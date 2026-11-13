@@ -735,11 +735,9 @@ def register(
                 # is derived from it at read.
                 "model_grades": grades["map"],
                 "model_grades_rev": grades["rev"],
-                # Whether mission launches run with permission bypass (#1215): the STRICT,
-                # fail-closed reading of the same stored value, which is what a launch uses. The
-                # lenient `agent_defaults.bypass` above can say true over a malformed value that
-                # grants nothing, so the missions settings line reads this instead.
-                "mission_bypass": prefs.unattended_bypass_granted(),
+                # Whether mission launches run with permission bypass: never, since missions run
+                # only API sessions (#1902, #1613 D8), whatever `agent_defaults.bypass` says.
+                "mission_bypass": False,
                 # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
                 # Applied at load like the theme; localStorage is the device cache.
                 "accent": prefs.get_accent(),

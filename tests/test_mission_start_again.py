@@ -31,6 +31,7 @@ from agent_sessions import (
     mission_dispatch,
     mission_dispatch_recover,
     mission_fence,
+    mission_structured,
     missions,
     ptybridge,
     runtime_cleanup,
@@ -39,6 +40,10 @@ from agent_sessions import (
 
 UUID = "11111111-2222-3333-4444-555555555555"
 KEY = f"claude:{UUID}"
+#: Missions launch only API clients (#1902): the plan names one, and every launch goes through the
+#: structured door (`mission_structured.dispatch`, faked). `KEY` stays the console fixture's so the
+#: teardown seam these tests stand at (`runtime_cleanup`) is the one a legacy member still gets.
+ENGINE = "claude-api"
 #: A pid above any `pid_max`, so its lease is provably dead.
 DEAD_OWNER = "4194305:1"
 #: The brief is sensitive operator text; it must never appear in the failure message or meta.
@@ -72,7 +77,7 @@ def _teardown_proves_empty(monkeypatch):
 def _planned(brief=BRIEF):
     m = missions.create_mission("ship it", cwd="/repo")
     missions.set_state(m["id"], "draft", "planned")
-    plan = missions.put_plan(m["id"], project_id="prj_a", cwd="/repo", engine="claude", brief=brief)
+    plan = missions.put_plan(m["id"], project_id="prj_a", cwd="/repo", engine=ENGINE, brief=brief)
     return m["id"], plan
 
 
@@ -102,7 +107,7 @@ def _fake_dispatch(monkeypatch, *, seed_outcome, teardown="stopped", briefed=Fal
         out.teardown = teardown
         return out
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
 
 
 def _failed(monkeypatch, seed_outcome="not_attempted", **kw):
@@ -153,7 +158,7 @@ def test_start_again_is_ALLOWED_on_affirmative_nothing_written_evidence(store, m
     # the failed attempt's id can land on the next one.
     stored = missions.get_plan(mid)
     assert stored is not None
-    assert (stored["engine"], stored["cwd"], stored["brief"]) == ("claude", "/repo", BRIEF)
+    assert (stored["engine"], stored["cwd"], stored["brief"]) == (ENGINE, "/repo", BRIEF)
     assert stored["plan_id"] != plan["plan_id"]
     intent = missions.plan_intent(mid)
     assert intent["plan_state"] == "ready"
@@ -816,7 +821,7 @@ def _launch_returns(monkeypatch, *, ok: bool):
         out.teardown = "" if ok else "stopped"
         return out
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
 
 
 def _gate(monkeypatch, owner, name, *, when=None, fail=False):
@@ -1022,7 +1027,7 @@ def test_a_launch_that_failed_BEFORE_minting_a_key_names_NO_session(store, monke
 
     mid, plan = _planned()
     claimed = missions.claim_plan(mid, plan["plan_id"])
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", boom)
+    monkeypatch.setattr(mission_structured, "dispatch", boom)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "failed" and out["session_key"] is None
@@ -1036,7 +1041,7 @@ def test_a_launch_REFUSED_before_anything_ran_records_no_session_link(store, mon
 
     mid, plan = _planned()
     claimed = missions.claim_plan(mid, plan["plan_id"])
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", refuse)
+    monkeypatch.setattr(mission_structured, "dispatch", refuse)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "planned"

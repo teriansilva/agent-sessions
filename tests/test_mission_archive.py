@@ -1211,6 +1211,7 @@ def test_the_LEDGER_refuses_to_append_for_a_barred_session(env, tmp_path, monkey
     assert ledger.latest_by_id() == {}, "the refused action was written anyway"
 
 
+@pytest.mark.usefixtures("lift_console_cutoff")  # the archive fence beneath #1902's
 @pytest.mark.anyio
 async def test_DELIVERY_refuses_a_session_whose_mission_was_archived_mid_batch(
     env, tmp_path, monkeypatch
@@ -1374,8 +1375,10 @@ async def test_the_MANUAL_approval_path_is_fenced_too(env, tmp_path, monkeypatch
     monkeypatch.setattr(session_input, "send_input", _spy_send)
 
     missions.begin_archive(mid, abandon=True)
-    # NO `authority` — this is the manual approval path.
-    await actuator.deliver("m1")
+    # NO `authority` — this is the manual approval path, flagged as the approve route flags it
+    # (#969). Without the flag the call is an AUTOMATIC one, which #1902 refuses for a mission's
+    # terminal session before the archive fence is reached.
+    await actuator.deliver("m1", operator_approval=True)
     assert sent == [], "bytes were written into a session whose mission is being archived"
     assert refusals and "archiv" in refusals[0], refusals
 

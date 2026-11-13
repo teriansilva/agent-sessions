@@ -20,7 +20,12 @@ import time
 
 import pytest
 
-from agent_sessions import mission_plan, missions
+from agent_sessions import mission_plan, mission_structured, missions
+
+#: Missions launch only API clients (#1902): every dispatch here goes through the structured door
+#: (`mission_structured.dispatch`, faked per test). A fake's `key` stays the console fixture's where
+#: a test pins the console teardown a legacy mission's member still gets.
+API_ENGINE = "claude-api"
 
 #: A real engine-qualified key. `engines.parse_key` validates the native shape, so a made-up
 #: `claude:zzz` makes the teardown path raise instead of decide — and a test asserting on the
@@ -135,104 +140,91 @@ def test_NULL_is_a_real_answer_and_is_not_reported_as_a_refusal():
 # ---- what is offered --------------------------------------------------------------------
 
 
-def test_SHELL_is_never_offered_as_a_dispatch_target(monkeypatch):
-    """Seeding a brief into a bare `bash -l` RUNS it.
+class _P:
+    """A provider over a REAL manifest (capability answers come from it, #853 P3)."""
 
-    The gate is applied when the LIST is built, so an unseedable engine is not offered rather
-    than offered and then refused — an operator cannot pick what was never on the menu, and the
-    model cannot index to it.
+    def __init__(self, eid, seed=True, present=True):
+        from agent_sessions import engines
+
+        self.engine_id = eid
+        self.supports_seed_start = seed
+        self.present = present
+        self.manifest = engines.get(eid).manifest
+
+    def is_present(self):
+        return self.present
+
+
+def _api_ready(monkeypatch):
+    """Every API client can start (no host probe); its kind's mission bit is the real one."""
+    from agent_sessions.engines import registry
+
+    monkeypatch.setattr(registry, "can_start", lambda prov: True)
+
+
+def test_no_TERMINAL_client_is_offered_as_a_dispatch_target(monkeypatch):
+    """Missions run on API clients only (#1902, #1613 D7/D17). A terminal client is not offered,
+    seedable or not, and `shell` least of all: a brief pasted into `bash -l` RUNS.
+
+    The gate is applied when the LIST is built, so a terminal client is not offered rather than
+    offered and then refused: an operator cannot pick what was never on the menu, and the model
+    cannot index to it. Red against `admits`' old console branch, which offered `claude`.
     """
     from agent_sessions import engines
 
-    class P:
-        def __init__(self, eid, seed):
-            self.engine_id = eid
-            self.supports_seed_start = seed
-            # #853 P3: capability answers come from the manifest; carry the real one.
-            self.manifest = engines.get(eid).manifest
-
-        def is_present(self):
-            return True
-
+    _api_ready(monkeypatch)
     monkeypatch.setattr(
         engines,
         "all_providers",
-        lambda: [P("claude", True), P("shell", True), P("gemini", False)],
+        lambda: [_P("claude"), _P("shell"), _P("gemini", False), _P("claude-api")],
     )
     ids = {e["id"] for e in mission_plan.engine_options()}
-    assert ids == {"claude"}
+    assert ids == {"claude-api"}
     assert "shell" not in ids, "a brief pasted into a login shell executes"
 
 
 def test_the_LEFT_OUT_agents_are_listed_with_a_reason_and_never_offered(monkeypatch):
     """#1577. The picker showed two agents out of nine and said nothing about the rest.
 
-    `engine_unavailable` names each agent `engine_options` leaves out, with plain words and the
-    server's full sentence — and stays disjoint from the offer, so it can never become a choice.
-    A non-agent engine is not listed at all: "shell — not an agent engine" is noise, not news.
+    `engine_unavailable` names each agent `engine_options` leaves out, with plain words, and stays
+    disjoint from the offer, so it can never become a choice. A non-agent engine is not listed at
+    all: "shell — not an agent engine" is noise, not news. Since #1902 a terminal client's words
+    name its family's API client to use, or say none can hold a mission role yet.
     """
     from agent_sessions import engines
+    from agent_sessions.plugins import kinds
 
-    class P:
-        def __init__(self, eid, seed, present=True):
-            self.engine_id = eid
-            self.supports_seed_start = seed
-            self.present = present
-            self.manifest = engines.get(eid).manifest
-
-        def is_present(self):
-            return self.present
-
+    _api_ready(monkeypatch)
+    monkeypatch.setitem(kinds.API_MISSION_READY, "codex-app-server", False)
     monkeypatch.setattr(
         engines,
         "all_providers",
-        lambda: [
-            P("claude", True),
-            P("shell", True),
-            P("gemini", False),
-            P("opencode", True, present=False),
-            P("kimi", True),
-        ],
-    )
-    real = engines.unattended_start_state
-    monkeypatch.setattr(
-        engines,
-        "unattended_start_state",
-        lambda prov: (False, "kimi does not reveal its session id")
-        if prov.engine_id == "kimi"
-        else real(prov),
+        lambda: [_P("claude"), _P("shell"), _P("codex"), _P("claude-api"), _P("codex-api")],
     )
     offered = {e["id"] for e in mission_plan.engine_options()}
     left_out = {e["id"]: e for e in mission_plan.engine_unavailable()}
-    assert offered == {"claude"}
-    assert set(left_out) == {"gemini", "opencode", "kimi"}, "shell is not an agent"
+    assert offered == {"claude-api"}
+    assert set(left_out) == {"claude", "codex", "codex-api"}, "shell is not an agent"
     assert not offered & set(left_out), "a left-out agent was also offered"
-    assert left_out["gemini"]["reason"] == "can't be started with a brief yet"
-    assert left_out["opencode"]["reason"] == "not installed"
-    assert left_out["kimi"]["reason"] == "can't be started unattended yet"
-    assert left_out["kimi"]["detail"] == "kimi does not reveal its session id"
+    assert left_out["claude"]["reason"] == (
+        "claude runs in a terminal, and missions run on API clients: use claude-api"
+    )
+    assert left_out["codex"]["reason"] == (
+        "codex runs in a terminal, and none of its API clients can hold a mission role yet"
+    )
+    assert left_out["codex-api"]["reason"] == mission_structured.NOT_MISSION_READY
 
 
-def test_an_UNINSTALLED_engine_is_not_offered(monkeypatch):
+def test_an_API_client_that_CANNOT_START_is_not_offered(monkeypatch):
+    """A mission-ready kind is not enough: the client has to be able to start now (#1898)."""
     from agent_sessions import engines
+    from agent_sessions.engines import registry
 
-    class P:
-        engine_id = "codex"
-
-        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
-        @property
-        def manifest(self):
-            from agent_sessions.engines import registry as _registry
-
-            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
-
-        supports_seed_start = True
-
-        def is_present(self):
-            return False
-
-    monkeypatch.setattr(engines, "all_providers", lambda: [P()])
+    monkeypatch.setattr(registry, "can_start", lambda prov: False)
+    monkeypatch.setattr(registry, "api_unavailable_reason", lambda prov: "not signed in")
+    monkeypatch.setattr(engines, "all_providers", lambda: [_P("claude-api")])
     assert mission_plan.engine_options() == []
+    assert mission_plan.engine_unavailable()[0]["reason"] == "not signed in"
 
 
 def test_a_project_with_NO_FOLDER_is_not_offered(monkeypatch, tmp_path):
@@ -272,7 +264,7 @@ def test_a_RE_PLAN_supersedes_rather_than_stacking(store):
     """Two live plans for one mission is a state the operator cannot act on coherently, and the
     newer one is the one on their screen."""
     mid = _mission()
-    first = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="claude", brief="one")
+    first = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="one")
     second = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="codex", brief="two")
     assert first["plan_id"] != second["plan_id"]
     current = missions.get_plan(mid)
@@ -286,8 +278,8 @@ def test_DISPATCHING_A_SUPERSEDED_PLAN_is_refused(store):
     SAW. Red against a dispatch that reads whatever is stored now.
     """
     mid = _mission("planned")
-    stale = missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="one")
-    missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="two")
+    stale = missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="one")
+    missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="two")
     with pytest.raises(missions.MissionError) as e:
         missions.claim_plan(mid, stale["plan_id"])
     assert e.value.status == 409
@@ -301,9 +293,9 @@ def test_ONE_WINNER_when_two_taps_race_the_same_plan(store):
     """Two approvals both reading a matching plan and both transitioning is two unattended
     agents against one mission."""
     mid = _mission("planned")
-    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="go")
+    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="go")
     first = missions.claim_plan(mid, plan["plan_id"])
-    assert first["engine"] == "claude"
+    assert first["engine"] == API_ENGINE
     with pytest.raises(missions.MissionError) as e:
         missions.claim_plan(mid, plan["plan_id"])
     assert e.value.status == 409
@@ -323,7 +315,7 @@ def test_a_mission_that_LEFT_PLANNED_cannot_be_dispatched_from_its_old_plan(stor
     from wherever it had got to.
     """
     mid = _mission("planned")
-    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="go")
+    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="go")
     # It leaves `planned` by a route that is not this one.
     missions.set_state(mid, "planned", "dispatching")
 
@@ -338,7 +330,7 @@ def test_a_mission_that_LEFT_PLANNED_cannot_be_dispatched_from_its_old_plan(stor
 def test_a_CLAIMED_plan_is_consumed(store):
     """A proposal that survives its own dispatch is a button the operator can press again."""
     mid = _mission("planned")
-    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="go")
+    plan = missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="go")
     missions.claim_plan(mid, plan["plan_id"])
     assert missions.get_plan(mid) is None
 
@@ -347,7 +339,7 @@ def test_a_plan_with_NO_PROJECT_or_NO_AGENT_cannot_be_dispatched(store):
     """Both are legitimate states to STORE — that is what the picker is for — and neither is a
     state to launch from. The refusal names which one is missing."""
     mid = _mission("planned")
-    p1 = missions.put_plan(mid, project_id=None, cwd=None, engine="claude", brief="go")
+    p1 = missions.put_plan(mid, project_id=None, cwd=None, engine=API_ENGINE, brief="go")
     with pytest.raises(missions.MissionError) as e:
         missions.claim_plan(mid, p1["plan_id"])
     assert e.value.status == 422 and "project" in str(e.value)
@@ -366,7 +358,7 @@ def test_a_RUNNING_mission_cannot_be_PLANNED(store):
     missions.set_state(mid, "planned", "dispatching")
     missions.set_state(mid, "dispatching", "running")
     with pytest.raises(missions.MissionError) as e:
-        missions.put_plan(mid, project_id="p", cwd="/repo", engine="claude", brief="go")
+        missions.put_plan(mid, project_id="p", cwd="/repo", engine=API_ENGINE, brief="go")
     assert e.value.status == 409
 
 
@@ -375,13 +367,13 @@ def test_the_plan_is_on_the_TIMELINE_as_its_own_kind(store):
     with no record of what was proposed."""
     mid = _mission()
     plan = missions.put_plan(
-        mid, project_id="prj_a", cwd="/repo", engine="claude", engine_reason="why", brief="go"
+        mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, engine_reason="why", brief="go"
     )
     events = missions.get_mission(mid)["events"]
     row = next(e for e in events if e["kind"] == "plan")
     assert row["text"] == "go"
     assert row["meta"]["plan_id"] == plan["plan_id"]
-    assert row["meta"]["engine"] == "claude" and row["meta"]["engine_reason"] == "why"
+    assert row["meta"]["engine"] == API_ENGINE and row["meta"]["engine_reason"] == "why"
 
 
 # ---- the whole pass ---------------------------------------------------------------------
@@ -496,7 +488,7 @@ def test_a_mission_with_NO_PROJECT_acquires_one_when_its_plan_is_dispatched(stor
     assert m.get("cwd") is None
     missions.set_state(m["id"], "draft", "planned")
     plan = missions.put_plan(
-        m["id"], project_id="prj_a", cwd="/repo/the-app", engine="claude", brief="go"
+        m["id"], project_id="prj_a", cwd="/repo/the-app", engine=API_ENGINE, brief="go"
     )
 
     missions.claim_plan(m["id"], plan["plan_id"])
@@ -543,7 +535,7 @@ def _planned(store, **over):
         mid,
         project_id="prj_a",
         cwd="/repo",
-        engine="claude",
+        engine=API_ENGINE,
         brief="go",
         **over,
     )
@@ -568,7 +560,7 @@ def test_ALIVE_IS_NOT_STARTED_a_launch_with_no_store_record_lands_FAILED(store, 
     async def fake(**kw):
         return _Out(started=False, briefed=True, reason="the engine's store has no such session")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] != "running"
@@ -599,7 +591,7 @@ def test_a_launch_that_could_not_be_ATTEMPTED_leaves_the_mission_RETRYABLE(store
     async def refuse(**kw):
         raise mission_dispatch.headless_dispatch.DispatchError("shell cannot be dispatched to")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", refuse)
+    monkeypatch.setattr(mission_structured, "dispatch", refuse)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "planned"
@@ -625,7 +617,7 @@ def test_an_UNEXPECTED_error_still_settles_the_mission(store, monkeypatch):
     async def boom(**kw):
         raise RuntimeError("something nobody predicted")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", boom)
+    monkeypatch.setattr(mission_structured, "dispatch", boom)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
     assert out["state"] == "failed"
     assert missions.get_mission(mid)["state"] == "failed"
@@ -645,19 +637,19 @@ def test_a_STARTED_AND_BRIEFED_launch_is_adopted_before_the_mission_reports_runn
     seen: list[str] = []
 
     async def fake(**kw):
-        seen.append(f"{kw['engine']}|{kw['cwd']}|{kw['brief']}|bypass={kw['bypass']}")
+        seen.append(f"{kw['engine']}|{kw['cwd']}|{kw['brief']}|bypass={'bypass' in kw}")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "running" and out["session_key"] == "claude:aaa"
     row = missions.get_mission(mid)
     assert row["state"] == "running"
     assert missions.active_session_keys(mid) == ["claude:aaa"]
-    # The launch used the SERVER's resolved cwd and the stored brief...
-    # The operator's grant, which defaults on (#1215); `test_mission_bypass_grant.py` covers off.
-    assert seen == ["claude|/repo|go|bypass=True"]
+    # The launch used the SERVER's resolved cwd and the stored brief, and no bypass at all: a
+    # mission's API session never skips permissions (#1613 D8), whatever #1215's grant says.
+    assert seen == [f"{API_ENGINE}|/repo|go|bypass=False"]
 
 
 @pytest.mark.parametrize("granted", [False, True])
@@ -665,23 +657,25 @@ def test_UNATTENDED_BYPASS_IS_NOT_INHERITED_from_the_operators_approval(
     store, monkeypatch, granted
 ):
     """An operator approving a PLAN approved the work, not the removal of every tool prompt from
-    an agent nobody is watching. #898 defaults it off in the launcher so the decision belongs to
-    the layer that knows whether somebody authorised it — and since #1215 that is the operator's
-    own `agent_defaults.bypass` grant, whichever way it is set, never the plan approval."""
+    an agent nobody is watching. Since #1902 a mission launches only API sessions, and #1215's
+    `agent_defaults.bypass` grant never reaches one (#1613 D8): whichever way it is set, the launch
+    is asked for no bypass and the timeline says "permission bypass off"."""
     from agent_sessions import mission_dispatch, prefs
 
     prefs.set_agent_defaults({"bypass": granted})
     mid, plan = _planned(store)
     claimed = missions.claim_plan(mid, plan["plan_id"])
-    got: list[bool] = []
+    got: list[dict] = []
 
     async def fake(**kw):
-        got.append(kw["bypass"])
+        got.append(kw)
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
-    assert got == [granted]
+    assert len(got) == 1 and "bypass" not in got[0]
+    texts = [str(e.get("text") or "") for e in missions.get_mission(mid)["events"]]
+    assert any("permission bypass off" in t for t in texts), texts
 
 
 def test_a_session_that_could_not_be_ADOPTED_is_not_reported_as_running(store, monkeypatch):
@@ -702,7 +696,7 @@ def test_a_session_that_could_not_be_ADOPTED_is_not_reported_as_running(store, m
     async def fake(**kw):
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "failed"
@@ -726,7 +720,7 @@ def test_STORING_a_plan_is_what_makes_a_mission_dispatchable(store):
     """
     mid = _mission()  # a fresh DRAFT, exactly as `POST /api/missions` leaves it
     assert missions.get_mission(mid)["state"] == "draft"
-    plan = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="claude", brief="go")
+    plan = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="go")
     assert missions.get_mission(mid)["state"] == "planned"
     # …and the very next call the operator makes now works, with nothing in between.
     claimed = missions.claim_plan(mid, plan["plan_id"])
@@ -738,8 +732,8 @@ def test_a_RE_PLAN_of_a_planned_mission_leaves_it_planned(store):
     """The transition is `draft -> planned` and nothing else. A second plan must not try to move
     a state that is already right — `_ALLOWED` has no `planned -> planned`."""
     mid = _mission()
-    missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="claude", brief="one")
-    second = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="claude", brief="two")
+    missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="one")
+    second = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="two")
     assert missions.get_mission(mid)["state"] == "planned"
     assert second["mission_state"] == "planned"
 
@@ -754,14 +748,14 @@ def test_two_TABS_editing_one_plan_do_not_silently_lose_an_edit(store):
     Red against a `put_plan` that ignores `expect_plan_id`.
     """
     mid = _mission()
-    a = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine="claude", brief="one")
+    a = missions.put_plan(mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="one")
 
     # Tab 1 edits the brief and wins.
     missions.put_plan(
         mid,
         project_id="prj_a",
         cwd="/repo",
-        engine="claude",
+        engine=API_ENGINE,
         brief="one, but better",
         expect_plan_id=a["plan_id"],
     )
@@ -784,7 +778,9 @@ def test_the_CLAIM_takes_the_cwd_the_caller_resolved_NOW(store):
     is what that project USED to mean. Launching an unattended agent into the old
     directory is `stale policy across the await` with a filesystem path on the end of it."""
     mid = _mission()
-    plan = missions.put_plan(mid, project_id="prj_a", cwd="/repo/old", engine="claude", brief="go")
+    plan = missions.put_plan(
+        mid, project_id="prj_a", cwd="/repo/old", engine=API_ENGINE, brief="go"
+    )
     claimed = missions.claim_plan(mid, plan["plan_id"], cwd="/repo/new", project_id="prj_a")
     assert claimed["cwd"] == "/repo/new"
     # …and it is what the MISSION now carries, which is what the launcher reads.
@@ -799,7 +795,7 @@ def test_the_CLAIM_writes_a_durable_record_of_the_launch_it_is_about_to_make(sto
     missions.claim_plan(mid, plan["plan_id"])
     rec = missions.get_dispatch(mid)
     assert rec is not None
-    assert rec["plan_id"] == plan["plan_id"] and rec["engine"] == "claude"
+    assert rec["plan_id"] == plan["plan_id"] and rec["engine"] == API_ENGINE
     # NULL until the key is minted — which is the difference recovery reads as "nothing was
     # spawned" versus "something may have been".
     assert rec["session_key"] is None
@@ -824,7 +820,7 @@ def test_the_key_is_recorded_BEFORE_the_launch_not_after_it(store, monkeypatch):
         seen.append(missions.get_dispatch(mid)["session_key"])
         return _Out(key="claude:11111111-2222-3333-4444-555555555555")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
     assert seen == ["claude:11111111-2222-3333-4444-555555555555"]
 
@@ -851,7 +847,7 @@ def test_a_dispatch_that_was_SETTLED_refuses_to_record_a_key(store, monkeypatch)
         calls.append("refused")
         return _Out(key="claude:11111111-2222-3333-4444-555555555555")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
     assert calls == ["refused"]
 
@@ -882,7 +878,7 @@ def test_an_ABANDON_during_the_launch_does_not_produce_a_running_report(store, m
         stopped.append(f"{engine}:{native}")
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     from agent_sessions import runtime_cleanup
 
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stop)
@@ -1094,7 +1090,7 @@ def _crashed_spawn(store, key):
     claim = missions.claim_spawn(
         mid,
         parent_key=parent,
-        engine="claude",
+        engine=API_ENGINE,
         cwd="/repo",
         brief="review it",
         owner=DEAD_OWNER,
@@ -1227,7 +1223,7 @@ def test_a_DISABLE_that_commits_after_the_check_still_stops_the_spawn(store, mon
         spawned.append("agent")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object(), policy_epoch=epoch))
 
     assert spawned == [], "an agent started under policy the operator had withdrawn"
@@ -1329,7 +1325,7 @@ def test_an_UNREADABLE_policy_refuses_the_launch_rather_than_authorising_it(stor
         spawned.append("agent")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(
         mission_dispatch.run(mid, claimed, registry=object(), policy_epoch="anything")
     )
@@ -1449,7 +1445,7 @@ def test_a_SIBLING_INSTANCE_withdrawing_the_policy_stops_this_launch(store, monk
         spawned.append("agent")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object(), policy_epoch=captured))
     assert spawned == [], "a sibling's withdrawal was invisible to the launch fence"
     assert "policy changed" in out["reason"]
@@ -1479,7 +1475,7 @@ def test_a_project_that_moves_AFTER_the_route_resolved_it_still_stops_the_spawn(
         spawned.append("agent")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(
         mission_dispatch.run(
             mid,
@@ -1517,7 +1513,7 @@ def test_an_UNRESOLVABLE_project_at_the_fence_refuses_rather_than_launching(stor
         spawned.append("agent")
         return _Out()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object(), verify_cwd=boom))
     assert spawned == []
     assert "that project moved" in out["reason"]
@@ -1548,7 +1544,7 @@ def test_a_LEAKED_teardown_keeps_the_durable_record(store, monkeypatch):
     async def leaks(engine, native, **kw):
         return "leaked"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", leaks)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
@@ -1573,7 +1569,7 @@ def test_a_CANCELLED_request_does_not_strand_the_mission(store, monkeypatch):
     async def cancelled(**kw):
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", cancelled)
+    monkeypatch.setattr(mission_structured, "dispatch", cancelled)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
@@ -1616,7 +1612,7 @@ def test_a_RETAINED_cleanup_obligation_is_RETRIED_until_the_boundary_is_EMPTY(st
         stopped.append(native)
         return outcomes.pop(0) if outcomes else "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
@@ -1906,7 +1902,7 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_interleave_a_teardown_of_the_session_it_ad
         t.join(timeout=5)
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     asyncio.run(mission_dispatch_recover.recover_once())
     # Wait for the adopter to COMMIT, bounded — and fail saying so. 5 s ran out on a starved runner
@@ -2050,7 +2046,7 @@ def test_a_RAISING_teardown_is_an_obligation_too_and_survives_a_CANCELLATION(sto
             raise OSError("the process table could not be read")
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", cancelled)
+    monkeypatch.setattr(mission_structured, "dispatch", cancelled)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", raises)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -2243,7 +2239,7 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_commit_inside_a_mission_WRITE_FENCE(store,
             on_key(key)
         return _Out(key=key)
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
 
     def _dispatch_from_another_request():
         order.append("dispatch-begin")
@@ -2496,7 +2492,7 @@ def test_a_REFUSED_ADOPTION_keeps_the_record_of_an_agent_it_could_not_stop(store
     async def leaked(engine, native, *, spare_if=None, **kw):
         return "leaked"  # something survived SIGKILL — the agent may still be running
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", leaked)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
@@ -2532,7 +2528,7 @@ def test_a_PROVED_TEARDOWN_after_a_refused_adoption_discharges_the_record(store,
     async def stopped(engine, native, *, spare_if=None, **kw):
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stopped)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
@@ -2582,7 +2578,7 @@ def test_a_CANCELLATION_while_RECORDING_the_dispatch_does_not_strand_the_mission
         time.sleep(0.3)  # the request goes away while this is in flight
         return real(*a, **kw)
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _slow_settle)
 
     async def _drive():
@@ -2648,7 +2644,7 @@ def test_ANY_settlement_failure_leaves_a_terminal_mission_and_a_teardown(store, 
         stopped.append(native)
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _boom)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -2711,7 +2707,7 @@ def test_a_CANCELLED_settlement_that_DID_NOT_SETTLE_still_tears_the_session_down
         stopped.append(native)
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _abandon_then_settle)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
 
@@ -2762,7 +2758,7 @@ def test_a_REPEATED_write_failure_keeps_the_row_recovery_needs(store, monkeypatc
     async def stopped(engine, native, *, spare_if=None, **kw):
         return "stopped"  # the process boundary IS provably empty
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _every_write_fails)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stopped)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -2821,7 +2817,7 @@ def test_a_LEAKED_teardown_is_never_reported_as_STOPPED(store, monkeypatch):
     async def leaked(engine, native, *, spare_if=None, **kw):
         return "leaked"  # it ignored SIGTERM and SIGKILL
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _slow)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", leaked)
 
@@ -2881,7 +2877,7 @@ def test_an_ATTEMPTED_launch_whose_SETTLEMENT_also_failed_keeps_its_recovery_row
     async def stopped(engine, native, *, spare_if=None, **kw):
         return "stopped"  # the boundary IS provably empty; only the WRITE failed
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _every_write_fails)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stopped)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -2935,7 +2931,7 @@ def test_a_MISSION_THAT_MOVED_never_claims_a_LEAKED_session_was_stopped(store, m
     async def leaked(engine, native, *, spare_if=None, **kw):
         return "leaked"  # it ignored SIGTERM and SIGKILL
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _moved)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", leaked)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -2997,7 +2993,7 @@ def test_a_SPARED_teardown_is_never_reported_as_a_STOP(store, monkeypatch):
         killed.append(native)
         return "stopped"
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     monkeypatch.setattr(mission_dispatch, "fenced_settle", _moved)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
@@ -3107,7 +3103,7 @@ def test_a_SUPERSEDED_dispatch_cannot_stamp_adopt_or_CLEAR_the_plan_that_replace
 
     # 3. PLAN B, proposed and approved. Its claim overwrites the row A is still holding.
     plan_b = missions.put_plan(
-        mid, project_id="prj_a", cwd="/repo", engine="claude", brief="something else"
+        mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="something else"
     )
     assert plan_b["plan_id"] != plan_a["plan_id"]
     missions.claim_plan(mid, plan_b["plan_id"])
@@ -3195,7 +3191,7 @@ def test_a_SUPERSEDED_attempt_cannot_SPAWN_under_the_approval_that_replaced_it(s
             mid, to="planned", detail="the operator went back", expect_plan=plan_a["plan_id"]
         )
         plan_b = missions.put_plan(
-            mid, project_id="prj_a", cwd="/repo", engine="claude", brief="something else"
+            mid, project_id="prj_a", cwd="/repo", engine=API_ENGINE, brief="something else"
         )
         missions.claim_plan(mid, plan_b["plan_id"])
         assert missions.get_dispatch(mid)["plan_id"] == plan_b["plan_id"]
@@ -3210,7 +3206,7 @@ def test_a_SUPERSEDED_attempt_cannot_SPAWN_under_the_approval_that_replaced_it(s
         spawned.append("agent")
         return _Out(key=key_a)
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     out = asyncio.run(mission_dispatch.run(mid, claimed_a, registry=object()))
 
     assert stamped == [True], "the test never reached the stamp it is about"
@@ -3251,7 +3247,7 @@ def test_an_EXCEPTION_after_the_KEY_WAS_MINTED_keeps_the_record_that_names_it(st
         kw["on_key"](key)
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", raises_after_stamping)
+    monkeypatch.setattr(mission_structured, "dispatch", raises_after_stamping)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "failed"
@@ -3276,7 +3272,7 @@ def test_an_exception_BEFORE_any_key_was_minted_still_discharges_the_record(stor
     async def raises_before_stamping(**kw):
         raise OSError("the launcher fell over before anything was minted")
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", raises_before_stamping)
+    monkeypatch.setattr(mission_structured, "dispatch", raises_before_stamping)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
 
     assert out["state"] == "failed"

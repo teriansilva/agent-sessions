@@ -55,17 +55,24 @@ only, and the mission can never confirm itself finished.
 
 Objectives arrive a moment after the mission does; see below.
 
+### Which agents can run a mission
+
+A mission runs on **API sessions** only: an agent's API client, never its terminal. The agent
+picker offers only API clients that can hold a mission role and can start now, and it lists every
+other agent with the reason it is left out. A terminal agent's reason names its API client to use
+instead, or says none can hold a mission role yet. Today that is Claude's API client. If none is
+ready, planning stops with that reason: set one up in **Settings › Agents**, then plan again.
+
+A plan written before this rule that still names a terminal agent is refused when you press
+**Dispatch**. The plan is kept, so you can choose another agent for it.
+
 ### Permission bypass
 
-An agent a mission starts runs with nobody watching, so whether it skips tool prompts is your call:
-it follows **Permission bypass for new sessions and missions** in **Settings › Agents › Defaults**
-(on by default), and the **Orchestrator** panel of [Mission control settings](/guide/settings)
-shows which way it is set. The setting is read as each agent starts, and the timeline records which
-posture it started with. Turning it off does not reach an agent that is already running. With it
-off, an agent asks before using tools and can stall until you answer.
-
-Scheduled mission automations always keep permission bypass off, as their consent specifies,
-even when this default is on. Their timeline records bypass off.
+A mission's agents never skip tool prompts, whatever **Permission bypass for new sessions and
+missions** says in **Settings › Agents › Defaults**. That default still applies to sessions you
+start yourself. When a mission's agent asks before using a tool, the mission shows one card for the
+session, and you decide each request in the session's own pane. The timeline records "permission
+bypass off" for every launch.
 
 ## Adopting a session you already started
 
@@ -73,6 +80,10 @@ Work started from the sidebar is not orphaned. Adopt it from the session itself:
 its sidebar row, or the session pane's header, offers to adopt the session into a mission. A session
 a mission holds carries that mission's tag in the sidebar, and **Filter by mission** narrows the
 session list to one mission's sessions.
+
+Only a session of an agent that can run a mission can be adopted (see
+[Which agents can run a mission](#which-agents-can-run-a-mission)). Adopting a terminal session is
+refused with the API client to use instead.
 
 A session belongs to at most one mission at a time. Adopting one another mission already holds
 comes back with a refusal that **names the holder**, so you are told where it went rather than just
@@ -270,6 +281,11 @@ becomes an escalation straight away. Reading often does not mean paying often: a
 still working is read by the model at most once every five minutes, a session that stopped is read
 once for that stop, at most three model readings per session in any five minutes, and the checks
 that call your forge or a web address keep their five-minute pace.
+
+A mission that took a terminal session before missions ran on API sessions keeps it, for you.
+Mission control types nothing automatic into it any more: a nudge, an AI-written direction or a
+menu answer for it waits in **Needs you** as a proposal you approve, whatever the autonomy tier.
+Your own messages to it are sent as before.
 
 Every objective shows why the supervisor is or is not acting on it:
 

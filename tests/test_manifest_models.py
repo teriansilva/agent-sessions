@@ -643,7 +643,7 @@ def test_ws_attach_never_reads_the_model(fake_jsonl, auth_cfg, monkeypatch):
 @pytest.mark.anyio
 @pytest.mark.parametrize("model", [None, "opus"])
 async def test_mission_dispatch_forwards_an_optional_model(monkeypatch, model):
-    from agent_sessions import headless_dispatch, mission_dispatch
+    from agent_sessions import headless_dispatch, mission_dispatch, mission_structured
 
     seen: dict = {}
 
@@ -654,20 +654,18 @@ async def test_mission_dispatch_forwards_an_optional_model(monkeypatch, model):
     async def settle(*a, **kw):
         return None
 
-    monkeypatch.setattr(headless_dispatch, "dispatch", dispatch)
+    # A mission launches only API clients (#1902), through the structured door.
+    monkeypatch.setattr(mission_structured, "dispatch", dispatch)
     monkeypatch.setattr(mission_dispatch, "_settle", settle)
     out = await mission_dispatch.run(
         "m1",
-        {"engine": "claude", "cwd": "/w", "brief": "go"},
+        {"engine": "claude-api", "cwd": "/w", "brief": "go"},
         registry=object(),
         policy_epoch="e",
         model=model,
     )
     assert out["outcome"] == "refused"
-    if model is None:
-        assert "model" not in seen  # exactly the dispatch before #1189
-    else:
-        assert seen["model"] == "opus"
+    assert seen["model"] == model  # `None` is the client's own default
 
 
 def test_list_and_lookup_rows_share_one_shape_and_only_the_lookup_reads_the_model(

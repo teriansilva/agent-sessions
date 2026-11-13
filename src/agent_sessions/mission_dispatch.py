@@ -39,27 +39,11 @@ from typing import NamedTuple
 from . import (
     engines,
     headless_dispatch,
-    launch_binding,
     missions,
     session_input,
 )
 
 log = logging.getLogger(__name__)
-
-
-def bypass_granted() -> bool:
-    """Whether the operator has granted permission bypass to unattended launches (#1215).
-
-    The grant is `agent_defaults.bypass` — the same default an interactive launch starts from —
-    read fresh on every call, and FAIL CLOSED: an unreadable or corrupt prefs document, or a stored
-    value that is not a boolean, is no grant (`prefs.unattended_bypass_granted`).
-    """
-    from . import prefs
-
-    try:
-        return prefs.unattended_bypass_granted()
-    except Exception:  # noqa: BLE001 — an unreadable grant is no grant
-        return False
 
 
 def posture_phrase(bypass: bool) -> str:
@@ -470,12 +454,6 @@ async def _orphaned_after_launch(
     return _Reconciled(state or "dispatching", outcome, not (discharged and terminal))
 
 
-def apply_bypass_ceiling(decided: bool, ceiling: bool | None) -> bool:
-    """A ceiling only ever LOWERS the grant: ``False`` forces no bypass, ``None`` changes nothing,
-    ``True`` never grants what the path did not decide (#1201)."""
-    return bool(decided) and ceiling is not False
-
-
 async def run(
     mission_id: str,
     plan: dict,
@@ -506,15 +484,32 @@ async def run(
     # not land. Empty only if a caller hands us a plan without one, in which case every CAS below
     # degrades to the old mission-keyed behaviour rather than refusing a legitimate dispatch.
     plan_id = str(plan.get("plan_id") or "") or None
+    # Imported here, not at the top: it reaches the native runtime, whose import graph already
+    # passes through the routes package that imports this module (an import cycle at startup).
+    from . import mission_structured
+
+    # A TERMINAL CLIENT IS NEVER LAUNCHED FOR A MISSION (#1902, #1613 D7/D17). Every caller lands
+    # here (the dispatch route, an automation's `start_mission`, a spawn), so a plan written before
+    # the cutoff, or by an old flow, is refused here before anything is prepared, exactly as a
+    # launcher refusal is: nothing spawned, the mission back to `planned` with the reason.
+    # A removed agent says so ("agent removed"), never "unknown"; it is never swapped for another.
+    removed = engines.removed_reason(engine)
+    prov = None if removed else engines.get(engine)
+    if not mission_structured.is_api(prov):
+        if removed or prov is None:
+            why = removed or f"{engine!r} is not an available agent"
+        else:
+            why = await asyncio.to_thread(mission_structured.console_refusal, prov)
+        landed = await _settle(mission_id, to="planned", detail=why, expect_plan=plan_id)
+        # The state it landed in: `planned` for a dispatch, `running` again for a refused spawn.
+        state = str((landed or {}).get("state") or "planned")
+        return {"state": state, "outcome": "refused", "reason": why, "session_key": None}
     epoch = session_input.policy_fingerprint() if policy_epoch is None else policy_epoch
-    # THE OPERATOR'S PERMISSION-BYPASS GRANT, read for THIS launch (#1215). Not at plan time: a
-    # plan can sit on screen for minutes, and the grant is whatever the operator has set when the
-    # agent starts. It is read here because the launcher builds the argv before it enters the
-    # fence, and it is CHECKED AGAIN under the fence in `authorize` below, so a revocation that
-    # lands in between refuses the launch rather than starting a bypassed agent.
-    # Scheduled automations retain their separately consented bypass-off ceiling (#1201).
-    # Apply it before construction, fenced authorization and settlement so all three agree.
-    bypass = apply_bypass_ceiling(bypass_granted(), bypass_ceiling)
+    # NO PERMISSION BYPASS (#1613 D8): a mission's session is an API session (above), and #1215's
+    # grant never applies to one. `bypass_ceiling` is still accepted from callers (an automation
+    # passes its bypass-off ceiling, #1201); it can only lower what is already off.
+    del bypass_ceiling
+    bypass = False
 
     def authorize(observed: str | None) -> str | None:
         # Under the fence, immediately before the spawn. The comparand is a digest of the POLICY
@@ -524,17 +519,6 @@ async def run(
         if observed is None or epoch is None or observed != epoch:
             return (
                 "orchestration policy changed while this launch was being authorised, "
-                "so nothing was started"
-            )
-        # …AND THE BYPASS GRANT IS STILL GIVEN (#1215). The argv was built with `bypass` before
-        # the fence; the operator switching the default off since then must stop this launch, not
-        # be overtaken by it. `set_agent_defaults` commits a bypass change under the same fence,
-        # so the change either landed before this read or waits for the spawn. The other way round
-        # (off -> on) is not refused: launching with prompts on is the safer of the two postures,
-        # and it is the one recorded.
-        if bypass and not bypass_granted():
-            return (
-                "permission bypass was switched off while this launch was being authorised, "
                 "so nothing was started"
             )
         # …AND THE DIRECTORY (#904 review 2, finding 6). The route resolved the project and the
@@ -591,10 +575,6 @@ async def run(
     # write — and the handler below cannot tell that from a refusal before anything ran. Keeping
     # the key is what lets it tell the truth in the one direction that matters.
     minted: str | None = None
-    # THIS ATTEMPT'S NONCE (#989). Minted here rather than in the launcher so the record can carry
-    # it beside the key before anything spawns; the launcher delivers it only for a late-id engine,
-    # where it is what proves which session the launch became.
-    nonce = launch_binding.mint_nonce()
 
     # The shelf's git baseline (#1740 P1b), snapshotted BEFORE the agent starts and recorded under
     # its key the moment the key exists: what it then changes in the mission's repositories is
@@ -608,10 +588,9 @@ async def run(
         # already been settled by somebody else, and starting an agent for it would produce
         # exactly the orphan this whole path exists to prevent.
         nonlocal minted
-        # The nonce rides with a PLACEHOLDER only: a pinned-id key is the session, and recording a
-        # discriminator it will never use would be a second fact for recovery to misread.
-        late = {"nonce": nonce} if engines.is_new_session_placeholder(key) else {}
-        if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id, **late):
+        # An API session's key is its pinned id, so no late-id nonce rides with it (#989 is the
+        # console launcher's, which missions no longer use).
+        if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id):
             raise missions.MissionError("this dispatch is no longer current", status=409)
         mission_shelf_git.record_baselines(mission_id, key, shelf_snaps)
         # THE RESOURCE IDENTITY IS PERSISTED HERE, at the real pre-launch callback (#894 review 2,
@@ -631,55 +610,22 @@ async def run(
         minted = key
 
     # AN API CLIENT IS DISPATCHED STRUCTURED (#1898): a create and one guarded brief turn through
-    # `mission_structured`, never dtach or a seed. Its posture is fixed BEFORE anything reads it:
-    # #1215's grant never applies to a mission's API session (#1613 D8), so `authorize` skips the
-    # grant check and the timeline records "bypass off", which is what the session runs with.
-    # Imported here, not at the top: it reaches the native runtime, whose import graph already
-    # passes through the routes package that imports this module (an import cycle at startup).
-    from . import mission_structured
-
-    structured = mission_structured.is_api(engines.get(engine))
-    if structured:
-        bypass = False
+    # `mission_structured`, never dtach or a seed, and it is the only kind left (#1902). Its
+    # posture is fixed BEFORE anything reads it: #1215's grant never applies to a mission's API
+    # session (#1613 D8), so `authorize` has no grant check and the timeline records "bypass
+    # off", which is what the session runs with. The session gets the mission's shelf from its
+    # first worker generation (#1900), and an optional model (#1189) is the client's own.
     try:
-        if structured:
-            out = await mission_structured.dispatch(
-                mission_id=mission_id,
-                plan_id=plan_id,
-                engine=engine,
-                cwd=cwd,
-                brief=brief,
-                on_key=on_key,
-                authorize=authorize,
-                model=model,
-            )
-        else:
-            out = await headless_dispatch.dispatch(
-                engine=engine,
-                cwd=cwd,
-                brief=brief,
-                registry=registry,
-                # UNATTENDED BYPASS IS AN EXPLICIT GRANT (#1215). #898 defaults it to False so
-                # the decision belongs to a layer that knows whether an operator authorised it.
-                # This is that layer, and the grant is the operator's own
-                # `agent_defaults.bypass` — the setting in Agents › Defaults, which says it
-                # governs mission launches too — approved on #1215 in their own words.
-                # Approving a PLAN is still not the grant; the setting is.
-                bypass=bypass,
-                on_key=on_key,
-                authorize=authorize,
-                nonce=nonce,
-                # The mission this agent works for (#1740): its launch gets the shelf tool,
-                # minted for THIS mission inside the launch fence. The session is adopted only
-                # once it runs. A structured (API) session gets it too (#1900): its first worker
-                # generation is minted for this mission (`mission_structured.dispatch`).
-                shelf_mission=mission_id,
-                # An optional model (#1189), resolved by the launcher's own resolver: a refusal is
-                # a `DispatchError` below (nothing spawned). Passed only when set, so `None` is
-                # exactly the launch this path made before a model could be chosen. #1194 is the
-                # first caller.
-                **({"model": model} if model is not None else {}),
-            )
+        out = await mission_structured.dispatch(
+            mission_id=mission_id,
+            plan_id=plan_id,
+            engine=engine,
+            cwd=cwd,
+            brief=brief,
+            on_key=on_key,
+            authorize=authorize,
+            model=model,
+        )
     except headless_dispatch.DispatchError as e:
         # Could not be ATTEMPTED — an ineligible engine, a brief the sanitiser refused. Nothing
         # was spawned, so this is not a mission that failed; it is a dispatch that did not happen,

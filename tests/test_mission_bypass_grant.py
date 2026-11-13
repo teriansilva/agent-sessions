@@ -1,13 +1,12 @@
-"""Mission launches honour the operator's permission-bypass grant (#1215).
+"""Mission launches never bypass permissions, whatever the operator's grant (#1902, #1613 D8).
 
-`agent_defaults.bypass` is the grant. A mission dispatch or spawn (both run through
-`mission_dispatch.run`) reads it at launch time, re-checks it inside the launch fence, and records
-the posture it launched with on the settlement's own timeline event. With the grant off, today's
-no-bypass launch is unchanged.
-
-The engine side — opencode with bypass gets no ask-only `OPENCODE_CONFIG_CONTENT` override — is
-pinned in `test_opencode_unattended.py`. Fakes stand at the launcher boundary
-(`headless_dispatch.dispatch`), as in `test_mission_start_again.py`. Nothing here spawns a process.
+`agent_defaults.bypass` is the operator's permission-bypass grant (#1215). It used to reach mission
+launches, which ran on terminal clients. Since #1902 a mission launches only API sessions
+(`mission_dispatch.run` → `mission_structured.dispatch`), and the grant never reaches one: a
+dispatch and a spawn are asked for no bypass, and the settlement records "permission bypass off".
+The grant itself is still stored and read strictly (`prefs.unattended_bypass_granted`, reported to
+Ask HQ); its storage rules are pinned below. Fakes stand at the structured door. Nothing here
+spawns a process.
 """
 
 from __future__ import annotations
@@ -25,13 +24,15 @@ from agent_sessions import (
     handoff,
     headless_dispatch,
     mission_dispatch,
+    mission_structured,
     missions,
     prefs,
     session_input,
 )
 
 UUID = "11111111-2222-3333-4444-555555555555"
-KEY = f"claude:{UUID}"
+ENGINE = "claude-api"
+KEY = f"{ENGINE}:{UUID}"
 EPOCH = "epoch-under-test"
 
 
@@ -50,43 +51,40 @@ def store(tmp_path, monkeypatch):
 def _claimed():
     m = missions.create_mission("ship it", cwd="/repo")
     missions.set_state(m["id"], "draft", "planned")
-    plan = missions.put_plan(m["id"], project_id="prj_a", cwd="/repo", engine="claude", brief="go")
+    plan = missions.put_plan(m["id"], project_id="prj_a", cwd="/repo", engine=ENGINE, brief="go")
     return m["id"], missions.claim_plan(m["id"], plan["plan_id"])
 
 
-def _started(kw) -> headless_dispatch.Dispatch:
-    out = headless_dispatch.Dispatch(key=KEY, engine="claude", native=UUID, cwd=kw["cwd"])
-    out.launched = out.started = out.briefed = True
-    out.seed_outcome = "delivered"
-    return out
-
-
-def _launcher(monkeypatch, *, before_authorize=None):
-    """A launcher that behaves like the real one around the fence: key first, then `authorize`
-    (the real one calls it inside `launch_fence`), then the spawn — refused if `authorize` says
-    so."""
+def _launcher(monkeypatch, *, key=KEY, before_authorize=None):
+    """The structured door, behaving like the real one around the fence: key first, then
+    `authorize` inside the fence, then the create, refused if `authorize` says so. Records every
+    keyword it was handed."""
     seen: dict = {}
 
     async def fake(**kw):
-        seen["bypass"] = kw["bypass"]
-        kw["on_key"](KEY)
+        seen["kw"] = kw
+        kw["on_key"](key)
         if before_authorize is not None:
             before_authorize()
         why = kw["authorize"](EPOCH)
         seen["refusal"] = why
+        out = headless_dispatch.Dispatch(key=key, engine=ENGINE, native=key.split(":")[1], cwd="")
         if why is not None:
-            out = headless_dispatch.Dispatch(key=KEY, engine="claude", native=UUID, cwd=kw["cwd"])
             out.reason = why
             out.refusal = "policy"
             return out
-        return _started(kw)
+        out.launched = out.started = out.briefed = True
+        out.seed_outcome = "delivered"
+        return out
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
     return seen
 
 
-def _run(mid, claimed):
-    return asyncio.run(mission_dispatch.run(mid, claimed, registry=object(), policy_epoch=EPOCH))
+def _run(mid, claimed, **kw):
+    return asyncio.run(
+        mission_dispatch.run(mid, claimed, registry=object(), policy_epoch=EPOCH, **kw)
+    )
 
 
 def _settlement(mid) -> dict:
@@ -97,78 +95,49 @@ def _settlement(mid) -> dict:
     raise AssertionError("no settlement event")
 
 
-def test_the_grant_defaults_on_and_a_mission_launches_bypassed(store, monkeypatch):
-    """Nothing stored: the default is the one interactive launches use (True)."""
-    seen = _launcher(monkeypatch)
-    mid, claimed = _claimed()
-    out = _run(mid, claimed)
-    assert out["outcome"] == "started", out
-    assert seen["bypass"] is True
-    ev = _settlement(mid)
-    assert ev["meta"]["bypass"] is True
-    assert ev["meta"]["to"] == "running"
-    assert "permission bypass on" in ev["meta"]["detail"]
-
-
-def test_with_the_grant_off_the_launch_is_not_bypassed(store, monkeypatch):
-    prefs.set_agent_defaults({"bypass": False})
-    seen = _launcher(monkeypatch)
-    mid, claimed = _claimed()
-    out = _run(mid, claimed)
-    assert out["outcome"] == "started", out
-    assert seen["bypass"] is False
+def _assert_not_bypassed(seen, mid):
+    assert "bypass" not in seen["kw"], "a mission's API session is never asked to bypass"
     ev = _settlement(mid)
     assert ev["meta"]["bypass"] is False
     assert "permission bypass off" in ev["meta"]["detail"]
 
 
-@pytest.mark.parametrize("grant,ceiling", [(True, False), (False, True)])
-def test_a_caller_ceiling_can_only_lower_the_recorded_launch_grant(
-    store, monkeypatch, grant, ceiling
-):
-    """Automation consent remains bypass-off, and an affirmative ceiling cannot grant bypass.
-    Both the command and the durable timeline must reflect the effective posture."""
-    prefs.set_agent_defaults({"bypass": grant})
+@pytest.mark.parametrize("grant", [None, True, False], ids=["default", "granted", "withheld"])
+def test_no_grant_reaches_a_mission_launch(store, monkeypatch, grant):
+    """Red against the old launch, which read the grant (default on) and launched bypassed."""
+    if grant is not None:
+        prefs.set_agent_defaults({"bypass": grant})
     seen = _launcher(monkeypatch)
     mid, claimed = _claimed()
-    out = asyncio.run(
-        mission_dispatch.run(
-            mid, claimed, registry=object(), policy_epoch=EPOCH, bypass_ceiling=ceiling
-        )
-    )
+    out = _run(mid, claimed)
     assert out["outcome"] == "started", out
-    assert seen["bypass"] is False
-    ev = _settlement(mid)
-    assert ev["meta"]["bypass"] is False
-    assert "permission bypass off" in ev["meta"]["detail"]
+    assert _settlement(mid)["meta"]["to"] == "running"
+    _assert_not_bypassed(seen, mid)
 
 
-def test_a_revocation_before_the_fence_refuses_a_bypassed_launch(store, monkeypatch):
-    """The argv is built with the grant read before the fence. Switching it off in between must
-    stop the launch inside the fence — never start a bypassed agent the operator just revoked."""
+@pytest.mark.parametrize("ceiling", [True, False, None])
+def test_a_caller_ceiling_changes_nothing(store, monkeypatch, ceiling):
+    """An automation still passes its bypass-off ceiling (#1201); an affirmative one cannot grant
+    what a mission launch never has."""
+    prefs.set_agent_defaults({"bypass": True})
+    seen = _launcher(monkeypatch)
+    mid, claimed = _claimed()
+    assert _run(mid, claimed, bypass_ceiling=ceiling)["outcome"] == "started"
+    _assert_not_bypassed(seen, mid)
+
+
+@pytest.mark.parametrize("flip", [False, True], ids=["revoked", "granted"])
+def test_a_grant_change_mid_launch_neither_refuses_nor_bypasses(store, monkeypatch, flip):
+    """The grant is not part of a mission launch's authority any more, so changing it inside the
+    window refuses nothing and starts nothing bypassed."""
+    prefs.set_agent_defaults({"bypass": not flip})
     seen = _launcher(
-        monkeypatch, before_authorize=lambda: prefs.set_agent_defaults({"bypass": False})
+        monkeypatch, before_authorize=lambda: prefs.set_agent_defaults({"bypass": flip})
     )
     mid, claimed = _claimed()
     out = _run(mid, claimed)
-    assert seen["bypass"] is True
-    assert seen["refusal"] and "permission bypass was switched off" in seen["refusal"]
-    assert out["outcome"] == "refused", out
-    assert missions.get_mission(mid)["state"] == "planned"
-
-
-def test_a_grant_turned_on_mid_launch_starts_it_without_bypass(store, monkeypatch):
-    """off -> on in the same window is not refused: prompts-on is the safer posture, and it is the
-    one that ran and the one recorded."""
-    prefs.set_agent_defaults({"bypass": False})
-    seen = _launcher(
-        monkeypatch, before_authorize=lambda: prefs.set_agent_defaults({"bypass": True})
-    )
-    mid, claimed = _claimed()
-    out = _run(mid, claimed)
-    assert out["outcome"] == "started", out
-    assert seen["bypass"] is False and seen["refusal"] is None
-    assert _settlement(mid)["meta"]["bypass"] is False
+    assert seen["refusal"] is None and out["outcome"] == "started", out
+    _assert_not_bypassed(seen, mid)
 
 
 def test_an_unreadable_grant_is_no_grant(store, monkeypatch):
@@ -177,56 +146,40 @@ def test_an_unreadable_grant_is_no_grant(store, monkeypatch):
     path = store / "prefs.json"
     path.write_text("{not json")
     assert prefs.get_agent_defaults()["bypass"] is True
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
     path.write_text('{"agent_defaults": {"bypass": "yes"}}')
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
     path.write_text('{"agent_defaults": []}')
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
     path.write_text('{"agent_defaults": null}')
-    assert mission_dispatch.bypass_granted() is False, "a stored null is not an absent block"
+    assert prefs.unattended_bypass_granted() is False, "a stored null is not an absent block"
     path.write_text('{"agent_defaults": {}}')
-    assert mission_dispatch.bypass_granted() is True, "absent is the approved default"
+    assert prefs.unattended_bypass_granted() is True, "absent is the approved default"
     path.unlink()
-    assert mission_dispatch.bypass_granted() is True, "nothing stored is the approved default"
+    assert prefs.unattended_bypass_granted() is True, "nothing stored is the approved default"
     path.write_text('{"agent_defaults": {"bypass": false}}')
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
 
     def boom(*a, **kw):
         raise OSError("prefs unreadable")
 
     monkeypatch.setattr(prefs, "_read_policy_doc", boom)
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
 
 
-def test_a_spawn_takes_the_same_grant(store, monkeypatch):
-    """A sub-agent spawn runs through `mission_dispatch.run` too — the same launch-time read, the
-    same fence check and the same recorded posture, for a spawn claim."""
-    seen = _launcher(monkeypatch)
+def test_a_spawn_never_bypasses_either(store, monkeypatch):
+    """A sub-agent spawn runs through `mission_dispatch.run` too, for a spawn claim."""
+    _launcher(monkeypatch)
     mid, claimed = _claimed()
     assert _run(mid, claimed)["outcome"] == "started"
-    missions_row = missions.get_mission(mid)
-    assert missions_row["state"] == "running"
+    assert missions.get_mission(mid)["state"] == "running"
     spawn = missions.claim_spawn(
-        mid, parent_key=KEY, engine="claude", cwd="/repo", brief="help", project_id="prj_a"
+        mid, parent_key=KEY, engine=ENGINE, cwd="/repo", brief="help", project_id="prj_a"
     )
-    prefs.set_agent_defaults({"bypass": False})
-    child = "claude:22222222-3333-4444-5555-666666666666"
-
-    async def fake(**kw):
-        seen["bypass"] = kw["bypass"]
-        kw["on_key"](child)
-        assert kw["authorize"](EPOCH) is None
-        out = headless_dispatch.Dispatch(
-            key=child, engine="claude", native=child.split(":")[1], cwd=kw["cwd"]
-        )
-        out.launched = out.started = out.briefed = True
-        out.seed_outcome = "delivered"
-        return out
-
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
+    child = f"{ENGINE}:22222222-3333-4444-5555-666666666666"
+    seen = _launcher(monkeypatch, key=child)
     _run(mid, spawn)
-    assert seen["bypass"] is False
-    assert _settlement(mid)["meta"]["bypass"] is False
+    _assert_not_bypassed(seen, mid)
 
 
 def test_a_bypass_change_commits_inside_the_launch_fence(store):
@@ -260,11 +213,11 @@ def test_a_save_that_does_not_name_bypass_never_enables_the_grant(store, stored,
     the approved absent default — so `null` is in the matrix, as is an empty patch."""
     path = store / "prefs.json"
     path.write_text(stored)
-    assert mission_dispatch.bypass_granted() is False
+    assert prefs.unattended_bypass_granted() is False
     before = session_input.current_policy_epoch("mission")
     out = prefs.set_agent_defaults(patch)
     assert isinstance(out["bypass"], bool)
-    assert mission_dispatch.bypass_granted() is False, stored
+    assert prefs.unattended_bypass_granted() is False, stored
     assert session_input.current_policy_epoch("mission") == before
 
 
@@ -284,17 +237,18 @@ def test_an_engine_only_save_keeps_an_absent_grant_absent(store, stored, patch):
         path.unlink(missing_ok=True)
     else:
         path.write_text(stored)
-    assert mission_dispatch.bypass_granted() is True
+    assert prefs.unattended_bypass_granted() is True
     before = session_input.current_policy_epoch("mission")
     prefs.set_agent_defaults(patch)
     assert "bypass" not in json.loads(path.read_text())["agent_defaults"]
-    assert mission_dispatch.bypass_granted() is True
+    assert prefs.unattended_bypass_granted() is True
     assert session_input.current_policy_epoch("mission") == before
 
 
-def test_config_reports_the_strict_grant(store):
-    """The missions settings line reads `mission_bypass`, the launch's own reading — never the
-    form's lenient default over a malformed value."""
+def test_the_strict_grant_never_reads_a_malformed_value_as_granted(store):
+    """The strict reading (`prefs.unattended_bypass_granted`, reported to Ask HQ) never takes the
+    form's lenient default over a malformed value. `/api/config`'s `mission_bypass` no longer reads
+    it at all: it is always `False` (#1902, `test_mission_console_cutoff.py`)."""
     (store / "prefs.json").write_text('{"agent_defaults": {"bypass": "yes"}}')
     assert prefs.get_agent_defaults()["bypass"] is True
     assert prefs.unattended_bypass_granted() is False
@@ -326,12 +280,12 @@ def test_a_revocation_waits_for_a_SIBLING_PROCESS_launch_in_its_fence(store, tmp
     }
     launch = """
         import time
-        from agent_sessions import mission_dispatch, session_input
+        from agent_sessions import prefs, session_input
         with session_input.launch_fence():
             print("held", flush=True)
-            first = mission_dispatch.bypass_granted()
+            first = prefs.unattended_bypass_granted()
             time.sleep(1.0)
-            print("authorised", first, mission_dispatch.bypass_granted(), flush=True)
+            print("authorised", first, prefs.unattended_bypass_granted(), flush=True)
     """
     sibling = _sibling(launch, env)
     assert sibling.stdout.readline().strip() == "held", sibling.stderr.read()

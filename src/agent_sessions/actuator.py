@@ -1088,6 +1088,59 @@ def withdraw_undeliverable(path=None) -> list[str]:
 NO_SURFACE_DETAIL = "its session is no longer listed (archived, excluded or out of scope)"
 
 
+#: Why a mission's automatic send to a TERMINAL session is not made (#1902, #1613 D17). The action
+#: stays a proposal for the operator to tap; their own words (the relay) still reach the session.
+CONSOLE_MEMBER_HELD = (
+    "a mission's terminal session takes only your own input, so this waits for your tap"
+)
+
+
+#: The fail-closed half: whether the session is a mission's could not be read (#1902).
+MEMBERSHIP_UNREADABLE = (
+    "whether a mission holds this terminal session could not be read, so nothing automatic is "
+    "sent; it waits for your tap"
+)
+
+
+def console_member_hold(rec: dict) -> str | None:
+    """Why nothing automatic may be typed into ``rec``'s target, or ``None`` (#1902).
+
+    The target is held when it is a TERMINAL session a mission holds: missions run on API sessions,
+    and a legacy mission's console members keep their terminals for the operator only. A held
+    session is one the action names a mission for, or one an open mission holds now
+    (:data:`CONSOLE_MEMBER_HELD`). An unreadable store holds every terminal target, with its own
+    reason (:data:`MEMBERSHIP_UNREADABLE`): fail closed, nothing is typed. A change of hands after
+    this read is the membership authority's (`_mission_membership_authority` rides the in-fence
+    fingerprint). Blocking (a store read)."""
+    from . import mission_structured, missions
+
+    phys = str((rec.get("authority") or {}).get("physical_key") or rec.get("session_id") or "")
+    if mission_structured.is_api_key(phys):
+        return None
+    if str(rec.get("mission_id") or ""):
+        return CONSOLE_MEMBER_HELD
+    try:
+        held = missions.all_active_memberships()
+    except Exception:  # noqa: BLE001 — an unreadable store proves nobody's hands are off it
+        return MEMBERSHIP_UNREADABLE
+    if str(rec.get("session_id") or "") in held or phys in held:
+        return CONSOLE_MEMBER_HELD
+    return None
+
+
+def _hold_for_operator(rec: dict, why: str) -> None:
+    """An automatic send declined for a mission's terminal session (#1902) becomes the operator's
+    proposal: an `approved` row (the yolo pass's) goes back to `proposed` with the reason, and an
+    autonomous menu answer becomes an ordinary one. A row anyone else moved is left alone."""
+    fields: dict = {"detail": why}
+    if _is_auto_choose(rec):
+        fields["auto_choose"] = False
+    with contextlib.suppress(Exception):
+        ledger.compare_and_set(
+            str(rec.get("id") or ""), frozenset({"approved"}), "proposed", **fields
+        )
+
+
 def _held_sessions() -> set[str] | None:
     """Sessions an open mission holds, or ``None`` when the store cannot be read."""
     try:
@@ -1219,6 +1272,13 @@ async def deliver(
     # AN API SESSION TAKES ITS TEXT AS ONE STRUCTURED TURN (#1899), never keystrokes: the same
     # words `render` would paste, from the same function, and no PTY, writer or screen involved.
     api = mission_structured.is_api_key(phys)
+    # …AND A MISSION'S TERMINAL SESSION TAKES NO AUTOMATIC TEXT AT ALL (#1902). "Automatic" is the
+    # API path's own test below: a caller's authority behind it, or neither the operator's tap nor
+    # the operator's words. The tap and the relay still deliver (D17: the Commander taps).
+    automatic = authority is not None or (not operator_approval and rec.get("origin") != "operator")
+    held = None if api or not automatic else await asyncio.to_thread(console_member_hold, rec)
+    if held:
+        return _settle_waiting(action_id, "stale", detail=held) or rec
     try:
         # Off the loop: a supervisor nudge re-reads its objective from the missions store.
         payload = await asyncio.to_thread(render_text if api else render, view, cfg)
@@ -1382,8 +1442,7 @@ async def deliver(
             precondition=rec.get("precondition")
             if isinstance(rec.get("precondition"), dict)
             else None,
-            autonomous=authority is not None
-            or (not operator_approval and rec.get("origin") != "operator"),
+            autonomous=automatic,
         )
         api_outcome = session_input.Outcome(state, detail)
     else:
@@ -1678,6 +1737,13 @@ async def deliver_auto(
         if why == "automation authority is unreadable":
             return None
         return await asyncio.to_thread(_settle_waiting, action["id"], "stale", detail=why)
+    # NOTHING AUTOMATIC INTO A MISSION'S TERMINAL SESSION (#1902, #1613 D17): the pass's approval
+    # becomes the operator's proposal, as in suggest. Asked first, so no tier, grant or opt-in can
+    # reach a terminal a mission holds; `deliver` refuses any other automatic caller the same way.
+    held = await asyncio.to_thread(console_member_hold, action)
+    if held:
+        await asyncio.to_thread(_hold_for_operator, action, held)
+        return None
     cfg = prefs.get_automation_policy(automation.scope_of(action))
     # AN AI-DRAFTED DIRECTION IS REFUSED UNLESS THE OPERATOR OPTED IN (#983 P3, widened in P4), and
     # it is asked as its own question rather than left to the ceiling below. The ceiling is a SET,

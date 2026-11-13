@@ -559,16 +559,14 @@ async def test_an_unreadable_probe_after_a_failed_create_keeps_the_record(
 
 
 @pytest.mark.anyio
-async def test_the_console_branch_still_hands_its_launch_the_mission_shelf(
-    store, project, monkeypatch
-):
-    """Hermes on #1921: the structured branch restructured the console call; #1740's shelf
-    must still ride every console mission launch (and the API branch takes none yet)."""
+async def test_a_mission_never_reaches_the_console_launcher(store, project, monkeypatch):
+    """#1902 removed the console branch #1921 restructured: a terminal client's plan is refused
+    before anything is prepared, and `headless_dispatch.dispatch` is never called for a mission."""
     seen = {}
 
     async def fake(**kw):
         seen.update(kw)
-        raise headless_dispatch.DispatchError("stop here")
+        raise AssertionError("a mission reached the console launcher")
 
     monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
     m = missions.create_mission("ship it", cwd=str(project))
@@ -577,5 +575,7 @@ async def test_the_console_branch_still_hands_its_launch_the_mission_shelf(
         m["id"], project_id="prj_a", cwd=str(project), engine="claude", brief="go"
     )
     claimed = missions.claim_plan(m["id"], plan["plan_id"])
-    await _run(m["id"], claimed)
-    assert seen.get("shelf_mission") == m["id"]
+    out = await _run(m["id"], claimed)
+    assert seen == {}
+    assert out["outcome"] == "refused" and "runs in a terminal" in out["reason"], out
+    assert missions.get_mission(m["id"])["state"] == "planned"

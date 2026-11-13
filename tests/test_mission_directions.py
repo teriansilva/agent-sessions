@@ -46,6 +46,9 @@ from agent_sessions import mission_objectives as mo
 from agent_sessions import mission_supervisor as sup
 from agent_sessions import orchestrator_ledger as ledger
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 SESSION = "claude:11111111-1111-4111-8111-111111111111"
 SHELL = "shell:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 HEAD_A = "a1" * 20

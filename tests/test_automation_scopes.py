@@ -29,6 +29,9 @@ from agent_sessions import (
 from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 KEY = "claude:11111111-1111-4111-8111-111111111111"
 OTHER = "claude:22222222-2222-4222-8222-222222222222"
 

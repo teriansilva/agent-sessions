@@ -203,7 +203,9 @@ def test_a_QUEUED_mission_plan_naming_a_removed_engine_stops_with_the_reason(
     roster, master, mission_store, cleaned_up
 ):
     """The plan was approved for `zeta`. When `zeta` is removed before it dispatches, the mission
-    stops at its next dispatch saying why — it never runs the brief on another engine."""
+    stops at its next dispatch saying why — it never runs the brief on another engine. Since
+    #1902 nothing is even attempted: a mission's dispatch refuses a client it can't launch before
+    it reaches any launcher."""
     from agent_sessions import mission_dispatch
 
     m = missions.create_mission("ship it", cwd="/repo")
@@ -225,7 +227,7 @@ def test_a_QUEUED_mission_plan_naming_a_removed_engine_stops_with_the_reason(
         mp.setattr(mission_dispatch.headless_dispatch, "dispatch", spy)
         out = asyncio.run(mission_dispatch.run(m["id"], claimed, registry=object()))
     assert out["outcome"] == "refused" and out["reason"] == "agent removed"
-    assert launched == [ZETA], "the dispatch was attempted for the planned engine and nothing else"
+    assert launched == [], "nothing was launched, for the planned engine or any other"
     back = missions.get_plan(m["id"])
     assert back is not None and back["engine"] == ZETA, "the plan still names its engine"
 

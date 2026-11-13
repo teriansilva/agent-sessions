@@ -160,10 +160,9 @@ Three panels, everything that tunes [Mission control](/guide/missions):
   above** is the confidence a [judged objective](/guide/missions#judged-objectives) needs before it
   counts as met: 0.90 to 1.00, default 0.90, saved when you let go of the slider. 0.90 is the floor
   and cannot be lowered. Confidence is the model's own opinion, so a judgment can at most move a
-  mission to review; you still close it. It also states whether missions run with permission
-  bypass — that is the **Permission bypass for new sessions and missions** default under **Agents ›
-  Defaults**, read as each mission agent starts. Scheduled mission automations always keep
-  bypass off regardless of this default.
+  mission to review; you still close it. Missions run with permission bypass off: their agents
+  are API sessions, which never skip tool prompts, whatever the **Permission bypass for new
+  sessions and missions** default under **Agents › Defaults** says.
 - **Session scan** — keeps the **Sessions without a mission** list current: a background scan and
   its interval, how many days back it looks, the scan depth (**Fast** or **Slow**), and **Scan
   now**.

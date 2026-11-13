@@ -1236,10 +1236,14 @@ def test_the_mission_scope_boundary_is_checked_at_run_time(mission_env, tmp_path
 
 @pytest.fixture
 def real_dispatch(real_project, monkeypatch):
-    """The real `dispatch_approved` → `mission_dispatch.run`; only the launcher is faked."""
-    from agent_sessions import mission_dispatch, scopedspawn
+    """The real `dispatch_approved` → `mission_dispatch.run`; only the launcher is faked: the
+    structured door, since a mission launches only API clients (#1902). The client's readiness is
+    stubbed; its kind's mission bit is the real one."""
+    from agent_sessions import mission_dispatch, mission_structured, scopedspawn
+    from agent_sessions.engines import registry
     from agent_sessions.routes import missions as mroutes
 
+    monkeypatch.setattr(registry, "can_start", lambda prov: True)
     prefs.set_orchestrator({"enabled": True})
     monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
     monkeypatch.setattr(scopedspawn, "available", lambda: True)
@@ -1247,7 +1251,7 @@ def real_dispatch(real_project, monkeypatch):
     async def producers(mid):  # what the planner and objective producer would have written
         m = missions.get_mission(mid)  # the mission's own project, as the planner would read it
         missions.put_plan(
-            mid, project_id=m["project_id"], cwd=m["cwd"], engine="claude", brief="go"
+            mid, project_id=m["project_id"], cwd=m["cwd"], engine="claude-api", brief="go"
         )
         missions.patch_objectives(mid, [{"op": "add", "key": "pr", "title": "a PR", "gate": True}])
         missions.settle_objectives_state(mid, "done")
@@ -1260,7 +1264,7 @@ def real_dispatch(real_project, monkeypatch):
 
     async def launcher(**kw):
         out = headless_dispatch.Dispatch(
-            key="claude:" + "0" * 36, engine="claude", native="0" * 36, cwd=kw["cwd"]
+            key="claude-api:" + "0" * 36, engine="claude-api", native="0" * 36, cwd=kw["cwd"]
         )
         if hooks.get("in_fence"):
             hooks.pop("in_fence")()  # lands after every check before the fence
@@ -1270,12 +1274,12 @@ def real_dispatch(real_project, monkeypatch):
         if why:
             out.reason = why
             return out
-        seen.append(kw["bypass"])
+        seen.append(bool(kw.get("bypass", False)))
         cwds.append(kw["cwd"])
         out.reason = "stopped by the test"
         return out
 
-    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
+    monkeypatch.setattr(mission_structured, "dispatch", launcher)
     return {"seen": seen, "md": mission_dispatch, "hooks": hooks, "cwds": cwds}
 
 
@@ -1290,9 +1294,12 @@ def test_an_automated_mission_never_launches_with_bypass(
     assert real_dispatch["seen"] == [False]
 
 
-def test_the_bypass_seam_is_live_for_the_manual_route(real_dispatch, real_project):
-    """Control for the tripwire: without a ceiling, the path's decision DOES reach the launcher —
-    so the test above is not passing because nothing is wired."""
+def test_the_manual_route_reaches_the_same_launcher_and_never_bypasses_either(
+    real_dispatch, real_project
+):
+    """Control for the test above: the manual route, with no ceiling and the grant on, DOES reach
+    the launcher (so the test above is not passing because nothing is wired), and since #1902 it
+    launches without bypass too: a mission's API session never skips permissions (#1613 D8)."""
     from agent_sessions.routes import missions as mroutes
 
     prefs.set_agent_defaults({"bypass": True})
@@ -1308,7 +1315,7 @@ def test_the_bypass_seam_is_live_for_the_manual_route(real_dispatch, real_projec
     }
     resp = asyncio.run(mroutes.dispatch_approved(row["id"], body, registry=object()))
     assert resp.status_code == 200, resp.body
-    assert real_dispatch["seen"] == [True]
+    assert real_dispatch["seen"] == [False]
 
 
 # ---- review round 1: widening covers every field ------------------------------------------------

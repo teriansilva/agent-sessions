@@ -2741,9 +2741,11 @@ def _coerce_agent_budgets(raw: object) -> dict:
 # still choose differently for itself, and changing a default never rewrites a mission plan or a
 # stored session. Strict on write (422, never coerce), lenient on read, like `term_font_size`.
 #
-# `bypass` is ALSO the operator's grant for UNATTENDED launches (#1215): a mission dispatch or
-# spawn reads it at launch time and re-checks it inside the launch fence. That is why a change to
-# it commits under the same fence — see `set_agent_defaults`.
+# `bypass` was ALSO the operator's grant for UNATTENDED mission launches (#1215). Since #1902 a
+# mission launches only API sessions and never bypasses (#1613 D8: `mission_dispatch.run` pins
+# `bypass = False`), so no mission launch reads it; its strict reading (`unattended_bypass_granted`)
+# is only reported (Ask HQ's settings). The new-session form and an Ask launch card still start
+# from `bypass`, and a change commits under the launch fence — see `set_agent_defaults`.
 
 AGENT_DEFAULTS_KEYS = ("default_engine", "bypass", "models", "session_defaults")
 _ENGINE_ID_SHAPE = re.compile(r"\A[a-z][a-z0-9-]{0,23}\Z")
@@ -3001,11 +3003,13 @@ class AgentDefaultsRefused(ValueError):
 def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
     """Merge a VALIDATED partial block under the prefs lock; unmentioned fields are kept.
 
-    **A `bypass` change commits inside the launch fence** (#1215). It is the grant a mission
-    launch re-checks under that fence, so the change either lands before the check — and a launch
-    built with bypass refuses — or waits until the spawn it could not have prevented anyway. The
-    same ordering `set_orchestrator` gets. Raises `session_input.AuthorityFenceBusy` rather than
-    committing unordered; call it off the event loop.
+    **A `bypass` change commits inside the launch fence** (#1215), the same ordering
+    `set_orchestrator` gets. No mission launch re-checks the grant any more: since #1902 a mission
+    launch never bypasses (`mission_dispatch.run` pins `bypass = False`), but the fence still
+    orders the change against an Ask launch card's in-fence re-read of the default
+    (`ask_proposals`, `DEFAULT_CHANGED`) and against other policy commits: that refusal is only
+    correct because of it. Raises `session_input.AuthorityFenceBusy` rather than committing
+    unordered; call it off the event loop.
     """
 
     def merge(raw):

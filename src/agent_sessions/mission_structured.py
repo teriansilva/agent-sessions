@@ -9,8 +9,9 @@ orchestrator or automation module calls `structured_runtime.create_session` / `s
 itself.
 
 * `admits(prov)`: may this client hold a mission role? An API client needs its kind's
-  `kinds.API_MISSION_READY` capability bit AND `registry.can_start`. A console client keeps
-  today's seed + unattended checks.
+  `kinds.API_MISSION_READY` capability bit AND `registry.can_start`. A console (terminal) client
+  never may (#1902, #1613 D7/D17): there is no terminal fallback. `console_refusal(prov)` says
+  so in the operator's words and names the API client to use, or says none exists yet.
 * `ids(plan_id)`: the session and brief operation ids, derived from the dispatch ATTEMPT
   (`plan_id`), never the mission. A re-planned dispatch gets a new session; a recovered or
   retried one replays the same create and the same brief, and never makes a second of either.
@@ -49,6 +50,9 @@ LIVE_STATES = frozenset({"dispatching", "running"})
 
 #: What the picker says about an API client that can't hold a mission role yet (#1577 words).
 NOT_MISSION_READY = "this agent's API client can't run missions yet"
+#: What every mission path says about a console (terminal) client (#1902). The same sentence
+#: `mission_team` gives a pool member's console client.
+CONSOLE_REFUSED = "only a mission-ready API client can hold a mission role"
 
 
 def ids(plan_id: str) -> tuple[str, str]:
@@ -79,10 +83,28 @@ def admits(prov) -> tuple[bool, str | None]:
         if not registry.can_start(prov):
             return False, registry.api_unavailable_reason(prov) or "not ready"
         return True, None
-    ok, why = handoff.seed_start_state(prov, present=prov.is_present())
-    if not ok:
-        return False, why
-    return engines.unattended_start_state(prov)
+    # A CONSOLE CLIENT NEVER HOLDS A MISSION ROLE (#1902). Not "unless it can be seeded": every
+    # plan, spawn, dispatch and adopt path asks this one question, so a terminal fallback has no
+    # door left. Cheap on purpose (the picker asks it of every agent); the words naming the API
+    # client to use come from `console_refusal`, asked only where a refusal is shown.
+    return False, CONSOLE_REFUSED
+
+
+def console_refusal(prov) -> str:
+    """Why ``prov`` (a console client) can't hold a mission role, naming the API client of its
+    family that can (the `unattended` default, #1728), or saying none can yet. Never raises; may
+    probe readiness, so call it off the loop."""
+    from .engines import family
+
+    eid = getattr(prov, "engine_id", "") or "this agent"
+    try:
+        fam = family.family_of(prov)
+        alt, _why = family.default_client(fam, "unattended") if fam else (None, "")
+    except Exception:  # noqa: BLE001 — an unreadable roster names no alternative
+        alt = None
+    if alt:
+        return f"{eid} runs in a terminal, and missions run on API clients: use {alt}"
+    return f"{eid} runs in a terminal, and none of its API clients can hold a mission role yet"
 
 
 @contextlib.asynccontextmanager

@@ -51,6 +51,9 @@ from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
 from automation_helpers import current_action
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 SESSION = "claude:11111111-1111-1111-1111-111111111111"
 KEY = "review"
 DRAFT = "Add a regression test for the retry backoff next to the upload tests, run it, and push."

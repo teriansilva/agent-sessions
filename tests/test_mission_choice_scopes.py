@@ -20,6 +20,9 @@ from agent_sessions import orchestrator_ledger as ledger
 from test_auto_choose import MENU, SID, _paint, _running_mission, _typed
 from test_auto_choose import world as _menu_world
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 menu_world = _menu_world
 
 

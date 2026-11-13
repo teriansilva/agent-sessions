@@ -90,7 +90,7 @@ These rules are **target** (P2–P6) unless a rule says otherwise; §10 shows wh
 
 ## 4. Lifecycle
 
-**Today** a mission is created from an instruction (HQ writes its objectives from it), planned by a one-shot planner, and dispatched to terminal sessions. The lifecycle below is **target** (P4–P6):
+**Today** a mission is created from an instruction (HQ writes its objectives from it), planned by a one-shot planner, and dispatched to an API session (#1902: never a terminal). The lifecycle below is **target** (P4–P6):
 
 1. **Plan.** The Commander and HQ draft objectives, from a mission plan or from scratch.
 2. **Bind.** Each objective gets a project and one of its procedures, or a mission-local procedure.
@@ -138,7 +138,7 @@ notification path and is not an outward action. Sending anything to anyone else 
 **Target**, rolled out as API clients become mission-ready (#1273). API sessions are the preferred execution surface: terminals are not reliable enough to drive
 unattended.
 
-**Today.** Missions and automations launch and drive terminal sessions. **Target** (as API clients become mission-ready):
+**Today.** Missions run only on API sessions, on a mission-ready API client (Claude's today; #1898–#1902). Plan, dispatch, spawn and adopt refuse a terminal client server-side, with the API client to use. A mission that took a terminal session before then keeps it, but nothing automatic is typed into it: the supervisor's nudges, drafts and menu answers there are proposals the Commander taps. Automations may target API sessions (#1901); their terminal targets are legacy. **Target** (as API clients become mission-ready):
 
 - **Missions and automations** run only on API sessions.
 - **New sessions** default to the engine's API client when one is ready. A terminal is an explicit choice.
@@ -201,7 +201,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | Specialists, the pool | **Library → Specialists (P3 S1, #1693):** a versioned, revision-fenced pool; each specialist is its own saved profile (engine, model, effort); its grade derived from the operator's model → grade map, which ships empty | Skills activated per session (P3 S2), specialist notes (P3 S3), capacity reservations and starting a session from a specialist (P3 S4) |
 | Mission scope | A mission's plan document holds its objectives, each a procedure from a project's deployed playbook or a mission-local one, applied by the operator before dispatch (P4 slice 1, #1777). An objective may be in another project, chosen by index, and is observed in that project's checkout; objectives may come after earlier ones, and the derived states follow that order (P4 slice 2, #1797) | Running each objective's steps in its own project (P6) |
 | Planning | A one-shot planner; the lead agent is planned in #1472. The team: assembled from the pool by skill and grade, with reasons, alternates and refused downgrades (P5, #1950), by the operator on the plan view or by HQ through cards | HQ itself running on a mission-ready API session (#1984); approval and launch (P6) |
-| Execution | Terminal-supervised missions. The plan approval record, its pins and their re-check, and standing consent exist (P6 slice A, #1951); nothing launches from them yet | API sessions under plan approval: one session per step, grants and rework (P6 slice B, with #1581's step runner) |
+| Execution | Supervised missions on API sessions only (#1902; a mission that adopted a terminal earlier keeps it, operator-input only). The plan approval record, its pins and their re-check, and standing consent exist (P6 slice A, #1951); nothing launches from them yet | API sessions under plan approval: one session per step, grants and rework (P6 slice B, with #1581's step runner) |
 | Mission plans | — | Library and a separate public feed (P7a) |
 | Ongoing work | Automations start one-off missions or sessions | Standing operations launching sorties, with a ledger (P7b, after P6) |
 | The map | Sessions map | THEATRE campaign map (P8) |

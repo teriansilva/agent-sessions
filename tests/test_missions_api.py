@@ -43,13 +43,23 @@ def _login(c, cfg):
 
 
 @pytest.fixture
-def api(auth_cfg, tmp_home, tmp_path, fake_jsonl):
+def api(auth_cfg, tmp_home, tmp_path, fake_jsonl, monkeypatch):
     """A logged-in client, a real project entity — and REAL SESSIONS on disk.
 
     `fake_jsonl` is not decoration: adoption now proves the session EXISTS, not merely that its
     key is well formed (#896 review 11, finding 1), and `CLAUDE_A` is one of the transcripts that
     fixture writes. Without it every adopt in this module would 404 — which is the correct answer
-    for a key naming nothing, and exactly the hole the check closes."""
+    for a key naming nothing, and exactly the hole the check closes.
+
+    Those transcripts are a TERMINAL client's, which no mission admits since #1902. So the offer
+    (`mission_plan.engine_options`, which adopt and dispatch both ask) names that client here, as
+    the dispatch tests below always stubbed it: this module pins the routes' own mechanics, and
+    `tests/test_mission_console_cutoff.py` pins the real offer refusing it."""
+    from agent_sessions import mission_plan
+
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
@@ -60,6 +70,16 @@ def api(auth_cfg, tmp_home, tmp_path, fake_jsonl):
     repo.mkdir(exist_ok=True)
     proj = projects.create("repo", folders=[str(repo)], default_folder=str(repo))
     return c, hdr, proj
+
+
+def _offer(monkeypatch, *engine_ids):
+    """The offer names these clients too (see `api`): a test adopting another engine's session."""
+    from agent_sessions import mission_plan
+
+    ids = ("claude", *engine_ids)
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": e, "label": e} for e in ids]
+    )
 
 
 def _set_objectives_state(mission_id, state):
@@ -3548,7 +3568,7 @@ OC_NATIVELY_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
 
 
 def test_an_UNARCHIVED_session_can_be_ADOPTED_even_where_the_ENGINE_still_says_archived(
-    api, opencode_db
+    api, opencode_db, monkeypatch
 ):
     """#896 review 29. `False` still had two meanings, and this was the other one.
 
@@ -3572,6 +3592,7 @@ def test_an_UNARCHIVED_session_can_be_ADOPTED_even_where_the_ENGINE_still_says_a
     from agent_sessions import metadata
 
     c, hdr, proj = api
+    _offer(monkeypatch, "opencode")
     key = f"opencode:{OC_NATIVELY_ARCHIVED}"
 
     # THE PREMISE: archived in the engine's own store, and nothing here will ever change that.
@@ -4318,6 +4339,7 @@ def test_a_LIVE_session_whose_engine_PINS_THE_ID_FIRST_can_be_adopted(api, monke
     from agent_sessions import session_input
 
     c, hdr, proj = api
+    _offer(monkeypatch, "gemini")
     m = _create(c, hdr, project_id=proj.id)
     # Nothing on disk for this one: gemini has written no chat file yet.
     fresh = "gemini:88888888-8888-8888-8888-888888888888"

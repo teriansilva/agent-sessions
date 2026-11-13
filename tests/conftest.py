@@ -1090,3 +1090,16 @@ def _no_host_engine_binaries(tmp_path, monkeypatch) -> None:
         var = getattr(getattr(getattr(p, "manifest", None), "binary", None), "env_var", None)
         if var:
             monkeypatch.setenv(var, str(tmp_path / "_no-host-binary" / var.lower()))
+
+
+@pytest.fixture
+def lift_console_cutoff(monkeypatch) -> None:
+    """Lift ONLY #1902's send cutoff (`actuator.console_member_hold`), for a suite that pins the
+    guards BENEATH it on a mission's terminal member: the scope, opt-out, render and auto-choose
+    fences an automatic delivery still has to pass. Production refuses every automatic send into a
+    mission's terminal session before those guards run, so without this such a test would pass
+    without reaching them. They stay pinned as defence in depth under the one predicate, which is
+    itself pinned by `tests/test_mission_console_cutoff.py`."""
+    from agent_sessions import actuator
+
+    monkeypatch.setattr(actuator, "console_member_hold", lambda rec: None)

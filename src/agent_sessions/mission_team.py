@@ -895,7 +895,7 @@ def _client(prov, usage: dict[str, str]) -> Client:
             label_,
             m.tools_mcp is not None,
             False,
-            "only a mission-ready API client can hold a mission role",
+            mission_structured.CONSOLE_REFUSED,
         )
     try:
         ok, why = mission_structured.admits(prov)

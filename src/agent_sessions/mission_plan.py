@@ -16,10 +16,10 @@ what it sends" and is the only one worth making.
 reason is shown, and the operator can change it or cancel. An agent chosen for the operator
 without a stated why is a decision disguised as a default.
 
-**`shell` is never a dispatch target.** Seeding a brief into a bare `bash -l` *runs* it. The gate
-is `handoff.seed_start_state`, the same function the handoff picker uses, so the two sets cannot
-drift — and it is applied when the LIST is built, so an unseedable engine is not offered rather
-than offered and then refused.
+**Only a mission-ready API client is a dispatch target (#1902).** No terminal client (`shell`
+included) is offered: the gate is `mission_structured.admits`, the one mission admission, applied
+when the LIST is built, so a client that can't hold a mission role is not offered rather than
+offered and then refused.
 
 **Nothing here is trusted after the await.** The lists are built, the model is asked, and the
 indices are resolved against the lists THAT WERE SENT — not against a freshly read set that may
@@ -57,7 +57,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from . import aitasks, engines, handoff, missions, projects, prompts, review
+from . import aitasks, engines, missions, projects, prompts, review
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,12 @@ KIND = "mission-plan"
 
 #: The one sentence both the skip path and the not-configured model error settle with.
 NOT_CONFIGURED = "no AI endpoint is configured, so nothing can be planned"
+#: The plan's answer on an install with no mission-ready API client (#1902). Missions never fall
+#: back to a terminal client, so there is nothing to offer the model; the remedy is to set one up.
+NO_MISSION_AGENT = (
+    "no agent can hold a mission role: missions run on API clients, and none is ready. "
+    "Set one up in Agents, then plan again"
+)
 
 #: How many times recovery reads its worklist before giving up on the pass, and the first backoff
 #: (doubled per retry). Short: this runs at boot, and a busy store usually clears in milliseconds.
@@ -176,19 +182,19 @@ def picker_project_options() -> list[dict]:
 
 
 def engine_options() -> list[dict]:
-    """The engines that can actually be dispatched into, with the reason for every exclusion.
+    """The engines that can actually be dispatched into: only mission-ready API clients (#1902).
 
-    Built through `handoff.seed_start_state`, which is the single capability source the handoff
-    picker uses. Applying it HERE — when the list is built — is what makes "`shell` is never a
-    dispatch target" a property of the offer rather than a refusal after the fact.
+    Built through `mission_structured.admits`, the one mission admission. Applying it HERE, when
+    the list is built, is what makes "a terminal client is never a mission target" a property of
+    the offer rather than a refusal after the fact. An empty list is an install with no
+    mission-ready API client: `plan` settles `failed` with :data:`NO_MISSION_AGENT`.
     """
     from . import mission_structured
 
     out: list[dict] = []
     for prov in engines.all_providers():
-        # ONE admission for both kinds of client (#1898): an API client needs its kind's mission
-        # capability AND readiness; a console client needs a seedable start that can be proved
-        # started and bound with nobody watching (#989). `mission_structured.admits` is that rule.
+        # ONE admission (#1898, #1902): an API client needs its kind's mission capability AND
+        # readiness; a console client is never admitted. `mission_structured.admits` is that rule.
         admitted, _why = mission_structured.admits(prov)
         if not admitted:
             continue
@@ -196,13 +202,23 @@ def engine_options() -> list[dict]:
     return out[:MAX_ENGINES]
 
 
-#: Plain words for why an agent is not offered (#1577). The raw reasons are written for the code's
-#: readers ("no seed-capable start yet", a list of missing capabilities); the picker needs a few
-#: words the operator can act on, and keeps the raw one as detail.
-_UNAVAILABLE_WORDS = {
-    handoff._REASON_NO_SEED: "can't be started with a brief yet",
-    handoff._REASON_NOT_INSTALLED: "not installed",
-}
+def engine_refusal(engine_id: str) -> str:
+    """Why ``engine_id`` is not in :func:`engine_options`, in the operator's words (#1902): a
+    terminal client's words name its family's API client to use, or say none exists yet. For the
+    refusal a route shows; may probe readiness, so call it off the loop."""
+    from . import mission_structured
+
+    removed = engines.removed_reason(engine_id) if engine_id else None
+    prov = None if removed else (engines.get(engine_id) if engine_id else None)
+    if prov is None:
+        return removed or "it is not an available agent"
+    if not mission_structured.is_api(prov):
+        return mission_structured.console_refusal(prov)
+    try:
+        _ok, why = mission_structured.admits(prov)
+    except Exception:  # noqa: BLE001 — a client that can't answer is not admitted
+        why = None
+    return why or mission_structured.NOT_MISSION_READY
 
 
 def engine_unavailable() -> list[dict]:
@@ -219,21 +235,28 @@ def engine_unavailable() -> list[dict]:
             continue
         from . import mission_structured
 
-        if mission_structured.is_api(prov):
-            ok, why = mission_structured.admits(prov)
-            words = why or ""
-        else:
-            ok, why = handoff.seed_start_state(prov, present=prov.is_present())
-            words = _UNAVAILABLE_WORDS.get(why or "", why or "")
-            if ok:
-                ok, why = engines.unattended_start_state(prov)
-                words = "can't be started unattended yet"
+        ok, why = mission_structured.admits(prov)
         if ok:
             continue
+        # A terminal client's words name the API client to use instead, or say none exists yet.
+        words = why or ""
+        if not mission_structured.is_api(prov):
+            words = mission_structured.console_refusal(prov)
         out.append(
             {"id": prov.engine_id, "label": prov.engine_id, "reason": words, "detail": why or ""}
         )
     return out[:MAX_ENGINES]
+
+
+def picker_lists() -> dict:
+    """The lists a plan card offers: projects, agents, and the agents left out with their reasons.
+    Blocking (a client's readiness may be probed, and #1902's refusal words ask the family's
+    default client): call it OFF the loop."""
+    return {
+        "project_options": picker_project_options(),
+        "engine_options": engine_options(),
+        "engine_unavailable": engine_unavailable(),
+    }
 
 
 def render_options(
@@ -395,6 +418,11 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
     # in the one place where the identity it would name is a filesystem path.
     projects_ = [fixed] if fixed is not None else project_options()
     engines_ = engine_options()
+    # NOTHING TO OFFER (#1902): no model call over an empty agent list, whose every answer would be
+    # refused. The plan card shows the reason; setting up an API client and planning again recovers.
+    if not engines_:
+        landed = await _settle(mission_id, generation, "failed", NO_MISSION_AGENT, path=path)
+        raise PlanError(NO_MISSION_AGENT, status=409, outcome=_outcome(landed, "failed"))
 
     instruction = str(row.get("instruction") or row.get("title") or "")
     options = render_options(projects_, engines_, fixed_project=fixed is not None)

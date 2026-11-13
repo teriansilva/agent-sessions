@@ -473,66 +473,20 @@ def _claimed(work, *, owner=None):
     return m["id"], missions.claim_plan(m["id"], plan["plan_id"], **kw)
 
 
-def test_a_MISSION_adopts_the_real_key_records_where_it_runs_and_publishes_the_alias(
-    work, prov, spawned, typed, torn_down
-):
-    seen: dict = {}
-
-    def react(text):
-        seen["record"] = missions.get_dispatch(mid)
-        prov.sessions[OURS] = text
-
-    prov.on_type = react
+def test_a_MISSION_never_launches_a_late_id_terminal_engine(work, prov, spawned, typed, torn_down):
+    """Missions run on API clients only (#1902). The late-id launch this section used to drive
+    end to end is refused before anything is prepared: nothing spawned, nothing typed, nothing to
+    tear down, and the mission back to `planned` with the reason. What stays is the legacy half
+    below: a dispatch already in flight at the upgrade is still repaired, recovered and torn down
+    through its placeholder."""
     mid, claimed = _claimed(work)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
-    assert out["state"] == "running" and out["outcome"] == "started", out
-    real = f"kimi:{OURS}"
-    assert out["session_key"] == real
-    placeholder = seen["record"]["session_key"]
-    assert placeholder.startswith("kimi:new-")
-    assert seen["record"]["attempt_nonce"] and _line(typed[0]).endswith(
-        f"{seen['record']['attempt_nonce']}]"
-    ), "the record's nonce is not the one that was typed"
-    assert missions.active_session_keys(mid) == [real]
-    assert missions.physical_key_of(real) == placeholder
-    assert metadata.load_aliases().get(placeholder) == real
+    assert out["outcome"] == "refused" and out["state"] == "planned", out
+    assert "runs in a terminal" in out["reason"]
+    assert spawned == [] and typed == [] and torn_down == []
+    assert missions.get_mission(mid)["state"] == "planned"
     assert missions.get_dispatch(mid) is None
-
-
-def test_DELIVERED_but_UNBOUND_fails_and_Start_again_stays_refused(
-    work, prov, spawned, typed, torn_down, short_bind
-):
-    mid, claimed = _claimed(work)
-    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
-    assert out["state"] == "failed" and out["outcome"] == "failed", out
-    assert "never appeared" in out["reason"]
-    assert missions.active_session_keys(mid) == []
-    with pytest.raises(missions.MissionError) as e:
-        missions.set_state(mid, "failed", "planned")
-    assert e.value.status == 409, "a launch that typed its brief became eligible to start again"
-
-
-def test_a_FAILED_publication_is_repaired_at_startup_and_repair_is_idempotent(
-    work, prov, spawned, typed, torn_down, monkeypatch
-):
-    prov.on_type = lambda text: prov.sessions.__setitem__(OURS, text)
-    real_set_alias = metadata.set_alias
-
-    def broken(*a, **k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(metadata, "set_alias", broken)
-    mid, claimed = _claimed(work)
-    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
-    assert out["state"] == "running", "a failed projection must never undo the adoption"
     assert metadata.load_aliases() == {}
-    placeholder = missions.physical_key_of(f"kimi:{OURS}")
-    assert placeholder
-
-    monkeypatch.setattr(metadata, "set_alias", real_set_alias)
-    assert asyncio.run(mission_dispatch_recover.repair_projections()) == 1
-    assert metadata.load_aliases()[placeholder] == f"kimi:{OURS}"
-    assert asyncio.run(mission_dispatch_recover.repair_projections()) == 0
 
 
 def test_a_CRASH_between_the_adopting_commit_and_publication_is_repaired(work, torn_down):
@@ -1305,24 +1259,49 @@ def _record_early(monkeypatch):
     return asked
 
 
-def test_a_launch_that_ADOPTS_its_session_asks_for_an_early_reading(
-    work, prov, spawned, typed, torn_down, monkeypatch
-):
+def _structured(monkeypatch, *, started: bool):
+    """The structured door (#1902: the only mission launcher), faked: started and briefed, or not.
+    Its key is the console fixture's shape, so a failed launch's teardown reaches `torn_down`."""
+    from agent_sessions import mission_structured
+
+    async def fake(**kw):
+        native = str(uuid.uuid4())
+        key = f"claude:{native}"
+        kw["on_key"](key)
+        out = headless_dispatch.Dispatch(key=key, engine="claude-api", native=native, cwd="")
+        out.launched = True
+        out.started = out.briefed = started
+        out.seed_outcome = "delivered" if started else "zero_write"
+        out.reason = "" if started else "the worker never became ready"
+        return out
+
+    monkeypatch.setattr(mission_structured, "dispatch", fake)
+
+
+def _api_claimed(work):
+    m = missions.create_mission("ship it", cwd=str(work))
+    missions.set_state(m["id"], "draft", "planned")
+    plan = missions.put_plan(
+        m["id"], project_id="prj_a", cwd=str(work), engine="claude-api", brief=BRIEF
+    )
+    return m["id"], missions.claim_plan(m["id"], plan["plan_id"])
+
+
+def test_a_launch_that_ADOPTS_its_session_asks_for_an_early_reading(work, torn_down, monkeypatch):
     """Only the path where the mission now owns a running session — the one moment the operator is
     most likely watching and the ordinary sweep could leave it silent for five minutes (#1064)."""
     asked = _record_early(monkeypatch)
-    prov.on_type = lambda text: prov.sessions.__setitem__(OURS, text)
-    mid, claimed = _claimed(work)
+    _structured(monkeypatch, started=True)
+    mid, claimed = _api_claimed(work)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
     assert out["state"] == "running", out
     assert asked == [mid]
 
 
-def test_a_launch_that_FAILS_asks_for_nothing(
-    work, prov, spawned, typed, torn_down, monkeypatch, short_bind
-):
+def test_a_launch_that_FAILS_asks_for_nothing(work, torn_down, monkeypatch):
     asked = _record_early(monkeypatch)
-    mid, claimed = _claimed(work)
+    _structured(monkeypatch, started=False)
+    mid, claimed = _api_claimed(work)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
     assert out["state"] == "failed", out
     assert asked == [], "a failed launch holds no session to read"

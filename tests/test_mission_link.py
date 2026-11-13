@@ -22,6 +22,9 @@ from agent_sessions import actuator, automation, engines, missions, prefs, sessi
 from agent_sessions import mission_supervisor as sup
 from agent_sessions import orchestrator_ledger as ledger
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 CLAUDE_A = "claude:11111111-1111-1111-1111-111111111111"
 CLAUDE_B = "claude:22222222-2222-2222-2222-222222222222"
 

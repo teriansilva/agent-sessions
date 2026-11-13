@@ -33,6 +33,9 @@ from agent_sessions import (
 from agent_sessions import orchestrator_ledger as ledger
 from automation_helpers import current_action
 
+#: The guards beneath #1902's send cutoff, on a mission's terminal member (see the fixture).
+pytestmark = pytest.mark.usefixtures("lift_console_cutoff")
+
 SID = "claude:44444444-4444-4444-4444-444444444444"
 PHYS = engines.physical_key(SID)
 FIXTURES = Path(__file__).parent / "fixtures"

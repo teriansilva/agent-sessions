@@ -483,6 +483,19 @@ async def _session_exists(key: str) -> bool:
     return await asyncio.to_thread(_adoptable)
 
 
+def _adoption_admission(key: str) -> tuple[bool, str]:
+    """May the session ``key`` be adopted into a mission? Only when its client is one a plan could
+    name (`mission_plan.engine_options`, the one mission admission): a mission-ready API client
+    (#1902). Blocking."""
+    try:
+        prov, _native = engines.parse_key(key)
+    except Exception:  # noqa: BLE001 — a key that names no client names nothing adoptable
+        return False, "it is not a session of an available agent"
+    if prov.engine_id in {str(o.get("id")) for o in mission_plan.engine_options()}:
+        return True, ""
+    return False, mission_plan.engine_refusal(prov.engine_id)
+
+
 def _reap_dead_spawns(mission_id: str) -> int:
     """Close the ledger rows of sub-agents whose master is PROVABLY gone. Returns how many.
 
@@ -640,6 +653,22 @@ async def dispatch_approved(
         current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
         if current is None:
             return _fail(missions.MissionError("this mission has no plan to dispatch", status=409))
+        # THE PLAN'S AGENT, RE-ASKED AT THE WRITE BOUNDARY (#1902), against the same list the
+        # plan was offered from. A plan can name a terminal client because it was written before
+        # missions refused them, or saved for an automation that dispatches it later; refused here
+        # the plan is not consumed, and the operator can pick another agent. `mission_dispatch.run`
+        # refuses a terminal client again for every other caller (a spawn).
+        plan_engine = str(current.get("engine") or "")
+        options = await asyncio.to_thread(mission_plan.engine_options)
+        if plan_engine not in {str(o.get("id")) for o in options}:
+            why = await asyncio.to_thread(mission_plan.engine_refusal, plan_engine)
+            return _fail(
+                missions.MissionError(
+                    f"this plan's agent can't hold a mission role ({why}); choose another "
+                    "agent for the plan",
+                    status=409,
+                )
+            )
         fresh_project, fresh_cwd = _resolve_cwd(current.get("project_id"))
         if not fresh_cwd:
             return _fail(
@@ -1067,9 +1096,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         with contextlib.suppress(Exception):
             plan = await missions.run_admitted(lambda: missions.get_plan(mission_id))
             if plan is not None:
-                plan["project_options"] = mission_plan.picker_project_options()
-                plan["engine_options"] = mission_plan.engine_options()
-                plan["engine_unavailable"] = mission_plan.engine_unavailable()
+                plan.update(await asyncio.to_thread(mission_plan.picker_lists))
             elif row.get("plan_state") in ("skipped", "failed"):
                 # PLAN MANUALLY NEEDS SOMETHING TO CHOOSE FROM (#967 P2b). The lists rode only on
                 # a stored plan, so the one mission that has to be planned by hand — no plan, and
@@ -1077,11 +1104,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 # exactly the states `PATCH /plan` accepts a first plan in, and built on the rules
                 # its validation uses, so an offered choice is one the save accepts. The OPERATOR'S
                 # list, uncapped: the model's 40-project cap hid a mission's own project (#984).
-                row["plan_options"] = {
-                    "project_options": mission_plan.picker_project_options(),
-                    "engine_options": mission_plan.engine_options(),
-                    "engine_unavailable": mission_plan.engine_unavailable(),
-                }
+                row["plan_options"] = await asyncio.to_thread(mission_plan.picker_lists)
             row["plan"] = plan
         return JSONResponse(row)
 
@@ -1099,6 +1122,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # `[]`, `0`) into the default instead of rejecting it. Absent means default; present
             # means it has to be a real string the store recognises.
             role = "primary" if body.get("role") is None else body.get("role")
+            # ONLY A SESSION OF A MISSION-READY API CLIENT JOINS A MISSION (#1902). A terminal
+            # session is refused here, for every new adoption, with the API client to use: a
+            # mission never drives a terminal, so a console member would be one it can't act on.
+            # Asked before the reservation: it is a property of the client, not of the session.
+            admitted, why = await asyncio.to_thread(_adoption_admission, key)
+            if not admitted:
+                return _fail(
+                    missions.MissionError(f"this session can't join a mission: {why}", status=409)
+                )
             # THE RESERVATION SPANS BOTH HALVES (#896 review 19, finding 2).
             #
             # Eligibility was decided in one moment and the row inserted in another, and the
@@ -1320,12 +1352,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 engine = (raw or "").strip() or None
                 if engine is not None:
                     # THE SAME GATE THE LIST WAS BUILT WITH. An operator may choose any agent that
-                    # could have been offered — and may not choose one that could not, because
-                    # `shell` is a login shell and a brief pasted into it EXECUTES.
+                    # could have been offered — and may not choose one that could not: only a
+                    # mission-ready API client holds a mission role (#1902).
                     if engine not in {e["id"] for e in mission_plan.engine_options()}:
+                        why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
                         return _fail(
                             missions.MissionError(
-                                f"{engine!r} cannot be dispatched into", status=422
+                                f"{engine!r} cannot be dispatched into: {why}", status=422
                             )
                         )
 
@@ -1355,9 +1388,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
-        plan["project_options"] = mission_plan.picker_project_options()
-        plan["engine_options"] = mission_plan.engine_options()
-        plan["engine_unavailable"] = mission_plan.engine_unavailable()
+        plan.update(await asyncio.to_thread(mission_plan.picker_lists))
         return JSONResponse(plan)
 
     async def _first_plan(mission_id: str, body: dict) -> JSONResponse | None:
@@ -1386,10 +1417,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine = raw_engine.strip() if isinstance(raw_engine, str) else ""
         if not engine:
             return _fail(missions.MissionError("engine is required for the first plan", status=422))
-        # THE SAME GATE THE LIST WAS BUILT WITH — `shell` is a login shell, and a brief pasted
-        # into it EXECUTES.
+        # THE SAME GATE THE LIST WAS BUILT WITH: only a mission-ready API client (#1902).
         if engine not in {e["id"] for e in mission_plan.engine_options()}:
-            return _fail(missions.MissionError(f"{engine!r} cannot be dispatched into", status=422))
+            why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
+            return _fail(
+                missions.MissionError(f"{engine!r} cannot be dispatched into: {why}", status=422)
+            )
 
         raw_brief = body.get("brief")
         brief = raw_brief.strip() if isinstance(raw_brief, str) else ""
@@ -1429,9 +1462,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # into is an invalid field of this request. An unreadable store stays a 503.
             e = bad_project
             return _fail(e if e.status >= 500 else missions.MissionError(str(e), status=422))
-        plan["project_options"] = mission_plan.picker_project_options()
-        plan["engine_options"] = mission_plan.engine_options()
-        plan["engine_unavailable"] = mission_plan.engine_unavailable()
+        plan.update(await asyncio.to_thread(mission_plan.picker_lists))
         return JSONResponse(plan)
 
     @app.post("/api/missions/{mission_id}/dispatch")
@@ -1573,9 +1604,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
 
-            # THE ENGINE IS CHECKED AGAINST THE CAPABILITY ALLOWLIST, which is what keeps `shell`
-            # and every mint-own-id engine out — the same list the plan picker is built from, so
-            # there is no second opinion about what may be launched unattended (#899).
+            # THE ENGINE IS CHECKED AGAINST THE MISSION ADMISSION, which keeps every terminal
+            # client out (#1902) — the same list the plan picker is built from, so there is no
+            # second opinion about what may be launched unattended (#899).
             options = {str(o.get("id")) for o in mission_plan.engine_options()}
             want = body.get("engine")
             engine = str(want).strip() if isinstance(want, str) and want.strip() else ""
@@ -1586,9 +1617,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
             if engine not in options:
+                why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
                 return _fail(
                     missions.MissionError(
-                        f"{engine} cannot be started unattended; choose one that can", status=422
+                        f"{engine} cannot be started unattended; choose one that can: {why}",
+                        status=422,
                     )
                 )
 
