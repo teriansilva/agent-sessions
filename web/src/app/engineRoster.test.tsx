@@ -219,10 +219,10 @@ describe("an eighth engine reaches every consumer through its manifest data", ()
 
   test("the seven answer exactly what the old client tables did", () => {
     // Recorded from the pre-P4 format.ts ladders / RECONCILE_ENGINES / WIPE_REPAINT_ENGINES;
-    // copilot (#1565) joins with its answers recorded the same way.
+    // copilot (#1565) joins with its answers recorded the same way, and opencode2 (#1986) after it.
     const old = {
-      badge: { claude: "cc", opencode: "oc", codex: "cx", gemini: "gm", antigravity: "ag", kimi: "ki", copilot: "cp", shell: "sh" },
-      reconcile: ["opencode", "codex", "antigravity", "kimi"],
+      badge: { claude: "cc", opencode: "oc", opencode2: "ot", codex: "cx", gemini: "gm", antigravity: "ag", kimi: "ki", copilot: "cp", shell: "sh" },
+      reconcile: ["opencode", "opencode2", "codex", "antigravity", "kimi"],
       wipe: ["codex", "kimi"],
       winch: ["antigravity"],
       handoffSource: SEVEN.filter((e) => e !== "shell"),

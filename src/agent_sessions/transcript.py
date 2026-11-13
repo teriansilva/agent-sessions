@@ -1148,6 +1148,150 @@ register_locator("opencode-sqlite", _opencode_locator)
 register_growth("opencode-sqlite", _opencode_growth)
 
 
+# --- opencode 2.x (#1986) -------------------------------------------------------------------------
+#
+# Its own database (never 1.x's): `session_message(id, session_id, type, seq, time_created,
+# time_updated, data)` with `type` in user / assistant / idle / …, ordered by `seq`. Measured on
+# 2.2.7: a user row's `data` carries `text`; an assistant row's carries a `content` list of
+# `{type: "text", text}` items (and token totals); `session_part` rows, when present, hang off a
+# message by `message_id` in `ordinal` order. Every other shape is skipped, never guessed at.
+
+_OPENCODE2_TOOL_TYPES = frozenset({"tool", "tool-call", "tool_call", "tool-use", "tool_use"})
+
+
+def _opencode2_items(items: object, role: str, ts: float | None) -> list[Turn]:
+    turns: list[Turn] = []
+    if not isinstance(items, list):
+        return turns
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        text = item.get("text")
+        if kind == "text" and isinstance(text, str) and text.strip():
+            turns.append(Turn(role, text.strip(), "text", ts))
+        elif kind in _OPENCODE2_TOOL_TYPES:
+            name = item.get("tool") or item.get("name") or "tool"
+            state = item.get("state") if isinstance(item.get("state"), dict) else {}
+            arg = item.get("input", state.get("input", ""))
+            turns.append(Turn("assistant", f"{name}({_short(arg)})", "tool"))
+    return turns
+
+
+def _opencode2_db(home: Path) -> Path:
+    from .engines import base
+
+    return Path(base._opencode2_db(home))
+
+
+def _opencode2_turns_strict(native_id: str, home: Path) -> list[Turn]:
+    """The last `DEFAULT_MAX_MESSAGES` user/assistant messages, oldest first, RAISING where the
+    fail-soft adapter degrades (a missing db is `FileNotFoundError`)."""
+    db = _opencode2_db(home)
+    if not db.exists():
+        raise FileNotFoundError(f"opencode 2.x's store {db} does not exist")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    try:
+        rows = conn.execute(
+            "SELECT id, type, time_created, data FROM session_message "
+            "WHERE session_id=? AND type IN ('user', 'assistant') ORDER BY seq DESC LIMIT ?",
+            (native_id, DEFAULT_MAX_MESSAGES),
+        ).fetchall()
+        cut = len(rows) >= DEFAULT_MAX_MESSAGES
+        turns: list[Turn] = []
+        for mid, mtype, created, mdata in rows[::-1]:
+            role = "user" if mtype == "user" else "assistant"
+            ts = _when(created)
+            try:
+                meta = json.loads(mdata) or {}
+            except (ValueError, TypeError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            text = meta.get("text")
+            if role == "user" and isinstance(text, str) and text.strip():
+                turns.append(Turn("user", text.strip(), "text", ts))
+            turns.extend(_opencode2_items(meta.get("content"), role, ts))
+            parts = conn.execute(
+                "SELECT data FROM session_part WHERE message_id=? ORDER BY ordinal", (mid,)
+            ).fetchall()
+            for (pdata,) in parts:
+                try:
+                    part = json.loads(pdata)
+                except (ValueError, TypeError):
+                    continue
+                turns.extend(_opencode2_items([part], role, ts))
+        return tagged_turns(turns, cut)
+    finally:
+        conn.close()
+
+
+def _opencode2_adapter(native_id: str, home: Path) -> list[Turn]:
+    """Read-only + fail-soft: any sqlite error or a missing store → ``[]``."""
+    try:
+        return _opencode2_turns_strict(native_id, home)
+    except (sqlite3.Error, FileNotFoundError):
+        return []
+
+
+def _opencode2_locator(native_id: str, home: Path) -> str | None:
+    """Like 1.x: rows in one shared database, named only when THIS session has rows there."""
+    db = _opencode2_db(home)
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM session_message WHERE session_id=? LIMIT 1", (native_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return (
+        f"{db} — SQLite database (no per-session file); "
+        f"query rows where session_message.session_id = '{native_id}'"
+    )
+
+
+def _opencode2_growth(native_id: str, home: Path) -> int | None:
+    """The newest update timestamp across this session's messages and parts (the 1.x rule: a
+    timestamp moves on insert and on in-place streaming, and never goes back)."""
+    db = _opencode2_db(home)
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+    try:
+        marks = []
+        for table in ("session_message", "session_part"):
+            row = conn.execute(
+                f"SELECT MAX(COALESCE(time_updated, time_created, 0)) FROM {table} "  # noqa: S608
+                "WHERE session_id=?",
+                (native_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                marks.append(int(row[0]))
+        return max(marks) if marks else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+register_adapter("opencode2-sqlite", _opencode2_adapter)
+register_strict_adapter("opencode2-sqlite", _opencode2_turns_strict)
+register_locator("opencode2-sqlite", _opencode2_locator)
+register_growth("opencode2-sqlite", _opencode2_growth)
+
+
 # --- gemini -------------------------------------------------------------------------------
 
 

@@ -253,6 +253,7 @@ def test_the_first_party_cli_manifests_declare_their_kind_and_no_other_does():
         "codex-api": "codex-config-override",
         "opencode": "opencode-config-content",
         "opencode-api": "opencode-config-content",
+        "opencode2": "opencode2-config-content",
         "copilot": "copilot-additional-mcp-config",
         "copilot-api": "copilot-additional-mcp-config",
     }

@@ -270,6 +270,11 @@ def _skills_entry_env(launch: agent_tools.McpLaunch, kind: str) -> dict:
         assert set(servers) == {agent_tools.SERVER_NAME, agent_tools.SKILLS_SERVER_NAME}
         return servers[agent_tools.SKILLS_SERVER_NAME]["env"]
     content = json.loads(launch.env[agent_tools.OPENCODE_CONFIG_ENV])
+    if kind == agent_tools.OPENCODE2_CONTENT:  # opencode 2.x nests servers (#1986)
+        servers = content["mcp"]["servers"]
+        assert set(servers) >= {agent_tools.SERVER_NAME, agent_tools.SKILLS_SERVER_NAME}
+        assert content["keep"] == 1  # the existing config is merged, never replaced
+        return servers[agent_tools.SKILLS_SERVER_NAME]["environment"]
     assert set(content["mcp"]) >= {agent_tools.SERVER_NAME, agent_tools.SKILLS_SERVER_NAME}
     assert content["keep"] == 1  # the existing config is merged, never replaced
     return content["mcp"][agent_tools.SKILLS_SERVER_NAME]["environment"]

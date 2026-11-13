@@ -787,6 +787,11 @@ async def dispatch(
             argv = ptybridge.launch_argv(
                 engine=engine, session_id=native, launch_argv=launch, detached=True
             )
+            # The environment the agent MUST run with (#1986: opencode 2.x's own XDG tree),
+            # applied last to the spawn environment below. A refusal spawns nothing.
+            from .plugins.provider import forced_env
+
+            forced = forced_env(prov)
         except ValueError as e:
             raise DispatchError(str(e)) from None
         except engines.EngineError as e:
@@ -1152,6 +1157,7 @@ async def dispatch(
                                 **capability,
                                 **mcp.env,
                                 **hq_report_broker.master_env(hq_env),
+                                **forced,  # last: the agent's isolation is never overridden
                             }
                             may_have_inherited = True
                             return (

@@ -683,10 +683,21 @@ async def run(
     # The thread default is a prefs read (a file lock): off the event loop (#1505), and before the
     # pty exists, so a cancellation here leaks no descriptor.
     thread_env = None
+    forced: dict[str, str] = {}
     if launch_provider is not None:
         from . import resource_limits
+        from .engine_errors import EngineError
+        from .plugins.provider import forced_env
 
         thread_env = await asyncio.to_thread(resource_limits.thread_environment, dict(os.environ))
+        # The environment the agent MUST run with (#1986: opencode 2.x's own XDG tree), resolved
+        # before the pty exists so a refusal leaks nothing, and applied LAST below.
+        try:
+            forced = await asyncio.to_thread(forced_env, launch_provider)
+        except EngineError as e:
+            with contextlib.suppress(Exception):
+                await ws.close(code=4500, reason=str(e)[:120])
+            return
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
     # A real color terminal: without TERM, Ink-based agents (claude) disable color.
@@ -709,6 +720,7 @@ async def run(
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         env.update(launch_env or {})
+        env.update(forced)  # last: nothing assembled above may override the agent's isolation
 
     def create():
         return asyncio.create_subprocess_exec(

@@ -30,7 +30,11 @@ def test_recipe_probe_and_signin_are_fixed_and_resume_validates_identity(path, t
         id_pattern=m.session_id.pattern,
         new_session_reconciles=m.session_id.mint == "adopt",
     )
-    native = "ses_0123456789abcdefghijklmnop" if m.probe_kind == "run-session" else str(uuid4())
+    native = (
+        "ses_0123456789abcdefghijklmnop"
+        if m.probe_kind in ("run-session", "opencode2-run")
+        else str(uuid4())
+    )
     # The conversation-store kind is authoritative; never pass a path/option as a session id.
     if not prov.id_pattern.fullmatch(native):
         native = "session_" + str(uuid4())

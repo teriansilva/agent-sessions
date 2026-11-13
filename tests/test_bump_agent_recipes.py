@@ -633,6 +633,95 @@ def test_a_github_redirect_to_another_host_is_refused(tmp_path):
     assert not [u for u in reg.requested if "example.com" in u]
 
 
+# -- version ranges (#1986): opencode 1.x stays on 1.x, opencode2 on 2.x ------------------------
+
+O1 = "opencode-linux-x64-baseline"
+O2_REPO = "anomalyco/opencode"
+O2_ASSET = "opencode-linux-x64-baseline.tar.gz"
+
+
+def test_an_npm_candidate_above_the_cap_is_never_proposed():
+    """npm `latest` moving to 2.x must not upgrade the 1.x agent; an in-range patch still can."""
+    reg = Registry()
+    for version in ("1.19.5", "1.19.6", "2.0.0", "2.2.7"):
+        reg.publish(O1, version, b"x", hours=300)
+    reg.latest(O1, "2.2.7")
+    rule = bump.RULES["opencode"]
+    assert rule.versions == "<2"
+    assert _bumper(reg).pick_npm(rule, "1.19.5") == ("1.19.6", None)
+    assert _bumper(reg).pick_npm(rule, "1.19.6") == (None, None)
+    # Negative control: the same registry without the cap proposes the 2.x line.
+    assert _bumper(reg).pick_npm(bump.Npm(O1, ""), "1.19.5") == ("2.2.7", None)
+
+
+def opencode2_setup(tmp_path, reg, tag: str):
+    old = _tgz({"opencode": b"#!/bin/sh\n"}, root="")
+    new = _tgz({"opencode": b"#!/bin/sh\necho new\n"}, root="")
+    doc = recipe(
+        "opencode2",
+        f"@{O2_REPO}",
+        [(".", f"https://github.com/{O2_REPO}/releases/download/v2.2.7/{O2_ASSET}", old)],
+        "v2.2.7",
+    )
+    path = write(tmp_path, "opencode2", doc)
+    reg.extra[f"https://github.com/{O2_REPO}/releases/latest"] = httpx.Response(
+        302, headers={"location": f"https://github.com/{O2_REPO}/releases/tag/{tag}"}
+    )
+    blob = "https://release-assets.githubusercontent.com/github-production-release-asset/2/o2"
+    reg.extra[f"https://github.com/{O2_REPO}/releases/download/{tag}/{O2_ASSET}"] = httpx.Response(
+        302, headers={"location": blob}
+    )
+    stamp = (NOW - dt.timedelta(hours=200)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    reg.extra[blob] = body(new, {"last-modified": stamp})
+    return path
+
+
+@pytest.mark.parametrize("tag", ["v1.19.9", "v3.0.0"])
+def test_a_github_release_outside_the_range_is_refused_and_downloads_nothing(tmp_path, tag):
+    """`releases/latest` names ONE tag: a 1.x patch (or a 3.x) there is a refusal, never a
+    regression and never a silent skip."""
+    reg = Registry()
+    path = opencode2_setup(tmp_path, reg, tag)
+    original = path.read_bytes()
+    report = go(reg, tmp_path)
+    assert [o.id for o in report.refused] == ["opencode2"]
+    assert path.read_bytes() == original
+    assert not [u for u in reg.requested if "/releases/download/" in u]
+
+
+def test_an_in_range_github_release_is_bumped(tmp_path):
+    reg = Registry()
+    path = opencode2_setup(tmp_path, reg, "v2.3.0")
+    report = go(reg, tmp_path)
+    assert [(o.id, o.new) for o in report.changed] == [("opencode2", "v2.3.0")]
+    after = json.loads(path.read_text())["manifest"]
+    assert after["install"]["version"] == "v2.3.0" and after["identity"]["version"] == "2.3.0"
+
+
+def test_the_version_runner_accepts_a_leading_v_and_nothing_else(fake_docker):
+    prefix, _ = fake_docker
+    _tool(prefix, "echo 'opencode v2.2.7'\n")
+    assert bump.run_version(prefix, "bin/tool", "--version", "2.2.7") == "2.2.7"
+    _tool(prefix, "echo 'opencode xv2.2.7'\n")
+    with pytest.raises(bump.BumpError):
+        bump.run_version(prefix, "bin/tool", "--version", "2.2.7")
+
+
+@pytest.mark.parametrize(
+    ("spec", "inside", "outside"),
+    [
+        ("<2", (1, 99, 99), (2, 0, 0)),
+        (">=2,<3", (2, 0, 0), (3, 0, 0)),
+        (">=2,<3", (2, 9, 9), (1, 9, 9)),
+    ],
+)
+def test_version_ranges(spec, inside, outside):
+    assert bump._allowed(spec, inside) and not bump._allowed(spec, outside)
+    assert bump._allowed("", outside)
+    with pytest.raises(bump.BumpError):
+        bump._range("~2")
+
+
 # -- the real tree ---------------------------------------------------------------------------
 
 

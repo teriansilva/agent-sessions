@@ -59,19 +59,53 @@ _REDIRECTS = (301, 302, 303, 307, 308)
 
 @dataclass(frozen=True)
 class Npm:
-    """The `latest` dist-tag of one npm package; `suffix` selects a per-platform build."""
+    """The `latest` dist-tag of one npm package; `suffix` selects a per-platform build.
+
+    `versions` (#1986) bounds what may ever be proposed, e.g. `"<2"`: a version outside it is
+    never a candidate, however `latest` moves. Empty = unbounded.
+    """
 
     package: str
     notes: str
     suffix: str = ""
+    versions: str = ""
 
 
 @dataclass(frozen=True)
 class GitHubRelease:
-    """The `releases/latest` redirect of one public repository and one fixed asset name."""
+    """The `releases/latest` redirect of one public repository and one fixed asset name.
+
+    `versions` (#1986) bounds the release: the redirect names ONE tag, so a tag outside the range
+    is a refusal (`BumpError`), never a silent skip and never a regression.
+    """
 
     repository: str
     asset: str
+    versions: str = ""
+
+
+_BOUND = re.compile(r"(>=|<)([0-9]+(?:\.[0-9]+){0,2})")
+
+
+def _range(spec: str) -> tuple[tuple[int, ...] | None, tuple[int, ...] | None]:
+    """`">=2,<3"` → `((2, 0, 0), (3, 0, 0))`: an inclusive floor and an exclusive ceiling."""
+    floor = ceiling = None
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        match = _BOUND.fullmatch(part)
+        if match is None:
+            raise BumpError(f"invalid version bound {part!r}")
+        key = tuple(int(x) for x in match[2].split("."))
+        key = key + (0,) * (3 - len(key))
+        if match[1] == ">=":
+            floor = key
+        else:
+            ceiling = key
+    return floor, ceiling
+
+
+def _allowed(spec: str, key: tuple[int, int, int]) -> bool:
+    floor, ceiling = _range(spec)
+    return (floor is None or key >= floor) and (ceiling is None or key < ceiling)
 
 
 RULES: dict[str, Npm | GitHubRelease] = {
@@ -94,8 +128,15 @@ RULES: dict[str, Npm | GitHubRelease] = {
     "kimi": Npm(
         "@moonshot-ai/kimi-code", "https://www.npmjs.com/package/@moonshot-ai/kimi-code/v/{version}"
     ),
+    # opencode 1.x stays on 1.x (#1986): npm `latest` moving to 2.x must never upgrade it — 2.x is
+    # the separate `opencode2` agent, released on GitHub (`anomalyco/opencode`), not npm.
     "opencode": Npm(
-        "opencode-linux-x64-baseline", "https://github.com/sst/opencode/releases/tag/v{version}"
+        "opencode-linux-x64-baseline",
+        "https://github.com/sst/opencode/releases/tag/v{version}",
+        versions="<2",
+    ),
+    "opencode2": GitHubRelease(
+        "anomalyco/opencode", "opencode-linux-x64-baseline.tar.gz", versions=">=2,<3"
     ),
     "antigravity": GitHubRelease("google-antigravity/antigravity-cli", "agy_cli_linux_x64.tar.gz"),
 }
@@ -290,7 +331,8 @@ def run_version(prefix: Path, entrypoint: str, flag: str, expected: str) -> str:
                 check=False,
             )
     output = (proc.stdout[:65536] + proc.stderr[:65536]).decode("utf-8", "replace")
-    pattern = rf"(?<![0-9A-Za-z.]){re.escape(expected)}(?![0-9]|\.[0-9])"
+    # An optional `v` before the version (`opencode v2.2.7`, #1986), never any other prefix.
+    pattern = rf"(?<![0-9A-Za-z.])v?{re.escape(expected)}(?![0-9]|\.[0-9])"
     if proc.returncode != 0 or not re.search(pattern, output):
         raise BumpError(f"`{flag}` did not report {expected} (exit {proc.returncode})")
     return expected
@@ -363,6 +405,8 @@ class Bumper:
             key = _key(base)
             if not floor < key <= ceiling or not isinstance(meta, dict) or meta.get("deprecated"):
                 continue
+            if not _allowed(rule.versions, key):
+                continue  # outside the rule's range: never a candidate (#1986)
             if self._old_enough(doc, version):
                 best = max(best or (key, version), (key, version))
             else:
@@ -504,6 +548,10 @@ class Bumper:
         if match is None:
             raise BumpError("the latest-release redirect does not name an exact X.Y.Z tag")
         tag = match[1]
+        if not _allowed(rule.versions, _key(tag.removeprefix("v"))):
+            raise BumpError(
+                f"the latest release {tag} is outside this rule's range ({rule.versions})"
+            )
         current = recipe["manifest"]["install"]["version"]
         if _key(tag.removeprefix("v")) <= _key(current.removeprefix("v")):
             return None, None

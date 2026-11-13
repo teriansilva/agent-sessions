@@ -22,6 +22,7 @@ PLACEHOLDER = f"new-{UUID}"
 NATIVE = {
     "claude": UUID,
     "opencode": "ses_AbC123",
+    "opencode2": "ses_AbC123",
     "codex": UUID,
     "gemini": UUID,
     "copilot": UUID,
@@ -121,6 +122,20 @@ GOLDEN = {
         "--yolo",
     ],
     ("opencode", "caps"): (True, True, True, True, True),
+    # opencode 2.x (#1986): `--standalone` on every launch, `--auto` only when bypassing; P1 has
+    # no orchestrator input or seed start (P2).
+    ("opencode2", "caps"): (True, False, True, False, True),
+    ("opencode2", "new", False): ["{bin}", "--standalone", "{cwd}"],
+    ("opencode2", "new", True): ["{bin}", "--standalone", "{cwd}", "--auto"],
+    ("opencode2", "resume", False): ["{bin}", "--standalone", "{cwd}", "--session", "ses_AbC123"],
+    ("opencode2", "resume", True): [
+        "{bin}",
+        "--standalone",
+        "{cwd}",
+        "--session",
+        "ses_AbC123",
+        "--auto",
+    ],
     ("opencode", "new", False): ["{bin}", "{cwd}"],
     ("opencode", "new", True): ["{bin}", "{cwd}"],
     ("opencode", "resume", False): ["{bin}", "{cwd}", "--session", "ses_AbC123"],
@@ -133,11 +148,13 @@ GOLDEN = {
 }
 
 # The seven P2 engines in their historic order, plus the API agent (#1209, display order 80),
-# the native API clients (#1311) and copilot + copilot-api (#1565, display order 45/46).
+# the native API clients (#1311), copilot + copilot-api (#1565, display order 45/46) and
+# opencode2 (#1986, display order 22).
 ORDER = [
     "claude",
     "claude-api",
     "opencode",
+    "opencode2",
     "opencode-api",
     "codex",
     "codex-api",

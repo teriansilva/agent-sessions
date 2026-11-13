@@ -1,0 +1,69 @@
+# OpenCode 2 (#1986): a separate agent beside opencode 1.x, never sharing its data. 2.x keeps
+# 1.x's default paths, so every process gets its OWN XDG tree under `store.root`
+# (`engines/opencode2.py`, `isolation_env`) and a launch that would reach a 1.x store is refused.
+contract = 1
+
+[identity]
+id = "opencode2"
+label = "OpenCode 2"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "opencode2"
+aliases = ["opencode"]  # the upstream tarball's executable
+env_var = "AGENT_SESSIONS_OPENCODE2_BIN"
+# Nothing adopted from ~/.local/bin, ~/.opencode/bin or PATH: those hold the 1.x `opencode`.
+# The catalog install (its own generation) or the env var is the only way in.
+search_paths = []
+
+[session_id]
+pattern = "^ses_[A-Za-z0-9]+$"
+mint = "adopt"  # 2.x mints its own ses_ id; it writes no row before the first message
+
+[store]
+root = "~/.local/share/agent-sessions/agents/opencode2"
+env_override = "AGENT_SESSIONS_OPENCODE2_DIR"
+layout = "opencode2-sqlite"
+[store.paths]
+# Where 2.x puts it under the forced XDG_DATA_HOME (`<root>/data`); checked before every launch.
+db = "data/opencode/opencode.db"
+log = "data/opencode/log/opencode.log"
+
+[launch]
+# `--standalone`: a private server per process, never the shared background service.
+base_args = ["--standalone"]
+resume = { kind = "positional-dir", flag = "--session" }
+new = { kind = "positional-dir" }
+bypass = ["--auto"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+raw_tty = true
+
+[transcript]
+kind = "opencode2-sqlite"
+strict = true
+
+[usage]
+source = "tokens"
+kind = "opencode2-store-query"
+
+[instructions]
+files = ["AGENTS.md"]
+
+# The model is chosen in the engine's own configuration: pickers offer `default` only.
+[models]
+configured_elsewhere = true
+
+[tools]
+mcp = "opencode2-config-content"
+
+[display]
+order = 22
+name = "opencode2"
+badge = "ot"  # letters only (`_BADGE_RE`); "oc" is 1.x
+accent = "teal"
+id_prefix = "ses_"

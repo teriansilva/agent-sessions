@@ -1048,6 +1048,56 @@ def read_opencode_tokens(
     return Report(engine=engine, source=SOURCE_TOKENS, tokens=totals, window_days=days, at=now)
 
 
+def read_opencode2_tokens(
+    home: Path | None = None, *, days: int = OPENCODE_WINDOW_DAYS, engine: str | None = None
+) -> Report:
+    """opencode 2.x's own token records over the last ``days`` (#1986), read-only.
+
+    2.2.7 records each reply's tokens on its assistant ``session_message`` row
+    (``data.tokens.{input,output,reasoning,cache.read,cache.write}``), stamped with the reply's own
+    ``time_created`` (ms) — so the window is by each reply's own time, as 1.x's ``step-finish``
+    parts are. ``session_v2``'s token columns are lifetime totals per session and cannot be cut to
+    a window, so they are not summed here.
+    """
+    from .engines import base
+
+    now = time.time()
+    engine = engine or _engine_for("opencode2-store-query")
+    db = base._opencode2_db(home or Path.home())
+    since_ms = int((now - days * 86400) * 1000)
+    totals = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error as exc:
+        return Report(engine=engine, source=SOURCE_TOKENS, at=now, error=str(exc))
+    try:
+        rows = conn.execute(
+            "select data from session_message where type = 'assistant' and time_created >= ?",
+            (since_ms,),
+        )
+        for (raw,) in rows:
+            try:
+                message = json.loads(raw) or {}
+            except ValueError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            tokens = message.get("tokens") or {}
+            if not isinstance(tokens, dict):
+                continue
+            cache = tokens.get("cache") or {}
+            cache = cache if isinstance(cache, dict) else {}
+            totals["in"] += _int(tokens.get("input"))
+            totals["out"] += _int(tokens.get("output")) + _int(tokens.get("reasoning"))
+            totals["cache_read"] += _int(cache.get("read"))
+            totals["cache_write"] += _int(cache.get("write"))
+    except sqlite3.Error as exc:
+        return Report(engine=engine, source=SOURCE_TOKENS, at=now, error=str(exc))
+    finally:
+        conn.close()
+    return Report(engine=engine, source=SOURCE_TOKENS, tokens=totals, window_days=days, at=now)
+
+
 def _int(v: object) -> int:
     """One whole in-range count, or 0. Floats included: a stored `inf`/`NaN` must not survive,
     and a float that is not integral was never a token count."""
@@ -1421,6 +1471,7 @@ KIND_REPORTERS: dict[str, object] = {
     "codex-app-server-probe": probe_codex,
     "kimi-web-usage-probe": probe_kimi_web,
     "opencode-store-query": read_opencode_tokens,
+    "opencode2-store-query": read_opencode2_tokens,
     "chat-response-tokens": read_chat_tokens,
 }
 

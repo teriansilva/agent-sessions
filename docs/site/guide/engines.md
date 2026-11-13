@@ -38,6 +38,7 @@ directory), shown with the binary's name instead of its resolved path.
 | **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
 | **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
 | **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
+| **OpenCode 2** (`opencode2`) | `opencode2` · `AGENT_SESSIONS_OPENCODE2_BIN` | `~/.local/share/agent-sessions/agents/opencode2` · `AGENT_SESSIONS_OPENCODE2_DIR` | `opencode2 --standalone <dir> --session <id>` | `opencode2 --standalone <dir>`, then adopt the id it mints | `--auto` |
 | **opencode — API** (`opencode-api`) | opencode's | `~/.local/share/agent-sessions/native/opencode-api` · `AGENT_SESSIONS_OPENCODE_API_DIR` | contained worker — runtime `api`, protocol `opencode-acp` | new conversation | — |
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
 | **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
@@ -61,6 +62,8 @@ and the scroll-up transcript, so pointing one at a different location moves both
 | `AGENT_SESSIONS_OPENCODE_BIN` | opencode | the binary |
 | `AGENT_SESSIONS_OPENCODE_DB` | opencode | the store's `db` (`~/.local/share/opencode/opencode.db`) |
 | `AGENT_SESSIONS_OPENCODE_LOG` | opencode | the store's `log` (`~/.local/share/opencode/log/opencode.log`) |
+| `AGENT_SESSIONS_OPENCODE2_BIN` | OpenCode 2 | the binary |
+| `AGENT_SESSIONS_OPENCODE2_DIR` | OpenCode 2 | the store root (`~/.local/share/agent-sessions/agents/opencode2`) |
 | `AGENT_SESSIONS_OPENCODE_API_DIR` | opencode — API | the store root (`~/.local/share/agent-sessions/native/opencode-api`) |
 | `AGENT_SESSIONS_CODEX_BIN` | Codex | the binary |
 | `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | Codex | the store root (`~/.codex/sessions`) |
@@ -117,6 +120,7 @@ added under **Settings → Agents → *engine***, for a model released after thi
 | **Claude Code** (`claude`) | `--model <id>` on new sessions and on resume | `claude-opus-5` (`opus`), `claude-sonnet-5` (`sonnet`), `claude-haiku-4-5` (`haiku`), `claude-fable-5-1`, `claude-opus-4-8`, `claude-sonnet-4-6` | `CLAUDE.md` |
 | **Claude — API** (`claude-api`) | — | — | — |
 | **opencode** (`opencode`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
+| **OpenCode 2** (`opencode2`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
 | **opencode — API** (`opencode-api`) | — | — | — |
 | **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
 | **Codex — API** (`codex-api`) | — | — | — |

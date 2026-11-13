@@ -106,6 +106,21 @@ def _probe_argv(prov, purpose: str, native_id: str, operation_id: str) -> list[s
                 *(["--session", native_id] if resume else []),
                 message,
             ]
+        case "opencode2-run":
+            # opencode 2.x (#1986): a private server (`--standalone`, never the shared background
+            # service), JSON events, and `--archived` so the check stays out of its own lists.
+            # Tools are denied by the same inline profile as 1.x (`_wrapped`), which 2.2.7
+            # normalizes to a final `* * deny` rule for the probe's own primary agent.
+            return [
+                ep,
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--archived",
+                *(["--session", native_id] if resume else []),
+                message,
+            ]
         case "prompt-pinned":
             return [
                 ep,
@@ -180,8 +195,18 @@ def _argv(
     raise ProcessError("this verification operation is unavailable")
 
 
+#: Probe kinds whose CLI defaults to allowing tools, so the check is given a deny-all profile.
+_DENY_ALL_PROFILE_KINDS = frozenset({"run-session", "opencode2-run"})
+
+
 def _wrapped(
-    argv: list[str], cwd: Path, unit: str, seconds: int, *, probe_kind: str | None = None
+    argv: list[str],
+    cwd: Path,
+    unit: str,
+    seconds: int,
+    *,
+    probe_kind: str | None = None,
+    agent_env: dict[str, str] | None = None,
 ) -> list[str]:
     # Clear the user manager's environment inside the service. The vendor gets its own HOME and
     # PATH, never BattleLab's cookie/key/database environment. These values contain no credentials.
@@ -192,7 +217,7 @@ def _wrapped(
         "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
     }
-    if probe_kind == "run-session":
+    if probe_kind in _DENY_ALL_PROFILE_KINDS:
         # This CLI defaults to allowing tools. Its own newly minted primary agent makes the
         # deny rule last, without merging a project's earlier per-tool grants under that name.
         agent = "battlelab-probe-" + uuid.uuid4().hex
@@ -203,6 +228,8 @@ def _wrapped(
                 "agent": {agent: {"mode": "primary", "permission": {"*": "deny"}}},
             }
         )
+    # Last: the agent's own isolation (#1986, opencode 2.x's XDG tree) wins over everything above.
+    environment.update(agent_env or {})
     return [
         "/usr/bin/systemd-run",
         "--user",
@@ -348,12 +375,20 @@ async def spawn(
                 raise
             if guard is None:
                 raise ProcessError("agent maintenance is busy; retry after it finishes")
+        from ..engine_errors import EngineError
+        from .provider import forced_env
+
+        try:
+            agent_env = forced_env(prov)
+        except EngineError as exc:
+            raise ProcessError(str(exc)) from None
         argv = _wrapped(
             _argv(prov, purpose, cwd, native_id, operation_id),
             cwd,
             unit,
             seconds,
             probe_kind=prov.manifest.probe_kind if purpose in ("new", "resume") else None,
+            agent_env=agent_env,
         )
         from . import admission
 

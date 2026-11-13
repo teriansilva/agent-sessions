@@ -96,7 +96,7 @@ def test_launch_argv_contract_all_present_providers(engine_bin):
     # every provider exposes launch_argv returning a non-empty argv list of plain strings
     engine_bin()
     uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
-    native = {"opencode": "ses_abcd1234", "kimi": f"session_{uuid}"}
+    native = {"opencode": "ses_abcd1234", "opencode2": "ses_abcd1234", "kimi": f"session_{uuid}"}
     for prov in engines.all_providers():
         if prov.manifest.runtime != "pty":
             continue  # a `chat` engine (#1209) launches nothing; its refusal is pinned elsewhere

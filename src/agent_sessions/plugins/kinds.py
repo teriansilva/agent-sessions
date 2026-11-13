@@ -133,13 +133,16 @@ BYPASS_FLAGS = frozenset(
         "--skip-trust",
         "-y",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--auto",  # opencode 2.x (#1986): auto-approve what is not explicitly denied
     }
 )
 #: Arguments placed straight after argv[0] on every launch. shell `-l` (a login shell).
 #: copilot `--no-auto-update` (#1565): the CLI otherwise self-downloads into `~/.cache/copilot`
 #: and re-execs from there, outside the provenance-bound entrypoint — it rides on EVERY console
-#: launch so no spawn seam can forget it.
-BASE_ARGS = frozenset({"-l", "--no-auto-update"})
+#: launch so no spawn seam can forget it. opencode 2.x `--standalone` (#1986): a private server
+#: owned by this process instead of the shared background service, so the dtach master IS the
+#: agent and nothing outlives it.
+BASE_ARGS = frozenset({"-l", "--no-auto-update", "--standalone"})
 #: Where bypass flags apply. codex has no per-launch bypass on resume, only on new.
 BYPASS_ON = frozenset({"both", "new"})
 
@@ -183,6 +186,9 @@ STORE_LAYOUTS = frozenset(
         "antigravity-cli",
         "kimi-code",
         "copilot-sessions",  # copilot: `~/.copilot/session-state/<uuid>/` per session (#1565)
+        # opencode 2.x (#1986): `session_v2` + `session_message` in its own XDG tree under the
+        # store root — never the 1.x database, which 2.x would otherwise share by default.
+        "opencode2-sqlite",
         "shell-records",
         "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
@@ -208,6 +214,7 @@ TRANSCRIPT_KINDS = frozenset(
         "gemini-chat",
         "antigravity-brain",
         "copilot-events",  # copilot's `session-state/<uuid>/events.jsonl` (#1565)
+        "opencode2-sqlite",  # opencode 2.x `session_message` rows (#1986)
         "battlelab-chat",  # chat runtime (#1209)
         "none",
     }
@@ -225,6 +232,7 @@ USAGE_KINDS = frozenset(
         # kimi 2.1+: `kimi web` on loopback, one token-gated GET of `/api/v1/oauth/usage` (#1239)
         "kimi-web-usage-probe",
         "opencode-store-query",
+        "opencode2-store-query",  # opencode 2.x: assistant `session_message` tokens (#1986)
         "chat-response-tokens",  # chat runtime: token counts recorded from each response (#1209)
     }
 )
@@ -278,6 +286,7 @@ MCP_KINDS = frozenset(
         "claude-mcp-config-flag",
         "codex-config-override",
         "opencode-config-content",
+        "opencode2-config-content",  # opencode 2.x `mcp.servers.<name>` (#1986)
         "copilot-additional-mcp-config",
     }
 )
@@ -383,6 +392,7 @@ PROBE_KINDS = frozenset(
         "prompt-session",  # kimi
         "print-conversation",  # antigravity
         "copilot-prompt-pinned",  # copilot (#1565): tools disabled, pinned or resumed id
+        "opencode2-run",  # opencode 2.x (#1986): `run --standalone`, tools denied, archived
     }
 )
 #: `verify` — the fixed check list (#853 §3). A manifest selects a subset; it never writes a check.
@@ -517,6 +527,7 @@ RESERVED_IDS = frozenset(
         "opencode-api",
         "copilot",
         "copilot-api",
+        "opencode2",
     }
 )
 

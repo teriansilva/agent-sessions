@@ -46,6 +46,7 @@ from .family import (  # noqa: F401 — the client-family resolver (#1728)
 from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
+from .opencode2 import OPENCODE2_SCHEMA, OpenCode2Provider
 from .registry import (  # noqa: F401 — public re-exports
     LATE_ID_CAPABILITIES,
     REMOVED_REASON,
@@ -94,6 +95,7 @@ __all__ = [
     "EngineProvider",
     "ClaudeProvider",
     "OpenCodeProvider",
+    "OpenCode2Provider",
     "CodexProvider",
     "GeminiProvider",
     "AntigravityProvider",
@@ -143,4 +145,5 @@ __all__ = [
     "LATE_ID_CAPABILITIES",
     "ShellProvider",
     "OPENCODE_SCHEMA",
+    "OPENCODE2_SCHEMA",
 ]

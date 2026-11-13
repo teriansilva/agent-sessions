@@ -303,7 +303,9 @@ test("defaults: lists only engines eligible for a new session, the stored one ch
   expect(radios.map((r) => (r as HTMLInputElement).value)).not.toContain(
     "codex",
   );
-  expect(within(group).getByRole("radio", { name: /opencode/ })).toBeChecked();
+  // By value: `/opencode/` would also name opencode2 (#1986).
+  const stored = radios.find((r) => (r as HTMLInputElement).value === "opencode");
+  expect(stored).toBeChecked();
   expect(screen.queryByText("Default unavailable")).toBeNull();
 });
 

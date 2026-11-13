@@ -1,0 +1,113 @@
+{
+  "manifest": {
+    "binary": {
+      "aliases": [
+        "opencode"
+      ],
+      "env_var": "AGENT_SESSIONS_OPENCODE2_BIN",
+      "name": "opencode2",
+      "search_paths": [],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "new": true,
+      "raw_tty": true,
+      "resume": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "teal",
+      "badge": "ot",
+      "id_prefix": "ses_",
+      "name": "opencode2",
+      "order": 22
+    },
+    "identity": {
+      "id": "opencode2",
+      "label": "OpenCode 2",
+      "publisher": "battlelab",
+      "version": "2.2.7"
+    },
+    "install": {
+      "authority": "github.com",
+      "digest": "sha256:89a6cee227b54bc011179c528a5e63176032462b1a5e21723b616801cddc2ca7",
+      "entrypoint": "opencode",
+      "kind": "tarball",
+      "package": "@anomalyco/opencode",
+      "platform": "linux-x64",
+      "version": "v2.2.7"
+    },
+    "instructions": {
+      "files": [
+        "AGENTS.md"
+      ]
+    },
+    "launch": {
+      "base_args": [
+        "--standalone"
+      ],
+      "bypass": [
+        "--auto"
+      ],
+      "new": {
+        "kind": "positional-dir"
+      },
+      "resume": {
+        "flag": "--session",
+        "kind": "positional-dir"
+      }
+    },
+    "models": {
+      "configured_elsewhere": true
+    },
+    "probe": {
+      "kind": "opencode2-run"
+    },
+    "session_id": {
+      "mint": "adopt",
+      "pattern": "^ses_[A-Za-z0-9]+$"
+    },
+    "signin": {
+      "kind": "auth-login"
+    },
+    "store": {
+      "env_override": "AGENT_SESSIONS_OPENCODE2_DIR",
+      "layout": "opencode2-sqlite",
+      "paths": {
+        "db": "data/opencode/opencode.db",
+        "log": "data/opencode/log/opencode.log"
+      },
+      "root": "~/.local/share/agent-sessions/agents/opencode2"
+    },
+    "tools": {
+      "mcp": "opencode2-config-content"
+    },
+    "transcript": {
+      "kind": "opencode2-sqlite",
+      "strict": true
+    },
+    "usage": {
+      "kind": "opencode2-store-query",
+      "source": "tokens"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": ".",
+        "sha256": "89a6cee227b54bc011179c528a5e63176032462b1a5e21723b616801cddc2ca7",
+        "url": "https://github.com/anomalyco/opencode/releases/download/v2.2.7/opencode-linux-x64-baseline.tar.gz"
+      }
+    ]
+  }
+}

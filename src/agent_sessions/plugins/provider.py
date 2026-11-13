@@ -138,6 +138,18 @@ def store_location(
     return root if name is None else root / s.paths[name]
 
 
+def forced_env(prov) -> dict[str, str]:
+    """What ``prov``'s processes must be given LAST, over every other variable (#1986).
+
+    The one question every spawn seam asks — an interactive launch (`webterm.run`), an unattended
+    dispatch (`headless_dispatch`) and the temporary sign-in/version/verify processes
+    (`plugins.process`). A provider without the method (a duck-typed test fake) needs nothing.
+    `EngineError` propagates: a launch that cannot be isolated must not happen.
+    """
+    fn = getattr(prov, "agent_env", None) if prov is not None else None
+    return dict(fn()) if callable(fn) else {}
+
+
 class PluginProvider:
     """Satisfies `engines.base.EngineProvider` from a validated manifest."""
 
@@ -227,6 +239,14 @@ class PluginProvider:
 
     def store_path(self, name: str) -> Path | None:
         return store_location(self.manifest, home=self.home, env=self.env, name=name)
+
+    def agent_env(self) -> dict[str, str]:
+        """Environment EVERY process for this agent must run with, laid over whatever else a
+        spawn seam assembled (#1986). Empty unless the store kind requires one: opencode 2.x
+        forces its XDG tree, and raises `EngineError` when that tree would reach a 1.x store, so
+        the caller spawns nothing. Spawn seams ask through `forced_env`, never this directly."""
+        hook = getattr(self.kind, "agent_env", None)
+        return dict(hook()) if callable(hook) else {}
 
     # --- the entrypoint (§2b) ------------------------------------------------------------------
 

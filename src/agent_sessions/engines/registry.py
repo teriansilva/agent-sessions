@@ -30,6 +30,7 @@ from .copilot import CopilotProvider
 from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OpenCodeProvider
+from .opencode2 import OpenCode2Provider
 from .shell import ShellProvider
 
 log = logging.getLogger("agent_sessions.engines")
@@ -204,6 +205,7 @@ def admits(prov) -> bool:
 STORE_KINDS: dict[str, type] = {
     "claude-projects": ClaudeProvider,
     "opencode-sqlite": OpenCodeProvider,
+    "opencode2-sqlite": OpenCode2Provider,
     "codex-rollouts": CodexProvider,
     "gemini-tmp": GeminiProvider,
     "antigravity-cli": AntigravityProvider,

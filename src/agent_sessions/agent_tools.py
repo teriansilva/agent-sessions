@@ -71,6 +71,8 @@ ARTIFACTS_MODULE = "agent_sessions.artifacts_mcp"
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
 OPENCODE_CONTENT = "opencode-config-content"  # `OPENCODE_CONFIG_CONTENT.mcp`, opencode 1.18.35
+# `OPENCODE_CONFIG_CONTENT.mcp.servers.<name>` + `disabled`, opencode 2.2.7 (#1986)
+OPENCODE2_CONTENT = "opencode2-config-content"
 # `--additional-mcp-config <json>`, copilot 1.0.68 — loads stdio MCP servers into TUI AND
 # `--acp` sessions (the ACP `session/new` mcpServers parameter rejects stdio servers, #1565).
 COPILOT_FLAG = "copilot-additional-mcp-config"
@@ -81,6 +83,7 @@ PROVEN = {
     CLAUDE_FLAG: "claude 2.1.304",
     CODEX_OVERRIDE: "codex-cli 0.162.0",
     OPENCODE_CONTENT: "opencode 1.18.35",
+    OPENCODE2_CONTENT: "opencode 2.2.7",
     COPILOT_FLAG: "copilot 1.0.68",
 }
 assert frozenset(PROVEN) == kinds.MCP_KINDS  # every kind has a shape here, and only those
@@ -397,6 +400,43 @@ def opencode_config_content(servers: Server | Sequence[Server], existing: str | 
     return json.dumps({**cfg, "mcp": table}, ensure_ascii=False)
 
 
+def opencode2_entry(s: Server) -> dict:
+    """One server in opencode 2.x's own shape: a local command under `mcp.servers`, `disabled`
+    rather than 1.x's `enabled` (2.2.7 rewrites a 1.x block into exactly this)."""
+    return {
+        "type": "local",
+        "command": [s.command, *s.args],
+        "environment": dict(s.env),
+        "disabled": False,
+    }
+
+
+def opencode2_config_content(
+    servers: Server | Sequence[Server], existing: str | None
+) -> str | None:
+    """``existing`` `OPENCODE_CONFIG_CONTENT` with these servers added under
+    ``mcp.servers`` (#1986). None when ``existing`` or its ``mcp`` block is not mergeable."""
+    cfg: dict = {}
+    if existing is not None and existing.strip():
+        try:
+            cfg = json.loads(existing)
+        except ValueError:
+            return None
+        if not isinstance(cfg, dict):
+            return None
+    mcp = cfg.get("mcp")
+    if mcp is not None and not isinstance(mcp, dict):
+        return None
+    mcp = dict(mcp or {})
+    table = mcp.get("servers")
+    if table is not None and not isinstance(table, dict):
+        return None
+    table = dict(table or {})
+    for s in _all(servers):
+        table[s.name] = opencode2_entry(s)
+    return json.dumps({**cfg, "mcp": {**mcp, "servers": table}}, ensure_ascii=False)
+
+
 # The exact tool names each first-party server exposes — memory_mcp.TOOLS / skills_mcp.TOOLS,
 # pinned against those modules by tests/test_agent_tools.py. Never a wildcard: copilot's own
 # default for a server is already "all tools", so only a named list is a real boundary, and a
@@ -498,7 +538,8 @@ def terminal_launch(
     if kind == COPILOT_FLAG:
         # A flag with ONE value, safe at the end: copilot's launch argv carries no positional.
         return McpLaunch(suffix=("--additional-mcp-config", copilot_mcp_config(servers)))
-    content = opencode_config_content(servers, base_env.get(OPENCODE_CONFIG_ENV))
+    build = opencode2_config_content if kind == OPENCODE2_CONTENT else opencode_config_content
+    content = build(servers, base_env.get(OPENCODE_CONFIG_ENV))
     if content is None:
         if skills is not None:
             raise SkillsRefused(

@@ -253,6 +253,62 @@
       "status_reason": null
     },
     {
+      "id": "opencode2",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": "/fixture/bin/opencode2",
+      "label": "OpenCode 2",
+      "kind": "agent",
+      "family": "opencode2",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "opencode2",
+        "badge": "ot",
+        "accent": "teal",
+        "id_prefix": "ses_",
+        "order": 22
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
+      "tools": {
+        "mcp": "opencode2-config-content"
+      },
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "opencode-api",
       "present": false,
       "supports_new": false,

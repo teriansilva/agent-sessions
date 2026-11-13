@@ -151,6 +151,7 @@ def test_doctor_cli_writes_bins(tmp_path, monkeypatch):
         lambda env=None: {
             "claude": "/usr/bin/claude",
             "opencode": None,
+            "opencode2": None,
             "codex": None,
             "gemini": None,
             "antigravity": None,
@@ -177,6 +178,7 @@ def test_doctor_cli_dry_run_does_not_write(tmp_path, monkeypatch):
         lambda env=None: {
             "claude": "/usr/bin/claude",
             "opencode": None,
+            "opencode2": None,
             "codex": None,
             "gemini": None,
             "antigravity": None,

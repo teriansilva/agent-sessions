@@ -52,6 +52,7 @@ ALLOWED = {
     "plugins/kinds.py",  # RESERVED_IDS: deliberately fixed, so a missing manifest frees no id
     "engines/claude.py",
     "engines/opencode.py",
+    "engines/opencode2.py",  # the `opencode2-sqlite` store kind (#1986)
     "engines/codex.py",
     "engines/gemini.py",
     "engines/antigravity.py",
@@ -374,15 +375,15 @@ def test_every_moved_table_answers_what_the_old_one_did():
     assert set(roster) == set(kinds.RESERVED_IDS)
     # The pre-P3 tables describe the terminal engines; the API agent (#1209) is newer than
     # all of them and has no "old" answer to agree with. copilot (#1565) joined with its old
-    # answers recorded here, the same as the seven before it.
+    # answers recorded here, the same as the seven before it, and opencode2 (#1986) after it.
     seven = [e for e in roster if engines.manifest_of(e).runtime == "pty"]
-    assert len(seven) == 8
+    assert len(seven) == 9
     old_wipe = {"codex", "kimi"}
     old_winch = {"antigravity"}
     # kimi moved from the manual counter to a plan reporter on purpose (#1239: kimi 2.1's
     # `kimi web` answers its quota) — the one recorded delta from the pre-P3 usage tables.
     old_manual = {"gemini", "copilot"}
-    old_reporters = {"claude", "antigravity", "codex", "opencode", "kimi"}
+    old_reporters = {"claude", "antigravity", "codex", "opencode", "kimi", "opencode2"}
     old_start_evidence = {"claude", "copilot"}
     old_painted = {"claude"}
     old_menu = {"claude"}
@@ -400,6 +401,8 @@ def test_every_moved_table_answers_what_the_old_one_did():
         "kimi": ["~/.kimi-code/bin", "~/.local/bin"],
         "copilot": ["~/.local/bin"],
         "shell": ["/bin", "/usr/bin"],
+        # Nothing adopted: those directories hold 1.x's `opencode` (#1986).
+        "opencode2": [],
     }
     for e in seven:
         k = f"{e}:x"
