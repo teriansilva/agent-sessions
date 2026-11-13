@@ -62,6 +62,7 @@ import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
 import { RenameProjectModal } from "./RenameProjectModal";
+import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import type {
   AnalyticsState,
   ProjectEntity,
@@ -443,11 +444,13 @@ function AnalyticsCard() {
  *  apply returns 503 (surfaced). On the default `stable` channel with no release tags
  *  yet, the check reports "up to date" (no `latest`).
  *
- *  #538: the card also owns the persisted update settings — the daily automatic-update
- *  toggle and the release channel. Both load from the cheap `/api/update/settings` (no
- *  remote hit on mount) and save optimistically; the server applies them live. The
- *  last-automatic-check line is recent runtime status only (in-memory server-side —
- *  it resets when the service restarts). */
+ *  #538: the card also owns the persisted update settings — automatic updates and the release
+ *  channel. Both load from the cheap `/api/update/settings` (no remote hit on mount) and save
+ *  optimistically; the server applies them live. The last-automatic-check line is recent
+ *  runtime status only (in-memory server-side — it resets when the service restarts).
+ *
+ *  #1994: automatic updates are ON by default and cover BattleLab AND its installed agents.
+ *  There is no opt-in toggle: one status line, Pause behind a confirmation, Resume. */
 function UpdatesCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   // Bumped when this card starts an update, so the progress panel polls at once (#1085).
@@ -461,6 +464,9 @@ function UpdatesCard() {
   const [msg, setMsg] = useState<string | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // The Pause button that opened the confirmation: focus returns there on Cancel, or to Resume
+  // (which replaces it) once paused.
+  const [pauseOpener, setPauseOpener] = useState<HTMLElement | null>(null);
   // Bumped on every channel switch: an in-flight check that started under the previous
   // channel must not repopulate `info` under the new one (Hermes #539 race).
   const checkGen = useRef(0);
@@ -556,27 +562,68 @@ function UpdatesCard() {
           <dd>{info?.current ?? current ?? "—"}</dd>
         </div>
       </dl>
-      <label className={styles.aiToggle}>
-        <input
-          type="checkbox"
-          checked={settings?.auto_update ?? false}
-          disabled={!settings}
-          onChange={(e) => void save({ auto_update: e.currentTarget.checked })}
-        />
-        <span>Automatic updates</span>
-      </label>
-      <p className={styles.hint}>
-        Checks daily and installs new releases with the same rollback-guarded
-        installer as the button below (“Update now”, or “Reinstall latest” when
-        you’re already current). No reinstall or terminal needed — the setting
-        applies immediately.
-      </p>
-      {settings?.auto_update && (
-        <p className={styles.hint}>
-          {settings.last_auto
-            ? `Last automatic check: ${new Date(settings.last_auto.ts * 1000).toLocaleString()} — ${settings.last_auto.result}`
-            : "No automatic check yet since the last restart."}
-        </p>
+      {settings && (
+        <>
+          {/* #1994: a status line, not a switch. An LED and a word, never colour alone. */}
+          <p className={styles.updateStatus} data-testid="auto-update-status" role="status">
+            <span
+              className={`hud-led ${settings.auto_update ? "up" : "idle"}`}
+              aria-hidden="true"
+            />
+            Automatic updates: {settings.auto_update ? "on" : "paused"}
+          </p>
+          <p className={styles.hint}>
+            {settings.auto_update
+              ? `BattleLab and your installed agents update themselves daily. ${
+                  settings.last_auto
+                    ? `Last check: ${new Date(settings.last_auto.ts * 1000).toLocaleString()} — ${settings.last_auto.result}.`
+                    : "No automatic check yet since the last restart."
+                }`
+              : "Nothing installs until you resume; the catalog is still checked."}
+          </p>
+          <div className={styles.updateActions}>
+            {settings.auto_update ? (
+              <button
+                type="button"
+                className={styles.updateBtn}
+                onClick={(e) => setPauseOpener(e.currentTarget)}
+                disabled={saving}
+                data-testid="auto-update-pause"
+              >
+                Pause
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`${styles.updateApply} shine`}
+                onClick={() => void save({ auto_update: true })}
+                disabled={saving}
+                data-testid="auto-update-resume"
+              >
+                Resume
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {pauseOpener && (
+        <ConfirmDialog
+          tag="AUTOMATIC UPDATES"
+          title="Pause automatic updates?"
+          confirmLabel="Pause updates"
+          busy={saving}
+          returnFocusTo={pauseOpener}
+          fallbackFocusSelector='[data-testid="auto-update-resume"]'
+          markers={{ dialog: { "data-testid": "auto-update-pause-dialog" } }}
+          onCancel={() => setPauseOpener(null)}
+          onConfirm={() =>
+            void save({ auto_update: false }).finally(() => setPauseOpener(null))
+          }
+        >
+          BattleLab and your agents stay on their current versions until you
+          resume. The catalog is still checked, so you’ll still hear if it
+          expires.
+        </ConfirmDialog>
       )}
       <div
         className={styles.themes}

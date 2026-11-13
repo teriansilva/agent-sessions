@@ -1221,7 +1221,8 @@ def test_update_settings_get_cheap_and_authed(auth_cfg, fake_jsonl, monkeypatch,
     assert c.get("/api/update/settings", follow_redirects=False).status_code in (401, 403)
     _login(c, auth_cfg)
     d = c.get("/api/update/settings").json()
-    assert d == {"auto_update": False, "channel": "stable", "last_auto": None}
+    # #1994: an install that never chose is ON; only an explicit `0` pauses.
+    assert d == {"auto_update": True, "channel": "stable", "last_auto": None}
 
 
 def test_update_settings_post_validation_and_roundtrip(auth_cfg, fake_jsonl, monkeypatch, tmp_path):

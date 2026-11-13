@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import (
+    agent_autoupdate,
     agent_catalog_refresh,
     ai_review_loop,
     artifact_broker,
@@ -388,12 +389,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # The follow-through sweep (#885). Registered beside the orchestrator because it acts
         # THROUGH it — same master switch, same verb path — rather than as a second autonomy.
         supervisor_task = asyncio.create_task(mission_supervisor_loop.run(registry))
-        # Daily in-app auto-update (#538): replaces the installer's systemd timer. Gated
-        # per pass on the env-file AGENT_SESSIONS_AUTOUPDATE key, so the Settings → System
-        # toggle governs it live without a restart.
+        # #1994: the retired switches move to their replacements once (the publisher pref → host
+        # config, a catalog opt-out → Paused), before any loop reads them. Never fatal.
+        await asyncio.to_thread(agent_autoupdate.migrate)
+        # Daily in-app auto-update (#538): on unless paused (#1994). Gated per pass on the
+        # env-file AGENT_SESSIONS_AUTOUPDATE key, so Pause/Resume apply without a restart.
         update_task = asyncio.create_task(update_loop.run())
+        # The catalog check, and the unattended agent updates it hands over to (#1994).
         catalog_task = asyncio.create_task(agent_catalog_refresh.run())
-        # Publisher alerts (#1730): opt-in warnings before a feed this operator publishes lapses.
+        # Feed alerts (#1730, #1994): the publisher's warnings where host config says this install
+        # publishes; everyone else hears only that agent updates are paused by a lapsed catalog.
         feed_alerts_task = asyncio.create_task(feed_alerts.run())
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.

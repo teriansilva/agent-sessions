@@ -111,11 +111,46 @@ def _channel() -> str:
     return ch if ch in CHANNELS else "stable"
 
 
-def auto_update_enabled() -> bool:
-    v = _env_get(AUTOUPDATE_KEY)
+_ON = ("1", "true", "yes", "on")
+_OFF = ("0", "false", "no", "off")
+
+
+def _env_flag(key: str) -> bool | None:
+    """An explicit on/off for ``key`` (the install env file first, then the process environment),
+    or None when neither says anything. Unrecognised text is an explicit value too: it reads as
+    off, because it is the operator's own words and they are not "on"."""
+    v = _env_get(key)
     if v is None:
-        v = os.environ.get(AUTOUPDATE_KEY) or ""
-    return v.strip().lower() in ("1", "true", "yes")
+        v = os.environ.get(key)
+    if v is None or not v.strip():
+        return None
+    return v.strip().lower() in _ON
+
+
+def auto_update_enabled() -> bool:
+    """Automatic updates are ON unless the operator explicitly paused them (#1994): an absent
+    key is on, an explicit ``0`` is respected. The same switch gates the app's own daily update
+    and the unattended agent updates (`agent_autoupdate`)."""
+    flag = _env_flag(AUTOUPDATE_KEY)
+    return True if flag is None else flag
+
+
+FEED_PUBLISHER_KEY = "AGENT_SESSIONS_FEED_PUBLISHER"
+
+
+def feed_publisher() -> bool | None:
+    """This install publishes the public feeds (#1994): host config the publisher's deploy writes,
+    never a UI switch. None when the host says nothing (the legacy pref then still answers)."""
+    return _env_flag(FEED_PUBLISHER_KEY)
+
+
+def set_feed_publisher(value: bool) -> bool | None:
+    """Write the publisher key to the install env file and read it back. Raises OSError when the
+    env file can't be written (read-only), so a caller keeps whatever it relied on before."""
+    path = _env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    envfile.update(path, {FEED_PUBLISHER_KEY: "1" if value else "0"})
+    return feed_publisher()
 
 
 def settings() -> dict[str, object]:

@@ -8,7 +8,11 @@ cut it holds (the agent catalog or the gallery) is close to unusable:
 * a long cut's current freshness statement expires in under 48 h (renewal has stalled for
   about 5 days), or no current statement makes it usable at all.
 
-Off by default (`prefs.get_feed_alerts`): only the operator who publishes can act on these. Each
+Publisher mode (#1994) is host config, never a UI switch: `update.feed_publisher()`
+(``AGENT_SESSIONS_FEED_PUBLISHER`` in the install env file), with the legacy pref honoured only
+until `agent_autoupdate.migrate` has replaced it. Every OTHER install gets one plain notice, and
+only when it actually happens: the agent catalog it holds is no longer usable, so agent updates
+are paused until it is renewed. Each
 condition is announced once per cut (and per statement), keyed on server facts, never on text,
 and the announced keys are recorded durably (`prefs`), so a dismissed or evicted bell row is not
 re-pushed while its condition lasts. Once a condition clears its key is forgotten, so the next
@@ -83,8 +87,52 @@ def _read(read, now):
     return None
 
 
+PAUSED_TITLE = "Agent updates are paused: the catalog's signature has expired."
+PAUSED_REASON = "They resume on their own once it's renewed."
+
+
+def publisher() -> bool:
+    """This install publishes the feeds (#1994): host config first, the legacy pref until it
+    is migrated. Never a UI switch."""
+    from . import update
+
+    flag = update.feed_publisher()
+    if flag is not None:
+        return flag
+    try:
+        return prefs.get_feed_alerts()
+    except Exception:  # noqa: BLE001 — an unreadable pref is not a publisher
+        return False
+
+
+def evaluate_paused(*, now: int | None = None) -> list[dict]:
+    """What EVERY install hears (#1994): the agent catalog it holds can no longer be used (its
+    cut ended, or a long cut has no current freshness statement), so agent updates are paused.
+    Keyed like the publisher's own alerts, so the same once-per-condition records apply."""
+    from .plugins import freshness
+    from .plugins.provenance import ProvenanceError
+
+    now = int(time.time()) if now is None else now
+    try:
+        held = _read(_agents, now)
+    except (ValueError, OSError, ProvenanceError):
+        return []  # unreadable trust records are an install problem, not a lapse
+    if held is None:
+        return []
+    cut, expires = held
+    long = freshness.is_long(cut.issued_at, cut.expires_at)
+    if cut.expires_at - now <= 0:
+        key = f"feed-alert:agents:{cut.sequence}:expired"
+    elif long and (expires is None or expires <= now):
+        key = f"feed-alert:agents:{cut.sequence}:no-statement"
+    else:
+        return []
+    return [{"key": key, "title": PAUSED_TITLE, "reason": PAUSED_REASON}]
+
+
 def evaluate(*, now: int | None = None) -> list[dict]:
-    """The alerts due now: `{key, title, reason}` each. Reads only local, verified evidence."""
+    """The publisher's alerts due now: `{key, title, reason}` each. Reads only local, verified
+    evidence."""
     from .plugins import freshness
     from .plugins.provenance import ProvenanceError
 
@@ -336,15 +384,17 @@ _SWEEPING = threading.Lock()
 
 
 def sweep(*, now: int | None = None) -> list[dict]:
-    """One pass, blocking: refresh both feeds, then announce what is due. Returns the alerts.
-    Never two at once (the loop and a just-enabled check): a second caller skips."""
-    if not prefs.get_feed_alerts():
-        return []
+    """One pass, blocking. The publisher (#1994: host config) refreshes both feeds first, then
+    hears everything due; every other install reads its local evidence and hears only that agent
+    updates are paused. Returns the alerts. Never two at once: a second caller skips."""
     if not _SWEEPING.acquire(blocking=False):
         return []
     try:
-        _refresh_feeds()
-        due = evaluate(now=now)
+        if publisher():
+            _refresh_feeds()
+            due = evaluate(now=now)
+        else:
+            due = evaluate_paused(now=now)
         for alert in due:
             try:
                 announce(alert)

@@ -35,7 +35,7 @@ async function catalogFixture(page: Page, state: "bundled" | "expired" | "corrup
   await page.route("**/api/agents/usage", route => route.fulfill({ json: { budgets: { threshold_pct: 90, notify: true, engines: {} }, agents: [] } }));
   await page.route("**/api/plugins", route => route.fulfill({ json: data }));
   await page.route("**/api/agents/catalog/preferences", route => {
-    writes.push("preferences"); data.feed.refresh!.automatic = route.request().postDataJSON().automatic;
+    writes.push("preferences");
     return route.fulfill({ json: data });
   });
   await page.route("**/api/plugins/feed/refresh", route => {
@@ -48,7 +48,7 @@ async function catalogFixture(page: Page, state: "bundled" | "expired" | "corrup
 }
 
 for (const theme of ["dark", "light"] as const) {
-  test(`bundled catalog, public provenance and persistent opt-out · ${theme}`, async ({ page }, info) => {
+  test(`bundled catalog, public provenance and no switches (#1994) · ${theme}`, async ({ page }, info) => {
     const { writes } = await catalogFixture(page);
     await page.goto("/settings/agents");
     await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
@@ -60,13 +60,9 @@ for (const theme of ["dark", "light"] as const) {
     await expect(panel).toContainText("Bundled with this release");
     await expect(panel.getByText("Not checked yet", { exact: true })).toHaveCount(2);
     await expect(panel.getByRole("link", { name: "View definitions" })).toHaveAttribute("href", /github.com/);
-    const toggle = panel.getByRole("checkbox", { name: "Automatically check daily" });
-    await toggle.click();
-    await expect(toggle).not.toBeChecked();
-    await page.reload();
-    await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
-    await page.getByTestId("catalog-line").getByText("Catalog details").click();
-    await expect(toggle).not.toBeChecked();
+    // #1994: no opt-out and no publisher switch; installed agents update themselves.
+    await expect(panel.getByRole("checkbox")).toHaveCount(0);
+    await expect(panel).toContainText("installed agents update themselves when a newer signed version arrives");
     await panel.getByRole("button", { name: "Refresh catalog" }).click();
     await expect(panel).toContainText("Previous catalog retained");
     await expect(page.getByText("GitHub unavailable", { exact: false })).toBeVisible();
@@ -77,7 +73,7 @@ for (const theme of ["dark", "light"] as const) {
     // is configured through its source agent, so it is not offered there at all.
     await expect(page.locator('[data-plugin-id="sample-agent"]').getByRole("link", { name: "Set up Sample agent" })).toBeVisible();
     await expect(page.locator('[data-plugin-id="sample-api"]')).toHaveCount(0);
-    expect(writes).toEqual(["preferences", "refresh"]);
+    expect(writes).toEqual(["refresh"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     for (const control of await panel.locator("button, a, label").all()) {
       expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);

@@ -8,13 +8,24 @@ import threading
 from agent_sessions import update, update_loop
 
 
-def test_sweep_disabled_never_touches_network(monkeypatch, tmp_path):
-    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(tmp_path / "env"))
+def test_sweep_paused_never_touches_network(monkeypatch, tmp_path):
+    envf = tmp_path / "env"
+    envf.write_text("AGENT_SESSIONS_AUTOUPDATE=0\n")  # the operator's explicit Pause (#1994)
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(envf))
     monkeypatch.delenv("AGENT_SESSIONS_AUTOUPDATE", raising=False)
     monkeypatch.setattr(
         update, "autoupdate", lambda: (_ for _ in ()).throw(AssertionError("network hit"))
     )
     assert asyncio.run(update_loop.sweep()) is None
+
+
+def test_an_install_that_never_chose_updates_itself(monkeypatch, tmp_path):
+    """#1994: no key at all is ON — nobody goes into Settings to opt in."""
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.delenv("AGENT_SESSIONS_AUTOUPDATE", raising=False)
+    monkeypatch.setattr(update, "_LAST_AUTO", None)
+    monkeypatch.setattr(update, "autoupdate", lambda: "up-to-date")
+    assert asyncio.run(update_loop.sweep()) == "up-to-date"
 
 
 def test_sweep_enabled_runs_off_the_event_loop_and_records(monkeypatch, tmp_path):

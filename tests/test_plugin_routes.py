@@ -840,57 +840,34 @@ def test_public_agent_catalog_api_names_and_preferences(api):
     )
 
 
-def test_publisher_alerts_preference_is_opt_in_and_validated(api):
-    """#1730: the alerts toggle is off by default, stored on its own, and only takes a bool."""
+def test_catalog_preference_is_the_one_pause_switch(api):
+    """#1994: `automatic` is the shared pause switch (app + agent updates), on by default; the
+    catalog itself stays checked; the publisher's alerts are host config, never a request field."""
+    from agent_sessions import agent_catalog_refresh, update
+
     client, headers, _ = api
-    assert (
-        client.get("/api/plugins", headers=headers).json()["feed"]["refresh"]["publisher_alerts"]
-        is False
-    )
-    for bad in ({}, {"publisher_alerts": "yes"}, {"publisher_alerts": 1}, {"other": True}):
+    refresh = client.get("/api/plugins", headers=headers).json()["feed"]["refresh"]
+    assert refresh["automatic"] is True and "publisher_alerts" not in refresh
+    for bad in (
+        {},
+        {"automatic": "no"},
+        {"automatic": 0},
+        {"publisher_alerts": True},
+        {"automatic": False, "publisher_alerts": True},
+    ):
         assert (
             client.patch("/api/agents/catalog/preferences", json=bad, headers=headers).status_code
             == 422
         )
-    on = client.patch(
-        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
+    assert update.auto_update_enabled() is True  # nothing above changed anything
+    off = client.patch(
+        "/api/agents/catalog/preferences", json={"automatic": False}, headers=headers
     )
-    assert on.status_code == 200
-    refresh = on.json()["feed"]["refresh"]
-    assert refresh["publisher_alerts"] is True and refresh["automatic"] is True  # untouched
-
-
-def test_turning_publisher_alerts_on_checks_at_once(api, monkeypatch):
-    from agent_sessions import feed_alerts
-
-    client, headers, _ = api
-    swept = []
-    monkeypatch.setenv("AGENT_SESSIONS_FEED_ALERTS_LOOP", "1")  # conftest switches the loop off
-    monkeypatch.setattr(feed_alerts, "sweep", lambda: swept.append("now") or [])
-    client.patch(
-        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
-    )
-    client.patch(
-        "/api/agents/catalog/preferences", json={"publisher_alerts": False}, headers=headers
-    )
-    deadline = __import__("time").time() + 5
-    while not swept and __import__("time").time() < deadline:
-        __import__("time").sleep(0.05)
-    assert swept == ["now"]
-
-
-def test_the_alerts_check_on_enable_honours_the_loop_switch(api, monkeypatch):
-    """With the loop switched off (as in the whole test suite), enabling never reaches out."""
-    from agent_sessions import feed_alerts
-
-    client, headers, _ = api
-    swept = []
-    monkeypatch.setattr(feed_alerts, "sweep", lambda: swept.append("now") or [])
-    client.patch(
-        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
-    )
-    __import__("time").sleep(0.3)
-    assert swept == []
+    assert off.status_code == 200 and off.json()["feed"]["refresh"]["automatic"] is False
+    assert update.auto_update_enabled() is False  # the SAME key Settings → Updates writes
+    assert agent_catalog_refresh.status()["automatic"] is True  # still checked while paused
+    on = client.patch("/api/agents/catalog/preferences", json={"automatic": True}, headers=headers)
+    assert on.json()["feed"]["refresh"]["automatic"] is True and update.auto_update_enabled()
 
 
 def test_activation_preview_is_read_only_behind_login_and_activate_refuses_below_floor(

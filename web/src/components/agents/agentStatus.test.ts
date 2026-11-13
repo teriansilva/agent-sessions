@@ -150,7 +150,7 @@ describe("versionsOf — installed → available, and the rollback target (#1741
       catalog: [entry("2.1.311", "r-new")],
       operations: [activated("a1", "g1", 1)],
     });
-    expect(versionsOf("x", data)).toEqual({ installed: "2.1.286", available: "2.1.311", previous: null, undetermined: [] });
+    expect(versionsOf("x", data)).toEqual({ installed: "2.1.286", available: "2.1.311", previous: null, undetermined: [], automatic: null });
   });
 
   it("offers no update toward a lower version, whatever the digest (#1861)", () => {
@@ -169,6 +169,20 @@ describe("versionsOf — installed → available, and the rollback target (#1741
     expect(versionsOf("x", data)).toMatchObject({ installed: "1.19.4", available: null });
   });
 
+  it("marks an active generation an unattended update installed on its offline checks (#1994)", () => {
+    const auto = verified("g2", "2.1.311", "r-new");
+    auto.verification = { ...auto.verification!, checked_at: 1_800_000_000, scope: "offline" };
+    const data = catalog({
+      plugins: [{ id: "x", active: "g2", candidate: "g2", enabled: true, generations: [verified("g1", "2.1.286", "r-old"), auto] }],
+      catalog: [entry("2.1.311", "r-new")],
+      operations: [activated("a1", "g1", 1), activated("a2", "g2", 2)],
+    });
+    expect(versionsOf("x", data).automatic).toEqual({ checkedAt: 1_800_000_000 });
+    // The operator's own full verification is not "automatic".
+    auto.verification = { ...auto.verification!, scope: "full" };
+    expect(versionsOf("x", data).automatic).toBeNull();
+  });
+
   it("offers the generation active before this one, if it still verifies", () => {
     const old = verified("g1", "2.1.286", "r-old");
     const data = catalog({
@@ -176,7 +190,7 @@ describe("versionsOf — installed → available, and the rollback target (#1741
       catalog: [entry("2.1.311", "r-new")],
       operations: [activated("a1", "g1", 1), activated("a2", "g2", 2)],
     });
-    expect(versionsOf("x", data)).toEqual({ installed: "2.1.311", available: null, previous: { id: "g1", version: "2.1.286" }, undetermined: [] });
+    expect(versionsOf("x", data)).toEqual({ installed: "2.1.311", available: null, previous: { id: "g1", version: "2.1.286" }, undetermined: [], automatic: null });
     // An unverified old generation is not a rollback target (activate would refuse it).
     old.verification = null;
     expect(versionsOf("x", data).previous).toBeNull();

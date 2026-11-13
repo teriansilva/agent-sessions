@@ -1,7 +1,12 @@
-"""Daily, optional agent metadata checks, shared by manual and background refreshes.
+"""Daily agent catalog checks, shared by manual and background refreshes.
 
 One cross-process fence owns each attempt through verified acceptance. Persisting the attempt
-before networking rate-limits failures and restarts too. This module never installs agents.
+before networking rate-limits failures and restarts too. A refresh itself only fetches and
+verifies the catalog. After the background loop starts, and after every successful check, it hands
+over to `agent_autoupdate`, which may install, offline-check and activate a newer recipe for an
+installed catalog-managed agent (#1994). Nothing else is ever installed or activated from here.
+The catalog's own `automatic` flag survives only as a migration input: #1994 moved it to the one
+pause switch (`update.auto_update_enabled`).
 """
 
 from __future__ import annotations
@@ -106,13 +111,24 @@ async def refresh(*, automatic: bool = False) -> feed.Feed | None:
         raise
 
 
+BUSY_RETRY = 600  # an unattended update that found another operation running tries again
+
+
 async def run() -> None:
     # Same operational/test kill switch as the application's other background workers.
     if os.environ.get("AGENT_SESSIONS_CATALOG_LOOP") == "0":
         return
+    from . import agent_autoupdate
+
+    # A restart resumes any interrupted unattended update before the first check is due.
+    retry_at = 0.0 if await agent_autoupdate.run_once() == "busy" else None
     while True:
+        accepted = None
         try:
-            await refresh(automatic=True)
+            accepted = await refresh(automatic=True)
         except (ValueError, OSError):
             log.info("Agent catalog check unavailable; retained previous catalog")
+        if accepted is not None or (retry_at is not None and time.monotonic() >= retry_at):
+            result = await agent_autoupdate.run_once()
+            retry_at = time.monotonic() + BUSY_RETRY if result == "busy" else None
         await asyncio.sleep(60)

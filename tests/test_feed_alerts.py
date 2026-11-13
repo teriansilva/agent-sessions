@@ -105,7 +105,7 @@ def test_the_gallery_is_watched_too(keys, gallery):
     assert alerts == [f"feed-alert:gallery:{doc['sequence']}:content"]
 
 
-def test_sweep_is_off_by_default_and_announces_each_condition_once(keys, monkeypatch):
+def test_only_the_publisher_hears_a_warning_and_each_condition_once(keys, monkeypatch):
     data, doc = cut(long=False)
     feed.accept(data, keys.content(data), now=NOW)
     bell = []
@@ -887,3 +887,84 @@ def test_a_bell_that_cant_take_the_row_still_lets_the_push_out(keys, bell, monke
     assert [r["action_id"] for r in rows] == [key]
     assert [p["action_id"] for p in pushed] == [key]  # no second push
     assert key in feed_alerts._announced()
+
+
+# --- #1994: publisher mode is host config; everyone else hears only that updates are paused ------
+
+
+def _host(monkeypatch, tmp_path, value):
+    envf = tmp_path / "env"
+    envf.write_text("" if value is None else f"AGENT_SESSIONS_FEED_PUBLISHER={value}\n")
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(envf))
+    monkeypatch.delenv("AGENT_SESSIONS_FEED_PUBLISHER", raising=False)
+
+
+@pytest.mark.parametrize(
+    ("host", "pref", "expected"),
+    [
+        ("1", False, True),  # the publisher's deploy wrote it: no UI switch involved
+        ("0", True, False),  # an explicit host `0` wins over a leftover pref
+        (None, True, True),  # not migrated yet: the legacy pref is still honoured
+        (None, False, False),  # every other install
+    ],
+)
+def test_publisher_mode_is_host_config_first(monkeypatch, tmp_path, host, pref, expected):
+    _host(monkeypatch, tmp_path, host)
+    monkeypatch.setattr(feed_alerts.prefs, "get_feed_alerts", lambda: pref)
+    assert feed_alerts.publisher() is expected
+
+
+def _bell(monkeypatch):
+    bell = []
+    monkeypatch.setattr(feed_alerts.notifications, "listing", lambda: {"notifications": bell})
+    monkeypatch.setattr(feed_alerts.notifications, "list_subscriptions", lambda: [])
+
+    def add(**fields):
+        bell.append(dict(fields))
+        return bell[-1]
+
+    monkeypatch.setattr(feed_alerts.notifications, "add", add)
+    return bell
+
+
+def test_everyone_hears_once_that_agent_updates_are_paused_when_the_catalog_lapses(
+    keys, monkeypatch, tmp_path
+):
+    _host(monkeypatch, tmp_path, None)
+    monkeypatch.setattr(feed_alerts.prefs, "get_feed_alerts", lambda: False)
+    monkeypatch.setattr(
+        feed_alerts, "_refresh_feeds", lambda: pytest.fail("only the publisher fetches")
+    )
+    bell = _bell(monkeypatch)
+    data, doc = cut(long=False)
+    feed.accept(data, keys.content(data), now=NOW)
+    # Close to its end is the publisher's business, not everyone's.
+    assert feed_alerts.sweep(now=doc["expires_at"] - DAY) == [] and bell == []
+    feed_alerts.sweep(now=doc["expires_at"] + 1)
+    feed_alerts.sweep(now=doc["expires_at"] + 60)  # the same lapse again: no second row
+    assert [r["title"] for r in bell] == [
+        "Agent updates are paused: the catalog's signature has expired."
+    ]
+    assert bell[0]["reason"] == "They resume on their own once it's renewed."
+    assert bell[0]["action_id"] == f"feed-alert:agents:{doc['sequence']}:expired"
+
+
+def test_a_long_cut_without_a_current_statement_pauses_updates_for_everyone(
+    keys, monkeypatch, tmp_path
+):
+    _host(monkeypatch, tmp_path, "0")
+    data, doc = cut()  # 60-day window
+    statement = stmt(data, doc, expires=NOW + 4 * DAY)
+    feed.accept(data, keys.content(data), statement=bundle(keys, statement), now=NOW)
+    assert feed_alerts.evaluate_paused(now=NOW + 3 * DAY) == []  # still usable
+    paused = feed_alerts.evaluate_paused(now=NOW + 5 * DAY)
+    assert [a["key"] for a in paused] == [f"feed-alert:agents:{doc['sequence']}:no-statement"]
+    assert paused[0]["title"].startswith("Agent updates are paused")
+
+
+def test_damaged_records_are_not_a_lapse_for_everyone(keys, monkeypatch, tmp_path):
+    _host(monkeypatch, tmp_path, None)
+    data, _ = cut(long=False)
+    feed.accept(data, keys.content(data), now=NOW)
+    storage.write(storage.root() / "feed-floor.json", {"damaged": True})
+    assert feed_alerts.evaluate_paused(now=NOW) == []

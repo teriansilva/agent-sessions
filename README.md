@@ -125,8 +125,10 @@ resume command** under the app's `dtach` PTY. What differs per engine:
 <!-- END generated:engine-table -->
 
 The [public agent catalog](docs/site/guide/agent-catalog.md) ships with BattleLab and checks
-GitHub for signed metadata updates daily, with an opt-out. Definitions and contribution history
-are public; installing an agent update remains a separate action.
+GitHub for signed metadata updates daily. Definitions and contribution history are public.
+Agents you installed from the catalog update themselves to a newer signed version after offline
+checks (never a vendor conversation), keep the previous version for Roll back, and stop while
+automatic updates are paused.
 
 The table is generated from the engines' manifests (`src/agent_sessions/plugins/first_party/`) by
 `scripts/gen-engine-docs`. Archive is a flag in BattleLab's own sidecar for every engine except
@@ -204,7 +206,7 @@ Self-update never runs arbitrary input — it only moves to the **channel's late
 
 - **In-app:** the dashboard shows the version + a check/apply control (`/api/version`, `/api/update/check`, `/api/update/apply` — authed + CSRF + origin-gated).
 - **CLI:** `agent-sessions autoupdate` (check the channel, apply only if newer).
-- **Automatic updates (Settings → System → Updates):** an in-app toggle runs the same guarded check/apply daily, and a channel selector switches between `stable` and `main` — both persist server-side and apply live, no reinstall or env var needed. Default **off**. Installs that had the old `AGENT_SESSIONS_AUTOUPDATE=1` systemd timer migrate automatically on upgrade: the opt-in is preserved as the in-app setting and the legacy timer units are removed.
+- **Automatic updates (Settings → System → Updates):** **on by default** — the same guarded check/apply runs daily, for BattleLab and for the agents installed from the catalog. **Pause** (it asks first) stops both until **Resume**; a channel selector switches between `stable` and `main`. Both persist server-side and apply live, no reinstall or env var needed. Installs that had the old `AGENT_SESSIONS_AUTOUPDATE=1` systemd timer migrate automatically on upgrade and the legacy timer units are removed.
 
 ### Rollback & emergency-disable
 
@@ -229,7 +231,7 @@ systemctl --user disable agent-sessions.service          # …and keep it down a
 journalctl --user -u agent-sessions.service -f           # logs
 ```
 
-To stop **automatic updates only**, turn the toggle off under Settings → System → Updates,
+To stop **automatic updates only**, press **Pause** under Settings → Updates,
 or set `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
 
 ## Security / trust model

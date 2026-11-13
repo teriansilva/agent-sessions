@@ -465,6 +465,16 @@
   gap: 10px;
   margin-top: 12px;
 }
+/* #1994: "Automatic updates: on / paused", an LED and a word, never colour alone. */
+.updateStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 6px;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+}
 .updateBtn {
   composes: ghost from "../components/ui/actionButton.module.css";
 }

@@ -565,13 +565,25 @@ def set_onboarded(value: bool, path: Path | None = None) -> bool:
 
 
 def get_feed_alerts(path: Path | None = None) -> bool:
-    """Publisher alerts (#1730): warn the operator before a feed they publish lapses. Off by
-    default: on another install the alert would be noise nobody there can act on."""
+    """LEGACY publisher alerts switch (#1730). #1994 moved publisher mode to host config
+    (`update.feed_publisher`, ``AGENT_SESSIONS_FEED_PUBLISHER``); this pref is only honoured until
+    `agent_autoupdate.migrate` has persisted that key, and then it is cleared."""
     return _load(path or _default_path()).get("feed_publisher_alerts") is True
 
 
 def set_feed_alerts(value: bool, path: Path | None = None) -> bool:
     return _set("feed_publisher_alerts", bool(value), path)
+
+
+def clear_feed_alerts(path: Path | None = None) -> None:
+    """Drop the legacy publisher pref (#1994), only after its host-config replacement was
+    written and read back. Read-modify-write under the same lock as every other pref."""
+    path = path or _default_path()
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        if "feed_publisher_alerts" in data:
+            del data["feed_publisher_alerts"]
+            atomic_write_json(path, data)
 
 
 def get_feed_alerts_announced(path: Path | None = None) -> list[str]:

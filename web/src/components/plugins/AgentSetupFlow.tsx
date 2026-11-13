@@ -485,8 +485,7 @@ export function AgentSetupFlow({
             refresh={() => void run(async current => {
               try { setCatalog(await current(api.pluginRefresh())); }
               catch (error) { setCatalog(await current(api.plugins())); throw error; }
-            })}
-            configure={value => void run(async current => setCatalog(await current(api.agentCatalogPreferences(value))))} />
+            })} />
           {!!catalog?.catalog.some(c => c.included) && <p>API agents are included with BattleLab and use their source agent’s installation. Configure them in <Link to={AGENTS_PATH}>Agents</Link>.</p>}
         </> : <>
           <p className={s.note}>Local manifests are untrusted. Verification does not make their publisher trusted.</p>

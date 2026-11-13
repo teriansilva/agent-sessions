@@ -31,6 +31,9 @@ export interface PluginGeneration {
     digest: string;
     checked_at: number;
     results: { check: string; passed: boolean; detail: string; version?: string }[];
+    /** `offline`: an unattended update's effect-free checks (#1994); `full` (or absent, before
+     *  #1994): the human Verify with its confirmed vendor effects. */
+    scope?: "full" | "offline";
   };
 }
 export interface PluginInstallation {
@@ -54,12 +57,16 @@ export interface PluginOperation {
   error: string | null;
   /** Commit order of roster decisions (activate / disable / remove), when recorded (#1741). */
   sequence?: number | null;
+  /** `auto-update` for an unattended update's install / check / activation (#1994). */
+  actor?: "auto-update" | null;
 }
 export interface PluginCatalog {
   feed: { state: "ready" | "missing" | "unavailable"; sequence?: number | null; expires_at?: number | null; digest?: string | null; error: string | null;
     source?: "bundled" | "remote" | "unavailable"; stale?: boolean; bundled_digest?: string; release_version?: string;
     definitions_url?: string; history_url?: string; updates_url?: string;
-    refresh?: { automatic: boolean; last_attempt: number | null; last_success: number | null; error: string | null; publisher_alerts?: boolean } | null;
+    /** `automatic`: whether automatic updates (the app and installed agents) are on, the one
+     *  pause switch (#1994). The catalog itself is always checked. */
+    refresh?: { automatic: boolean; last_attempt: number | null; last_success: number | null; error: string | null } | null;
   };
   catalog: { manifest: PluginManifest; digest: string; source?: string | null; installable?: boolean; included?: boolean; reason?: string | null }[];
   plugins: PluginInstallation[];

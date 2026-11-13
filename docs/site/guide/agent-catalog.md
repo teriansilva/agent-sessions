@@ -13,10 +13,27 @@ catalog account or private admin service.
 
 ## What updates automatically
 
-BattleLab checks public GitHub for signed catalog metadata once a day. You can turn this off
-with **Automatically check daily**, or use **Refresh catalog** yourself. The last attempt and
-last successful check are shown separately. Refreshing the catalog does not install software,
-change an enabled agent, or interrupt sessions.
+BattleLab checks public GitHub for signed catalog metadata once a day, and **Refresh catalog**
+checks now. The last attempt and last successful check are shown separately. There is no switch
+to turn the check off: it only downloads and verifies the catalog.
+
+**Installed agents update themselves.** When the catalog (signed, and current) offers a newer
+version of an agent you installed from it, BattleLab installs that version beside the current
+one, runs its offline checks, and switches to it:
+- **Offline checks only.** It checks that the program is the exact one the catalog pinned, that it
+  reports its version, and that its store is there. It never starts a conversation with the
+  vendor, so it never spends your quota or leaves history on your account. The agent row says
+  *Updated automatically to X · offline checks*.
+- **Running sessions keep their version.** Only new sessions use the new one, and the previous
+  version stays installed: **Roll back** returns to it, and BattleLab never installs that rolled
+  back version on its own again. A newer one still updates.
+- **A version that fails its checks** is never retried. You stay on your version, the bell tells
+  you once, and a newer version is tried when the catalog has one.
+- **What never updates on its own:** an agent you set up from a local manifest or your own program
+  file, an API agent, a disabled agent, and anything while the catalog has expired. A first install
+  always asks you.
+- **Pause** in Settings → Updates stops it (together with BattleLab's own updates). To give an
+  automatically updated version the full check, disable it, choose **Verify**, then enable it.
 
 ## Updating an agent
 
@@ -83,14 +100,14 @@ says it is still current. That statement comes from a separate, low-authority ke
 approve or change anything, so the release key is needed only when the catalog changes, or at
 the latest once per approval window.
 
-**Publisher alerts.** If you publish the agent catalog or the gallery, turn on *I publish these
-feeds: alert me before the agent catalog or the gallery lapses* under Agents → Catalog
-details. BattleLab then warns you, in the bell and by push, when:
+**Publisher alerts.** The install that publishes the agent catalog and the gallery has
+`AGENT_SESSIONS_FEED_PUBLISHER=1` in its env file (the publisher's deploy writes it; there is no
+switch in the app). BattleLab then warns that install, in the bell and by push, when:
 - a long-lived cut ends within 14 days, or a 7-day cut within 2 days;
 - a cut has ended;
 - a long-lived cut's freshness statement expires within 48 hours, or none is current.
 
-The setting is off by default, because only the publisher can act on these warnings. Turning it on means BattleLab checks both feeds every 6 hours, even with the catalog's daily check turned off, so a stale local copy is never reported as a stalled publisher. Each condition is announced once; once it clears, the next occurrence is announced again.
+The publisher's install checks both feeds every 6 hours, so a stale local copy is never reported as a stalled publisher. Each condition is announced once; once it clears, the next occurrence is announced again. Every other install hears only what matters to it, and only when it happens: *Agent updates are paused: the catalog's signature has expired. They resume on their own once it's renewed.* (An install that had the old in-app setting turned on keeps it until the env key is written, then the setting is removed.)
 
 Publish the signed pair on the current public BattleLab GitHub release. Keep a versioned copy
 of each pair (sequence and digest in the asset name), record its source commit, digest and expiry

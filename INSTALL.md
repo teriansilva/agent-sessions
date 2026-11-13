@@ -175,12 +175,12 @@ Self-update moves to the **channel's latest** release, flips `current`, restarts
 `/healthz`, and **rolls back** automatically if the new release fails.
 
 - **In-app:** version + check/apply control on the dashboard, plus **automatic updates**
-  (daily) and the release channel under Settings → System → Updates — both persist
-  server-side and apply live.
+  (daily, on by default, for BattleLab and its catalog-installed agents; **Pause**/**Resume**)
+  and the release channel under Settings → Updates — both persist server-side and apply live.
 - **CLI:** `agent-sessions autoupdate` (apply only if newer).
-- **Re-run the installer:** also upgrades; it keeps your persisted auto-update/channel
-  settings. An old `agent-sessions-update.timer` from a pre-Settings install is migrated
-  automatically (opt-in preserved, legacy units removed).
+- **Re-run the installer:** also upgrades; it keeps your persisted Pause/channel settings. An
+  old `agent-sessions-update.timer` from a pre-Settings install is migrated automatically
+  (legacy units removed).
 
 ### Channels — `stable` is the production one
 

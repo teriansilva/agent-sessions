@@ -14,7 +14,7 @@ import json
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
-from .. import __version__, agent_catalog, agent_catalog_refresh, chat_config, prefs
+from .. import __version__, agent_catalog, agent_catalog_refresh, chat_config, prefs, update
 from ..auth import origin_matches, session_uid
 from ..engines import registry
 from ..plugins import feed, jobs, manager, provenance, signin, storage
@@ -81,6 +81,8 @@ def _operation(item: dict) -> dict:
         "review_digest": item.get("review_digest") or (item.get("review") or {}).get("digest"),
         # Commit order of roster decisions (activate / disable / remove), when recorded (#1741).
         "sequence": item.get("sequence"),
+        # `auto-update` for an unattended update's install/check/activation (#1994), else None.
+        "actor": item.get("actor"),
     }
 
 
@@ -111,9 +113,11 @@ def _list() -> dict:
         "updates_url": "https://github.com/teriansilva/agent-sessions/releases",
     }
     try:
+        # `automatic` is the shared pause switch now (#1994): the catalog is always checked,
+        # and installed agents update themselves unless updates are paused.
         feed_view["refresh"] = {
             **agent_catalog_refresh.status(),
-            "publisher_alerts": prefs.get_feed_alerts(),
+            "automatic": update.auto_update_enabled(),
         }
     except (ValueError, OSError):
         feed_view["refresh"] = None
@@ -179,25 +183,27 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
     async def plugin_refresh(request: Request):
         await _body(request, required=set())
         await _job(agent_catalog_refresh.refresh)
+        # A newly accepted cut may carry updates for installed agents (#1994). Best effort, off
+        # the request; the pass is a no-op while paused and skips when anything else is busy.
+        from .. import agent_autoupdate
+
+        app.state.agent_autoupdate_kick = asyncio.create_task(agent_autoupdate.run_once())
         return await _call(_list)
 
     @app.patch("/api/agents/catalog/preferences", dependencies=write)
     async def catalog_preferences(request: Request):
-        body = await _body(request, required=set(), optional={"automatic", "publisher_alerts"})
-        if not body or any(type(v) is not bool for v in body.values()):
-            raise HTTPException(422, "automatic and publisher_alerts must be true or false")
-        if "automatic" in body:
-            await _call(agent_catalog_refresh.configure, body["automatic"])
-        if "publisher_alerts" in body:
-            await _call(prefs.set_feed_alerts, body["publisher_alerts"])
-            from .. import feed_alerts
+        # #1994: `automatic` is the ONE pause switch (the app's own updates and unattended agent
+        # updates), the same key Settings → Updates writes. The catalog itself is always checked.
+        # The publisher's alerts are host config now, never a request field.
+        body = await _body(request, required={"automatic"})
+        if type(body["automatic"]) is not bool:
+            raise HTTPException(422, "automatic must be true or false")
 
-            if body["publisher_alerts"] and feed_alerts.enabled_loop():
-                # Check now rather than up to 6 h later; best effort, off the request. Sweeps
-                # never overlap (feed_alerts._SWEEPING), so repeated toggles can't double-announce.
-                app.state.feed_alerts_kick = asyncio.create_task(
-                    asyncio.to_thread(feed_alerts.sweep)
-                )
+        def apply(automatic: bool) -> None:
+            update.set_settings(auto_update=automatic)
+            agent_catalog_refresh.configure(True)
+
+        await _call(apply, body["automatic"])
         return await _call(_list)
 
     @app.post("/api/plugins/review", dependencies=write)

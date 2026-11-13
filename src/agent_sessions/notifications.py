@@ -353,6 +353,7 @@ def add(
     action_id: str = "",
     escalation: bool = False,
     auto_direction: bool = False,
+    once: bool = False,
     activity_at: float | None = None,
     recorded: Callable[[], bool] | None = None,
     after: Callable[[], None] | None = None,
@@ -368,7 +369,13 @@ def add(
 
     ``dispatch_tag`` (#1837) is the producer's event tag for HQ's Dispatches, stored on the row as
     ``dispatch`` — a tag, never text. One that does not fully match :data:`DISPATCH_TAG_RES` is
-    dropped and logged: the row is written without it, exactly as if none was given."""
+    dropped and logged: the row is written without it, exactly as if none was given.
+
+    ``once`` (#1994) announces ``action_id`` at most once EVER, through the same tombstone the
+    autonomous-direction class uses: written in the same write as the row, outside the rows, so
+    neither `dismiss` nor `_evict` can remove the evidence, and checked under this lock, so two
+    overlapping announcers cannot both post. It adds no class semantics: the row is an ordinary
+    notice. A tombstone hit returns ``None`` (already announced)."""
     if dispatch_tag is not None and not valid_dispatch_tag(dispatch_tag):
         log.warning("notifications: dropped an invalid dispatch tag; the row is written without it")
         dispatch_tag = None
@@ -397,7 +404,7 @@ def add(
         #
         # A TOMBSTONE HIT CONVERGES, it does not merely suppress: a receipt whose first write
         # failed is repaired here, and the compaction pin then releases.
-        if auto_direction and action_id:
+        if (auto_direction or once) and action_id:
             if action_id in announced:
                 _converge(action_id, after)
                 return None
@@ -534,7 +541,7 @@ def add(
             rec["dispatch"] = dispatch_tag
         rows.append(rec)
         kept = _evict(rows)
-        if auto_direction and action_id:
+        if (auto_direction or once) and action_id:
             # ONE WRITE, carrying the row and its tombstone, so a failure or a crash can never
             # leave the row present and the identity absent. The tombstone is invisible to the
             # bell — it is not in `rows`, so neither `dismiss` nor `_evict` can reach it — and it

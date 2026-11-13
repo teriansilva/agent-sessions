@@ -67,13 +67,6 @@ async function expectBrandedAndCapped(
   expect(box!.height).toBeLessThanOrEqual(18);
 }
 
-test("Updates auto-update checkbox is brand-accented and size-capped (#683)", async ({
-  page,
-}) => {
-  await page.goto(settingsPath("updates"));
-  await expectBrandedAndCapped(page, "checkbox", /automatic updates/i);
-});
-
 test("Session-overview mode radios are brand-accented and size-capped (#683)", async ({
   page,
 }) => {

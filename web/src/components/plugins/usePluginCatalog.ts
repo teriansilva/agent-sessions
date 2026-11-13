@@ -21,17 +21,5 @@ export function usePluginCatalog() {
     try { setData(await api.pluginRefresh()); } catch (e) { await load(); setError(pluginError(e)); }
     finally { setBusy(false); }
   };
-  const configure = async (automatic: boolean) => {
-    setBusy(true); setError("");
-    try { setData(await api.agentCatalogPreferences(automatic)); }
-    catch (e) { setError(pluginError(e)); }
-    finally { setBusy(false); }
-  };
-  const configureAlerts = async (enabled: boolean) => {
-    setBusy(true); setError("");
-    try { setData(await api.agentCatalogAlerts(enabled)); }
-    catch (e) { setError(pluginError(e)); }
-    finally { setBusy(false); }
-  };
-  return { data, error, busy, load, refresh, configure, configureAlerts };
+  return { data, error, busy, load, refresh };
 }

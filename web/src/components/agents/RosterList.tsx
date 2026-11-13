@@ -46,10 +46,15 @@ function Usage({ row }: { row: AgentUsageRow | undefined }) {
   );
 }
 
-/** `installed → available`, or the current version and what Roll back would restore (#1741). */
+const updatedAt = (seconds: number) =>
+  new Date(seconds * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** `installed → available`, the current version and what Roll back would restore (#1741), or
+ *  that an unattended update installed it on its offline checks (#1994). */
 function versionLine(v: Versions): string | null {
   if (!v.installed) return null;
   if (v.available) return `${v.installed} → ${v.available}`;
+  if (v.automatic) return `Updated automatically to ${v.installed} · offline checks · ${updatedAt(v.automatic.checkedAt)}`;
   return v.previous ? `${v.installed} active · ${v.previous.version ?? "previous"} kept` : `${v.installed} · current`;
 }
 

@@ -4,18 +4,20 @@ import s from "../plugins/PluginSetup.module.css";
 
 const date = (value: number | null | undefined) => value ? new Date(value * 1000).toLocaleString() : "Not checked yet";
 
-export function AgentCatalogStatus({ feed, busy, refresh, configure, configureAlerts }: {
+/** The public agent catalog (#1994): always checked, and installed agents update themselves. No
+ *  switches here: pausing is Settings → Updates (one switch for BattleLab and its agents), and the
+ *  publisher's expiry warnings are the publisher host's own config. */
+export function AgentCatalogStatus({ feed, busy, refresh }: {
   feed: PluginCatalog["feed"] | undefined; busy: boolean;
-  refresh: () => void; configure: (automatic: boolean) => void;
-  /** Publisher alerts (#1730): only where the operator manages the catalog, not in setup. */
-  configureAlerts?: (enabled: boolean) => void;
+  refresh: () => void;
 }) {
   return <section className={`${s.panel} ${s.stack}`} aria-label="Public agent catalog">
     <div className={s.row}>
       <h2>Public agent catalog</h2>
       <span>{feed?.state === "unavailable" ? "Trust records unavailable" : feed?.source === "bundled" ? "Bundled with this release" : feed?.sequence ? `Signed catalog · sequence ${feed.sequence}` : "Loading catalog…"}</span>
     </div>
-    <p>Agent definitions ship with BattleLab. Signed updates are checked on public GitHub.</p>
+    <p>Agent definitions ship with BattleLab. Signed updates are checked daily on public GitHub, and installed agents update themselves when a newer signed version arrives.</p>
+    {feed?.refresh && !feed.refresh.automatic && <p className={s.note} role="status">Automatic updates are paused. Installed agents stay on their current versions until you resume them in Settings → Updates.</p>}
     {feed?.stale && <p className={s.note}>The accepted remote catalog has expired. An agent it lists stays installable from this release’s bundled definitions when the bundle carries the same recipe or a newer version.</p>}
     {feed?.refresh?.error && <p className={s.note} role="status">{feed.refresh.error}</p>}
     {feed?.refresh && <dl className={s.kv}>
@@ -28,14 +30,8 @@ export function AgentCatalogStatus({ feed, busy, refresh, configure, configureAl
       {feed?.updates_url && <a className={button.ghost} href={feed.updates_url} target="_blank" rel="noreferrer">GitHub releases</a>}
     </div>
     <div className={s.row}>
-      {feed?.refresh && <label className={s.check}><input type="checkbox" checked={feed.refresh.automatic} disabled={busy} onChange={event => configure(event.target.checked)} />Automatically check daily</label>}
       <button className={button.ghost} disabled={busy} onClick={refresh}>{busy ? "Refreshing…" : "Refresh catalog"}</button>
     </div>
-    {feed?.refresh && configureAlerts && <label className={s.check}>
-      <input type="checkbox" checked={feed.refresh.publisher_alerts === true} disabled={busy} onChange={event => configureAlerts(event.target.checked)} />
-      I publish these feeds: alert me before the agent catalog or the gallery lapses (checks both every 6 hours)
-    </label>}
-    <p>Installing an agent update is a separate action.</p>
     {feed?.digest && <details className={s.details}><summary>Catalog evidence</summary>
       <p>Installed BattleLab release: {feed.release_version ?? "Unknown"}</p>
       <p className={s.digest}>Catalog SHA-256: {feed.digest}</p>

@@ -286,14 +286,15 @@ beforeEach(() => {
     uptime_seconds: 90000,
   });
   // Updates card (#538): persisted settings load on mount (cheap GET, no remote hit).
+  // #1994: an install that never chose is ON.
   vi.mocked(api.updateSettings).mockResolvedValue({
-    auto_update: false,
+    auto_update: true,
     channel: "stable",
     last_auto: null,
   });
   vi.mocked(api.setUpdateSettings).mockImplementation((body) =>
     Promise.resolve({
-      auto_update: body.auto_update ?? false,
+      auto_update: body.auto_update ?? true,
       channel: body.channel ?? "stable",
       last_auto: null,
     }),
@@ -1527,20 +1528,38 @@ test("Updates: the apply action is disabled while a reinstall is running (#931)"
 
 // ---- Updates: in-app auto-update settings (#538) ----
 
-test("Updates: automatic-updates toggle loads from settings and persists", async () => {
+test("Updates: automatic updates are on with no toggle; Pause asks first, then Resume (#1994)", async () => {
   renderSettings("dark", "#ffb000", "/settings/updates");
-  const toggle = await screen.findByRole("checkbox", {
-    name: /automatic updates/i,
-  });
-  await waitFor(() => expect(toggle).toBeEnabled()); // enabled once settings load
-  expect(toggle).not.toBeChecked(); // default off (opt-in preserved)
-  await userEvent.click(toggle);
-  expect(api.setUpdateSettings).toHaveBeenCalledWith({ auto_update: true });
-  await waitFor(() => expect(toggle).toBeChecked());
-  // With auto-update on and no pass yet this run, the recent-runtime status line shows.
+  const status = await screen.findByTestId("auto-update-status");
+  expect(status).toHaveTextContent("Automatic updates: on");
+  expect(screen.queryByRole("checkbox", { name: /automatic updates/i })).toBeNull();
   expect(
-    screen.getByText(/no automatic check yet since the last restart/i),
+    screen.getByText(/BattleLab and your installed agents update themselves daily\. No automatic check yet/i),
   ).toBeInTheDocument();
+  // Pause never fires on the first click: it asks.
+  await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+  const dialog = await screen.findByRole("dialog", { name: /pause automatic updates\?/i });
+  expect(dialog).toHaveTextContent(/the catalog is still checked/i);
+  expect(api.setUpdateSettings).not.toHaveBeenCalled();
+  // Cancel changes nothing.
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(api.setUpdateSettings).not.toHaveBeenCalled();
+  expect(status).toHaveTextContent("Automatic updates: on");
+  await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+  await userEvent.click(
+    within(await screen.findByRole("dialog")).getByRole("button", { name: "Pause updates" }),
+  );
+  expect(api.setUpdateSettings).toHaveBeenCalledWith({ auto_update: false });
+  await waitFor(() =>
+    expect(screen.getByTestId("auto-update-status")).toHaveTextContent("Automatic updates: paused"),
+  );
+  expect(screen.getByText(/nothing installs until you resume/i)).toBeInTheDocument();
+  // Resume is one click (it only turns the default back on).
+  await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(api.setUpdateSettings).toHaveBeenLastCalledWith({ auto_update: true });
+  await waitFor(() =>
+    expect(screen.getByTestId("auto-update-status")).toHaveTextContent("Automatic updates: on"),
+  );
 });
 
 test("Updates: last automatic check renders as recent runtime status", async () => {
@@ -1550,9 +1569,7 @@ test("Updates: last automatic check renders as recent runtime status", async () 
     last_auto: { ts: 1720000000, result: "up-to-date" },
   });
   renderSettings("dark", "#ffb000", "/settings/updates");
-  expect(
-    await screen.findByText(/last automatic check: .*up-to-date/i),
-  ).toBeInTheDocument();
+  expect(await screen.findByText(/last check: .*up-to-date/i)).toBeInTheDocument();
 });
 
 test("Updates: switching channel drops a stale in-flight check result", async () => {

@@ -23,13 +23,15 @@ fails that check.
 - **In-app** — Settings → System → Updates shows the running version with check/apply controls
   (`/api/version`, `/api/update/check`, `/api/update/apply`; authed, CSRF- and origin-gated).
 - **CLI** — `agent-sessions autoupdate` checks the channel and applies only if newer.
-- **Automatic** — an in-app toggle runs the same guarded check/apply daily. **Off by default.**
+- **Automatic** — the same guarded check/apply runs daily. **On by default**, for BattleLab and for
+  the agents you installed from the catalog ([Agent catalog](/guide/agent-catalog)). **Pause**
+  under Settings → Updates stops both; **Resume** turns them back on.
 
 The **channel** selector switches between `stable` (the highest `v*` tag) and `main` (bleeding
-edge). Both the channel and the auto-update toggle persist server-side and apply live — no
-reinstall, no environment variable. Installs that used the old `AGENT_SESSIONS_AUTOUPDATE=1`
-systemd timer migrate on upgrade: the opt-in is preserved as the in-app setting and the legacy
-timer units are removed.
+edge). Both the channel and Pause persist server-side and apply live — no reinstall, no
+environment variable. Installs that used the old `AGENT_SESSIONS_AUTOUPDATE=1` systemd timer
+migrate on upgrade and the legacy timer units are removed. An install whose agent catalog check
+was turned off is shown as **Paused**, so its earlier choice stays visible.
 
 ## Rolling back by hand
 
@@ -58,7 +60,7 @@ systemctl --user disable agent-sessions.service   # …and keep it down across l
 journalctl --user -u agent-sessions.service -f    # logs
 ```
 
-To stop **automatic updates only**, turn the toggle off under Settings → System → Updates, or set
+To stop **automatic updates only**, press **Pause** under Settings → Updates, or set
 `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
 
 ::: info Verified against

@@ -246,6 +246,7 @@ def begin_install(
     *,
     confirm_local: bool = False,
     confirm_adopted: bool = False,
+    actor: str | None = None,
 ) -> dict:
     request_id, review_id = _operation_id(request_id), _operation_id(review_id)
     if type(confirm_local) is not bool or type(confirm_adopted) is not bool:
@@ -288,6 +289,8 @@ def begin_install(
             "updated_at": _now(),
             "error": None,
         }
+        if actor is not None:
+            operation["actor"] = _actor(actor)
         item["consumed_by"] = request_id
         doc["operations"][request_id] = operation
         storage.write(path, doc)
@@ -577,9 +580,57 @@ def required_checks(prov: PluginProvider) -> list[str]:
     return sorted(checks)
 
 
-def _verification(prov: PluginProvider, gen: dict, results: list[dict]) -> dict:
+#: The checks an UNATTENDED update may run (#1994): local facts about the installed candidate,
+#: nothing that opens a vendor conversation, spends vendor quota or leaves vendor-side history.
+#: `new`/`resume`/`transcript`/`usage` are those effects, and stay behind the human Verify's
+#: explicit `confirm_effects`.
+OFFLINE_CHECKS = ("binary", "store", "version")
+AUTO_UPDATE_ACTOR = "auto-update"
+
+
+def _actor(value: str) -> str:
+    if value != AUTO_UPDATE_ACTOR:
+        raise ManagerError("unknown operation actor")
+    return value
+
+
+def offline_checks(prov: PluginProvider) -> list[str]:
+    """The effect-free subset of `required_checks` (#1994). Empty for chat/API runtimes, which
+    unattended updates never touch."""
+    if prov.manifest.runtime != "pty":
+        return []
+    return [c for c in required_checks(prov) if c in OFFLINE_CHECKS]
+
+
+def catalog_managed(gen: dict) -> bool:
+    """A generation installed from a catalog recipe into managed storage: never a local
+    manifest and never an adopted executable (#1994). Only these may update unattended."""
+    review = gen.get("review") or {}
+    return review.get("source") in ("signed", "bundled") and review.get("adopted_path") is None
+
+
+def verification_scope(gen: dict) -> str | None:
+    """`"full"` (the human Verify, with its confirmed effects) or `"offline"` (an unattended
+    update's effect-free checks) for a recorded verification; None when there is none. A record
+    from before #1994 has no scope and was a full verification."""
+    result = gen.get("verification")
+    if not result:
+        return None
+    return result.get("scope", "full")
+
+
+def _verification(
+    prov: PluginProvider, gen: dict, results: list[dict], *, scope: str = "full"
+) -> dict:
     prov.entrypoint()
-    required = required_checks(prov)
+    if scope == "full":
+        required = required_checks(prov)
+    elif scope == "offline":
+        required = offline_checks(prov)
+        if not required:
+            raise ManagerError("this agent has no offline checks")
+    else:
+        raise ManagerError("unknown verification scope")
     if sorted(x["check"] for x in results) != required or any(
         type(x["passed"]) is not bool for x in results
     ):
@@ -588,6 +639,7 @@ def _verification(prov: PluginProvider, gen: dict, results: list[dict]) -> dict:
         "digest": gen["review"]["digest"],
         "checked_at": _now(),
         "results": copy.deepcopy(results),
+        "scope": scope,
     }
     if prov.manifest.runtime == "chat":
         binding = _endpoint_binding(prov.engine_id, gen["id"])
@@ -745,6 +797,62 @@ def begin_action(
         return copy.deepcopy(item)
 
 
+def begin_offline_verify(request_id: str, plugin_id: str, generation_id: str) -> dict:
+    """Plan an UNATTENDED update's effect-free checks (#1994), under the caller's worker fence.
+
+    It never takes or implies `confirm_effects`: the request records `scope: "offline"`, the
+    checks it may run are `offline_checks`, and only a catalog-managed candidate qualifies. The
+    human Verify (`begin_action`) and its confirmation are unchanged.
+    """
+    request_id, plugin_id, generation_id = (
+        _operation_id(request_id),
+        _id(plugin_id),
+        _operation_id(generation_id),
+    )
+    payload = {"plugin_id": plugin_id, "generation_id": generation_id, "scope": "offline"}
+    with storage.locked(DOCUMENT) as path:
+        doc = _load(path)
+        previous = doc["operations"].get(request_id)
+        if previous is not None:
+            if previous["kind"] != "verify" or previous["request"] != payload:
+                raise ManagerError("operation id was already used for a different request")
+            return copy.deepcopy(previous)
+        if any(item["state"] in _BUSY for item in doc["operations"].values()):
+            raise ManagerError("another plugin operation is busy")
+        if len(doc["operations"]) >= MAX_OPERATIONS:
+            raise ManagerError("plugin operation history is full; no history was removed")
+        row = doc["plugins"].get(plugin_id)
+        if row is None:
+            raise ManagerError("installed agent not found")
+        _validate_row(plugin_id, row)
+        gen = row["generations"].get(generation_id)
+        if gen is None:
+            raise ManagerError("installed generation not found")
+        _require_inactive(row, generation_id)
+        if not catalog_managed(gen):
+            raise ManagerError("only a catalog-managed installation updates unattended")
+        prov = provider(plugin_id, gen)
+        prov.entrypoint()
+        if not offline_checks(prov):
+            raise ManagerError("this agent has no offline checks")
+        gen["verification"] = None
+        item = {
+            "id": request_id,
+            "plugin_id": plugin_id,
+            "kind": "verify",
+            "request": payload,
+            "state": "planned",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "error": None,
+            "review_digest": gen["review"]["digest"],
+            "actor": AUTO_UPDATE_ACTOR,
+        }
+        doc["operations"][request_id] = item
+        storage.write(path, doc)
+        return copy.deepcopy(item)
+
+
 def claim_signin(request_id: str) -> dict:
     """Consume one ready sign-in while the caller owns the worker fence."""
     with storage.locked(DOCUMENT) as path:
@@ -790,7 +898,10 @@ def finish_verification(request_id: str, results: list[dict]) -> dict:
         gen = doc["plugins"][item["plugin_id"]]["generations"][item["request"]["generation_id"]]
         if gen["review"]["digest"] != item["review_digest"]:
             raise ManagerError("the verification candidate changed")
-        gen["verification"] = _verification(provider(item["plugin_id"], gen), gen, results)
+        scope = "offline" if item["request"].get("scope") == "offline" else "full"
+        gen["verification"] = _verification(
+            provider(item["plugin_id"], gen), gen, results, scope=scope
+        )
         passed = all(r["passed"] for r in results)
         item.update(
             state="verified" if passed else "failed",
@@ -829,6 +940,34 @@ def activate(
     )
 
 
+def activate_offline(
+    request_id: str,
+    plugin_id: str,
+    generation_id: str,
+    *,
+    expected_active: str,
+    guard=None,
+) -> dict:
+    """Enable an UNATTENDED update's candidate on its offline checks (#1994). Only this entry
+    accepts `scope: "offline"`, and only for a catalog-managed generation; every human path
+    still requires a full verification. In the same commit: the agent's active generation must
+    still be the one observed when the update was planned AND the agent must still be enabled
+    (a rollback, another activation or a disable in between refuses), and ``guard(doc)``
+    re-checks the caller's own conditions (pause, catalog freshness) under the lock.
+
+    The roster revision is deliberately not a precondition: another agent's unattended update
+    in the same pass moves it, and that is not an operator decision about this agent."""
+    return _change(
+        request_id,
+        _id(plugin_id),
+        "activate",
+        _operation_id(generation_id),
+        _operation_id(expected_active),
+        offline=True,
+        guard=guard,
+    )
+
+
 def deactivate(
     request_id: str,
     plugin_id: str,
@@ -858,6 +997,9 @@ def _change(
     generation_id: str | None,
     expected_active=_UNSPECIFIED,
     expected_revision=_UNSPECIFIED,
+    *,
+    offline: bool = False,
+    guard=None,
 ) -> dict:
     from ..engines import registry
 
@@ -873,6 +1015,8 @@ def _change(
             expected_revision,
             known_provider=plugin_id in by_id,
             roster=by_id,
+            offline=offline,
+            guard=guard,
         )
         registry.sync_committed()  # also retried for an existing id after a lost response
         return result
@@ -888,9 +1032,13 @@ def _commit_change(
     *,
     known_provider: bool,
     roster,
+    offline: bool = False,
+    guard=None,
 ) -> dict:
     request_id = _operation_id(request_id)
     payload = {"plugin_id": plugin_id, "generation_id": generation_id}
+    if offline:
+        payload["verification"] = "offline"
     if expected_active is not _UNSPECIFIED:
         payload["expected_active"] = expected_active
     if expected_revision is not _UNSPECIFIED:
@@ -904,6 +1052,10 @@ def _commit_change(
             return copy.deepcopy(old)
         if any(o["state"] in _BUSY for o in doc["operations"].values()):
             raise ManagerError("another plugin operation is busy")
+        if offline and (doc["plugins"].get(plugin_id) or {}).get("enabled") is not True:
+            raise ManagerError("this agent was disabled; an unattended update never re-enables it")
+        if guard is not None:
+            guard(doc)  # the caller's own conditions, re-checked in this commit (#1994)
         known = known_provider or plugin_id in doc["plugins"]
         row = doc["plugins"].setdefault(
             plugin_id, {"enabled": None, "active": None, "candidate": None, "generations": {}}
@@ -932,10 +1084,24 @@ def _commit_change(
             prov = provider(plugin_id, gen)
             prov.entrypoint()
             result = gen["verification"]
+            if offline:
+                # Unattended updates only (#1994): a catalog-managed candidate whose recorded
+                # offline (or full) checks all passed. Never reachable from a human route.
+                if not catalog_managed(gen):
+                    raise ManagerError("only a catalog-managed installation updates unattended")
+                scope = verification_scope(gen)
+                wanted = offline_checks(prov) if scope == "offline" else required_checks(prov)
+            else:
+                # Every human path: a FULL verification, never an unattended update's offline one,
+                # even where the two check lists happen to coincide.
+                scope = "full"
+                wanted = required_checks(prov)
             if (
                 not result
+                or result.get("scope", "full") != scope
+                or not wanted
                 or result["digest"] != gen["review"]["digest"]
-                or sorted(x["check"] for x in result["results"]) != required_checks(prov)
+                or sorted(x["check"] for x in result["results"]) != wanted
                 or not all(x["passed"] is True for x in result["results"])
                 or (
                     prov.manifest.runtime == "chat"
@@ -965,6 +1131,8 @@ def _commit_change(
                 default=0,
             ),
         }
+        if offline:
+            item["actor"] = AUTO_UPDATE_ACTOR
         doc["operations"][request_id] = item
         doc["roster_revision"] = request_id
         # Pointer, revision and durable response commit together, with byte headroom reserved

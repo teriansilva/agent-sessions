@@ -235,7 +235,8 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 | `AGENT_SESSIONS_REPO` | `https://github.com/teriansilva/agent-sessions.git` | Source to clone/update from (override for a fork/mirror). |
 | `AGENT_SESSIONS_REF` | — | Pin an exact tag/branch/sha (one-shot; self-update never inherits it). |
 | `AGENT_SESSIONS_CHANNEL` | `stable` | `stable` (highest `v*` tag) or `main` (bleeding edge). Persisted to the env file and editable in Settings → System → Updates; the installer follows the persisted choice on re-runs. |
-| `AGENT_SESSIONS_AUTOUPDATE` | `0` | Daily in-app automatic updates. Not an installer flag: toggled in Settings → System → Updates (persisted to the env file, read live). A legacy `agent-sessions-update.timer` is migrated + removed on upgrade. |
+| `AGENT_SESSIONS_AUTOUPDATE` | on (absent) | Daily automatic updates of BattleLab and of the agents installed from the catalog (#1994). Absent means **on**; an explicit `0` is **Paused**. Not an installer flag: Pause/Resume in Settings → Updates write it (persisted to the env file, read live). A legacy `agent-sessions-update.timer` is migrated + removed on upgrade. |
+| `AGENT_SESSIONS_FEED_PUBLISHER` | — | `1` on the install that publishes the agent catalog and the gallery: it gets the publisher's expiry warnings (bell + push). Host config written by the publisher's deploy, never an app setting; an explicit `0` wins over the legacy in-app setting it replaced. |
 | `AGENT_SESSIONS_ANALYTICS` | `1` | `0` turns opt-in usage analytics off for this server, whatever was chosen in Settings → System → Usage analytics (the toggle then shows disabled). Read live. |
 | `AGENT_SESSIONS_NO_SERVICE` | `0` | Install without touching systemd. |
 | `AGENT_SESSIONS_HOME` | `~/.local/share/agent-sessions` | Install root. |

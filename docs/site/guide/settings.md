@@ -251,10 +251,13 @@ that instead. See [First login](/start/first-login).
 
 ### Updates · `updates`
 
-The running version, **Automatic updates** (a daily check that installs new releases with the same
-rollback-guarded installer), the release channel — **stable** (tagged releases) or **main** (the
-development branch) — and the manual update control. The channel and the toggle persist
-server-side and apply immediately. See [Update & rollback](/start/update).
+The running version, **Automatic updates** — on by default: BattleLab and the agents you installed
+from the catalog update themselves daily, BattleLab through the same rollback-guarded installer as
+**Update now**. **Pause** (it asks first) stops both until you press **Resume**; the catalog is
+still checked while paused. Then the release channel — **stable** (tagged releases) or **main**
+(the development branch) — and the manual update control. Pause and the channel persist
+server-side and apply immediately. See [Update & rollback](/start/update) and
+[Agent catalog](/guide/agent-catalog).
 
 ### Usage analytics · `analytics` {#usage-analytics}
 

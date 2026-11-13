@@ -1,14 +1,18 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { TOUCH_FLOOR } from "./touchTarget";
 
-// #538: real-browser proof for the in-app auto-update controls in Settings → System.
-// The Automatic-updates toggle and the release-channel radiogroup persist via
+// #538 / #1994: real-browser proof for the in-app automatic-update controls in Settings →
+// Updates. Automatic updates are ON by default (BattleLab and its installed agents): one status
+// line, Pause behind a confirmation, Resume. They and the release-channel radiogroup persist via
 // POST /api/update/settings (mocked here — the server semantics are covered by
-// tests/test_api.py + tests/test_update*.py). The mobile project additionally proves
-// the card reflows single-column without horizontal scroll on a phone viewport.
+// tests/test_api.py + tests/test_update*.py + tests/test_agent_autoupdate.py). The mobile
+// project additionally proves the card reflows without horizontal scroll on a phone viewport.
 
 async function setup(page: Page): Promise<unknown[]> {
   const posts: unknown[] = [];
+  // An install that never chose: automatic updates are on (#1994).
+  const state = { auto_update: true, channel: "stable" };
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -47,38 +51,45 @@ async function setup(page: Page): Promise<unknown[]> {
         channel?: string;
       };
       posts.push(body);
-      return r.fulfill({
-        json: {
-          auto_update: body.auto_update ?? false,
-          channel: body.channel ?? "stable",
-          last_auto: null,
-        },
-      });
+      state.auto_update = body.auto_update ?? state.auto_update;
+      state.channel = body.channel ?? state.channel;
+      return r.fulfill({ json: { ...state, last_auto: null } });
     }
-    return r.fulfill({
-      json: { auto_update: false, channel: "stable", last_auto: null },
-    });
+    return r.fulfill({ json: { ...state, last_auto: null } });
   });
   await page.goto(settingsPath("updates"));
   return posts;
 }
 
-test.describe("in-app auto-update settings (#538)", () => {
-  test("toggle + channel persist via /api/update/settings", async ({
+test.describe("automatic updates: on by default, Pause asks first, Resume (#538, #1994)", () => {
+  test("the status line, Pause → confirm → Paused → Resume, and the channel persist", async ({
     page,
   }) => {
     const posts = await setup(page);
-
-    const toggle = page.getByRole("checkbox", { name: /automatic updates/i });
-    await expect(toggle).toBeVisible();
-    await expect(toggle).toBeEnabled(); // enabled once the persisted settings loaded
-    await expect(toggle).not.toBeChecked(); // default off — the opt-in posture is preserved
-    await toggle.click();
-    await expect(toggle).toBeChecked();
-    // With auto-update on and no pass yet this run, the recent-runtime status line shows.
+    const status = page.getByTestId("auto-update-status");
+    await expect(status).toHaveText("Automatic updates: on");
+    // No opt-in switch any more: nobody goes into Settings to turn updates on.
+    await expect(page.getByRole("checkbox", { name: /automatic updates/i })).toHaveCount(0);
     await expect(
-      page.getByText(/no automatic check yet since the last restart/i),
+      page.getByText(/BattleLab and your installed agents update themselves daily/i),
     ).toBeVisible();
+
+    // Pause asks first; Cancel changes nothing.
+    const pause = page.getByRole("button", { name: "Pause", exact: true });
+    await pause.click();
+    const dialog = page.getByRole("dialog", { name: "Pause automatic updates?" });
+    await expect(dialog).toContainText("The catalog is still checked");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(status).toHaveText("Automatic updates: on");
+    expect(posts).toEqual([]);
+
+    await pause.click();
+    await page.getByRole("dialog").getByRole("button", { name: "Pause updates" }).click();
+    await expect(status).toHaveText("Automatic updates: paused");
+    await expect(page.getByText(/nothing installs until you resume/i)).toBeVisible();
+    await page.getByRole("button", { name: "Resume" }).click();
+    await expect(status).toHaveText("Automatic updates: on");
 
     const main = page.getByRole("radio", { name: /main/i });
     const stable = page.getByRole("radio", { name: /stable/i });
@@ -87,7 +98,41 @@ test.describe("in-app auto-update settings (#538)", () => {
     await expect(main).toHaveAttribute("aria-checked", "true");
     await expect(stable).toHaveAttribute("aria-checked", "false");
 
-    expect(posts).toEqual([{ auto_update: true }, { channel: "main" }]);
+    expect(posts).toEqual([{ auto_update: false }, { auto_update: true }, { channel: "main" }]);
+  });
+
+  test("Pause, its confirmation and Resume work from the keyboard alone, at touch size", async ({
+    page,
+  }) => {
+    const posts = await setup(page);
+    const pause = page.getByRole("button", { name: "Pause", exact: true });
+    await expect(pause).toBeVisible();
+    expect((await pause.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    await pause.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Pause automatic updates?" });
+    await expect(dialog).toBeVisible();
+    // Focus lands on the safe action.
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    for (const button of await dialog.getByRole("button", { name: /^(Cancel|Pause updates)$/ }).all()) {
+      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    }
+    // Escape cancels.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(pause).toBeFocused();
+    await page.keyboard.press("Enter");
+    const confirm = page.getByRole("dialog").getByRole("button", { name: "Pause updates" });
+    await confirm.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("auto-update-status")).toHaveText("Automatic updates: paused");
+    const resume = page.getByRole("button", { name: "Resume" });
+    // Focus is not lost with the Pause button gone: it lands on Resume.
+    await expect(resume).toBeFocused();
+    expect((await resume.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("auto-update-status")).toHaveText("Automatic updates: on");
+    expect(posts).toEqual([{ auto_update: false }, { auto_update: true }]);
   });
 
   test("the Updates page has no horizontal scroll with the grown Updates card", async ({
@@ -98,9 +143,9 @@ test.describe("in-app auto-update settings (#538)", () => {
       "the single-column reflow is a mobile concern",
     );
     await setup(page);
-    await expect(
-      page.getByRole("checkbox", { name: /automatic updates/i }),
-    ).toBeVisible();
+    await expect(page.getByTestId("auto-update-status")).toBeVisible();
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
     const overflow = await page.evaluate(
       () =>
         document.documentElement.scrollWidth -

@@ -308,6 +308,9 @@ export interface Versions {
   /** When older history cannot say which generation came before (#1741): the kept, verified
    *  generations to choose from instead — each through its own Enable step, never one click. */
   undetermined: { id: string; version: string | null }[];
+  /** The active generation came from an unattended update (#1994): it passed only the offline
+   *  checks, at `checkedAt` (epoch seconds). Null for an operator's own (fully verified) install. */
+  automatic: { checkedAt: number } | null;
 }
 
 /** `installed → available` and the rollback target, read from `/api/plugins` alone (#1741): the
@@ -350,5 +353,6 @@ export function versionsOf(id: string, data: PluginCatalog | null): Versions {
       previous = { id: gen.id, version: manifestVersion(gen.review.entry.manifest) };
     }
   }
-  return { installed, available, previous, undetermined };
+  const automatic = active?.verification?.scope === "offline" ? { checkedAt: active.verification.checked_at } : null;
+  return { installed, available, previous, undetermined, automatic };
 }

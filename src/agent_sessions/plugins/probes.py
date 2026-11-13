@@ -285,3 +285,59 @@ async def run(item: dict) -> None:
                     f": {reason}." if reason else "."
                 )
     await asyncio.to_thread(manager.finish_verification, item["id"], list(results.values()))
+
+
+async def run_offline(item: dict) -> None:
+    """An UNATTENDED update's checks (#1994): only `manager.offline_checks`, never a vendor
+    conversation, quota or vendor-side history. The exact reviewed executable is re-verified,
+    its `--version` is asked (a local process, like the human Verify's first step), and the
+    declared store is looked for. The same fixed result shapes and refusal texts as `run`."""
+    plugin_id, generation_id = item["plugin_id"], item["request"]["generation_id"]
+    if item["request"].get("scope") != "offline":
+        raise manager.ManagerError("this operation is not an offline check")
+    gen = await asyncio.to_thread(manager.generation, plugin_id, generation_id)
+    prov = manager.provider(plugin_id, gen)
+    required = manager.offline_checks(prov)
+    results = {
+        check: {"check": check, "passed": False, "detail": "This check did not run."}
+        for check in required
+    }
+    cwd = manager.workspace(plugin_id, generation_id)
+    try:
+        kind = registry.STORE_KINDS.get(prov.manifest.store.layout if prov.manifest.store else None)
+        if kind is None:
+            raise process.ProcessError("this build has no store kind for the candidate")
+        prov.attach_kind(kind())
+        with candidate_scope(prov):
+            if "binary" in required:
+                prov.entrypoint_path()
+                results["binary"] = {
+                    "check": "binary",
+                    "passed": True,
+                    "detail": "The exact reviewed executable is still verified.",
+                }
+            if "version" in required:
+                version = await _version(prov, item, cwd)
+                results["version"] = {
+                    "check": "version",
+                    "passed": True,
+                    "version": version,
+                    "detail": "The installed CLI reported its version.",
+                }
+            if "store" in required:
+                root = prov.store_root()
+                results["store"] = {
+                    "check": "store",
+                    "passed": root is not None and root.exists(),
+                    "detail": "The declared vendor store was checked.",
+                }
+    except process.CleanupError:
+        raise
+    except Exception as exc:
+        reason = _stop_reason(exc)
+        for result in results.values():
+            if not result["passed"]:
+                result["detail"] = "Verification stopped before this check could pass" + (
+                    f": {reason}." if reason else "."
+                )
+    await asyncio.to_thread(manager.finish_verification, item["id"], list(results.values()))
