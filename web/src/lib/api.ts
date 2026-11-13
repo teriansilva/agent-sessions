@@ -1,3 +1,4 @@
+import type { MissionTeam, TeamChoices, TeamOp } from "../types/missionTeam";
 import { appUrl } from "./appBase";
 import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
 import type {
@@ -2907,6 +2908,22 @@ export const api = {
       archived,
       expect_revision,
     }),
+  /** The mission's team (#1950): re-derived on every read; the per-step lists; one operation. */
+  missionTeam: (missionId: string) =>
+    getJsonWithDetail<MissionTeam>(`/api/missions/${encodeURIComponent(missionId)}/plan/team`),
+  missionTeamChoices: (missionId: string, step: string) =>
+    getJsonWithDetail<TeamChoices>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/team/choices?step=${encodeURIComponent(step)}`,
+    ),
+  missionTeamOp: (
+    missionId: string,
+    body: TeamOp & { operation_id: string; expected_revision: number; reason: string },
+  ) =>
+    mutateJson<{ revision: number; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/ops`,
+      body,
+    ),
   missionPlanRevision: (missionId: string) =>
     getJsonWithDetail<MissionPlanRevision>(
       `/api/missions/${encodeURIComponent(missionId)}/plan/revisions/latest`,

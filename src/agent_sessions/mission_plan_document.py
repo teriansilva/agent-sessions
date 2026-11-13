@@ -12,8 +12,9 @@ A mission's plan is a list of **revisions**. Each revision is one JSON document:
   (`o1.implement`). The step CORE is the playbook flow step (title, role, `after`, independence,
   rework) and is DERIVED from the snapshot, never authored separately: `validate_document`
   recomputes it and refuses a document whose steps say anything else. Only the envelope —
-  `reason`, and an `assignment` that stays `null` until P5 assigns a pool specialist — is the
-  plan's own.
+  `reason`, and an `assignment` (#1950, P5: a pool specialist pinned `{id, version}`, an optional
+  per-mission model override, the server's reason, up to 3 alternates and closed notes) — is the
+  plan's own. A grade is never stored here: it is derived at read (`mission_team.view`).
 
 Nothing here touches a store, a session or the network. `missions` owns persistence (one
 transaction with the objective rows); this module is the shape and the derived step state.
@@ -39,8 +40,9 @@ PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 #: Where an input's value came from: `deployment`, `project`, `global`, `default`, `missing`, …
 INPUT_SOURCE_RE = re.compile(r"^[a-z][a-z_]{0,31}$")
 #: Who wrote a revision. `playbook`: a deployed procedure applied; `operator`: a mission-local
-#: procedure the operator added. #1578 adds `planner` / `lead`; P5 adds HQ.
-AUTHOR_KINDS = frozenset({"playbook", "operator"})
+#: procedure the operator added; `hq`: a team change HQ proposed and the operator confirmed
+#: (#1950 P5: a provenance label, never more authority than the operator's).
+AUTHOR_KINDS = frozenset({"playbook", "operator", "hq"})
 #: `authored` only in this slice; #1578 adds `reconstructed` (legacy missions, never runnable).
 KINDS = frozenset({"authored"})
 SOURCES = frozenset({"playbook", "mission_local"})
@@ -170,6 +172,73 @@ def _exact_keys(d: object, keys: set[str], what: str) -> dict:
     if set(d) != keys:
         raise PlanError(f"{what} must have exactly {sorted(keys)}")
     return d
+
+
+#: The assignment's shape (#1950 §5). Identities are resolved from indexes when the revision is
+#: written; nothing is remapped later.
+ASSIGNMENT_KEYS = {"specialist", "override", "reason", "alternates", "notes"}
+ALTERNATES_MAX = 3
+NOTE_CODES = frozenset({"usage_unknown", "will_queue"})
+_SPECIALIST_ID_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,47}\Z")
+_ENGINE_ID_RE = re.compile(r"\A[a-z][a-z0-9-]{1,23}\Z")
+_MODEL_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}\Z")
+_EFFORT_RE = re.compile(r"\A[a-z][a-z0-9_-]{0,23}\Z")
+
+
+def _pin(p: object, what: str) -> dict:
+    p = _exact_keys(p, {"id", "version"}, what)
+    if not isinstance(p["id"], str) or not _SPECIALIST_ID_RE.fullmatch(p["id"]):
+        raise PlanError(f"{what}.id is not a specialist id")
+    if type(p["version"]) is not int or not 0 < p["version"] < 1_000_000:
+        raise PlanError(f"{what}.version must be a positive whole number")
+    return p
+
+
+def check_assignment(a: object, step: dict, what: str) -> dict:
+    """One step's assignment, checked to the letter (#1950 §5), or `PlanError`.
+
+    Only an agent step with a binding role is assigned. The model override is the per-mission
+    `{engine, model, effort}`; `default` is never one (it is not one model). Qualification is not
+    this function's: `mission_team.qualify` decides it, at write and again on every read."""
+    if step["actor"] != "agent" or step.get("role") is None:
+        raise PlanError(f"{what}: only an agent step with a role gets a specialist")
+    a = _exact_keys(a, ASSIGNMENT_KEYS, what)
+    pin = _pin(a["specialist"], f"{what}.specialist")
+    ovr = a["override"]
+    if ovr is not None:
+        ovr = _exact_keys(ovr, {"engine", "model", "effort"}, f"{what}.override")
+        if not isinstance(ovr["engine"], str) or not _ENGINE_ID_RE.fullmatch(ovr["engine"]):
+            raise PlanError(f"{what}.override.engine is not an agent id")
+        if (
+            not isinstance(ovr["model"], str)
+            or not _MODEL_ID_RE.fullmatch(ovr["model"])
+            or ovr["model"] == "default"
+        ):
+            raise PlanError(f"{what}.override.model must name one model")
+        if ovr["effort"] is not None and (
+            not isinstance(ovr["effort"], str) or not _EFFORT_RE.fullmatch(ovr["effort"])
+        ):
+            raise PlanError(f"{what}.override.effort is not an effort level")
+    _one_line(a["reason"], f"{what}.reason", max_len=REASON_MAX)
+    alts = a["alternates"]
+    if not isinstance(alts, list) or len(alts) > ALTERNATES_MAX:
+        raise PlanError(f"{what}.alternates lists at most {ALTERNATES_MAX} specialists")
+    seen = {pin["id"]}
+    for i, alt in enumerate(alts):
+        alt = _exact_keys(alt, {"specialist", "reason"}, f"{what}.alternates[{i}]")
+        apin = _pin(alt["specialist"], f"{what}.alternates[{i}].specialist")
+        if apin["id"] in seen:
+            raise PlanError(f"{what}.alternates names {apin['id']} twice or names the pick")
+        seen.add(apin["id"])
+        _one_line(alt["reason"], f"{what}.alternates[{i}].reason", max_len=REASON_MAX)
+    notes = a["notes"]
+    if (
+        not isinstance(notes, list)
+        or any(not isinstance(n, str) or n not in NOTE_CODES for n in notes)
+        or len(set(notes)) != len(notes)
+    ):
+        raise PlanError(f"{what}.notes must be distinct codes from {sorted(NOTE_CODES)}")
+    return a
 
 
 def _check_after(after: object, oid: str, earlier: set[str], what: str) -> None:
@@ -353,18 +422,23 @@ def validate_document(doc: object) -> dict:
         env = _exact_keys(got.get("envelope"), {"reason", "assignment"}, f"{what}.envelope")
         _one_line(env["reason"], f"{what}.envelope.reason", max_len=REASON_MAX)
         if env["assignment"] is not None:
-            raise PlanError(f"{what}.envelope.assignment is assigned in P5, never before")
+            check_assignment(env["assignment"], want, f"{what}.envelope.assignment")
         core = {k: v for k, v in got.items() if k != "envelope"}
         if core != {k: v for k, v in want.items() if k != "envelope"}:
             raise PlanError(f"{what} does not match its procedure step {want['id']!r}")
     return doc
 
 
-def build(objectives: list[dict], reasons: dict[str, str]) -> dict:
-    """A validated document from `objectives`; each objective's steps carry `reasons[oid]`."""
+def build(objectives: list[dict], reasons: dict[str, str], assignments: dict | None = None) -> dict:
+    """A validated document from `objectives`; each objective's steps carry `reasons[oid]`, and a
+    step named in `assignments` keeps its assignment (#1950: applying another procedure never
+    drops the team the earlier steps already have)."""
     steps: list[dict] = []
     for o in objectives:
         steps.extend(project_steps(o["id"], o["procedure"]["flow"], reasons[o["id"]]))
+    for s in steps:
+        if assignments and assignments.get(s["id"]) is not None:
+            s["envelope"]["assignment"] = copy.deepcopy(assignments[s["id"]])
     return validate_document({"format": FORMAT, "objectives": objectives, "steps": steps})
 
 

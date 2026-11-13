@@ -83,6 +83,36 @@ you started yourself does not have to pretend it was dispatched — the timeline
 launch that never happened. It is refused until the mission actually holds a session, because a
 running mission with nothing in it has nothing to follow through on.
 
+## The team — who does each step
+
+When a mission's objectives follow a playbook procedure, each **agent** step names a role: the
+skills it needs and, optionally, a minimum grade (Intern, Specialist or Senior). The **Team** card
+on the mission shows who fills each one from your pool of specialists (Library → Specialists).
+
+- **Assemble** picks, for every agent step without a specialist, the cheapest one that qualifies.
+  Cheapest means the lowest grade that meets the step's minimum, then the most free capacity in
+  this plan, then the specialist's id. The same pool always gives the same team. Each pick shows
+  why, and up to three alternates that also qualified.
+- **Qualifies** means the specialist has every skill the role names (by exact id), its skills are
+  current in your library, it runs on a client that can hold a mission role, and its model is at
+  least the step's minimum grade. A model you have not graded in Settings → Agents meets no minimum.
+- **Change** on a step picks another specialist, or another model for this mission only, from the
+  server's list. Entries that would not qualify are shown disabled, with the reason. A model below
+  the step's grade is refused, and nothing is written.
+- **A step left unassigned** says what blocked it. Assembly never breaks a rule to fill a role: a
+  review that must be done by someone other than the writer stays empty rather than going to the
+  writer.
+- **Capacity never blocks a plan.** If one specialist would be needed more times at once than its
+  capacity allows, the step says it will queue.
+- **Grades are checked every time you look.** Remap a model in Settings and a step that no longer
+  meets its minimum says so ("no longer qualifies"). Approval will refuse it until you change it.
+- **HQ can do the same**, in conversation ("put the review on Sonnet"). It reads the team and the
+  lists, and proposes a change as a card you confirm. A change that would not qualify is refused
+  to HQ right away, with the same reason, and never becomes a card. HQ cannot approve or launch
+  anything.
+
+Nothing on the Team card starts an agent.
+
 ## Objectives — what "done" means, decided before the work
 
 A mission carries an objective list, and the point is that it is written **before** the work rather than

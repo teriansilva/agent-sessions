@@ -338,7 +338,7 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # "session" | "project" | "playbook" | "skill" | "automation" | "secret"
+    group: str  # "session" | "project" | "playbook" | "skill" | "automation" | "secret" | "team"
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
@@ -828,8 +828,9 @@ def _ops() -> tuple[Operation, ...]:
 def _all_ops() -> tuple[Operation, ...]:
     from .ask_library import library_ops
     from .ask_secrets import secret_ops
+    from .ask_team import team_ops
 
-    return (*_ops(), *library_ops(), *secret_ops())
+    return (*_ops(), *library_ops(), *secret_ops(), *team_ops())
 
 
 CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
@@ -872,6 +873,10 @@ async def facts_for(
         from . import ask_secrets
 
         return await ask_secrets.facts(op, target, app, operator)
+    if op.group == "team":  # a mission's team (#1950): its title and plan revision
+        from . import ask_team
+
+        return await ask_team.facts(target, app, operator)
     if op.target == "attachment":
         from . import ask_secrets
 

@@ -40,6 +40,7 @@ import { MISSION_ID_RE } from "../../lib/missionLink";
 import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
+import { MissionTeamCard } from "./MissionTeamCard";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionNowStrip } from "./MissionNowStrip";
 import { LIVE_STATES } from "./missionNow";
@@ -886,6 +887,11 @@ function MissionBody({
                 both halves of a change and the mount fence. */}
             {d.mission ? (
               <MissionPlanCard mission={d.mission} start={start} />
+            ) : null}
+            {/* THE TEAM (#1950): who fills each agent step, why, and the same operations HQ has.
+                Nothing on it approves or launches. */}
+            {d.mission ? (
+              <MissionTeamCard key={missionId} missionId={missionId} state={d.mission.state} />
             ) : null}
           </div>
           {/* THE THREAD, in its own box so a SHORT thread sits at the BOTTOM (#942). Pinning the

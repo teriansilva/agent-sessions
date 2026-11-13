@@ -22,6 +22,10 @@ from test_ask_orchestrator import Script, ai, answer, app, call, calls, found  #
 #: it is on — never by default.
 GATED = {
     "ask_operator",
+    "assemble",
+    "assign",
+    "clear_override",
+    "set_override",
     "end_call",
     "propose_library",
     "propose_message",

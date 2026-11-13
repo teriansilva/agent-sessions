@@ -215,6 +215,12 @@ class _Turn:
     #: The specialists THIS turn's `list_specialists` returned (#1910): what a `specialist_index`
     #: in `propose_session` means. None until the tool ran in this turn.
     specialists: list[dict] | None = None
+    #: A mission's team as `read_plan` returned it THIS turn (#1950): mission id →
+    #: `{"revision", "steps": [step id, …]}`. A step index is a position in that list.
+    team_plans: dict[str, dict] = field(default_factory=dict)
+    #: The server's lists for one step, as `read_pool` returned them this turn:
+    #: `(mission id, step id)` → `GET …/plan/team/choices`.
+    team_lists: dict[tuple[str, str], dict] = field(default_factory=dict)
     #: Who asked (#1559): their request identity (`asgi_call.Operator`) and the app, so the facts an
     #: operation card shows are read as THEY would read them. Memory only, never stored.
     operator: object | None = None
@@ -806,6 +812,236 @@ async def _list_specialists(turn: _Turn, args: dict) -> tuple[dict, dict]:
         for r in rows
     ]
     return {"specialists": shown}, {"count": len(rows)}
+
+
+# ---- the team (#1950, #1613 P5): HQ plans with the Commander ------------------------------------
+#
+# HQ reads the team and the server's lists, and proposes the same four operations the plan view
+# has. Every proposal is checked by the server's own `mission_team.apply_op` BEFORE a card exists
+# (`ask_team.dry_run`): a refused one (the review on Sonnet) comes back here as the refusal, with
+# its code and server text, and is never a card. HQ has no approve, start or launch tool.
+
+_TEAM_REASON_MAX = 200
+
+
+def _team_reason(args: dict) -> str:
+    raw = args.get("reason")
+    if not isinstance(raw, str) or not raw.strip():
+        raise _ToolRefused("reason is one line saying why", "bad_arguments")
+    one = " ".join(raw.split())[:_TEAM_REASON_MAX]
+    return one
+
+
+def _team_step(turn: _Turn, mid: str, args: dict) -> str:
+    plan = turn.team_plans.get(mid)
+    if plan is None:
+        raise _ToolRefused("refused: call read_plan for this mission first", "bad_index")
+    idx = args.get("step_index")
+    if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(plan["steps"]):
+        raise _ToolRefused("step_index must be an index read_plan returned", "bad_index")
+    return plan["steps"][idx]
+
+
+def _team_why_not(reasons: list) -> str | None:
+    return "; ".join(str(r.get("text") or "") for r in reasons) or None
+
+
+async def _read_plan(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import asgi_call
+    from .mission_team import GRADE_LABEL
+
+    mid = _known_mission(turn, args)
+    operator, app = _operator(turn)
+    r = await asgi_call.call(app, operator, "GET", f"/api/missions/{mid}/plan/team", None)
+    if r.status != 200 or not isinstance(r.body, dict):
+        raise _ToolRefused("the mission's team could not be read just now", "not_available")
+    if r.body.get("revision") is None or not r.body.get("team"):
+        return {"plan": None, "note": "This mission has no plan yet: no procedure is applied."}, {}
+    team = r.body["team"]
+    steps, ids = [], []
+    for s in team["steps"]:
+        ids.append(s["id"])
+        role = s.get("role") or {}
+        row: dict = {
+            "step_index": len(ids) - 1,
+            "step": s["id"],
+            "title": s["title"],
+            "actor": s["actor"],
+        }
+        if not s.get("assignable"):
+            row["gets_specialist"] = False
+            steps.append(row)
+            continue
+        row["needs"] = {
+            "skills": role.get("skills") or [],
+            "min_grade": GRADE_LABEL.get(role.get("min_grade") or "", "any"),
+        }
+        a, d = s.get("assignment"), s.get("derived")
+        if a and d:
+            eff = d["effective"]
+            row.update(
+                specialist=a["specialist"]["id"],
+                model=f"{eff.get('engine')} · {eff.get('model') or 'default'}",
+                grade=GRADE_LABEL.get(d.get("grade") or "", "ungraded"),
+                override=a.get("override") is not None,
+                reason=a["reason"],
+                qualifies=d["ok"],
+                alternates=[x["specialist"]["id"] for x in a.get("alternates") or []],
+                notes=[n["text"] for n in d.get("notes") or []],
+            )
+            if not d["ok"]:
+                row["why_not"] = _team_why_not(d["reasons"])
+        else:
+            row["unassigned"] = (s.get("unassigned") or {}).get("summary")
+        steps.append(row)
+    turn.team_plans[mid] = {"revision": r.body["revision"], "steps": ids}
+    return (
+        {
+            "revision": r.body["revision"],
+            "steps": steps,
+            "peak": team["peak"],
+            "pool_limit": team["pool_max"],
+            "pool_size": team["pool_size"],
+        },
+        {"count": len(steps)},
+    )
+
+
+async def _read_pool(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    import urllib.parse
+
+    from . import asgi_call
+    from .mission_team import GRADE_LABEL
+
+    mid = _known_mission(turn, args)
+    sid = _team_step(turn, mid, args)
+    operator, app = _operator(turn)
+    r = await asgi_call.call(
+        app,
+        operator,
+        "GET",
+        f"/api/missions/{mid}/plan/team/choices",
+        None,
+        query=urllib.parse.urlencode({"step": sid}),
+    )
+    if r.status != 200 or not isinstance(r.body, dict):
+        detail = r.body.get("detail") if isinstance(r.body, dict) else None
+        raise _ToolRefused(str(detail or "that step's lists could not be read"), "not_available")
+    if r.body.get("revision") != turn.team_plans[mid]["revision"]:
+        raise _ToolRefused("refused: the plan changed since read_plan: read it again", "stale")
+    turn.team_lists[(mid, sid)] = r.body
+    cands = [
+        {
+            "candidate_index": c["index"],
+            "specialist": c["specialist"]["id"],
+            "model": f"{c['engine']} · {c.get('model') or 'default'}",
+            "grade": GRADE_LABEL.get(c.get("grade") or "", "ungraded"),
+            "qualifies": c["ok"],
+            **({"why_not": _team_why_not(c["reasons"])} if not c["ok"] else {}),
+        }
+        for c in r.body["candidates"]["choices"]
+    ]
+    models = [
+        {
+            "model_index": m["index"],
+            "model": f"{m['engine']} · {m['model']}"
+            + (f" · effort {m['effort']}" if m["effort"] else ""),
+            "grade": GRADE_LABEL.get(m.get("grade") or "", "ungraded"),
+            "qualifies": m["ok"],
+            **({"why_not": _team_why_not(m["reasons"])} if not m["ok"] else {}),
+        }
+        for m in r.body["overrides"]["choices"]
+    ]
+    return {"step": sid, "specialists": cands, "models": models}, {
+        "count": len(cands) + len(models)
+    }
+
+
+async def _team_propose(turn: _Turn, mid: str, fields: dict) -> tuple[dict, dict]:
+    from . import ask_operations, ask_team, mission_team
+
+    nonce = uuid.uuid4().hex
+    fields = {
+        "op": fields["op"],
+        "operation_id": ask_team.operation_id(nonce),
+        "expected_revision": turn.team_plans[mid]["revision"],
+        "reason": fields["reason"],
+        "step": fields.get("step", ""),
+        "index": fields.get("index", -1),
+        "listing": fields.get("listing", ""),
+        "shown": fields.get("shown", ""),
+    }
+    probe = {
+        k: v
+        for k, v in fields.items()
+        if k in ("op", "operation_id", "expected_revision", "reason")
+        or (k == "step" and fields["op"] != "assemble")
+        or (k in ("index", "listing") and fields["op"] in ("assign", "set_override"))
+    }
+    try:
+        await ask_team.dry_run(mid, probe)
+    except mission_team.TeamRefused as e:
+        # THE REFUSAL REACHES HQ AS ITS TOOL RESULT (#1950): the same code and server text the
+        # plan view shows. Nothing is staged and nothing is written.
+        raise _ToolRefused(f"refused: {e.text}. Nothing was written ({e.code})", e.code) from None
+    op = ask_operations.CATALOG[f"team.{fields['op']}"]
+    return await _stage(turn, op, mid, "", fields)
+
+
+async def _team_assemble(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    mid = _known_mission(turn, args)
+    if mid not in turn.team_plans:
+        raise _ToolRefused("refused: call read_plan for this mission first", "bad_index")
+    return await _team_propose(turn, mid, {"op": "assemble", "reason": _team_reason(args)})
+
+
+def _team_row(
+    turn: _Turn, mid: str, sid: str, group: str, key: str, args: dict
+) -> tuple[dict, str]:
+    lists = turn.team_lists.get((mid, sid))
+    if lists is None:
+        raise _ToolRefused("refused: call read_pool for this step first", "bad_index")
+    rows = lists[group]["choices"]
+    idx = args.get(key)
+    if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(rows):
+        raise _ToolRefused(f"{key} must be an index read_pool returned", "bad_index")
+    return rows[idx], lists[group]["listing"]
+
+
+async def _team_assign(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    mid = _known_mission(turn, args)
+    sid = _team_step(turn, mid, args)
+    row, listing = _team_row(turn, mid, sid, "candidates", "candidate_index", args)
+    shown = f"{row['specialist']['id']} v{row['specialist']['version']}"
+    return await _team_propose(
+        turn,
+        mid,
+        {"op": "assign", "reason": _team_reason(args), "step": sid, "index": row["index"],
+         "listing": listing, "shown": shown},
+    )  # fmt: skip
+
+
+async def _team_set_override(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    mid = _known_mission(turn, args)
+    sid = _team_step(turn, mid, args)
+    row, listing = _team_row(turn, mid, sid, "overrides", "model_index", args)
+    shown = f"{row['model']} on {row['engine']}" + (
+        f" (effort {row['effort']})" if row["effort"] else ""
+    )
+    return await _team_propose(
+        turn,
+        mid,
+        {"op": "set_override", "reason": _team_reason(args), "step": sid, "index": row["index"],
+         "listing": listing, "shown": shown},
+    )  # fmt: skip
+
+
+async def _team_clear_override(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    mid = _known_mission(turn, args)
+    sid = _team_step(turn, mid, args)
+    return await _team_propose(
+        turn, mid, {"op": "clear_override", "reason": _team_reason(args), "step": sid}
+    )
 
 
 # ---- usage, the fleet and the settings view (#1554) --------------------------------------------
@@ -2159,6 +2395,102 @@ TOOLS: dict[str, Tool] = {
             _list_specialists,
         ),
         Tool(
+            "read_plan",
+            "read",
+            _spec(
+                "read_plan",
+                "A mission's team (#1950): every step of its latest plan revision by step_index, "
+                "with the role an agent step needs (skills, minimum grade), the specialist "
+                "assigned, its model and grade, the server's reason, alternates and notes, and "
+                "whether it still qualifies (why_not when not). Unassigned steps say why. "
+                "mission_id must be one a tool returned this turn.",
+                {"mission_id": {"type": "string"}},
+                ["mission_id"],
+            ),
+            _read_plan,
+        ),
+        Tool(
+            "read_pool",
+            "read",
+            _spec(
+                "read_pool",
+                "For ONE step (step_index from read_plan this turn): the specialists that could "
+                "be assigned (candidate_index) and the models it could run on for this mission "
+                "only (model_index), each with qualifies and, when not, why_not. Only an entry "
+                "that qualifies can be proposed.",
+                {"mission_id": {"type": "string"}, "step_index": {"type": "integer"}},
+                ["mission_id", "step_index"],
+            ),
+            _read_pool,
+        ),
+        Tool(
+            "assemble",
+            "proposal",
+            _spec(
+                "assemble",
+                "Propose assembling the team: the server picks, for every agent step without "
+                "one, the cheapest specialist that qualifies (it never relaxes a constraint). "
+                "Needs read_plan this turn. reason: one line. The operator confirms a card; "
+                "nothing launches.",
+                {"mission_id": {"type": "string"}, "reason": {"type": "string"}},
+                ["mission_id", "reason"],
+            ),
+            _team_assemble,
+        ),
+        Tool(
+            "assign",
+            "proposal",
+            _spec(
+                "assign",
+                "Propose putting a specialist on one step: step_index from read_plan and "
+                "candidate_index from read_pool, this turn. A specialist that does not qualify "
+                "is refused with the reason. The operator confirms a card.",
+                {
+                    "mission_id": {"type": "string"},
+                    "step_index": {"type": "integer"},
+                    "candidate_index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                ["mission_id", "step_index", "candidate_index", "reason"],
+            ),
+            _team_assign,
+        ),
+        Tool(
+            "set_override",
+            "proposal",
+            _spec(
+                "set_override",
+                "Propose running one step on another model for this mission only: step_index "
+                "from read_plan, model_index from read_pool, this turn. A model below the step's "
+                "minimum grade, ungraded, not offered or not mission-ready is refused with the "
+                "reason; tell the operator. The operator confirms a card.",
+                {
+                    "mission_id": {"type": "string"},
+                    "step_index": {"type": "integer"},
+                    "model_index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                ["mission_id", "step_index", "model_index", "reason"],
+            ),
+            _team_set_override,
+        ),
+        Tool(
+            "clear_override",
+            "proposal",
+            _spec(
+                "clear_override",
+                "Propose putting one step back on its specialist's own model (step_index from "
+                "read_plan this turn). The operator confirms a card.",
+                {
+                    "mission_id": {"type": "string"},
+                    "step_index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                ["mission_id", "step_index", "reason"],
+            ),
+            _team_clear_override,
+        ),
+        Tool(
             "propose_session",
             "proposal",
             _spec(
@@ -2612,7 +2944,7 @@ DRAFT_READ_TOOLS = frozenset(
         "playbook_detail", "playbook_schema", "list_skills", "skill_detail", "list_automations",
         "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
-        "list_recipients", "list_specialists",
+        "list_recipients", "list_specialists", "read_plan", "read_pool",
     }
 )  # fmt: skip
 

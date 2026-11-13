@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1472,7 +1472,28 @@ def _migrate_36_to_37(con) -> None:
         con.execute(statement)
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36})
+#: v38 (#1950, #1613 P5): the plan-op LEDGER — not a plan table (plans stay in
+#: `mission_plan_revisions`). One row per operation that WROTE a revision: its `operation_id`
+#: bound to the mission, the author and a digest of the request, and the revision it wrote. A
+#: repeat returns that result; the same id with anything else is a conflict. A refused operation
+#: writes no row. Cascades with the mission (it names steps a deleted mission had).
+PLAN_OPS_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_plan_ops ("
+    "operation_id TEXT PRIMARY KEY, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "author_kind TEXT NOT NULL, request_digest TEXT NOT NULL, "
+    "revision INTEGER NOT NULL, created_at REAL NOT NULL)",
+)
+_SCHEMA += ";\n".join(PLAN_OPS_DDL) + ";\n"
+
+
+def _migrate_37_to_38(con) -> None:
+    """Additive only (workflow §0): one table. Idempotent."""
+    for statement in PLAN_OPS_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1480,7 +1501,10 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
 
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
-    column (to 35), v37 the mission debriefs (to 36); an older build never reads any of them.
+    column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37); an older
+    build never reads any of them. (A plan revision carrying a team, #1950, reads fine on an older
+    build. Applying another procedure there rebuilds every step with `assignment: null`, so that
+    one write drops the team: earlier revisions keep it, and Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1636,6 +1660,8 @@ def _migrate(con) -> int:
             _migrate_35_to_36(con)
         if version < 37:
             _migrate_36_to_37(con)
+        if version < 38:
+            _migrate_37_to_38(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -10420,7 +10446,10 @@ def apply_procedure(
             new = {"id": oid, "project_id": project_id, "procedure": procedure, "inputs": inputs}
             if after:
                 new["after"] = list(after)
-            doc = plan_doc.build([*objectives_so_far, new], reasons)
+            # The team the earlier steps already have stays (#1950); the new steps arrive
+            # unassigned.
+            kept = {s["id"]: s["envelope"]["assignment"] for s in prior["steps"]} if prior else {}
+            doc = plan_doc.build([*objectives_so_far, new], reasons, kept)
             expected = {k for s in doc["steps"] if s["objective"] == oid for k in s["evidence"]}
             keys = [plan_doc.evidence_key(oid, it["key"]) for it in items]
             if sorted(keys) != sorted(expected) or len(keys) != len(set(keys)):
@@ -10465,6 +10494,113 @@ def apply_procedure(
         finally:
             con.close()
     return {"revision": revision, "objective": oid}
+
+
+#: The states a mission's TEAM may be planned in (#1950): before dispatch, like a procedure.
+TEAM_STATES = PROCEDURE_STATES
+
+
+def plan_op_replay(
+    mission_id: str,
+    operation_id: str,
+    *,
+    author_kind: str,
+    request_digest: str,
+    path: Path | None = None,
+) -> dict | None:
+    """The recorded result of `operation_id`, or None when it never wrote (#1950, #1579's rule).
+
+    The same id with another mission, author or request is a conflict (409), never a replay."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return _plan_op_row_tx(con, mission_id, operation_id, author_kind, request_digest)
+    finally:
+        con.close()
+
+
+def _plan_op_row_tx(con, mission_id, operation_id, author_kind, request_digest) -> dict | None:
+    row = con.execute(
+        "SELECT * FROM mission_plan_ops WHERE operation_id=?", (operation_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if (row["mission_id"], row["author_kind"], row["request_digest"]) != (
+        mission_id,
+        author_kind,
+        request_digest,
+    ):
+        raise MissionError(
+            "this operation id was already used for another request; send a new one",
+            status=409,
+        )
+    return {"revision": int(row["revision"]), "replayed": True}
+
+
+def commit_plan_op(
+    mission_id: str,
+    document: dict,
+    *,
+    operation_id: str,
+    author_kind: str,
+    request_digest: str,
+    expected_revision: int,
+    reason: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Append `document` as the next plan revision for a TEAM operation (#1950) — compare-and-set
+    on `expected_revision`, in ONE transaction with its ledger row.
+
+    The caller built `document` from revision `expected_revision` under the team rules
+    (`mission_team`); this re-checks, under the write lock, that the mission is still before
+    dispatch and that nobody wrote a revision since (409, with the latest revision number). A
+    repeat of a recorded operation returns its result and writes nothing."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            done = _plan_op_row_tx(con, mission_id, operation_id, author_kind, request_digest)
+            if done is not None:
+                con.execute("ROLLBACK")
+                return done
+            m = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if m is None:
+                raise MissionNotFound(mission_id)
+            if m["state"] not in TEAM_STATES:
+                raise MissionError(
+                    f"mission {mission_id} is {m['state']}; its team is planned before dispatch",
+                    status=409,
+                )
+            latest = _latest_plan_tx(con, mission_id)
+            current = latest["revision"] if latest else 0
+            if current != expected_revision:
+                err = MissionError(
+                    f"the plan changed: it is at revision {current}, not {expected_revision}; "
+                    "read it again",
+                    status=409,
+                )
+                err.latest_revision = current  # type: ignore[attr-defined]
+                raise err
+            revision = _append_plan_revision_tx(
+                con, mission_id, document, author_kind=author_kind, reason=reason, ts=ts
+            )
+            con.execute(
+                "INSERT INTO mission_plan_ops "
+                "(operation_id, mission_id, author_kind, request_digest, revision, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (operation_id, mission_id, author_kind, request_digest, revision, ts),
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {"revision": revision, "replayed": False}
 
 
 def plan_revision(

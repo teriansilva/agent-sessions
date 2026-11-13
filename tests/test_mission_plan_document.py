@@ -257,7 +257,7 @@ def test_a_legacy_step_role_is_never_promoted_into_a_plan():
             lambda d: d["objectives"].append(copy.deepcopy(d["objectives"][0])),
             "duplicate objective",
         ),
-        (lambda d: d["steps"][0]["envelope"].update(assignment="spc_x"), "assigned in P5"),
+        (lambda d: d["steps"][0]["envelope"].update(assignment="spc_x"), "envelope.assignment"),
         (lambda d: d["steps"][0]["envelope"].update(reason="two\nlines"), "one line"),
         (lambda d: d["steps"].pop(), "exactly the objectives' procedure steps"),
         (lambda d: d["steps"][1].update(after=[]), "does not match"),

@@ -227,6 +227,8 @@ async def _watch_turn(task: asyncio.Task, queue: asyncio.Queue[dict]) -> AsyncIt
 #: A mission-local procedure is one flow document; the bundle format bounds a flow file at
 #: `schema.MAX_TOML_BYTES`, and its JSON spelling gets the same order of room (#1777).
 PROCEDURE_BODY_MAX = 4 * 64 * 1024
+#: A team operation is a handful of small fields (#1950).
+TEAM_OP_BODY_MAX = 4 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -2594,6 +2596,144 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)
+
+    # ---- the team (#1950, #1613 P5): HQ plans with the Commander ------------------------------
+
+    def _team_fail(e: Exception) -> JSONResponse:
+        from .. import mission_team
+
+        if isinstance(e, mission_team.TeamRefused):
+            body = {"detail": e.text, "code": e.code, "reasons": e.reasons, **e.extra}
+            return JSONResponse(body, status_code=e.status, headers=_NO_STORE)
+        out = {"detail": str(e)}
+        latest = getattr(e, "latest_revision", None)
+        if latest is not None:
+            out["latest_revision"] = latest
+        return JSONResponse(out, status_code=getattr(e, "status", 500), headers=_NO_STORE)
+
+    async def _latest_plan(mission_id: str) -> dict:
+        latest = await missions.run_admitted(lambda: missions.plan_revision(mission_id))
+        if latest is None:
+            raise missions.MissionError(
+                "this mission has no plan yet: apply a procedure first", status=409
+            )
+        return latest
+
+    @app.get("/api/missions/{mission_id}/plan/team")
+    async def plan_team_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """The team on the latest plan revision, RE-DERIVED on this read: each step's stored
+        assignment plus its effective model, grade, current verdict ("no longer qualifies") and
+        notes. Nothing derived here is ever stored."""
+        from .. import mission_team
+
+        try:
+            latest = await missions.run_admitted(lambda: missions.plan_revision(mission_id))
+            if latest is None:
+                return JSONResponse({"revision": None, "team": None}, headers=_NO_STORE)
+            doc = latest["document"]
+            ctx = await asyncio.to_thread(mission_team.load_context, doc)
+            team = await asyncio.to_thread(mission_team.view, doc, ctx)
+        except (missions.MissionError, mission_team.TeamRefused) as e:
+            return _team_fail(e)
+        return JSONResponse(
+            {"revision": latest["revision"], "author_kind": latest["author_kind"], "team": team},
+            headers=_NO_STORE,
+        )
+
+    @app.get("/api/missions/{mission_id}/plan/team/choices")
+    async def plan_team_choices_route(
+        mission_id: str, step: str = "", _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """The server-built lists for ONE step, each entry with its verdict: the specialists that
+        may be assigned and the models an override may choose. An `assign` / `set_override` names
+        an entry by index and echoes the list's `listing` digest (bound to this mission, revision
+        and step)."""
+        from .. import mission_team
+
+        try:
+            latest = await _latest_plan(mission_id)
+            doc, rev = latest["document"], latest["revision"]
+            if not mission_team.STEP_ID_RE.fullmatch(step):
+                raise mission_team.TeamRefused("invalid_request", "step must be a plan step id")
+            sid = step
+            ctx = await asyncio.to_thread(mission_team.load_context, doc)
+
+            def lists() -> dict:
+                s = mission_team._step(doc, sid)
+                if not mission_team.assignable(s):
+                    raise mission_team.TeamRefused(
+                        "not_assignable", f"step {sid} gets no specialist"
+                    )
+                assigned = mission_team.assignments_of(doc)
+                kw = {"mission_id": mission_id, "revision": rev}
+                return {
+                    "candidates": mission_team.candidates(s, doc, assigned, ctx, **kw),
+                    "overrides": mission_team.override_choices(s, doc, assigned, ctx, **kw),
+                }
+
+            out = await asyncio.to_thread(lists)
+        except (missions.MissionError, mission_team.TeamRefused) as e:
+            return _team_fail(e)
+        return JSONResponse({"revision": rev, "step": sid, **out}, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/plan/ops")
+    async def plan_ops_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """One team operation (#1950; #1579's op contract): `assemble`, `assign`, `set_override`
+        or `clear_override`, with `expected_revision`, `operation_id` and a one-line `reason`.
+
+        The same function decides for both authors (the operator here, HQ through its card, which
+        runs this route as the operator). A refusal writes nothing. A stale revision is 409 with
+        the latest number; a repeated `operation_id` returns its first result."""
+        from .. import mission_team
+
+        try:
+            body = await _bounded_body(request, TEAM_OP_BODY_MAX)
+            op = mission_team.parse_op(body)
+            digest = mission_team.request_digest(op)
+            done = await missions.run_admitted(
+                lambda: missions.plan_op_replay(
+                    mission_id,
+                    op["operation_id"],
+                    author_kind=op["author"],
+                    request_digest=digest,
+                )
+            )
+            if done is None:
+                latest = await _latest_plan(mission_id)
+                if latest["revision"] != op["expected_revision"]:
+                    err = missions.MissionError(
+                        f"the plan changed: it is at revision {latest['revision']}, not "
+                        f"{op['expected_revision']}; read it again",
+                        status=409,
+                    )
+                    err.latest_revision = latest["revision"]  # type: ignore[attr-defined]
+                    raise err
+                doc = latest["document"]
+                ctx = await asyncio.to_thread(mission_team.load_context, doc)
+                new = await asyncio.to_thread(
+                    lambda: mission_team.apply_op(
+                        doc, op, ctx, mission_id=mission_id, revision=latest["revision"]
+                    )
+                )
+                done = await missions.run_admitted(
+                    lambda: missions.commit_plan_op(
+                        mission_id,
+                        new,
+                        operation_id=op["operation_id"],
+                        author_kind=op["author"],
+                        request_digest=digest,
+                        expected_revision=op["expected_revision"],
+                        reason=op["reason"],
+                    )
+                )
+        except (missions.MissionError, mission_team.TeamRefused) as e:
+            return _team_fail(e)
+        return JSONResponse(done, headers=_NO_STORE)
 
     @app.post("/api/missions/{mission_id}/objectives/{objective_key}/stand-down")
     async def stand_down_route(

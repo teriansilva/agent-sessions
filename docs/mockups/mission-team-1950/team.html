@@ -1,0 +1,106 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1950 · HQ plans the team</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1950 · the team HQ assembled</h1>
+<p class="sub">Frames 1–3. A synthetic job-application mission (no personal content). Grades show under the Settings names: Intern = fast, Specialist = strong, Senior = frontier. Every reason, note and refusal line is server text; the client renders it and recomputes nothing.</p>
+<div class="board">
+
+<div><div class="label">1 · THE ASSEMBLED TEAM — REASONS, ALTERNATES, NOTES</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="team">
+  <div class="thead"><span class="ttl">Team</span><span class="rev">revision 4 · assembled · by HQ, confirmed by you</span>
+   <div class="tacts"><button class="nj-plate btn ghost">Ask HQ</button><button class="nj-plate btn primary">Assemble</button></div></div>
+  <p class="tsum">10 steps, 6 shown · 7 agent steps · 3 specialists · peak 2 at once (pool limit 6). Nothing launches here: approval and Start come later.</p>
+  <ul class="steps">
+   <li class="step quiet"><div class="sline"><span class="stitle">Intake</span><span class="sid">o1.intake</span><span class="actor">operator step</span></div><div class="side"></div><p class="why">You do this step. No specialist is assigned to operator, external or note steps.</p></li>
+   <li class="step"><div class="sline"><span class="stitle">Read the posting</span><span class="sid">o1.posting</span><span class="skill">career-archive</span><span class="grade">min Intern</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">career-archivist</span><span class="ver">v2</span><span class="runs">claude-api · sonnet</span><span class="grade">Specialist</span></div>
+    <p class="why">Only specialist with <b>career-archive</b>; Specialist ≥ Intern.</p>
+    <div class="notes"><span class="note info">usage unknown</span></div>
+   </li>
+   <li class="step"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="skill">cv-writing</span><span class="grade">min Specialist</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">cv-writer</span><span class="ver">v3</span><span class="runs">claude-api · sonnet</span><span class="grade">Specialist</span></div>
+    <p class="why">Only specialist with <b>cv-writing</b>; Specialist ≥ Specialist.</p>
+    <div class="notes"><span class="note info">usage unknown</span></div>
+   </li>
+   <li class="step"><div class="sline"><span class="stitle">Cover letter</span><span class="sid">o1.cover_letter</span><span class="skill">cv-writing</span><span class="grade">min Specialist</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">cv-writer</span><span class="ver">v3</span><span class="runs">claude-api · sonnet</span><span class="grade">Specialist</span></div>
+    <p class="why">Only specialist with <b>cv-writing</b>; Specialist ≥ Specialist.</p>
+    <div class="notes"><span class="note">will queue: 1 of 2 runs first</span><span class="note info">usage unknown</span></div>
+    <p class="ann" style="grid-column:1/-1;margin:0">Shown when cv-writer's capacity is 1 and Tailor the CV and Cover letter can run at the same time. The plan stays valid: capacity never refuses a plan.</p>
+   </li>
+   <li class="step"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="skill">application-review</span><span class="grade">min Senior</span><span class="actor">distinct from cv, cover_letter</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">application-reviewer</span><span class="ver">v1</span><span class="runs">claude-api · opus</span><span class="grade">Senior</span></div>
+    <p class="why">Only Senior specialist with <b>application-review</b>, and not cv-writer (steps cv, cover_letter).</p>
+    <details class="alt" open><summary>Alternates (1)</summary><ol><li><b>review-lead</b> v2 · claude-api · opus · Senior — also qualifies; same grade and free capacity, so it is ordered after by id.</li></ol></details>
+   </li>
+   <li class="step"><div class="sline"><span class="stitle">Record the application</span><span class="sid">o1.record</span><span class="skill">career-archive</span><span class="grade">min Intern</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">career-archivist</span><span class="ver">v2</span><span class="runs">claude-api · haiku</span><span class="grade">Intern</span><span class="ovr">OVERRIDE · THIS MISSION</span></div>
+    <p class="why">Override accepted: haiku is Intern, and Intern ≥ Intern. career-archivist itself still runs on sonnet.</p>
+    <details class="alt"><summary>Alternates (0)</summary></details>
+   </li>
+  </ul>
+ </div>
+</section></div>
+
+<div><div class="label">2 · CHANGE THE MODEL FOR ONE STEP — REFUSED ENTRIES DISABLED, WITH THEIR REASON</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="picker" style="margin-top:14px">
+  <div class="phead"><b>Review the application</b><span class="skill">application-review</span><span class="grade">min Senior</span><span class="rev">application-reviewer v1 · normally claude-api · opus</span></div>
+  <div class="ogroup">Specialist</div>
+  <ul class="opts">
+   <li class="opt"><span class="radio"></span><span class="oname">application-reviewer — as saved</span><span class="grade">Senior</span></li>
+   <li class="opt"><span class="radio"></span><span class="oname">review-lead v2 · claude-api · opus</span><span class="grade">Senior</span></li>
+   <li class="opt dis"><span class="radio"></span><span class="oname">cv-writer v3 · claude-api · sonnet</span><span class="grade">Specialist</span><span class="oreason">Not distinct: it already holds Tailor the CV and Cover letter.</span></li>
+  </ul>
+  <div class="ogroup">Model for this mission only</div>
+  <ul class="opts">
+   <li class="opt sel"><span class="radio"></span><span class="oname">claude-api · opus · effort high</span><span class="grade">Senior</span></li>
+   <li class="opt"><span class="radio"></span><span class="oname">claude-api · opus</span><span class="grade">Senior</span></li>
+   <li class="opt dis"><span class="radio"></span><span class="oname">claude-api · sonnet</span><span class="grade">Specialist</span><span class="oreason">sonnet is Specialist, below Senior, which application-review needs</span></li>
+   <li class="opt dis"><span class="radio"></span><span class="oname">claude-api · haiku</span><span class="grade">Intern</span><span class="oreason">haiku is Intern, below Senior, which application-review needs</span></li>
+   <li class="opt dis"><span class="radio"></span><span class="oname">claude-api · claude-x-preview</span><span class="ungraded">Ungraded</span><span class="oreason">claude-x-preview is ungraded on claude-api; an ungraded model meets no minimum grade (grade it in Settings → Agents)</span></li>
+  </ul>
+  <div class="pfoot"><span class="hint">You pick from this list. Nothing typed becomes a model.</span><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Use opus · high</button></div>
+ </div>
+ <p class="ann" style="margin:0 16px 14px">One row per entry the server offers, each with its own verdict. Only clients that can hold a mission role are listed (their model lists are the only ones asked). A disabled row cannot be chosen; the request carries its index, and an index the server did not offer is refused (422). Each choosable row is a 44 px target.</p>
+</section></div>
+
+<div><div class="label">3a · THE DOWNGRADE, REFUSED — IN THE PLAN VIEW</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="team">
+  <ul class="steps">
+   <li class="step warn"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="skill">application-review</span><span class="grade">min Senior</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <p class="alert" style="grid-column:1/-1" role="alert"><b>REFUSED</b>sonnet is Specialist, below Senior, which application-review needs. Nothing was written. <span class="code">grade_below_min</span></p>
+    <div class="who"><span class="spec">application-reviewer</span><span class="ver">v1</span><span class="runs">claude-api · opus</span><span class="grade">Senior</span></div>
+    <p class="why">Only Senior specialist with <b>application-review</b>, and not cv-writer (steps cv, cover_letter).</p>
+   </li>
+  </ul>
+  <p class="ann" style="margin:0">The step keeps the team it had: revision 4 is still the latest. The same refusal comes back whether you or HQ asked.</p>
+ </div>
+</section></div>
+
+<div><div class="label">3b · THE SAME REFUSAL — IN THE HQ CONVERSATION</div>
+<section class="frame">
+ <div class="mhead"><b>HQ</b><span class="mstate">ASK</span></div>
+ <div class="chat">
+  <div class="msg me"><span class="by">You</span>Put the review on Sonnet, it's cheaper.</div>
+  <div class="tool"><span class="tn">set_override · step 5 · model 3 (claude-api · sonnet)</span><span class="tr"><b style="color:var(--warn-text);font:600 10px 'Liberation Mono',monospace;letter-spacing:.14em">REFUSED</b> sonnet is Specialist, below Senior, which application-review needs. Nothing was written. <span class="rev">grade_below_min</span></span></div>
+  <div class="msg hq"><span class="by">HQ</span>I can't: the review step needs a Senior model and Sonnet is graded Specialist. The review stays on application-reviewer with opus. If cost is the concern, I can move <b>Record the application</b> to haiku instead: it only needs an Intern.</div>
+  <p class="ann" style="margin:0">HQ has read_plan, read_pool, assemble, assign, set_override and clear_override. It has no approve, start or launch tool. A change HQ proposes that qualifies becomes a card you confirm; one that does not qualify never becomes a card.</p>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

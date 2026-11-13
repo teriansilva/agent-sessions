@@ -37,6 +37,8 @@ export interface MissionMockOptions {
   now?: unknown;
   /** `GET /api/missions/{id}/shelf` — the mission shelf (#1740). Defaults to an empty shelf. */
   shelf?: unknown;
+  /** `GET /api/missions/{id}/plan/team` (#1950). Defaults to "no plan yet". */
+  team?: unknown;
 }
 
 /** An empty shelf manifest, exactly as `GET /api/missions/{id}/shelf` answers for a mission that
@@ -101,6 +103,11 @@ export async function mockMissions(
   );
   await page.route("**/api/missions/*/shelf", (r) =>
     r.fulfill({ json: opts.shelf ?? EMPTY_SHELF }),
+  );
+  // The mission's team (#1950): no plan unless a spec says otherwise. Registered after the
+  // catch-all, so a team read is never answered with — or counted as — a LIST read.
+  await page.route("**/api/missions/*/plan/team**", (r) =>
+    r.fulfill({ json: opts.team ?? { revision: null, team: null } }),
   );
 }
 

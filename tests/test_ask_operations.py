@@ -98,6 +98,9 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1, "revision": 2}
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
     fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
+    # A team card (#1950): the op and the index it names.
+    fields.update(op="assemble", operation_id="x", expected_revision=1, reason="r", step="o1.a",
+                  index=0, listing="l")  # fmt: skip
     # A secret (#1786): the create's card input, and the revision an access card reads at the tap.
     fields.update(secret_name="asc_api_key", description="", value="card-typed-value-1786")
     from agent_sessions import ask_secrets
@@ -123,6 +126,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "automation": "aut1",
             "secret": "0" * 32,
             "attachment": "0" * 32,
+            "mission": "m1",
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

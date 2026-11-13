@@ -92,6 +92,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Objectives: add, rename, waive, reorder, remove, overrule the judge, edit / reset / clear direction, preview a direction | PATCH …/objectives, POST /api/mission-directions/preview | P5 W/R |
 | Stand down an objective's nudges | POST …/objectives/{key}/stand-down | P5 W |
 | Procedures (#1777): list the project's procedures by index, apply one or a mission-local one (in a project chosen by index, after earlier objectives); read a plan revision with its derived step and objective states | GET …/procedures, GET …/procedures/projects, GET …/procedures/{index}/inputs, POST …/procedure, GET …/plan/revisions/{latest\|n} | P5 W/R |
+| Team (#1950): read the team with its re-derived verdicts, the per-step candidate and model lists; assemble, assign, override a step's model, clear it | GET …/plan/team, GET …/plan/team/choices, POST …/plan/ops | have (`read_plan`, `read_pool`; `assemble`, `assign`, `set_override`, `clear_override` as cards) |
 | Relay words to a held session; edit an AI-drafted direction and send | POST …/relay | P5 W |
 | Spawn a sub-agent beside a held session | POST …/spawn | P5 W (starts agents) |
 | Answer menus automatically (auto-choose) | PATCH …/autonomy | **never** for on (widens autonomy); off is P5 W |
@@ -419,7 +420,10 @@ GET    /api/missions/{mission_id}/objectives                                    
 PATCH  /api/missions/{mission_id}/objectives                                      P5
 POST   /api/missions/{mission_id}/objectives/{objective_key}/stand-down           P5
 PATCH  /api/missions/{mission_id}/plan                                            P5
+POST   /api/missions/{mission_id}/plan/ops                                        P5
 GET    /api/missions/{mission_id}/plan/revisions/{revision}                       P5
+GET    /api/missions/{mission_id}/plan/team                                       P5
+GET    /api/missions/{mission_id}/plan/team/choices                               P5
 POST   /api/missions/{mission_id}/plan/save-as-plan                               P5
 POST   /api/missions/{mission_id}/plan                                            P5
 POST   /api/missions/{mission_id}/procedure                                       P5

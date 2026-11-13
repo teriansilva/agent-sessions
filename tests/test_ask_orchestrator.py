@@ -277,6 +277,14 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "send_nudge": "send",
         "list_agents": "read",
         "list_specialists": "read",
+        # #1950: a mission's team — two reads and four proposals, each a card the operator
+        # confirms. There is NO approve, start, dispatch or launch tool.
+        "read_plan": "read",
+        "read_pool": "read",
+        "assemble": "proposal",
+        "assign": "proposal",
+        "set_override": "proposal",
+        "clear_override": "proposal",
         "propose_session": "proposal",
         # #1554: usage, the fleet and the allowlisted settings view — all read-only.
         "agent_usage": "read",

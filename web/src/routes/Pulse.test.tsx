@@ -55,6 +55,8 @@ vi.mock("../lib/api", async () => {
       missionObjectives: vi.fn(),
       missionContext: vi.fn(),
       adoptMissionSession: vi.fn(),
+      // The mission's team (#1950): no plan here, so the Team card renders nothing.
+      missionTeam: vi.fn().mockResolvedValue({ revision: null, team: null }),
     },
   };
 });
