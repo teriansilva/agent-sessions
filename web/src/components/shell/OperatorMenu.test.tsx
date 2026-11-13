@@ -7,7 +7,7 @@
  *  the operator their app is open to the network, and one that offers Sign out where there is no
  *  session offers a control that cannot do anything.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -147,4 +147,23 @@ test("Report an issue is offered on a no-login install as well", async () => {
   mount({ username: null, authMode: "none" });
   await userEvent.click(screen.getByTestId("operator-menu"));
   expect(screen.getByTestId("operator-report-issue")).toBeInTheDocument();
+});
+
+test("the tile shows the operator's avatar, and falls back to the initials if it fails", () => {
+  mount({ avatarSrc: "blob:avatar-1" });
+  const tile = screen.getByTestId("operator-menu");
+  const img = screen.getByTestId("operator-avatar");
+  expect(img).toHaveAttribute("src", "blob:avatar-1");
+  expect(tile).not.toHaveTextContent("NI");
+  // The accessible name still names the operator: the picture is decoration.
+  expect(tile).toHaveAccessibleName("Operator nightowl");
+  fireEvent.error(img);
+  expect(screen.queryByTestId("operator-avatar")).toBeNull();
+  expect(tile).toHaveTextContent("NI");
+});
+
+test("no avatar keeps the initials", () => {
+  mount({ avatarSrc: null });
+  expect(screen.queryByTestId("operator-avatar")).toBeNull();
+  expect(screen.getByTestId("operator-menu")).toHaveTextContent("NI");
 });

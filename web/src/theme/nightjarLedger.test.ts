@@ -225,8 +225,7 @@ function rules(css: string): { selector: string; body: string; line: number }[] 
 }
 
 const COLOUR = /#[0-9a-fA-F]{3,8}(?![\w-])|\brgba?\(|\bhsla?\(/;
-// `avatar` (#1931): the chat avatars are round at the operator's request (docs/design.md §1).
-const ROUND_OK = /led|radar|round|ping|spinner|fab|dot|avatar/i;
+const ROUND_OK = /led|radar|round|ping|spinner|fab|dot/i;
 
 export function literalFindings(css: string): string[] {
   const out: string[] = [];
@@ -271,7 +270,8 @@ describe("a done stylesheet carries no literals (docs/design.md v2 §10)", () =>
     expect(literalFindings(".a { background: rgba(0,0,0,.5); }")).toHaveLength(1);
     expect(literalFindings(".a { border-radius: 4px; }")).toHaveLength(1);
     expect(literalFindings(".led { border-radius: 50%; }")).toEqual([]);
-    expect(literalFindings(".avatar { border-radius: 50%; }")).toEqual([]);
+    // The avatars are chamfered plates now (docs/design.md §1): a round one is a finding again.
+    expect(literalFindings(".avatar { border-radius: 50%; }")).toHaveLength(1);
     expect(literalFindings(".a { z-index: 5; }")).toHaveLength(1);
     expect(literalFindings(".a { z-index: var(--z-menu); }")).toEqual([]);
     expect(literalFindings(".a { font-size: 12px; }")).toHaveLength(1);

@@ -239,3 +239,24 @@ test("a revoked or expired link says so; a link without its key fetches nothing"
   expect(cut.requests.filter((u) => u.includes("/api/"))).toEqual([]);
   await cut.ctx.close();
 });
+
+test("a message header's avatar, name, time and share icon sit on one centre line", async ({ page }) => {
+  await operatorPage(page, { id: PLAIN.envelope.id, key: PLAIN.key, password: false });
+  await page.goto(`/s/claude-api/${ID}`);
+  await expect(page.getByTestId("reply-share-button")).toHaveCount(1);
+  // Every header that carries a timestamp: the operator's and the agent's, the shared one too.
+  const headers = page.locator("time").locator("xpath=..");
+  await expect(headers.first()).toBeVisible();
+  const spreads = await headers.evaluateAll((els) =>
+    els.map((h) => {
+      const mids = [...h.children].map((c) => {
+        const r = c.getBoundingClientRect();
+        return r.top + r.height / 2;
+      });
+      return { children: mids.length, spread: Math.max(...mids) - Math.min(...mids) };
+    }),
+  );
+  expect(spreads.length).toBeGreaterThanOrEqual(2);
+  expect(spreads.some((s) => s.children === 4)).toBe(true); // the shared reply: disc, name, time, icon
+  for (const s of spreads) expect(s.spread).toBeLessThanOrEqual(1);
+});

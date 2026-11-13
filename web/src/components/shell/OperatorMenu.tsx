@@ -46,6 +46,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../lib/api";
@@ -68,6 +69,7 @@ export function OperatorMenu({
   onWhatsNew,
   whatsNewLabel = null,
   version = null,
+  avatarSrc = null,
 }: {
   /** The operator's login name. `null` on a no-login install, `undefined` before the config
    *  arrives or on a server too old to send it — neither decides whether there IS a login. */
@@ -88,7 +90,12 @@ export function OperatorMenu({
   /** The running version (`useAppVersion().displayVersion`), written into a reported issue's
    *  body (#1742). `null` until it is known; the report then says "unknown". */
   version?: string | null;
+  /** The operator's avatar as an object URL (`useOperatorAvatarSrc`, so it loads over the Home
+   *  Free relay too). Fills the square, cover-fit; the initials stay underneath until it loads and
+   *  come back if it fails. */
+  avatarSrc?: string | null;
 }) {
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   // Settings returns to wherever it was opened from, as the old top-bar ⚙ did.
   const location = useLocation();
   // No config yet: render nothing rather than a placeholder identity.
@@ -111,7 +118,17 @@ export function OperatorMenu({
       trigger={
         <>
           <span className={styles.square} aria-hidden="true">
-            {initials}
+            {avatarSrc && brokenSrc !== avatarSrc ? (
+              <img
+                className={styles.squareImg}
+                src={avatarSrc}
+                alt=""
+                data-testid="operator-avatar"
+                onError={() => setBrokenSrc(avatarSrc)}
+              />
+            ) : (
+              initials
+            )}
           </span>
           {/* Clipped, not removed, at icon-only widths — see App.css. The trigger's accessible
               name comes from `AnchoredMenu`'s own label, so this text is for the eye. */}

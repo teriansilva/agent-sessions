@@ -107,6 +107,7 @@ import {
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { BrandMark, BrandWordmark } from "../components/brand/Brand";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
+import { useOperatorAvatarSrc } from "../lib/operatorAvatar";
 import { RelayChip } from "../components/shell/RelayChip";
 import { FooterTelemetry } from "../components/shell/FooterTelemetry";
 import { BootSequence } from "../components/shell/BootSequence";
@@ -251,6 +252,8 @@ function Layout() {
   if (isSessionPath && lastSessionPath !== routePath)
     setLastSessionPath(routePath);
   const config = useConfig();
+  // The operator tile shows the avatar (#1931) — the same shared object URL the chat plates use.
+  const operatorAvatarSrc = useOperatorAvatarSrc(config?.avatar);
   // First-run onboarding (#463): show the setup wizard once the password gate has cleared and
   // the install isn't already onboarded. `setupDismissed` hides it immediately on finish/skip
   // (no config refetch needed); the topbar Help entry re-opens the slideshow tour (`tourOpen`).
@@ -656,6 +659,7 @@ function Layout() {
                 onWhatsNew={whatsNew.open}
                 whatsNewLabel={helpWhatsNew}
                 version={version.displayVersion}
+                avatarSrc={operatorAvatarSrc}
               />
             </span>
           </span>

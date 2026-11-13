@@ -37,18 +37,31 @@
   background: var(--bg-0);
 }
 .reply > .activity:last-child { margin-bottom: 0; }
+/* ONE row, on one centre line (the operator, 2026-11-13): the plate, the name, the time and the
+   share icon. Nothing wraps — the time, then the name, ellipsise first — and the row is as tall as
+   the plate: the share icon's 44 px touch target overhangs it instead of pushing the reply down. */
 .messageHeader {
-  flex-wrap: wrap;
-  align-items: baseline;
-  row-gap: 4px;
-  overflow-wrap: anywhere;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
 }
-/* #1931: the author's disc, scaled with the API-session look like the label beside it. */
+/* Doubled to outrank ChatPane's `.who` (one class each, and module load order isn't an API). */
+.messageHeader.messageHeader {
+  margin-bottom: 4px;
+}
+.messageHeader > span:not([data-avatar]),
+.messageHeader > time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.messageHeader > time {
+  flex-shrink: 2;
+}
+/* #1931: the author's plate, scaled with the API-session look like the label beside it. */
 .messageAvatar {
-  --avatar-size: calc(24px * var(--api-scale, 1));
-  /* Centred on the label on its own: the header keeps its baseline alignment, so nothing that was
-     there before the disc computes differently (e2e/api-look-defaults.spec.ts). */
-  align-self: center;
+  --avatar-size: calc(22px * var(--api-scale, 1));
 }
 /* #1931: the head's "N connected". It never yields: the project name ellipsises first. */
 .presentChip {
@@ -1005,8 +1018,11 @@
 
 /* Share this reply (#1956): a quiet icon at the end of a finished reply's header. 44px on touch. */
 .replyShare {
+  flex: none;
   margin-left: auto;
-  align-self: center;
+  /* Overhangs the row rather than setting its height: the target stays, the gap above the reply
+     doesn't grow (see .messageHeader). */
+  margin-block: -6px;
   display: inline-grid;
   place-items: center;
   inline-size: 28px;
@@ -1026,5 +1042,6 @@
   .replyShare {
     inline-size: 44px;
     block-size: 44px;
+    margin-block: -11px;
   }
 }

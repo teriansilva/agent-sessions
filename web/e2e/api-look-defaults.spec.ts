@@ -30,6 +30,12 @@
 // An eighth time for #1956: a finished reply's header gained the Share this reply icon — five
 // inserted elements per structured case (the button, its svg and three paths); every existing
 // element computes exactly the recorded styles in order, and the chat pane is unchanged.
+// A ninth time at the operator's request (2026-11-13): every message header is ONE centred row —
+// the avatar became a chamfered NIGHTJAR plate (22 px, clip-path instead of a 50% radius, its edge
+// drawn by ::after), the header centres instead of baseline-aligning and no longer wraps, its gap
+// below is 4 px, and the share icon overhangs the row. Three recorded elements per structured case
+// changed (row-gap and margins on the headers and the overhanging share icon); nothing was added or
+// removed, and the chat pane is byte-identical.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

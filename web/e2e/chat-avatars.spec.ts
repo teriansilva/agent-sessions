@@ -10,7 +10,7 @@ import { TOUCH_FLOOR } from "./touchTarget";
 // Three surfaces: the public share viewer (a fresh visitor context on the built `share.html`), the
 // operator's own API-session pane, and Settings › Profile, where an image is chosen, cropped and
 // scaled by the browser's own canvas, and uploaded. A jsdom test proves none of the geometry this
-// is about — that the disc is round, sits beside its label, and doesn't push the text off a phone.
+// is about — that the plate is chamfered, sits beside its label, and doesn't push the text off a phone.
 
 const ID = "5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
 const KEY = `codex-api:${ID}`;
@@ -42,7 +42,8 @@ const VISITOR_TURN = {
   author: { name: "Jana", via: "public_link" as const },
 };
 
-/** The disc must be round, the size it was given, and left of its label without overlapping it. */
+/** The plate must be square, chamfered (a NIGHTJAR cut, never round), the size it was given, and
+ *  left of its label without overlapping it. */
 async function expectDiscBeside(disc: Locator, label: Locator, size: number) {
   await expect(disc).toBeVisible();
   const [d, l] = [await disc.boundingBox(), await label.boundingBox()];
@@ -50,7 +51,12 @@ async function expectDiscBeside(disc: Locator, label: Locator, size: number) {
   expect(Math.abs(d!.width - size)).toBeLessThanOrEqual(1);
   expect(Math.abs(d!.height - d!.width)).toBeLessThanOrEqual(1);
   expect(d!.x + d!.width).toBeLessThanOrEqual(l!.x + 0.5);
-  expect(await disc.evaluate((e) => getComputedStyle(e).borderTopLeftRadius)).toBe("50%");
+  const shape = await disc.evaluate((e) => {
+    const cs = getComputedStyle(e);
+    return { radius: cs.borderTopLeftRadius, clip: cs.clipPath };
+  });
+  expect(shape.radius).toBe("0px");
+  expect(shape.clip).toMatch(/^polygon\(/);
 }
 
 /** The `file` part of a multipart body: its declared type and its bytes. */
@@ -264,14 +270,25 @@ test("the operator's API session: discs on every message and the head's connecte
 
   const mine = turns.nth(0).locator("[data-avatar]");
   await expect(mine).toHaveCount(2); // you + the agent's reply
-  await expectDiscBeside(mine.nth(0), turns.nth(0).getByText("you", { exact: true }), 24);
+  await expectDiscBeside(mine.nth(0), turns.nth(0).getByText("you", { exact: true }), 22);
   const img = mine.nth(0).locator("img");
   await expect(img).toHaveAttribute("src", /^blob:/);
   await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBe(180);
   await expect(mine.nth(1)).toHaveText("🤖");
+  // The top bar's operator tile wears the same image, cover-fit to its whole square.
+  const tileImg = page.getByTestId("operator-avatar");
+  await expect(tileImg).toHaveAttribute("src", /^blob:/);
+  const fit = await tileImg.evaluate((i: HTMLImageElement) => {
+    const sq = i.parentElement!.getBoundingClientRect();
+    const r = i.getBoundingClientRect();
+    return { fit: getComputedStyle(i).objectFit, dw: Math.abs(r.width - sq.width), dh: Math.abs(r.height - sq.height) };
+  });
+  expect(fit.fit).toBe("cover");
+  expect(fit.dw).toBeLessThanOrEqual(0.5);
+  expect(fit.dh).toBeLessThanOrEqual(0.5);
 
   const theirs = turns.nth(1).locator("[data-avatar]").first();
-  await expectDiscBeside(theirs, turns.nth(1).getByText("Jana · via public link"), 24);
+  await expectDiscBeside(theirs, turns.nth(1).getByText("Jana · via public link"), 22);
   await expect(theirs).toHaveText("J");
 });
 
