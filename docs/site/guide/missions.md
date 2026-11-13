@@ -113,6 +113,34 @@ on the mission shows who fills each one from your pool of specialists (Library �
 
 Nothing on the Team card starts an agent.
 
+## Plan approval — one tap for the enumerated plan
+
+Under the Team card, the **Plan approval** card lists, in plain words, what approving the plan
+would cover: each agent step's specialist and version, its model and grade, how many times it may
+run (a rework round adds runs), the equipment each project offers its agents, and the bounds. It
+also says what is **not** covered: anything irreversible, outward, about money or credentials, and
+the playbook's own operator steps, still come to you every time.
+
+- **Approve plan** approves exactly that plan revision. The card sends the revision and a digest
+  of what it showed; if anything changed in between, the server refuses and you read it again.
+- **Every launch and every gate checks the approval again.** A newer specialist version, an
+  archived specialist, a model that is no longer offered, a re-deployed playbook, a change to a
+  project's equipment, or a grade that fell below a step's minimum makes the approval **stale**.
+  The card shows each change as old → new. Nothing is swapped in silently.
+- **A rotated secret value is not a change.** The next session gets the new value. Turning a
+  secret's agent access off is a change, and it takes effect at once.
+- **Grades are never stored on an approval.** Re-grade a model in Settings → Agents and the same
+  approval is in force again.
+- **Revoke approval** at any time. A session already running keeps running; Stop is always yours.
+- **Standing consent** lets an automation start the mission from your approval without asking
+  each time, within the server's scope lines, for 1 to 30 days (7 by default). Any change to the
+  plan voids it; you can revoke it at any time. Approving or importing a plan never creates one.
+  No automation uses it yet.
+
+HQ cannot approve a plan, give consent or revoke either. Launching the approved steps one session
+per step arrives with the step runner; until then the approval is recorded and checked, and
+missions start as before.
+
 ## Objectives — what "done" means, decided before the work
 
 A mission carries an objective list, and the point is that it is written **before** the work rather than

@@ -1,3 +1,4 @@
+import type { MissionApproval } from "../types/missionApproval";
 import type { MissionTeam, TeamChoices, TeamOp } from "../types/missionTeam";
 import { appUrl } from "./appBase";
 import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
@@ -2923,6 +2924,41 @@ export const api = {
       "POST",
       `/api/missions/${encodeURIComponent(missionId)}/plan/ops`,
       body,
+    ),
+  /** Plan approval (#1951): the card re-derived on every read; the Commander's taps. */
+  missionApproval: (missionId: string) =>
+    getJsonWithDetail<MissionApproval>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approval`,
+    ),
+  approvePlan: (
+    missionId: string,
+    body: { revision: number; digest: string; operation_id: string },
+  ) =>
+    mutateJson<{ id: string; revision: number; digest: string; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approve`,
+      body,
+    ),
+  revokeApproval: (missionId: string, approval_id: string) =>
+    mutateJson<{ id: string; revoked_at: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approval/revoke`,
+      { approval_id },
+    ),
+  giveConsent: (
+    missionId: string,
+    body: { approval_id: string; scope_digest: string; days: number; operation_id: string },
+  ) =>
+    mutateJson<{ id: string; expires_at: number; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/consent`,
+      body,
+    ),
+  revokeConsent: (missionId: string, consent_id: string) =>
+    mutateJson<{ id: string; revoked_at: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/consent/revoke`,
+      { consent_id },
     ),
   missionPlanRevision: (missionId: string) =>
     getJsonWithDetail<MissionPlanRevision>(

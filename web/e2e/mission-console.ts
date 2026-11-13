@@ -109,6 +109,20 @@ export async function mockMissions(
   await page.route("**/api/missions/*/plan/team**", (r) =>
     r.fulfill({ json: opts.team ?? { revision: null, team: null } }),
   );
+  // Plan approval (#1951): nothing to approve unless a spec says otherwise. After the catch-all.
+  await page.route("**/api/missions/*/plan/approval", (r) =>
+    r.fulfill({
+      json: {
+        mission_id: "msn_1",
+        revision: null,
+        card: null,
+        approval: null,
+        consent: null,
+        consent_offer: null,
+        consent_days: { default: 7, max: 30 },
+      },
+    }),
+  );
 }
 
 /** A LIST row, exactly as `GET /api/missions` produces one — `session_keys`, and NO `sessions`.

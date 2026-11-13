@@ -499,6 +499,9 @@ ALLOWED_IMPORTERS = {
     # memory's own write path (`share_import_note`) — an operator's file, never a model input.
     "sharebundle/memory_kinds.py",
     "template_vars.py",
+    # Plan approval (#1951): asks only whether a project's memory is ON (`memory.enabled`), to pin
+    # the memory scope as equipment the approval covers. Never a note, evidence or model input.
+    "mission_approval.py",
 }
 
 

@@ -2735,6 +2735,220 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _team_fail(e)
         return JSONResponse(done, headers=_NO_STORE)
 
+    # ---- plan approval (#1951, #1613 P6 slice A): approving the enumerated plan is the tap -------
+
+    def _approval_fail(e: Exception) -> JSONResponse:
+        from .. import mission_approval
+
+        if isinstance(e, mission_approval.ApprovalRefused):
+            body = {"detail": e.text, "code": e.code, "reasons": e.reasons, **e.extra}
+            return JSONResponse(body, status_code=e.status, headers=_NO_STORE)
+        return _team_fail(e)
+
+    async def _approval_read(mission_id: str) -> dict:
+        from .. import mission_approval
+
+        row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+        if row is None:
+            raise missions.MissionNotFound(mission_id)
+        latest = await missions.run_admitted(lambda: missions.plan_revision(mission_id))
+        approval = await missions.run_admitted(lambda: missions.approval(mission_id))
+        consent = await missions.run_admitted(lambda: missions.consent(mission_id))
+        ctx = facts = None
+        if latest is not None:
+            doc = latest["document"]
+            ctx = await asyncio.to_thread(mission_approval.context_for, doc)
+            facts = await asyncio.to_thread(mission_approval.read_facts, doc)
+        return await asyncio.to_thread(
+            mission_approval.view,
+            mission_id,
+            row.get("title") or mission_id,
+            latest,
+            approval,
+            consent,
+            ctx,
+            facts,
+        )
+
+    @app.get("/api/missions/{mission_id}/plan/approval")
+    async def plan_approval_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """The plan-approval card, RE-DERIVED on this read: what approving the latest revision would
+        pin (in plain words, with its digest), the approval in force re-checked against the state
+        now, and the standing consent with its verdict. Nothing derived here is stored."""
+        try:
+            out = await _approval_read(mission_id)
+        except missions.MissionError as e:
+            return _approval_fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/plan/approve")
+    async def plan_approve_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The Commander's tap (#1613 D3): approve exactly the plan revision the card showed.
+
+        The server recomputes the pins and their digest; a digest that differs from the one the
+        card showed is a 409, as is a plan that no longer qualifies (with its reasons) or a newer
+        revision. The store's compare-and-set on the revision decides a race; a repeated
+        `operation_id` returns the first result. HQ has no tool that reaches this route."""
+        from .. import mission_approval
+
+        try:
+            body = mission_approval.parse_approve(await _bounded_body(request, TEAM_OP_BODY_MAX))
+            req = mission_approval.digest([body["revision"], body["digest"]])
+            done = await missions.run_admitted(
+                lambda: missions.approval_replay(
+                    mission_id, body["operation_id"], request_digest=req
+                )
+            )
+            if done is None:
+                latest = await _latest_plan(mission_id)
+                if latest["revision"] != body["revision"]:
+                    err = missions.MissionError(
+                        f"the plan changed: it is at revision {latest['revision']}, not "
+                        f"{body['revision']}; read it again",
+                        status=409,
+                    )
+                    err.latest_revision = latest["revision"]  # type: ignore[attr-defined]
+                    raise err
+                doc = latest["document"]
+                ctx = await asyncio.to_thread(mission_approval.context_for, doc)
+                facts = await asyncio.to_thread(mission_approval.read_facts, doc)
+
+                def decide() -> dict:
+                    p = mission_approval.pins(doc, latest["revision"], ctx, facts)
+                    d = mission_approval.digest(p)
+                    if d != body["digest"]:
+                        raise mission_approval.ApprovalRefused(
+                            "digest_changed",
+                            "what you would approve changed since the card was built; read it "
+                            "again",
+                            extra={"digest": d},
+                        )
+                    fresh = {"pins": p, "digest": d, "revoked_at": None}
+                    check = mission_approval.recheck(fresh, doc, latest["revision"], ctx, facts)
+                    if not check["ok"]:
+                        first = check["reasons"][0]
+                        raise mission_approval.ApprovalRefused(
+                            first["code"], first["text"], reasons=check["reasons"]
+                        )
+                    return {"pins": p, "digest": d}
+
+                ready = await asyncio.to_thread(decide)
+                done = await missions.run_admitted(
+                    lambda: missions.commit_approval(
+                        mission_id,
+                        revision=body["revision"],
+                        digest=ready["digest"],
+                        pins=ready["pins"],
+                        operation_id=body["operation_id"],
+                        request_digest=req,
+                    )
+                )
+        except (missions.MissionError, mission_approval.ApprovalRefused) as e:
+            return _approval_fail(e)
+        out = {k: done[k] for k in ("id", "revision", "digest", "created_at", "replayed")}
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/plan/approval/revoke")
+    async def plan_approval_revoke_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Revoke the approval in force (and any standing consent on it). Sessions already running
+        keep running; every new launch and gate is refused until a new approval."""
+        from .. import mission_approval
+
+        try:
+            aid = mission_approval.parse_revoke(
+                await _bounded_body(request, TEAM_OP_BODY_MAX),
+                "approval_id",
+                mission_approval.APPROVAL_ID_RE,
+            )
+            row = await missions.run_admitted(lambda: missions.revoke_approval(mission_id, aid))
+        except (missions.MissionError, mission_approval.ApprovalRefused) as e:
+            return _approval_fail(e)
+        return JSONResponse({"id": row["id"], "revoked_at": row["revoked_at"]}, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/plan/consent")
+    async def plan_consent_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The Commander's standing consent (#1951 §5) on the approval in force: the server's scope
+        lines (their digest must be the one the card showed) and an expiry of 1…30 days. Inert
+        until #1901 / P7b wire a consumer. Only an approval that still re-checks clean can carry
+        one; importing or approving a plan never creates one."""
+        from .. import mission_approval
+
+        try:
+            body = mission_approval.parse_consent(await _bounded_body(request, TEAM_OP_BODY_MAX))
+            req = mission_approval.digest([body["approval_id"], body["scope_digest"], body["days"]])
+            done = await missions.run_admitted(
+                lambda: missions.consent_replay(
+                    mission_id, body["operation_id"], request_digest=req
+                )
+            )
+            if done is None:
+                read = await _approval_read(mission_id)
+                offer = read["consent_offer"]
+                if offer is None or offer["approval_id"] != body["approval_id"]:
+                    raise mission_approval.ApprovalRefused(
+                        "approval_revoked",
+                        "there is no clean approval in force to consent on; read it again",
+                    )
+                if offer["digest"] != body["scope_digest"]:
+                    raise mission_approval.ApprovalRefused(
+                        "digest_changed", "the consent's scope changed; read it again"
+                    )
+                scope = {k: offer[k] for k in ("approval_id", "approval_digest", "lines")}
+                now = time.time()
+                done = await missions.run_admitted(
+                    lambda: missions.commit_consent(
+                        mission_id,
+                        approval_id=offer["approval_id"],
+                        approval_digest=offer["approval_digest"],
+                        scope=scope,
+                        scope_digest=offer["digest"],
+                        expires_at=now + body["days"] * 86400,
+                        operation_id=body["operation_id"],
+                        request_digest=req,
+                        now=now,
+                    )
+                )
+        except (missions.MissionError, mission_approval.ApprovalRefused) as e:
+            return _approval_fail(e)
+        out = {k: done[k] for k in ("id", "approval_id", "expires_at", "created_at", "replayed")}
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/plan/consent/revoke")
+    async def plan_consent_revoke_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Revoke a standing consent: the next launch from it is refused."""
+        from .. import mission_approval
+
+        try:
+            cid = mission_approval.parse_revoke(
+                await _bounded_body(request, TEAM_OP_BODY_MAX),
+                "consent_id",
+                mission_approval.CONSENT_ID_RE,
+            )
+            row = await missions.run_admitted(lambda: missions.revoke_consent(mission_id, cid))
+        except (missions.MissionError, mission_approval.ApprovalRefused) as e:
+            return _approval_fail(e)
+        return JSONResponse({"id": row["id"], "revoked_at": row["revoked_at"]}, headers=_NO_STORE)
+
     @app.post("/api/missions/{mission_id}/objectives/{objective_key}/stand-down")
     async def stand_down_route(
         mission_id: str,

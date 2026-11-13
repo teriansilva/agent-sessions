@@ -1,0 +1,86 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1951 · plan approval</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1951 · approving the enumerated plan is the tap</h1>
+<p class="sub">Frames 1–4. A synthetic job-application mission (no personal content). The card sits under the Team card on a draft or planned mission. Every line is server text built from the pins; the client renders it and recomputes nothing. Grades use the Settings names (Intern = fast, Specialist = strong, Senior = frontier).</p>
+<div class="board">
+
+<div><div class="label">1 · THE PLAN-APPROVAL CARD — PINS IN PLAIN WORDS, BOUNDS, NOT COVERED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="rev">revision 6 · not approved</span></div>
+  <p class="tsum">Approving is the tap. HQ may then launch exactly these specialists on exactly these steps, at revision 6, and nothing else. Every launch and every gate checks this list again; any change asks you again.</p>
+  <div class="sect"><p class="sh">Objective o1 · Synthetic Project</p>
+   <ul class="pins">
+    <li class="pin"><span class="k">procedure</span><span class="v"><b>application</b> from playbook <b>synthetic-application</b> at revision 7d3675e8, deployment applied (generation 4)</span><span class="b"></span></li>
+    <li class="pin"><span class="k">o1.posting</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.cv</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.cover_letter</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.documents</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.review</span><span class="v"><b>application-reviewer</b> v1 · claude-api · opus · Senior (needs Senior); alternate: none</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.pull_request</span><span class="v"><b>career-archivist</b> v2 · claude-api · haiku (override) · Intern (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.record</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">equipment</span><span class="v">Synthetic Project's: secret <b>GITHUB_TOKEN</b> (this project), secret file <b>cv-master.pdf</b> (global, bound here), project memory. Nothing from another project.</span><span class="b">3 items</span></li>
+    <li class="pin"><span class="k">allowed</span><span class="v">agent and operator steps; probes supervisor_judged and none</span><span class="b"></span></li>
+    <li class="pin"><span class="k">rework</span><span class="v">review → cv, at most 3 rounds: cv, documents and review may each run up to 1 + 3 times</span><span class="b"></span></li>
+   </ul></div>
+  <div class="sect"><p class="sh">Bounds</p><p class="tsum">Up to 16 sessions in all, up to 2 at once (pool limit 6). One session per step run.</p></div>
+  <p class="cover"><b>Not covered.</b> The floor (anything irreversible, outward, money or credentials) still asks you, every time. The playbook's own gates, <b>approve</b> and <b>submit</b>, still wait for you. HQ never approves a gate, a tool request or a floor item.</p>
+  <div class="foot"><span class="digest">digest sha256:9f3c41d07ab2…e1a4</span><button class="nj-plate btn primary">Approve plan</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">2 · APPROVED — RE-CHECKED ON EVERY READ</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="stamp live">APPROVED</span><span class="rev">revision 6 · by you · 13 Nov 10:42</span></div>
+  <p class="okline"><b>IN FORCE</b>All 7 agent steps still match what you approved. Checked on this read.</p>
+  <p class="tsum">HQ may launch exactly what is listed below. Each launch and each gate checks it again first; a change refuses that launch and asks you. A session already running keeps running; Stop is always yours.</p>
+  <details class="alt"><summary>What you approved (11 lines)</summary><ol><li>application from synthetic-application at 7d3675e8 …</li></ol></details>
+  <div class="foot"><span class="digest">digest sha256:9f3c41d07ab2…e1a4</span><button class="nj-plate btn ghost">Standing consent</button><button class="nj-plate btn ghost">Revoke approval</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">3 · A STALE BINDING — OLD → NEW, NOTHING REMAPPED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="stamp warn">STALE</span><span class="rev">revision 6 · approved 13 Nov 10:42</span></div>
+  <p class="alert"><b>PLAN CHANGED</b>Plan changed since you approved it: review it again. New launches and gates are refused until you do; nothing is remapped.</p>
+  <ul class="pins">
+   <li class="pin bad"><span class="k">o1.cv</span><span class="v"><b>cv-writer</b> changed</span><span class="b code">specialist_version_changed</span>
+    <p class="chg"><s>v2</s><span class="arrow">→</span>v3 (saved 14 Nov 09:10)</p></li>
+   <li class="pin bad"><span class="k">o1.cover_letter</span><span class="v"><b>cv-writer</b> changed</span><span class="b code">specialist_version_changed</span>
+    <p class="chg"><s>v2</s><span class="arrow">→</span>v3</p></li>
+   <li class="pin bad"><span class="k">equipment</span><span class="v">Synthetic Project's equipment changed</span><span class="b code">equipment_changed</span>
+    <p class="chg">added secret <b>STRIPE_KEY</b> (this project)</p></li>
+   <li class="pin bad"><span class="k">procedure</span><span class="v">playbook re-deployed</span><span class="b code">playbook_revision_changed</span>
+    <p class="chg"><s>7d3675e8</s><span class="arrow">→</span>a91f02c4</p></li>
+  </ul>
+  <p class="ann" style="margin:0">A rotated secret value is not a change: the next grant takes the new value. Turning a secret's agent access off is a change, and it takes effect at once.</p>
+  <div class="foot"><span class="digest">approved sha256:9f3c41d07ab2…e1a4</span><button class="nj-plate btn ghost">Revoke approval</button><button class="nj-plate btn primary">Review again</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">4 · GRADE DRIFT — THE GRADE IS NEVER PINNED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="stamp warn">STALE</span><span class="rev">revision 6 · approved 13 Nov 10:42</span></div>
+  <p class="alert"><b>BELOW GRADE</b>A model's grade fell after you approved. Launches of these steps are refused until it qualifies again.</p>
+  <ul class="pins">
+   <li class="pin bad"><span class="k">o1.cv</span><span class="v">sonnet is Intern, below Specialist, which cv-writing needs</span><span class="b code">grade_below_min</span></li>
+   <li class="pin bad"><span class="k">o1.cover_letter</span><span class="v">sonnet is Intern, below Specialist, which cv-writing needs</span><span class="b code">grade_below_min</span></li>
+   <li class="pin bad"><span class="k">o1.review</span><span class="v">opus is ungraded on claude-api; an ungraded model meets no minimum grade (grade it in Settings → Agents)</span><span class="b code">ungraded</span></li>
+  </ul>
+  <p class="ann" style="margin:0">Grade sonnet Specialist again in Settings → Agents and the same approval launches: grades are checked live, never stored on the approval.</p>
+  <div class="foot"><span class="digest">approved sha256:9f3c41d07ab2…e1a4</span><a class="nj-plate btn ghost" href="#">Settings → Agents</a><button class="nj-plate btn ghost">Revoke approval</button></div>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

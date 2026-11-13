@@ -57,6 +57,16 @@ vi.mock("../lib/api", async () => {
       adoptMissionSession: vi.fn(),
       // The mission's team (#1950): no plan here, so the Team card renders nothing.
       missionTeam: vi.fn().mockResolvedValue({ revision: null, team: null }),
+      // Plan approval (#1951): no plan here, so the approval card renders nothing.
+      missionApproval: vi.fn().mockResolvedValue({
+        mission_id: "m",
+        revision: null,
+        card: null,
+        approval: null,
+        consent: null,
+        consent_offer: null,
+        consent_days: { default: 7, max: 30 },
+      }),
     },
   };
 });

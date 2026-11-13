@@ -772,12 +772,12 @@ def test_applying_another_procedure_keeps_the_team(app, monkeypatch):
     assert all(s["envelope"]["assignment"] is None for s in doc["steps"] if s["objective"] == "o2")
 
 
-def test_the_schema_is_v38_and_rolls_back_to_37(app):
+def test_the_schema_rolls_back_to_37(app):
     db = missions._db_path()
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 38
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION >= 38
     con.close()
-    assert missions.rollback_schema(37, path=db) == {"from": 38, "to": 37}
+    assert missions.rollback_schema(37, path=db) == {"from": missions.SCHEMA_VERSION, "to": 37}
     missions.reset_schema_cache_for_test()
     assert missions.plan_revision(app["mid"])["revision"] == 1  # converges, nothing dropped
 

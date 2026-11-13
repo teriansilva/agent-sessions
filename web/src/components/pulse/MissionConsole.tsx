@@ -40,6 +40,7 @@ import { MISSION_ID_RE } from "../../lib/missionLink";
 import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
+import { MissionApprovalCard } from "./MissionApprovalCard";
 import { MissionTeamCard } from "./MissionTeamCard";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionNowStrip } from "./MissionNowStrip";
@@ -248,6 +249,9 @@ function MissionBody({
       .finally(() => setTurnOffBusy(false));
   }, [refreshConfig]);
   const [revealObjectives, setRevealObjectives] = useState(0);
+  // The plan-approval card re-reads after every team write (#1951).
+  const [approvalReads, setApprovalReads] = useState(0);
+  const bumpApproval = useCallback(() => setApprovalReads((n) => n + 1), []);
   const showObjectives = () => {
     onDetails();
     setRevealObjectives((n) => n + 1);
@@ -891,7 +895,22 @@ function MissionBody({
             {/* THE TEAM (#1950): who fills each agent step, why, and the same operations HQ has.
                 Nothing on it approves or launches. */}
             {d.mission ? (
-              <MissionTeamCard key={missionId} missionId={missionId} state={d.mission.state} />
+              <MissionTeamCard
+                key={missionId}
+                missionId={missionId}
+                state={d.mission.state}
+                onWrite={bumpApproval}
+              />
+            ) : null}
+            {/* PLAN APPROVAL (#1951): approving the enumerated plan is the Commander's tap. It
+                re-reads after every team write; nothing on it launches. */}
+            {d.mission ? (
+              <MissionApprovalCard
+                key={`approval-${missionId}`}
+                missionId={missionId}
+                state={d.mission.state}
+                refresh={approvalReads}
+              />
             ) : null}
           </div>
           {/* THE THREAD, in its own box so a SHORT thread sits at the BOTTOM (#942). Pinning the

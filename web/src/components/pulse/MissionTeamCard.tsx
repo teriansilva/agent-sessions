@@ -369,7 +369,16 @@ function StepRow({
   );
 }
 
-export function MissionTeamCard({ missionId, state }: { missionId: string; state: string }) {
+export function MissionTeamCard({
+  missionId,
+  state,
+  onWrite,
+}: {
+  missionId: string;
+  state: string;
+  /** Called after every team write, so the plan-approval card (#1951) re-reads. */
+  onWrite?: () => void;
+}) {
   const cfg = useConfig();
   const [data, setData] = useState<MissionTeam | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -421,9 +430,10 @@ export function MissionTeamCard({ missionId, state }: { missionId: string; state
       } finally {
         setBusy(false);
         setReads((n) => n + 1);
+        onWrite?.();
       }
     },
-    [revision, missionId],
+    [revision, missionId, onWrite],
   );
 
   if (loadError) {

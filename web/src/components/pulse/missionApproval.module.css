@@ -1,0 +1,226 @@
+/* PLAN APPROVAL (#1951; mockups docs/mockups/plan-approval-1951/). Tokens only: no literal colour,
+   radius, shadow or off-scale size. Status colour means state: the warn edge marks a refused or
+   stale line, the up colour an approval in force; the accent is never a status. */
+.appr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.thead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+.ttl {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.rev,
+.code,
+.digest,
+.b,
+.k {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tsum {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.sect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.sh {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.pins {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.pin {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  gap: 2px var(--sp-3);
+  align-items: baseline;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.v {
+  font-size: var(--fs-row);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.b {
+  white-space: nowrap;
+}
+.bad {
+  border-left: 3px solid var(--warn-text);
+}
+.chg {
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.chg s {
+  color: var(--text-2);
+}
+.arrow {
+  padding: 0 var(--sp-1);
+  color: var(--warn-text);
+}
+.cover {
+  margin: 0;
+  padding: var(--sp-2) 10px;
+  border: 1px dashed var(--line-strong);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.cover b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  align-items: center;
+}
+.foot .digest {
+  margin-right: auto;
+}
+.btn {
+  min-height: 44px;
+}
+.stamp {
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--text-2);
+}
+.live {
+  border-color: var(--status-up);
+  color: var(--ok-text);
+}
+.warnStamp {
+  border-color: var(--warn-text);
+  color: var(--warn-text);
+}
+.okline,
+.alert {
+  margin: 0;
+  padding: var(--sp-2) 10px;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.okline {
+  border-left: 3px solid var(--status-up);
+  background: color-mix(in srgb, var(--status-up) 8%, transparent);
+}
+.alert {
+  border-left: 3px solid var(--warn-text);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+}
+.okline b,
+.alert b {
+  margin-right: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+.okline b {
+  color: var(--ok-text);
+}
+.alert b {
+  color: var(--warn-text);
+}
+.ann {
+  margin: 0;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--line-strong);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.alt {
+  min-width: 0;
+}
+.altSummary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.scope {
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-row);
+}
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-row);
+}
+.select {
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-input);
+}
+@media (max-width: 640px) {
+  .appr {
+    padding: 10px;
+  }
+  .pin {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chg {
+    grid-column: 1 / -1;
+  }
+  .b {
+    white-space: normal;
+  }
+  .foot button,
+  .foot a {
+    flex: 1 1 auto;
+  }
+}

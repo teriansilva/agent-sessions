@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1493,7 +1493,65 @@ def _migrate_37_to_38(con) -> None:
         con.execute(statement)
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37})
+#: v39 (#1951, #1613 P6 slice A): plan approval. Three tables, each cascading with its mission.
+#:
+#: * `mission_plan_approvals` — one IMMUTABLE record per approval: the plan revision, the pins
+#:   (`mission_approval.pins`) and their digest, and the `operation_id` it was written under. The
+#:   only change a row ever takes is its revocation (`revoked_at` NULL → a time, once); a trigger
+#:   refuses every other update. At most one approval per mission is in force (unrevoked).
+#: * `mission_approval_refusals` — one row per refused boundary, keyed by (approval, step, the
+#:   digest of what changed), so the same stale binding asks the Commander once, not per retry.
+#: * `mission_standing_consents` — the Commander's standing consent for automations (inert until
+#:   #1901 / P7b wire a consumer): the server's scope lines and their digest, an expiry, revocation.
+#:   Immutable except its revocation, like an approval.
+APPROVAL_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_plan_approvals ("
+    "id TEXT PRIMARY KEY, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "revision INTEGER NOT NULL CHECK(revision >= 1), digest TEXT NOT NULL, "
+    "pins_json TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE, request_digest TEXT NOT NULL, "
+    "created_at REAL NOT NULL, revoked_at REAL, revoked_reason TEXT)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS mission_plan_approvals_one_live "
+    "ON mission_plan_approvals(mission_id) WHERE revoked_at IS NULL",
+    "CREATE TRIGGER IF NOT EXISTS mission_plan_approvals_immutable "
+    "BEFORE UPDATE ON mission_plan_approvals WHEN OLD.revoked_at IS NOT NULL "
+    "OR NEW.revoked_at IS NULL OR NEW.id IS NOT OLD.id OR NEW.mission_id IS NOT OLD.mission_id "
+    "OR NEW.revision IS NOT OLD.revision OR NEW.digest IS NOT OLD.digest "
+    "OR NEW.pins_json IS NOT OLD.pins_json OR NEW.operation_id IS NOT OLD.operation_id "
+    "OR NEW.request_digest IS NOT OLD.request_digest OR NEW.created_at IS NOT OLD.created_at "
+    "BEGIN SELECT RAISE(ABORT, 'an approval is never edited, only revoked once'); END",
+    "CREATE TABLE IF NOT EXISTS mission_approval_refusals ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "approval_id TEXT NOT NULL, step TEXT NOT NULL, change_digest TEXT NOT NULL, "
+    "boundary TEXT NOT NULL, reasons_json TEXT NOT NULL, created_at REAL NOT NULL, "
+    "PRIMARY KEY (mission_id, approval_id, step, change_digest))",
+    "CREATE TABLE IF NOT EXISTS mission_standing_consents ("
+    "id TEXT PRIMARY KEY, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "approval_id TEXT NOT NULL, scope_digest TEXT NOT NULL, scope_json TEXT NOT NULL, "
+    "expires_at REAL NOT NULL, operation_id TEXT NOT NULL UNIQUE, request_digest TEXT NOT NULL, "
+    "created_at REAL NOT NULL, revoked_at REAL, revoked_reason TEXT)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS mission_standing_consents_one_live "
+    "ON mission_standing_consents(mission_id) WHERE revoked_at IS NULL",
+    "CREATE TRIGGER IF NOT EXISTS mission_standing_consents_immutable "
+    "BEFORE UPDATE ON mission_standing_consents WHEN OLD.revoked_at IS NOT NULL "
+    "OR NEW.revoked_at IS NULL OR NEW.id IS NOT OLD.id OR NEW.mission_id IS NOT OLD.mission_id "
+    "OR NEW.approval_id IS NOT OLD.approval_id OR NEW.scope_digest IS NOT OLD.scope_digest "
+    "OR NEW.scope_json IS NOT OLD.scope_json OR NEW.expires_at IS NOT OLD.expires_at "
+    "OR NEW.operation_id IS NOT OLD.operation_id OR NEW.request_digest IS NOT OLD.request_digest "
+    "OR NEW.created_at IS NOT OLD.created_at "
+    "BEGIN SELECT RAISE(ABORT, 'a standing consent is never edited, only revoked once'); END",
+)
+_SCHEMA += ";\n".join(APPROVAL_DDL) + ";\n"
+
+
+def _migrate_38_to_39(con) -> None:
+    """Additive only (workflow §0): three tables, two indexes, two triggers. Idempotent."""
+    for statement in APPROVAL_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1501,10 +1559,11 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
 
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
-    column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37); an older
-    build never reads any of them. (A plan revision carrying a team, #1950, reads fine on an older
-    build. Applying another procedure there rebuilds every step with `assignment: null`, so that
-    one write drops the team: earlier revisions keep it, and Assemble restores it.)
+    column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
+    approval (to 38); an older build never reads any of them. (A plan revision carrying a team,
+    #1950, reads fine on an older build. Applying another procedure there rebuilds every step
+    with `assignment: null`, so that one write drops the team: earlier revisions keep it, and
+    Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1662,6 +1721,8 @@ def _migrate(con) -> int:
             _migrate_36_to_37(con)
         if version < 38:
             _migrate_37_to_38(con)
+        if version < 39:
+            _migrate_38_to_39(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -10623,6 +10684,407 @@ def plan_revision(
             (mission_id, revision),
         ).fetchone()
         return None if row is None else _plan_row(row)
+    finally:
+        con.close()
+
+
+# ---- plan approval (#1951, #1613 P6 slice A) -----------------------------------------------------
+#
+# The store half of `mission_approval`. A record is written once and only ever revoked; the
+# compare-and-set is on the plan revision, inside the write transaction, so an approve racing a
+# plan edit has exactly one winner. Nothing here decides whether a plan MAY be approved: the module
+# computes the pins and re-checks them; this only keeps the record honest.
+
+#: The states a plan may be approved in: before dispatch, like the team (#1950).
+APPROVAL_STATES = TEAM_STATES
+
+
+def _approval_row(row) -> dict:
+    return {
+        "id": row["id"],
+        "mission_id": row["mission_id"],
+        "revision": int(row["revision"]),
+        "digest": row["digest"],
+        "pins": json.loads(row["pins_json"]),
+        "created_at": row["created_at"],
+        "revoked_at": row["revoked_at"],
+        "revoked_reason": row["revoked_reason"],
+    }
+
+
+def _consent_row(row) -> dict:
+    return {
+        "id": row["id"],
+        "mission_id": row["mission_id"],
+        "approval_id": row["approval_id"],
+        "scope_digest": row["scope_digest"],
+        "scope": json.loads(row["scope_json"]),
+        "expires_at": row["expires_at"],
+        "created_at": row["created_at"],
+        "revoked_at": row["revoked_at"],
+        "revoked_reason": row["revoked_reason"],
+    }
+
+
+def _replay_tx(con, table: str, operation_id: str, mission_id: str, request_digest: str):
+    if table not in ("mission_plan_approvals", "mission_standing_consents"):
+        raise ValueError(table)
+    sql = f"SELECT * FROM {table} WHERE operation_id=?"  # noqa: S608 — one of two fixed names
+    row = con.execute(sql, (operation_id,)).fetchone()
+    if row is None:
+        return None
+    if (row["mission_id"], row["request_digest"]) != (mission_id, request_digest):
+        raise MissionError(
+            "this operation id was already used for another request; send a new one", status=409
+        )
+    return row
+
+
+def approval_replay(
+    mission_id: str, operation_id: str, *, request_digest: str, path: Path | None = None
+) -> dict | None:
+    """The approval `operation_id` wrote, or None. The same id with another request is a 409."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = _replay_tx(con, "mission_plan_approvals", operation_id, mission_id, request_digest)
+        return None if row is None else {**_approval_row(row), "replayed": True}
+    finally:
+        con.close()
+
+
+def commit_approval(
+    mission_id: str,
+    *,
+    revision: int,
+    digest: str,
+    pins: dict,
+    operation_id: str,
+    request_digest: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Write one approval of plan `revision`, or refuse. ONE transaction: the mission is still
+    before dispatch, `revision` is still the latest (409 with `latest_revision` otherwise), and
+    the approval in force (if any) is revoked as `superseded` before the new one is written, so
+    at most one is ever in force. A repeated `operation_id` returns the first result."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    blob = json.dumps(pins, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            done = _replay_tx(
+                con, "mission_plan_approvals", operation_id, mission_id, request_digest
+            )
+            if done is not None:
+                con.execute("ROLLBACK")
+                return {**_approval_row(done), "replayed": True}
+            m = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if m is None:
+                raise MissionNotFound(mission_id)
+            if m["state"] not in APPROVAL_STATES:
+                raise MissionError(
+                    f"mission {mission_id} is {m['state']}; a plan is approved before dispatch",
+                    status=409,
+                )
+            latest = _latest_plan_tx(con, mission_id)
+            current = latest["revision"] if latest else 0
+            if current != revision:
+                err = MissionError(
+                    f"the plan changed: it is at revision {current}, not {revision}; "
+                    "read it again",
+                    status=409,
+                )
+                err.latest_revision = current  # type: ignore[attr-defined]
+                raise err
+            live = con.execute(
+                "SELECT * FROM mission_plan_approvals WHERE mission_id=? AND revoked_at IS NULL",
+                (mission_id,),
+            ).fetchone()
+            if live is not None and live["revision"] == revision and live["digest"] == digest:
+                raise MissionError("this plan revision is already approved", status=409)
+            if live is not None:
+                _revoke_approval_tx(con, live["id"], "superseded", ts)
+            aid = "apr-" + uuid.uuid4().hex[:20]
+            con.execute(
+                "INSERT INTO mission_plan_approvals (id, mission_id, revision, digest, pins_json, "
+                "operation_id, request_digest, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (aid, mission_id, revision, digest, blob, operation_id, request_digest, ts),
+            )
+            row = con.execute("SELECT * FROM mission_plan_approvals WHERE id=?", (aid,)).fetchone()
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {**_approval_row(row), "replayed": False}
+
+
+def _revoke_approval_tx(con, approval_id: str, reason: str, ts: float) -> None:
+    """Revoke an approval and every standing consent resting on it. Caller holds the txn."""
+    con.execute(
+        "UPDATE mission_plan_approvals SET revoked_at=?, revoked_reason=? "
+        "WHERE id=? AND revoked_at IS NULL",
+        (ts, reason, approval_id),
+    )
+    con.execute(
+        "UPDATE mission_standing_consents SET revoked_at=?, revoked_reason=? "
+        "WHERE approval_id=? AND revoked_at IS NULL",
+        (ts, "approval_" + reason, approval_id),
+    )
+
+
+def revoke_approval(
+    mission_id: str, approval_id: str, *, now: float | None = None, path: Path | None = None
+) -> dict:
+    """The Commander revokes the approval in force (and with it any standing consent on it). A
+    revoked or unknown approval is a 409/404: revocation happens once."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM mission_plan_approvals WHERE id=? AND mission_id=?",
+                (approval_id, mission_id),
+            ).fetchone()
+            if row is None:
+                raise MissionError("no such approval on this mission", status=404)
+            if row["revoked_at"] is not None:
+                raise MissionError("this approval is already revoked", status=409)
+            _revoke_approval_tx(con, approval_id, "revoked", ts)
+            row = con.execute(
+                "SELECT * FROM mission_plan_approvals WHERE id=?", (approval_id,)
+            ).fetchone()
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return _approval_row(row)
+
+
+def approval(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The mission's newest approval (in force or not), or None when it was never approved."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+            raise MissionNotFound(mission_id)
+        row = con.execute(
+            "SELECT * FROM mission_plan_approvals WHERE mission_id=? "
+            "ORDER BY (revoked_at IS NULL) DESC, rowid DESC LIMIT 1",
+            (mission_id,),
+        ).fetchone()
+        return None if row is None else _approval_row(row)
+    finally:
+        con.close()
+
+
+def record_refusal(
+    mission_id: str,
+    *,
+    approval_id: str,
+    step: str,
+    change_digest: str,
+    boundary: str,
+    reasons: list[dict],
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Record one refused boundary; True when it is NEW. The key is (approval, step, what
+    changed), so a launch retried against the same stale binding raises nothing new."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    blob = json.dumps(reasons, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                "INSERT OR IGNORE INTO mission_approval_refusals (mission_id, approval_id, step, "
+                "change_digest, boundary, reasons_json, created_at) VALUES (?,?,?,?,?,?,?)",
+                (mission_id, approval_id, step, change_digest, boundary, blob, ts),
+            )
+            con.execute("COMMIT")
+            return cur.rowcount == 1
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def refusals(mission_id: str, *, path: Path | None = None) -> list[dict]:
+    """Every recorded refusal of the mission, oldest first."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT * FROM mission_approval_refusals WHERE mission_id=? ORDER BY created_at, rowid",
+            (mission_id,),
+        ).fetchall()
+        return [
+            {
+                "approval_id": r["approval_id"],
+                "step": r["step"],
+                "change_digest": r["change_digest"],
+                "boundary": r["boundary"],
+                "reasons": json.loads(r["reasons_json"]),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+def consent_replay(
+    mission_id: str, operation_id: str, *, request_digest: str, path: Path | None = None
+) -> dict | None:
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = _replay_tx(con, "mission_standing_consents", operation_id, mission_id, request_digest)
+        return None if row is None else {**_consent_row(row), "replayed": True}
+    finally:
+        con.close()
+
+
+def commit_consent(
+    mission_id: str,
+    *,
+    approval_id: str,
+    approval_digest: str,
+    scope: dict,
+    scope_digest: str,
+    expires_at: float,
+    operation_id: str,
+    request_digest: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Write the Commander's standing consent on the approval IN FORCE (the one whose digest the
+    card showed), replacing any earlier consent of the mission. ONE transaction."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    blob = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            done = _replay_tx(
+                con, "mission_standing_consents", operation_id, mission_id, request_digest
+            )
+            if done is not None:
+                con.execute("ROLLBACK")
+                return {**_consent_row(done), "replayed": True}
+            live = con.execute(
+                "SELECT * FROM mission_plan_approvals WHERE mission_id=? AND revoked_at IS NULL",
+                (mission_id,),
+            ).fetchone()
+            if live is None or live["id"] != approval_id or live["digest"] != approval_digest:
+                raise MissionError(
+                    "that approval is no longer the one in force; read it again", status=409
+                )
+            con.execute(
+                "UPDATE mission_standing_consents SET revoked_at=?, revoked_reason='replaced' "
+                "WHERE mission_id=? AND revoked_at IS NULL",
+                (ts, mission_id),
+            )
+            cid = "con-" + uuid.uuid4().hex[:20]
+            con.execute(
+                "INSERT INTO mission_standing_consents (id, mission_id, approval_id, "
+                "scope_digest, scope_json, expires_at, operation_id, request_digest, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    cid,
+                    mission_id,
+                    approval_id,
+                    scope_digest,
+                    blob,
+                    expires_at,
+                    operation_id,
+                    request_digest,
+                    ts,
+                ),
+            )
+            row = con.execute(
+                "SELECT * FROM mission_standing_consents WHERE id=?", (cid,)
+            ).fetchone()
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {**_consent_row(row), "replayed": False}
+
+
+def revoke_consent(
+    mission_id: str, consent_id: str, *, now: float | None = None, path: Path | None = None
+) -> dict:
+    """The Commander revokes a standing consent: the next launch from it is refused."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM mission_standing_consents WHERE id=? AND mission_id=?",
+                (consent_id, mission_id),
+            ).fetchone()
+            if row is None:
+                raise MissionError("no such standing consent on this mission", status=404)
+            if row["revoked_at"] is not None:
+                raise MissionError("this standing consent is already revoked", status=409)
+            con.execute(
+                "UPDATE mission_standing_consents SET revoked_at=?, revoked_reason='revoked' "
+                "WHERE id=?",
+                (ts, consent_id),
+            )
+            row = con.execute(
+                "SELECT * FROM mission_standing_consents WHERE id=?", (consent_id,)
+            ).fetchone()
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return _consent_row(row)
+
+
+def consent(
+    mission_id: str, consent_id: str | None = None, *, path: Path | None = None
+) -> dict | None:
+    """One standing consent (`consent_id`), else the mission's newest, or None."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        if consent_id is not None:
+            row = con.execute(
+                "SELECT * FROM mission_standing_consents WHERE id=? AND mission_id=?",
+                (consent_id, mission_id),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM mission_standing_consents WHERE mission_id=? "
+                "ORDER BY (revoked_at IS NULL) DESC, rowid DESC LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+        return None if row is None else _consent_row(row)
     finally:
         con.close()
 
