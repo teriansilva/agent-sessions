@@ -44,6 +44,8 @@ export const SETTINGS = {
   interrupt: true,
   mic: "open",
   answers: "brief",
+  thinking: "off",
+  hq_model: "",
   captions: true,
   configured: true,
   contacts: {} as Record<string, unknown>,
@@ -203,6 +205,10 @@ export async function mockShell(page: Page, caps: Record<string, unknown> = AVAI
         srv.settings = { ...srv.settings, contacts };
       }
       if (typeof patch.language === "string") srv.settings = { ...srv.settings, language: patch.language };
+      // The call's own thinking level and model (#1996): stored as sent.
+      for (const k of ["thinking", "hq_model"] as const) {
+        if (typeof patch[k] === "string") srv.settings = { ...srv.settings, [k]: patch[k] };
+      }
       return r.fulfill({ json: srv.settings });
     }
     return r.fulfill({ json: srv.settings });

@@ -14,6 +14,60 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from .voice_text import split_speech
+
+#: A synthesis this short says nothing about how its server sends audio.
+PACE_MIN_AUDIO_S = 1.0
+#: A server that streams has sent its first audio well before the sentence is finished; one that
+#: does not sends everything at the end. Measured: 0.2 s of 3 s on VoxCPM2, against all of it.
+PACE_FIRST_SHARE = 0.5
+
+
+class Pace:
+    """Whether the TTS server sends a sentence's audio WHILE it generates it, learnt from the
+    sentences the call has already spoken (the greeting is the first). The worker voices whole
+    sentences on a server that does (`voice_text.split_speech(whole=True)`) and keeps cutting
+    them short on one that does not, where a short first piece is the only early audio there is.
+    ``None``: nothing measured yet."""
+
+    def __init__(self) -> None:
+        self.streams: bool | None = None
+
+    def note(self, first_s: float, total_s: float, audio_s: float) -> None:
+        """One finished synthesis: its first audio came `first_s` after it was asked for, all of
+        its `audio_s` seconds of audio after `total_s`. The newest one that says anything
+        decides, so a server that changes (a cold first request, a fallback to whole files) is
+        followed."""
+        if audio_s < PACE_MIN_AUDIO_S or total_s <= 0 or first_s < 0:
+            return
+        self.streams = first_s <= PACE_FIRST_SHARE * total_s
+
+
+async def paced(chunks, pace: Pace, rate: int, clock: Callable[[], float]):
+    """`chunks` (one sentence's PCM16 mono audio at `rate`, as the endpoint sends it) passed on
+    unchanged, with what it showed noted on `pace` — only for a sentence that came back WHOLE.
+    One that failed, or was cut off by a barge-in, says nothing about how the server sends."""
+    asked = clock()
+    first: float | None = None
+    size = 0
+    async for chunk in chunks:
+        if first is None:
+            first = clock() - asked
+        size += len(chunk)
+        yield chunk
+    if first is not None:
+        pace.note(first, clock() - asked, size / (2 * rate))
+
+
+def speech_pieces(text: str, pace: Pace, first_words: int) -> list[str]:
+    """What one say is sent to the TTS server as. Whole sentences where the server is KNOWN to
+    stream; else (it does not, or nothing was measured yet: the call's first words) the first
+    piece is cut to `first_words`, the earliest audio such a server can give. That cold start is
+    the one place a reply is still cut on a streaming server: its greeting."""
+    if pace.streams:
+        return split_speech(text, whole=True)
+    return split_speech(text, first_max=first_words)
+
 
 class SpeechOrder:
     """Sentences ask the TTS server one first-audio at a time. A server with one model takes

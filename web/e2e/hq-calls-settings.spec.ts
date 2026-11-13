@@ -243,3 +243,33 @@ test("the voice fields are real dropdowns of every voice the server lists, from 
   }
   await noSideways(page);
 });
+
+test("thinking and model on calls: their own settings, saved at once, kept across a reload (#1996)", async ({ page }) => {
+  const srv = await mockShell(page);
+  await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: ["hq-big", "hq-fast"] } }));
+  await page.goto("/settings/ai-hq-calls");
+  const thinking = page.getByTestId("hq-calls-thinking");
+  const model = page.getByTestId("hq-calls-model");
+  await thinking.scrollIntoViewIfNeeded();
+  await expect(thinking).toHaveValue("off"); // a call does not think unless told to
+  await expect(model).toHaveValue("");
+  await expect(model.locator("option")).toHaveText(["Same as HQ", "hq-big", "hq-fast"]);
+  for (const field of [thinking, model]) {
+    const box = (await field.boundingBox())!;
+    if (PHONE(page)) expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+  await noSideways(page);
+
+  await thinking.selectOption("hq");
+  await expect.poll(() => srv.saves).toContainEqual({ thinking: "hq" });
+  await model.selectOption("hq-fast");
+  await expect.poll(() => srv.saves).toContainEqual({ hq_model: "hq-fast" });
+  await expect(thinking).toHaveValue("hq");
+  await expect(model).toHaveValue("hq-fast");
+
+  await page.reload();
+  await expect(page.getByTestId("hq-calls-thinking")).toHaveValue("hq");
+  await expect(page.getByTestId("hq-calls-model")).toHaveValue("hq-fast");
+});

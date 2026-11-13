@@ -28,6 +28,10 @@ VOICE_GROUPS = ("woman", "man")
 TURN_TAKING = ("quick", "natural", "patient")
 MIC_MODES = ("open", "push")
 ANSWERS = ("brief", "detailed")
+#: How much HQ's model thinks before it answers a SPOKEN turn (#1996): its own setting, apart
+#: from the level Settings → AI holds for typed turns. `off` is the default, because the
+#: Commander is waiting on the line; `hq` follows the typed level.
+CALL_THINKING = ("off", "low", "medium", "high", "hq")
 
 MODEL_MAX = prefs.AI_REVIEW_MODEL_MAX
 VOICE_MAX = 120
@@ -43,6 +47,9 @@ _DEFAULTS: dict = {
     "interrupt": True,
     "mic": "open",
     "answers": "brief",
+    # #1996: thinking and model for spoken turns only. `hq_model` empty: HQ's own model.
+    "thinking": "off",
+    "hq_model": "",
     "captions": True,
     # P3 (#1623): per-contact overrides, the call language, and what the TTS server advertised.
     "contacts": {},
@@ -132,6 +139,34 @@ class SettingsError(ValueError):
     """A patch that may not be saved (→ 422)."""
 
 
+#: The settings that are one of a fixed set of words.
+_CHOICES = (
+    ("turn_taking", TURN_TAKING),
+    ("mic", MIC_MODES),
+    ("answers", ANSWERS),
+    ("thinking", CALL_THINKING),
+)
+
+
+def _is_model(value: object) -> bool:
+    """A model id as the AI endpoint lists it, or empty: one printable line of bounded length."""
+    return isinstance(value, str) and len(value) <= MODEL_MAX and value.strip().isprintable()
+
+
+def spoken(block: dict | None = None) -> dict:
+    """How HQ's model is asked on a SPOKEN turn (#1996), as `ai_providers.spoken_turn`'s
+    arguments: the thinking level for calls (``None``: the level Settings → AI holds) and the
+    model for calls (``None``: HQ's own). Read when the turn starts, so a setting changed during
+    a call applies from the next thing said."""
+    b = block if block is not None else get()
+    level = b.get("thinking")
+    model = (b.get("hq_model") or "").strip()
+    return {
+        "thinking": None if level == "hq" else level if level in CALL_THINKING else "off",
+        "model": model or None,
+    }
+
+
 def _coerce_side(raw: object) -> dict:
     out = dict(_SIDE_DEFAULTS)
     if isinstance(raw, dict):
@@ -159,9 +194,11 @@ def coerce(raw: object) -> dict:
             v = raw["voices"].get(g)
             if isinstance(v, str) and len(v) <= VOICE_MAX:
                 out["voices"][g] = v
-    for k, allowed in (("turn_taking", TURN_TAKING), ("mic", MIC_MODES), ("answers", ANSWERS)):
+    for k, allowed in _CHOICES:
         if raw.get(k) in allowed:
             out[k] = raw[k]
+    if _is_model(raw.get("hq_model")):
+        out["hq_model"] = raw["hq_model"].strip()
     for k in ("interrupt", "captions", "stt_detects_language", "tts_accepts_language"):
         if isinstance(raw.get(k), bool):
             out[k] = raw[k]
@@ -352,9 +389,11 @@ def validate(patch: object) -> None:
         for g, name in v.items():
             if not isinstance(name, str) or len(name) > VOICE_MAX:
                 raise SettingsError(f"voices.{g} must be a short string")
-    for k, allowed in (("turn_taking", TURN_TAKING), ("mic", MIC_MODES), ("answers", ANSWERS)):
+    for k, allowed in _CHOICES:
         if k in patch and patch[k] not in allowed:
             raise SettingsError(f"{k} must be one of {list(allowed)}")
+    if "hq_model" in patch and not _is_model(patch["hq_model"]):
+        raise SettingsError("hq_model must be a model id, or empty for HQ's own model")
     for k in ("interrupt", "captions", "stt_detects_language", "tts_accepts_language"):
         if k in patch and not isinstance(patch[k], bool):
             if k == "stt_detects_language" and patch[k] is None:
@@ -455,9 +494,12 @@ def save(patch: dict, path: Path | None = None) -> dict:
         for k in (
             "turn_taking", "mic", "answers", "interrupt", "captions", "language", "tts_styles",
             "tts_languages", "tts_voices", "stt_detects_language", "tts_accepts_language",
+            "thinking",
         ):  # fmt: skip
             if k in patch:
                 new[k] = patch[k]
+        if "hq_model" in patch:
+            new["hq_model"] = patch["hq_model"].strip()
         for s in SIDES:
             moved = any(new[s].get(k) != cur[s].get(k) for k in ("base_url", "model", "api_key"))
             for k in _PROBED[s]:

@@ -100,6 +100,13 @@ DIAL_TIMEOUT_S = 30.0
 #: The worker ends a segment at this pause, whatever the setting (#1845): HQ starts a DRAFT of its
 #: answer at once, and the turn-taking setting decides when it is committed instead.
 WORKER_STOP_S = 0.35
+#: How long the worker's turn model waits for more after a sentence it takes for UNFINISHED
+#: (#1996). Pipecat's default is 3 s, and all of it came before HQ was even given the words:
+#: measured on real calls through the worker, the words reached HQ 1.0 s after the last one
+#: when the model took the sentence for finished and 3.4 s when it did not ("Thanks. That
+#: helps."). One second is enough: the answer stays a draft for the commit pause, and words
+#: that come later join it (#1845).
+WORKER_TURN_WAIT_S = 1.0
 #: The silence after the Commander's last word before HQ's draft is committed (#1845), per
 #: turn-taking setting. Quick drafts nothing: it commits at the worker's own stop.
 COMMIT_PAUSE_S = {"quick": 0.0, "natural": 1.5, "patient": 2.5}
@@ -323,6 +330,9 @@ class Call:
     held: tuple | None = None
     #: When the Commander last stopped speaking (`user_stopped`'s own instant, #1845).
     user_stopped_at: float = 0.0
+    #: The answer HQ is about to speak, for its timing line (#1996): ``(stopped, asked,
+    #: answered)`` monotonic instants, ``stopped`` None for words with no turn of their own.
+    answer_clock: tuple | None = None
     #: The silence HQ waits for before a draft is committed (#1845, `COMMIT_PAUSE_S`); 0: no drafts.
     commit_pause: float = 0.0
     #: HQ's answer started before the Commander has surely finished (#1845), until it is committed
@@ -552,6 +562,7 @@ class Call:
                 # lines (#1702) carry on after a barge-in over the ack or a status line.
                 await self.set_state("thinking" if self._turn_running() else "listening")
         elif t == "bot_started":
+            self._log_answer_clock()
             self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
             await self.set_state("speaking")
             await self.client({"t": "speaking", "id": ev.get("id"), "on": True})
@@ -591,6 +602,24 @@ class Call:
 
     def _turn_running(self) -> bool:
         return self.turn_task is not None and not self.turn_task.done()
+
+    def _log_answer_clock(self) -> None:
+        """One line per spoken answer (#1996): how long after the Commander's stop HQ was asked
+        (the speech server's transcript, and the turn settling), how long the answer took (the
+        commit pause and the model), and how long after it HQ's audio began (the speech server's
+        first audio). Durations and the call's id only, never words."""
+        clock, self.answer_clock = self.answer_clock, None
+        if clock is None:
+            return
+        stopped, asked, answered = clock
+        now = time.monotonic()
+        heard = "-" if stopped is None else f"{max(0.0, asked - stopped):.2f}s"
+        total = now - (asked if stopped is None else min(stopped, asked))
+        log.info(
+            "voice call %s answer: asked %s after the stop, answered in %.2fs, "
+            "speaking %.2fs later, %.2fs in all",
+            self.id, heard, answered - asked, now - answered, total,
+        )  # fmt: skip
 
     def _language_after(self, text: str) -> str | None:
         """The call's language after an utterance it KEPT (#1807, Hermes 7438/7443). **The app owns
@@ -1074,6 +1103,9 @@ class Call:
                     "said_at": None,
                     "speech_s": speech_seconds(words),
                 }
+            # Where this turn's time went (#1996), closed by HQ's first audio (`bot_started`).
+            stopped = self.user_stopped_at if heard.get("turn") is not None else None
+            self.answer_clock = (stopped, now, time.monotonic()) if words.strip() else None
             if await self.say(words, turn_id=view.get("turn_id"), sid=sid) is None:
                 self.ending = None
             for line in lines:
@@ -2800,6 +2832,7 @@ def worker_config(settings: dict, voice: str, profile: dict | None = None) -> di
         # the split no longer cuts the Commander off, because HQ's answer is only a draft until
         # the setting's own pause has passed (`COMMIT_PAUSE_S`, #1845), and the rest joins it.
         "stop_secs": WORKER_STOP_S,
+        "turn_wait": WORKER_TURN_WAIT_S,
         "interrupt": bool(settings["interrupt"]),
     }
 

@@ -80,9 +80,9 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
 from . import speech_endpoints as se
-from .voice_synth import SpeechOrder, Synths
-from .voice_text import call_language, split_speech
-from .voice_turns import Turns
+from .voice_synth import Pace, SpeechOrder, Synths, paced, speech_pieces
+from .voice_text import call_language
+from .voice_turns import Turns, stop_instant
 
 #: How long a turn waits for its transcripts with NO result coming back at all (#1842, Hermes 7657,
 #: 7659). A turn goes to the app WHOLE: sending part of it early, and the rest LATE, split one
@@ -93,7 +93,9 @@ TRANSCRIPT_WAIT_S = se.TRANSCRIBE_TIMEOUT_S + 5.0
 #: Synthesis look-ahead: sentences synthesized ahead of the one playing. Two hides most of a
 #: slower-than-real-time TTS (measured on VoxCPM2: RTF 1.0–2.1) without flooding the server.
 LOOKAHEAD = 1
-#: The first chunk of each reply is cut to this many words: first audio sooner on slow TTS.
+#: The first chunk of each reply is cut to this many words: first audio sooner on a TTS that
+#: sends a sentence only once it is finished. Not on one that streams (`Pace`): there a reply is
+#: voiced in whole sentences, because cut pieces change voice (`voice_text.WHOLE_WORDS`).
 FIRST_WORDS = 7
 
 
@@ -228,13 +230,14 @@ class _Synth:
         try:
             # aclosing: an interrupted say (cancelled mid-stream) closes its HTTP stream now, not
             # whenever the abandoned generator is collected. `p`: its say's parameters, taken
-            # when the say arrived — never the next say's.
+            # when the say arrived — never the next say's. `paced`: a sentence that comes back
+            # whole shows whether this server streams (`Pace`).
             async with contextlib.aclosing(se.synthesize(
                 tts._ep, text, voice=p.voice, out_rate=tts.sample_rate, speed=p.speed,
                 language=p.language, extra={"style": p.style} if p.style else None,
                 plain_fallback=tts.go_plain,
             )) as chunks:  # fmt: skip
-                async for chunk in chunks:
+                async for chunk in paced(chunks, tts.pace, tts.sample_rate, time.monotonic):
                     started.set()
                     await self.queue.put(chunk)
             await self.queue.put(None)
@@ -259,6 +262,8 @@ class EndpointTTS(TTSService):
         self._voice = voice
         self._bus = bus
         self.speech_order = SpeechOrder()
+        #: Does the endpoint stream? Learnt from each sentence spoken (`voice_synth.Pace`).
+        self.pace = Pace()
         self._synths = Synths(lambda key: _Synth(self, key), lookahead)
         #: P3: the contact's style (only when the server advertised it), speed and the language
         #: of the say being spoken.
@@ -336,6 +341,8 @@ class Bridge(FrameProcessor):
         # Numbers each user turn: `user_started` and that turn's `utterance` carry it, so the app
         # can tell when an utterance BEGAN even though its transcript arrives later (#1397 P2).
         self._turn = 0
+        #: When the voice detector last ended a segment (this process's monotonic clock).
+        self._vad_stopped_at: float | None = None
 
     async def _flush(self, target: int, turn: int) -> None:
         text = self._bus.turns.flush(target, turn)
@@ -405,6 +412,7 @@ class Bridge(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._bus.turns.segment_sent()
+            self._vad_stopped_at = time.monotonic()
         if isinstance(frame, TranscriptionFrame):
             res = frame.result if isinstance(frame.result, dict) else {}
             lang = res.get("language") if isinstance(res.get("language"), str) else None
@@ -416,7 +424,10 @@ class Bridge(FrameProcessor):
         elif isinstance(frame, UserStoppedSpeakingFrame):
             # Its turn and its own instant (#1845): the app times HQ's commit pause from HERE, not
             # from the transcript, which can trail it by the grace.
-            await self._bus.send({"t": "user_stopped", "turn": self._turn, "at": time.monotonic()})
+            # `at`: when the voice detector ended the turn's last segment, which is earlier than
+            # now by however long the turn model waited for more (`stop_instant`, #1996).
+            at = stop_instant(self._vad_stopped_at, time.monotonic())
+            await self._bus.send({"t": "user_stopped", "turn": self._turn, "at": at})
             self._grace = asyncio.create_task(
                 self._when_transcribed(self._bus.turns.target(), self._grace, self._turn)
             )
@@ -439,7 +450,7 @@ class Bridge(FrameProcessor):
             self._tts.language = lang if isinstance(lang, str) and len(lang) == 2 else None
             v = msg.get("voice")
             self._tts.say_voice = v if isinstance(v, str) and 0 < len(v) <= 120 else None
-            chunks = split_speech(str(msg.get("text") or ""), first_max=FIRST_WORDS)
+            chunks = speech_pieces(str(msg.get("text") or ""), self._tts.pace, FIRST_WORDS)
             self._tts.prefetch(chunks)
             for c in chunks:
                 await self.push_frame(TTSSpeakFrame(c))
@@ -491,12 +502,23 @@ async def run_call(websocket) -> None:
             sample_rate=in_rate, params=VADParams(stop_secs=float(cfg.get("stop_secs", 0.35)))
         )
     )
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
+    # How long the turn model waits for more after a sentence it takes for unfinished. Pipecat's
+    # own default is 3 s; the app sends its own (`voice_calls.WORKER_TURN_WAIT_S`), because it
+    # holds HQ's answer as a draft for the commit pause anyway and joins words that come later.
+    smart = SmartTurnParams(stop_secs=float(cfg["turn_wait"])) if "turn_wait" in cfg else None
     turns = UserTurnProcessor(
         user_turn_strategies=UserTurnStrategies(
             start=[VADUserTurnStartStrategy(enable_interruptions=bool(cfg.get("interrupt", True)))],
-            stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())],
+            stop=[
+                TurnAnalyzerUserTurnStopStrategy(
+                    turn_analyzer=LocalSmartTurnAnalyzerV3(params=smart)
+                    if smart is not None
+                    else LocalSmartTurnAnalyzerV3()
+                )
+            ],
         )
     )
     tts.style = cfg["tts"].get("style") or None

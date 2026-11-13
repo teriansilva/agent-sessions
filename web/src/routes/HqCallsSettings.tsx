@@ -19,6 +19,7 @@ import { Seg, Switch } from "../components/hud/Controls";
 import { api, ApiError } from "../lib/api";
 import type {
   AnswerLength,
+  CallThinking,
   ConformanceReport,
   HostKind,
   MicMode,
@@ -67,10 +68,18 @@ const KIND_WORD: Record<HostKind, string> = {
   invalid: "Not a valid URL",
 };
 
-type ConvKey = "turn_taking" | "interrupt" | "mic" | "answers" | "captions";
+type ConvKey = "turn_taking" | "interrupt" | "mic" | "answers" | "captions" | "thinking" | "hq_model";
+/** Thinking on calls (#1996), in the order shown. */
+const CALL_THINKING: { value: CallThinking; label: string }[] = [
+  { value: "off", label: "Off · fastest" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "hq", label: "Same as typed HQ turns" },
+];
 /** Runs one settings write after every earlier one (the page's single write queue). */
 export type SettingsWrite = <T>(fn: () => Promise<T>) => Promise<T>;
-const CONV_KEYS: ConvKey[] = ["turn_taking", "interrupt", "mic", "answers", "captions"];
+const CONV_KEYS: ConvKey[] = ["turn_taking", "interrupt", "mic", "answers", "captions", "thinking", "hq_model"];
 
 /** The endpoint a draft points at — and the credential it would use: a test or a read is only
  *  valid for exactly that (a server may answer one token differently from another). */
@@ -271,6 +280,23 @@ function SideFields({
 export function HqCallsSettings() {
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const convSeq = useRef<Partial<Record<ConvKey, number>>>({});
+  // The AI endpoint's own model list, for "Model on calls" (#1996). A list that can't be read
+  // leaves the field with HQ's model and whatever is saved: never an invented id.
+  const [hqModels, setHqModels] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    api
+      .aiReviewModels()
+      .then((r) => {
+        // Only a real list is shown: any other answer (an older server, a mocked route) is none.
+        const models = Array.isArray(r?.models) ? r.models.filter((m) => typeof m === "string" && m) : [];
+        if (live) setHqModels(models);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
   // ONE write queue for the whole page (#1640 reviews): conversation settings, the endpoints,
   // the call language, each General's profile and Use this machine all write the same settings
   // block, and each answer is the WHOLE block. Run one at a time, the server commits them in
@@ -717,6 +743,46 @@ export function HqCallsSettings() {
             ]}
             testId="hq-calls-answers"
           />
+        </div>
+        <div className={h.row}>
+          <div className={h.lab}>
+            <b>Thinking on calls</b>
+            <span>how much HQ’s model thinks before it speaks; more is slower</span>
+          </div>
+          <select
+            className={styles.aiInput}
+            aria-label="Thinking on calls"
+            value={settings.thinking}
+            onChange={(e) => void saveOne({ thinking: e.target.value as CallThinking })}
+            data-testid="hq-calls-thinking"
+          >
+            {CALL_THINKING.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className={h.row}>
+          <div className={h.lab}>
+            <b>Model on calls</b>
+            <span>a faster model for spoken turns, on your AI endpoint</span>
+          </div>
+          <select
+            className={styles.aiInput}
+            aria-label="Model on calls"
+            value={settings.hq_model}
+            onChange={(e) => void saveOne({ hq_model: e.target.value })}
+            data-testid="hq-calls-model"
+          >
+            <option value="">Same as HQ</option>
+            {/* The saved model stays choosable even when the endpoint no longer lists it. */}
+            {[...new Set([...(settings.hq_model ? [settings.hq_model] : []), ...hqModels])].map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
         </div>
         <div className={h.row}>
           <div className={h.lab}>

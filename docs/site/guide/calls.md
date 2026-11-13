@@ -96,6 +96,16 @@ enter that server's key again or remove it.
   may not hear you until you come back.
 - **A slow speech server pauses rather than stutters.** If text-to-speech can't keep up, HQ waits
   a moment and then speaks the next stretch in one piece.
+- **Thinking on calls** and **Model on calls** (Settings → AI → HQ calls → Conversation) are
+  separate from what you set for HQ in **Settings → AI**, which applies to what you type. On a
+  call HQ does not think before it answers unless you choose a level here, because you are
+  waiting on the line; **Same as typed HQ turns** follows your AI setting. **Model on calls**
+  lets spoken turns use another model from the same AI endpoint, for example a faster one;
+  **Same as HQ** is the default. HQ uses the same tools either way.
+- **HQ speaks a reply in whole sentences** when your speech server sends audio while it is still
+  generating it, so the voice stays the same from the first word to the last. On a server that
+  sends each sentence only when it is finished, HQ still starts with a short first piece, so you
+  hear it sooner.
 
 ### Acting by voice
 

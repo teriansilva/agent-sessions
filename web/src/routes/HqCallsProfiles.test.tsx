@@ -40,6 +40,8 @@ function settings(over: Partial<VoiceSettings> = {}): VoiceSettings {
     interrupt: true,
     mic: "open",
     answers: "brief",
+  thinking: "off",
+  hq_model: "",
     captions: true,
     configured: true,
     contacts: {},

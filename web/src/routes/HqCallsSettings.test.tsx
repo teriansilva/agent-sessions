@@ -25,6 +25,7 @@ vi.mock("../lib/api", async () => {
       voicePreviewContact: vi.fn(),
       voiceLocal: vi.fn(),
       useLocalVoice: vi.fn(),
+      aiReviewModels: vi.fn(),
     },
   };
 });
@@ -37,6 +38,8 @@ const SETTINGS: VoiceSettings = {
   interrupt: true,
   mic: "open",
   answers: "brief",
+  thinking: "off",
+  hq_model: "",
   captions: true,
   configured: true,
   contacts: {},
@@ -98,6 +101,7 @@ beforeEach(() => {
   vi.mocked(api.voiceCapabilities).mockResolvedValue(CAPS);
   vi.mocked(api.saveVoiceSettings).mockImplementation(async () => SETTINGS);
   vi.mocked(api.voiceLocal).mockResolvedValue(LOCAL);
+  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: ["hq-big", "hq-fast"] });
 });
 
 function renderPage() {
@@ -169,6 +173,51 @@ test("Test both checks the typed endpoints with a voice and lists every check", 
   expect(within(report).getAllByTestId("hq-calls-check")).toHaveLength(2);
   expect(report).toHaveTextContent("no streaming: first audio waits");
   expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+});
+
+test("thinking on calls is its own setting, off by default, and saves at once (#1996)", async () => {
+  renderPage();
+  const field = (await screen.findByTestId("hq-calls-thinking")) as HTMLSelectElement;
+  expect(field.value).toBe("off");
+  expect(within(field).getAllByRole("option").map((o) => (o as HTMLOptionElement).value)).toEqual([
+    "off", "low", "medium", "high", "hq",
+  ]);
+  await userEvent.selectOptions(field, "hq");
+  await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledWith({ thinking: "hq" }));
+});
+
+test("the model on calls is chosen from the AI endpoint's own list, HQ's by default (#1996)", async () => {
+  renderPage();
+  const field = (await screen.findByTestId("hq-calls-model")) as HTMLSelectElement;
+  expect(field.value).toBe("");
+  await waitFor(() =>
+    expect(within(field).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Same as HQ", "hq-big", "hq-fast",
+    ]),
+  );
+  await userEvent.selectOptions(field, "hq-fast");
+  await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledWith({ hq_model: "hq-fast" }));
+  await userEvent.selectOptions(field, "");
+  await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledWith({ hq_model: "" }));
+});
+
+test("a saved call model the endpoint no longer lists stays shown, and a list that fails invents nothing (#1996)", async () => {
+  vi.mocked(api.voiceSettings).mockResolvedValue({ ...SETTINGS, hq_model: "retired-model" });
+  vi.mocked(api.aiReviewModels).mockRejectedValue(new Error("no list"));
+  renderPage();
+  const field = (await screen.findByTestId("hq-calls-model")) as HTMLSelectElement;
+  expect(field.value).toBe("retired-model");
+  expect(within(field).getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "Same as HQ", "retired-model",
+  ]);
+});
+
+test("an answer that is no model list shows only HQ's own model (#1996)", async () => {
+  vi.mocked(api.aiReviewModels).mockResolvedValue({} as { models: string[] });
+  renderPage();
+  const field = (await screen.findByTestId("hq-calls-model")) as HTMLSelectElement;
+  expect(within(field).getAllByRole("option").map((o) => o.textContent)).toEqual(["Same as HQ"]);
+  expect(screen.getByTestId("hq-calls-thinking")).toBeInTheDocument();
 });
 
 test("a conversation setting saves at once", async () => {

@@ -185,7 +185,7 @@ How [Calling HQ](/guide/calls) sounds and where its audio goes:
 - **Speech services:** speech-to-text and text-to-speech, each a URL, a model and an optional
   access key. **Test both** checks them before you save.
 - **Each General's voice:** voice, style, speed and a voice per language, with **Preview**.
-- **Call language**, **Turn-taking**, **Interrupt HQ**, **Captions**, and **Where your call goes**.
+- **Call language**, **Turn-taking**, **Interrupt HQ**, **Thinking on calls**, **Model on calls**, **Captions**, and **Where your call goes**.
 
 ### HQ connectors · `ai-hq-connectors`
 

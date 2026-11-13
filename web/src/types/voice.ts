@@ -4,6 +4,9 @@
 export type TurnTaking = "quick" | "natural" | "patient";
 export type MicMode = "open" | "push";
 export type AnswerLength = "brief" | "detailed";
+/** How much HQ's model thinks before answering a spoken turn (#1996): its own level for calls,
+ *  or `hq` for the level Settings → AI holds. */
+export type CallThinking = "off" | "low" | "medium" | "high" | "hq";
 export type VoiceGroup = "woman" | "man";
 /** Where an endpoint sits, derived from its URL by the server. */
 export type HostKind = "loopback" | "lan" | "remote" | "invalid";
@@ -24,6 +27,10 @@ export interface VoiceSettings {
   mic: MicMode;
   answers: AnswerLength;
   captions: boolean;
+  /** #1996: thinking for spoken turns only (default off). */
+  thinking: CallThinking;
+  /** #1996: the model for spoken turns; empty = HQ's own model. */
+  hq_model: string;
   configured: boolean;
   /** #1397 P3: each General's saved overrides (absent = their defaults). */
   contacts: Record<string, ContactVoice>;
@@ -81,6 +88,8 @@ export interface VoiceSettingsPatch {
   mic?: MicMode;
   answers?: AnswerLength;
   captions?: boolean;
+  thinking?: CallThinking;
+  hq_model?: string;
   contacts?: Record<string, ContactVoice | null>;
   language?: string;
   tts_styles?: string[];

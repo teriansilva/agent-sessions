@@ -60,6 +60,7 @@ from . import (
     ask_settings,
     ask_store,
     engines,
+    hq_calls_settings,
     hq_contacts,
     hq_usage,
     mission_plan,
@@ -3396,8 +3397,16 @@ def _leaked_calls(text: str) -> bool:
 
 
 async def run_turn(turn: _Turn) -> list[dict]:
-    """The turn itself. Writes tool records as it goes; RETURNS the records that settle it."""
+    """The turn itself. Writes tool records as it goes; RETURNS the records that settle it. A
+    spoken call turn is asked with the call's own thinking level and model (#1996, Settings →
+    HQ calls; by default no extended thinking on HQ's model), in every request it makes."""
+    if turn.via == "call":
+        with ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+            return await _run_turn(turn)
+    return await _run_turn(turn)
 
+
+async def _run_turn(turn: _Turn) -> list[dict]:
     def fail(detail: str, code: str | None = None) -> list[dict]:
         return [_status(turn, "failed", detail, code)]
 

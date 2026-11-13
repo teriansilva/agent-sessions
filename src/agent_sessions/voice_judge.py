@@ -68,7 +68,7 @@ def _user_message(readback: str, cards: int, reply: str) -> str:
 async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int | None] | None:
     """Ask the HQ model what `reply` means for the `cards` card(s) HQ read back as `readback`.
     `None` when no verdict could be had — the caller decides nothing then."""
-    from . import hq_usage, prompts, review
+    from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
 
     try:
         cfg = review._require_config()
@@ -82,7 +82,8 @@ async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int |
             "stream": False,
             "max_tokens": JUDGE_MAX_TOKENS,
         }
-        with hq_usage.hq_call():
+        # A spoken turn (#1996): the call's own thinking level and model, off and HQ's by default.
+        with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
             r = await asyncio.wait_for(review.post_chat_response(cfg, body), JUDGE_TIMEOUT_S)
         if r.status_code != 200:
             return None

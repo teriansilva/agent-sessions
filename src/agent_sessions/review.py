@@ -1411,6 +1411,12 @@ async def _post_chat(
     # HQ's calls are marked by HQ's pipeline (`hq_usage.hq_call`), never inferred from the prompt
     # text: identical registry texts would otherwise count another feature's call (#1531).
     hq = hq_usage.in_hq_call()
+    # A spoken call turn with a model of its own (#1996): every request of that turn asking for
+    # the configured model goes to the call's instead, on the same endpoint with the same key.
+    # A caller that named another model itself is left alone.
+    spoken_model = ai_providers.spoken_model()
+    if spoken_model and body.get("model") == cfg.get("model"):
+        body["model"] = spoken_model
     if ai_providers.is_auto(cfg) and body.get("model") == cfg.get("model"):
         body["model"] = await _auto_model(cfg)
     url = _base(cfg) + "/chat/completions"

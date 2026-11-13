@@ -151,41 +151,72 @@ def verbatim(text: str) -> str | None:
 
 #: Words per spoken chunk: shorter chunks give earlier first audio on slow TTS servers.
 CHUNK_WORDS = 14
+#: For a TTS server that STREAMS (`whole`): whole sentences, together up to this many words per
+#: request. Such a server starts speaking a fraction of a second into any request, so nothing is
+#: gained by cutting — and each request is voiced on its own: measured on VoxCPM2 (2026-11-13, 432
+#: renders), a piece of one to five words left its voice's pitch in 12 of 72 renders, a sentence
+#: of six or more in none. Cut pieces are what made HQ sound calm, then suddenly excited.
+WHOLE_WORDS = 40
+#: A last piece shorter than this joins the one before it rather than being voiced alone, even
+#: past WHOLE_WORDS: a request is at most WHOLE_WORDS + WHOLE_MIN_WORDS - 1 words.
+WHOLE_MIN_WORDS = 6
 
 
-def split_speech(text: str, *, first_max: int | None = None) -> list[str]:
+def _length(chunk: str) -> int:
+    return len(chunk.split())
+
+
+def _whole_sentences(pieces: list[str]) -> list[str]:
+    """`pieces` (sentences, a longer one already cut at its clauses) joined into requests of up to
+    WHOLE_WORDS words; a short last one joins the one before it."""
+    out: list[str] = []
+    for piece in pieces:
+        if out and _length(out[-1]) + _length(piece) <= WHOLE_WORDS:
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    if len(out) > 1 and _length(out[-1]) < WHOLE_MIN_WORDS:
+        out[-2:] = [f"{out[-2]} {out[-1]}"]
+    return out
+
+
+def split_speech(text: str, *, first_max: int | None = None, whole: bool = False) -> list[str]:
     """Sentences, and long sentences split at commas/semicolons, each at most ~CHUNK_WORDS words
     where the text allows it; with `first_max`, the FIRST chunk is cut shorter still (at a comma
-    if there is one, else at a word), so a slow TTS starts speaking sooner. Joining the chunks
-    gives back the same words."""
+    if there is one, else at a word), so a slow TTS starts speaking sooner. With `whole` (a TTS
+    that streams) sentences stay whole and go out together, up to WHOLE_WORDS words a request;
+    only a sentence longer than that is cut, at its clauses. Joining the chunks gives back the
+    same words."""
+    limit = WHOLE_WORDS if whole else CHUNK_WORDS
     out: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
         if not sentence:
             continue
-        if len(sentence.split()) <= CHUNK_WORDS:
+        if len(sentence.split()) <= limit:
             out.append(sentence)
             continue
         part: list[str] = []
         for clause in re.split(r"(?<=[,;:])\s+", sentence):
-            if part and len(" ".join(part).split()) + len(clause.split()) > CHUNK_WORDS:
+            if part and len(" ".join(part).split()) + len(clause.split()) > limit:
                 out.append(" ".join(part))
                 part = []
             part.append(clause)
         if part:
             out.append(" ".join(part))
-    if first_max and out and len(out[0].split()) > first_max:
+    if first_max and not whole and out and len(out[0].split()) > first_max:
         words = out[0].split()
         cut = next(
             (i + 1 for i in range(min(first_max, len(words)) - 1, 2, -1) if words[i][-1] in ",;:"),
             first_max,
         )
         out[0:1] = [" ".join(words[:cut]), " ".join(words[cut:])]
-    # A long stretch without punctuation is still cut, at words: no chunk over CHUNK_WORDS.
+    # A long stretch without punctuation is still cut, at words: no chunk over the limit.
     fitted: list[str] = []
     for chunk in out:
         words = chunk.split()
-        fitted += [" ".join(words[i : i + CHUNK_WORDS]) for i in range(0, len(words), CHUNK_WORDS)]
-    return [c for c in fitted if c]
+        fitted += [" ".join(words[i : i + limit]) for i in range(0, len(words), limit)]
+    fitted = [c for c in fitted if c]
+    return _whole_sentences(fitted) if whole else fitted
 
 
 def _same_words(text: str) -> str:

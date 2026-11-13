@@ -27,6 +27,8 @@ waives consent (:func:`is_loopback`). Nothing is resolved, and no name suffix ev
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import ipaddress
 from dataclasses import dataclass
@@ -406,6 +408,9 @@ def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
     block's wire is byte-identical."""
     p = row_for(cfg)
     level = cfg.get("thinking") if cfg.get("thinking") in THINKING_LEVELS else "auto"
+    spoken = _SPOKEN.get()
+    if spoken is not None and spoken[0] is not None:
+        level = spoken[0]  # a spoken call turn: the level for calls, not the one for typing
     off = level == "off" or (level == "auto" and not interactive)
     if p.thinking == _STYLE_CHAT_TEMPLATE:
         # Today: the opt-out rides on EVERY call, interactive or not.
@@ -421,6 +426,45 @@ def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
             return {"reasoning": {"enabled": False}}
         return {} if level == "auto" else {"reasoning": {"effort": level}}
     return {}
+
+
+#: How the model is asked while a spoken call turn is being answered (`spoken_turn`): the
+#: thinking level and the model for calls, either ``None`` for "as HQ is set". ``None`` outside.
+_SPOKEN: contextvars.ContextVar[tuple[str | None, str | None] | None] = contextvars.ContextVar(
+    "hq_spoken_turn", default=None
+)
+
+
+@contextlib.contextmanager
+def spoken_turn(thinking: str | None = "off", model: str | None = None):
+    """Everything asked of the model inside this block is a SPOKEN turn on a call (#1996): it is
+    sent with the thinking level for calls (`thinking`: a level of THINKING_LEVELS, or ``None``
+    for the level Settings → AI holds) and to the model for calls (`model`, or ``None`` for
+    HQ's own). The defaults are no extended thinking on HQ's own model: the Commander is waiting
+    on the line, and a model that reasons first spends about two seconds before its first word
+    (measured 2026-11-13, a short answer: first content after 2.3 s with thinking, 0.2 s
+    without). The operator sets both in Settings → HQ calls (`hq_calls_settings.spoken`).
+
+    A context, not a changed configuration: it reaches every request the turn makes — each tool
+    round, the call-end judgement, the tools-refused fallback and a session search, which read
+    the configuration themselves — and nothing outside it. The stored AI settings are never
+    touched, so a typed turn is sent as set. Tasks and threads started inside inherit it."""
+    level = thinking if thinking in THINKING_LEVELS else None
+    token = _SPOKEN.set((level, (model or "").strip() or None))
+    try:
+        yield
+    finally:
+        _SPOKEN.reset(token)
+
+
+def in_spoken_turn() -> bool:
+    return _SPOKEN.get() is not None
+
+
+def spoken_model() -> str | None:
+    """The model for calls, inside a spoken turn that has one; else ``None``."""
+    spoken = _SPOKEN.get()
+    return spoken[1] if spoken is not None else None
 
 
 def with_fields(body: dict, fields: dict) -> dict:

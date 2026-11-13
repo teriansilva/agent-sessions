@@ -17,6 +17,18 @@ from __future__ import annotations
 OWNERS_KEPT = 32
 
 
+def stop_instant(vad_stopped_at: float | None, now: float) -> float:
+    """When the Commander stopped, for `user_stopped`'s `at` (#1845, #1996): the instant the
+    voice detector ended the turn's LAST segment, not the instant the turn was declared over.
+    The two are far apart when the turn model takes a sentence for unfinished and waits for more
+    (`voice_calls.WORKER_TURN_WAIT_S`), and the app times its commit pause from this instant: it
+    promises an answer after that much silence, not after that much on top of the wait. No
+    segment seen, or a clock that makes no sense: now."""
+    if vad_stopped_at is None or vad_stopped_at > now:
+        return now
+    return vad_stopped_at
+
+
 class Turns:
     def __init__(self) -> None:
         self.sent = 0  # segments handed to STT
