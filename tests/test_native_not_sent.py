@@ -187,6 +187,70 @@ def test_a_managed_binary_with_a_changed_digest_fails_provenance(tmp_path):
         prov().entrypoint_selection()
 
 
+def _managed(
+    tmp_path: Path, monkeypatch, *, plugin="myagent", generation=None, entry="bin/myagent"
+):
+    """A managed install of ``plugin`` in one generation under the plugins home, as the plugin
+    manager lays it out: ``<plugins home>/<plugin>/generations/<generation>/<entry>``."""
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGINS_DIR", str(tmp_path / "plugins"))
+    d = plugins.doc()
+    d["install"] = plugins._install(entrypoint=entry)
+    d["identity"]["id"] = plugin
+    d["binary"]["name"] = "myagent"
+    d["binary"]["aliases"] = ["myagent"] if plugin != "myagent" else []
+    d["binary"]["env_var"] = "AGENT_SESSIONS_MYAGENT_BIN"
+    root = tmp_path / "plugins" / plugin / "generations" / (generation or str(uuid.uuid4()))
+    ep = plugins.exe(root / entry, f"#!/bin/true\n#{root.name}\n".encode())
+    prov = PluginProvider(
+        plugins.parse(d),
+        trust=provenance.LOCAL,
+        root=root,
+        env={},
+        home=tmp_path,
+        state_dir=tmp_path / "state" / root.name,
+    )
+    plugins.write_record(prov, install_entrypoint=entry, install_sha256=plugins.sha(ep))
+    return prov
+
+
+def test_a_managed_update_to_a_new_generation_keeps_the_selection(tmp_path, monkeypatch):
+    # Activating a new generation of the same managed plugin is that plugin's update: the running
+    # process is the old generation's, and delivery writes only to it. Refusing here refused every
+    # queued message to every session started before an update, until each was restarted.
+    launched = _pinned(_managed(tmp_path, monkeypatch))
+    assert launched["state"] == provenance.MANAGED and launched["via"] == "install"
+    assert _same(launched, _managed(tmp_path, monkeypatch))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"plugin": "otheragent"}, {"entry": "libexec/myagent"}],
+    ids=["another-plugin", "another-entrypoint"],
+)
+def test_a_managed_switch_to_another_plugin_or_entrypoint_is_another_selection(
+    tmp_path, monkeypatch, change
+):
+    launched = _pinned(_managed(tmp_path, monkeypatch))
+    assert not _same(launched, _managed(tmp_path, monkeypatch, **change))
+
+
+def test_a_managed_selector_outside_the_plugins_home_is_never_a_generation(tmp_path, monkeypatch):
+    launched = _pinned(_managed(tmp_path, monkeypatch))
+    fresh = _managed(tmp_path, monkeypatch)
+    # The same layout, but the plugins home is elsewhere now: no generation rule applies.
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGINS_DIR", str(tmp_path / "elsewhere"))
+    assert not _same(launched, fresh)
+
+
+def test_a_managed_switch_that_also_changes_trust_or_state_is_another_selection(
+    tmp_path, monkeypatch
+):
+    launched = _pinned(_managed(tmp_path, monkeypatch))
+    fresh = _managed(tmp_path, monkeypatch)
+    for field, value in (("trust", provenance.FIRST_PARTY), ("state", provenance.ADOPTED)):
+        assert not _same({**launched, field: value}, fresh)
+
+
 # --- admit_queued: every gate a launch passed holds again -----------------------------------------
 
 

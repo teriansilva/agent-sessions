@@ -8,8 +8,10 @@ does not launch it, select a model, inherit bypass flags, or claim an adapter is
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..engine_errors import EngineError
@@ -118,6 +120,22 @@ def selection(ep: provenance.Entrypoint, trust: str) -> dict:
     return {"via": ep.via, "selector": ep.selector, "state": ep.state, "trust": trust}
 
 
+def _managed_generation(selector: str) -> tuple[str, str] | None:
+    """``(plugin directory, path inside the generation)`` for a managed install's selector, which
+    is ``<plugins home>/<plugin>/generations/<generation>/<install entrypoint>``; else None."""
+    from . import plugins_home
+
+    try:
+        home = Path(os.path.realpath(plugins_home()))
+        rel = Path(selector).relative_to(home)
+    except (OSError, ValueError):
+        return None
+    parts = rel.parts
+    if len(parts) < 4 or parts[1] != "generations" or ".." in parts:
+        return None
+    return parts[0], str(Path(*parts[3:]))
+
+
 def same_selection(pinned: object, ep: provenance.Entrypoint, trust: str) -> bool:
     """Does a fresh, provenance-PASSED resolution keep the selection a worker launched with?
 
@@ -127,6 +145,29 @@ def same_selection(pinned: object, ep: provenance.Entrypoint, trust: str) -> boo
     first-party adopted launcher may point somewhere new, and that launcher is the operator's own
     (owner-checked, regular file): the next generation would launch whatever it points at under
     the same rules, while delivery writes only to the process already running. A changed
-    selector, `via`, state or trust is never the same selection.
+    `via`, state or trust is never the same selection, and neither is a changed selector, with
+    the one exception below.
+
+    A managed install's update is the same case: activating a new generation of the SAME plugin
+    moves its selector from ``generations/<old>/<entry>`` to ``generations/<new>/<entry>``. That
+    activation went through the plugin manager's verify step and the fresh resolution passed
+    provenance; the running process is the one the old generation launched, and delivery writes
+    only to it. Every queued message to every session started before an update was refused
+    otherwise, until each session was restarted. Another plugin, another entrypoint inside the
+    generation, or any other field changing is still another selection.
     """
-    return isinstance(pinned, dict) and pinned == selection(ep, trust)
+    current = selection(ep, trust)
+    if not isinstance(pinned, dict):
+        return False
+    if pinned == current:
+        return True
+    if (
+        set(pinned) != set(current)
+        or any(pinned[k] != current[k] for k in current if k != "selector")
+        or current["via"] != "install"
+        or current["state"] != provenance.MANAGED
+        or not isinstance(pinned.get("selector"), str)
+    ):
+        return False
+    was = _managed_generation(pinned["selector"])
+    return was is not None and was == _managed_generation(current["selector"])
