@@ -117,6 +117,11 @@ it **reads the card back** and asks you to confirm:
 A message you tell HQ to send into one of your sessions is not read back: HQ sends it right away
 and tells you whether it arrived.
 
+- **A long brief is not read out.** If the brief for a new session is longer than a couple of
+  sentences, HQ says what would start and where, and that the brief is on your screen ("A new
+  Claude Code session in api. Its brief is too long to read out; it is on your screen."). You
+  can still say **confirm**: you are then starting a brief you have not heard in full. Messages
+  to a session and changes HQ proposes are always read in full, or stay on screen.
 - Say **confirm** within 20 seconds of the read-back finishing. With several cards, say which one
   ("confirm the second").
 - Anything else — silence, "cancel", talking over the read-back, or a new question — leaves the card

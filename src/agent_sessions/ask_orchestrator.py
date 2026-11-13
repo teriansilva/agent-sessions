@@ -1524,7 +1524,11 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         )
     registry = getattr(getattr(turn.app, "state", None), "session_registry", None)
     try:
-        done = await actuator.deliver(rec["id"], registry=registry, authority=_hq_authority)
+        # `attended`: the Commander started this turn and asked for the message (#2008), so it
+        # may go into a session that skips permission prompts, as their own typing may.
+        done = await actuator.deliver(
+            rec["id"], registry=registry, authority=_hq_authority, attended=True
+        )
     except actuator.NotDeliverable as e:
         # Claimed or changed by someone else first (an operator's tap on the same row): this send
         # did nothing, and the row is whatever that other caller made it.

@@ -3754,9 +3754,16 @@ async def submit(
     permission_operation = _permission_change(record).get("operation_id")
     if _permission_change(record).get("state") == "stopping":
         raise NativeError(409, "finish enabling Skip permissions before sending another message")
-    if execution_admission is not None and _effective_bypass(record):
-        # Guarded work never runs without permission prompts (#1897, #1613 D8). A change that
-        # races this check moves `permission_operation`, which `_effect` refuses.
+    if (
+        execution_admission is not None
+        and getattr(execution_admission, "attended", False) is not True
+        and _effective_bypass(record)
+    ):
+        # UNATTENDED guarded work never runs without permission prompts (#1897, #1613 D8). A
+        # change that races this check moves `permission_operation`, which `_effect` refuses.
+        # A turn the operator is behind (`ExecutionGuard.attended`, #2008: their tap, or HQ's
+        # send in a turn they started) is admitted, as their own typed message is; its
+        # authority is still checked in the fence and again at the worker's claim.
         raise NativeError(409, "guarded work can't run in a session that skips permission prompts")
     params = {"text": text, "context": context or {}}
     if attachments:

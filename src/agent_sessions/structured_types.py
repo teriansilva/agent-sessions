@@ -33,8 +33,17 @@ class ExecutionGuard:
     #: (`session_input.admit_native`). It raises when authority is withdrawn. A guard without it
     #: cannot fence a native turn, and a native client refuses it.
     admit: Callable[[], dict] | None = None
+    #: The operator is behind THIS turn (#2008): their own tap approved it, or HQ sends it in a
+    #: turn the Commander started and asked for. Set by server code at the two call sites that
+    #: know it (`actuator.deliver`), never read from a request or a stored record. It changes one
+    #: thing: such a turn may go into a session that skips permission prompts, as the operator's
+    #: typed message may. Unattended work — a mission, an automation, the supervisor — never
+    #: carries it, and is refused there as before (#1897, #1613 D8).
+    attended: bool = False
 
     def __post_init__(self) -> None:
+        if self.attended is not True and self.attended is not False:
+            raise ValueError("execution authority's attended flag must be a bool")
         if not isinstance(self.binding, str) or not _IDENTIFIER.fullmatch(self.binding):
             raise ValueError("execution authority needs a bounded opaque binding")
         if not callable(self.acquire):

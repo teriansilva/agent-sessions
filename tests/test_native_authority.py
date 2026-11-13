@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 
 import pytest
 
@@ -527,6 +528,57 @@ async def test_guarded_work_is_refused_in_a_session_that_skips_permissions(host,
         )
     assert refused.value.status == 409
     assert "SKIP" not in sent_texts(project)
+
+
+@pytest.mark.anyio
+async def test_a_turn_the_operator_is_behind_goes_into_a_session_that_skips_permissions(
+    host, project
+):
+    """#2008 (the operator's approval is on the issue): HQ's own send in a turn the Commander
+    started, and the operator's tap, carry `attended`; the same turn without it is refused."""
+    snap = await runtime.create_session(
+        ENGINES["claude"], str(project), operation_id=ident(), bypass=True
+    )
+    key = snap["session_key"]
+    await runtime.start_session(key)
+    attended = dataclasses.replace(guard(key), attended=True)
+    sent = await runtime.submit_turn(
+        key, operation_id=ident(), text="ATTENDED", execution_admission=attended
+    )
+    await settle(key, sent["turn_id"])
+    assert "ATTENDED" in sent_texts(project)
+    with pytest.raises(runtime.StructuredError, match="skips permission"):
+        await runtime.submit_turn(
+            key, operation_id=ident(), text="UNATTENDED", execution_admission=guard(key)
+        )
+    assert "UNATTENDED" not in sent_texts(project)
+
+
+@pytest.mark.anyio
+async def test_an_attended_turn_still_needs_its_authority(host, project):
+    """Attended lifts the skip-permissions refusal and nothing else: a withdrawn authority is
+    still refused in the fence, before anything is sent."""
+    snap = await runtime.create_session(
+        ENGINES["claude"], str(project), operation_id=ident(), bypass=True
+    )
+    key = snap["session_key"]
+    await runtime.start_session(key)
+    refused = guard(key, allowed=lambda: (False, "session assistance is off"))
+    with pytest.raises(runtime.StructuredError):
+        await runtime.submit_turn(
+            key,
+            operation_id=ident(),
+            text="NOPE",
+            execution_admission=dataclasses.replace(refused, attended=True),
+        )
+    assert "NOPE" not in sent_texts(project)
+
+
+def test_attended_is_a_real_bool_and_off_unless_set():
+    assert ExecutionGuard("mission:m-1", _never).attended is False
+    for bad in ("yes", 1, None):
+        with pytest.raises(ValueError):
+            ExecutionGuard("mission:m-1", _never, attended=bad)
 
 
 def test_an_api_sessions_fence_key_is_the_key_its_record_is_named_after(host):

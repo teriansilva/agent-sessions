@@ -550,9 +550,15 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
     check: Callable[[], tuple[bool, str]],
     precondition: dict | None,
     autonomous: bool,
+    attended: bool = False,
 ) -> tuple[str, str]:
     """Deliver one ledger action's text into API session ``key`` as one GUARDED turn. Returns
     ``(ledger_state, detail)`` in the actuator's vocabulary; never raises.
+
+    ``attended`` (#2008): the operator is behind this send — their tap, or HQ in a turn they
+    started. Only then may it go into a session that skips permission prompts; the ledger's
+    detail then says so. Nothing else about the send changes: the same precondition, the same
+    final guard in the fence, the same re-check at the worker's claim.
 
     ``check`` is the action's own final guard (authority, policy, membership, render), run INSIDE
     the write fence by #1897's admission, so a withdrawal after it is refused at the worker's claim.
@@ -607,7 +613,10 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
         # Built before anything is sent, so a malformed binding or action id is a known refusal
         # rather than an exception that strands the caller's claim (Hermes on #1926).
         action_guard = ExecutionGuard(
-            binding, _in_process_only, admit=lambda: session_input.admit_native(key, fenced_check)
+            binding,
+            _in_process_only,
+            admit=lambda: session_input.admit_native(key, fenced_check),
+            attended=attended is True,
         )
         operation_id = action_operation_id(action_id)
     except Exception as exc:  # noqa: BLE001
@@ -631,10 +640,12 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
     except Exception as exc:  # noqa: BLE001 — may have reached the worker
         return "indeterminate", f"delivery outcome is unknown ({type(exc).__name__}); not retried"
     code = sent.get("handoff")
+    # Said on the record when it applies (#2008): the agent acts on this text without asking.
+    unprompted = " (this session skips permission prompts)" if snap.get("bypass") is True else ""
     if code == "sent":
-        return "delivered", "delivered as a structured turn"
+        return "delivered", "delivered as a structured turn" + unprompted
     if code == "queued":
-        return "delivered", "queued behind the running turn"
+        return "delivered", "queued behind the running turn" + unprompted
     if code == "not_sent":
         return "stale", "the agent did not take the message; nothing was sent"
     return "indeterminate", "delivery could not be confirmed; not retried"

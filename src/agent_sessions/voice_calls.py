@@ -2187,10 +2187,24 @@ def confirmable_cards(
                         "line": _sentence(f"A message to {to} on {via}: {text}")})  # fmt: skip
         elif kind == "session":
             brief = verbatim(p.get("text") or "")
-            if brief is None:
-                continue  # the brief is what starts: unheard, it stays a screen decision
+            if brief is not None:
+                line = f"A new session in {title}: {brief}"
+            elif not (p.get("text") or "").strip():
+                continue  # nothing would start it
+            else:
+                # A brief too long (or too marked up) to read back word for word is ANNOUNCED,
+                # and may still be confirmed (#2008 2c, the operator's own approval there): the
+                # briefs HQ wrote on real calls ran 350 to 600 characters, so "confirm" never
+                # started a session. The line says what starts, where, and that the brief was
+                # not read. The card's id binds the confirmation to exactly this brief: a
+                # changed brief is a new card with a new id. Only a NEW SESSION is announced
+                # this way; a message and an operation's effect are still read in full or stay
+                # on screen (`verbatim` is unchanged).
+                agent = " ".join(str(p.get("agent") or "").split())[:40]
+                what = f"A new {agent} session" if agent else "A new session"
+                line = f"{what} in {title}. Its brief is too long to read out; it is on your screen"
             out.append({"id": pid, "kind": "session", "verb": "start it",
-                        "line": _sentence(f"A new session in {title}: {brief}")})  # fmt: skip
+                        "line": _sentence(line), "announced": brief is None})  # fmt: skip
         elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
             # A new draft: its spoken SUMMARY of the bound draft is what is confirmed, or it stays
             # on screen (#1681).

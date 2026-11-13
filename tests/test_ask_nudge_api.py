@@ -190,3 +190,114 @@ def test_refused_sends_do_not_spend_the_turns_budget(app, ai, api_session, fleet
     assert all("does not take input" in r["error"] for r in results[1 : n + 1])
     assert results[-1].get("sent") is True
     assert len(_ledger_for(api_session)) == 1
+
+
+# --- #2008: HQ's own send reaches an API session that skips permission prompts -------------------
+
+
+@pytest.fixture
+def bypass_session(host, project, fleet):
+    """An API session created to skip permission prompts, started, in HQ's fleet."""
+
+    async def make():
+        snap = await runtime.create_session(ENGINE, str(project), operation_id=ident(), bypass=True)
+        await runtime.start_session(snap["session_key"])
+        return snap["session_key"]
+
+    key = asyncio.run(make())
+    fleet["cards"].append(_card(key, ENGINE))
+    return key
+
+
+def test_hq_s_nudge_reaches_a_session_that_skips_permission_prompts(
+    app, ai, bypass_session, project
+):
+    """The operator's call of 2026-11-13: "nothing was sent: guarded work can't run in a session
+    that skips permission prompts". The Commander asked HQ for the message in that turn; the
+    operator's approval of this is on #2008."""
+    script = _nudge(ai, bypass_session)
+    app.ask(app.new(), "nudge the stuck sessions")
+    assert _result(script)["sent"] is True
+    assert _users(project).count(TEXT) == 1
+    (rec,) = _ledger_for(bypass_session)
+    assert rec["state"] == "delivered"
+    assert "skips permission prompts" in rec["detail"]  # said on the record
+
+
+def test_an_unattended_send_into_that_session_is_still_refused(bypass_session, project):
+    """A mission's, an automation's or the supervisor's send carries no `attended`: refused as
+    before, and nothing is written."""
+
+    async def go():
+        return await mission_structured.send(
+            action_id=ident(),
+            key=bypass_session,
+            text="UNATTENDED",
+            mission_id=None,
+            check=lambda: (True, ""),
+            precondition=None,
+            autonomous=False,
+        )
+
+    state, detail = asyncio.run(go())
+    assert state == "stale" and "skips permission prompts" in detail
+    assert "UNATTENDED" not in _users(project)
+
+
+def test_the_same_send_attended_is_delivered_and_says_so(bypass_session, project):
+    async def go():
+        return await mission_structured.send(
+            action_id=ident(),
+            key=bypass_session,
+            text="ATTENDED",
+            mission_id=None,
+            check=lambda: (True, ""),
+            precondition=None,
+            autonomous=False,
+            attended=True,
+        )
+
+    state, detail = asyncio.run(go())
+    assert state == "delivered" and detail.endswith("(this session skips permission prompts)")
+    assert _users(project).count("ATTENDED") == 1
+
+
+def test_an_attended_send_is_still_refused_when_its_authority_is_withdrawn(bypass_session, project):
+    async def go():
+        return await mission_structured.send(
+            action_id=ident(),
+            key=bypass_session,
+            text="WITHDRAWN",
+            mission_id=None,
+            check=lambda: (False, "session assistance left Suggest/Yolo before the write"),
+            precondition=None,
+            autonomous=False,
+            attended=True,
+        )
+
+    state, _detail = asyncio.run(go())
+    assert state != "delivered"
+    assert "WITHDRAWN" not in _users(project)
+
+
+def test_a_session_that_asks_first_says_nothing_about_skipping(app, ai, api_session, project):
+    script = _nudge(ai, api_session)
+    app.ask(app.new(), "nudge the stuck sessions")
+    assert _result(script)["sent"] is True
+    (rec,) = _ledger_for(api_session)
+    assert "skips permission prompts" not in (rec.get("detail") or "")
+
+
+def test_only_hq_s_send_and_the_operator_s_tap_are_attended():
+    """Every other caller of `actuator.deliver` leaves `attended` unset: found by reading the
+    source, so a new caller that sets it shows up here."""
+    import pathlib
+    import re
+
+    src = pathlib.Path(ask_orchestrator.__file__).parent
+    setters = sorted(
+        p.name
+        for p in src.rglob("*.py")
+        if re.search(r"attended\s*=\s*True", p.read_text(encoding="utf-8"))
+    )
+    assert setters == ["ask_orchestrator.py"]

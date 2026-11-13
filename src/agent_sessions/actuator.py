@@ -1197,8 +1197,14 @@ async def deliver(
     extra_fingerprint=None,
     operator_approval: bool = False,
     edit: dict | None = None,
+    attended: bool = False,
 ) -> dict:
     """Deliver one ledger action. Returns the resulting ledger record.
+
+    ``attended`` (#2008) is set by HQ's own send (`ask_orchestrator._send_nudge`, a turn the
+    Commander started) and by nothing else; with ``operator_approval`` (the operator's tap) it
+    is what lets an API send go into a session that skips permission prompts. A mission's, an
+    automation's and the supervisor's sends set neither.
 
     The state machine is the safety property, so the ordering matters: ``claimed`` is written
     and fsynced BEFORE any byte reaches the PTY. That is what makes a crash recoverable — the
@@ -1443,6 +1449,7 @@ async def deliver(
             if isinstance(rec.get("precondition"), dict)
             else None,
             autonomous=automatic,
+            attended=bool(attended or operator_approval),
         )
         api_outcome = session_input.Outcome(state, detail)
     else:
