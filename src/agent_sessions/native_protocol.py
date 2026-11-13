@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -646,6 +647,46 @@ def _origin_public(origin: dict) -> dict:
     return {"task_id": origin["task_id"], "description": origin.get("description") or ""}
 
 
+def guarded_text_refusal(codec: _Codec, text: str) -> str | None:
+    """Why a GUARDED (mission) ``text`` may not be sent to ``codec``, or None (#1903).
+
+    A client that runs slash commands itself takes no text whose first non-blank character is "/":
+    the command it names can run a child session unasked. The operator's own words are not
+    guarded and keep their commands."""
+    if not codec.runs_slash_commands:
+        return None
+    return _slash_refusal(text)
+
+
+def guarded_adapter_refusal(adapter: str | None, text: str) -> str | None:
+    """`guarded_text_refusal` by the adapter's kind, for the SERVER: a worker started before the
+    worker-side check existed would send the command, so the app refuses first (#1903)."""
+    known = False
+    pending = list(_Codec.__subclasses__())
+    while pending:  # every level: a subclass of a subclass counts
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        if adapter and getattr(cls, "ADAPTER", None) == adapter:
+            known = True
+            if cls.runs_slash_commands:
+                return _slash_refusal(text)
+    # FAIL CLOSED: an adapter nobody can name (a missing or unreadable record) is treated as one
+    # that runs slash commands.
+    return None if known else _slash_refusal(text)
+
+
+def _slash_refusal(text: str) -> str | None:
+    # Skip every leading blank or invisible character (Unicode Z* and C*, so a BOM or a
+    # zero-width space too): the client may trim by a rule other than Python's.
+    body = text.lstrip()
+    start = 0
+    while start < len(body) and unicodedata.category(body[start])[0] in "ZC":
+        start += 1
+    if body[start : start + 1] == "/":
+        return "a slash command is not sent to a mission-guarded session"
+    return None
+
+
 class _Codec:
     # The worker owns selection/queueing; codecs only map native effects (#1389).
     send_now_mode = "interrupt"
@@ -655,6 +696,11 @@ class _Codec:
     # `submit_now` cuts a turn the agent runs for itself, so a message Send now selected need not
     # wait behind one (#1475). False: it is written like any other message.
     submit_now_cuts_own_turn = False
+    # A prompt that begins with "/" may name a slash command the CLI runs ITSELF, and a command
+    # can start a child session under an agent of its own, outside the guarded one's permission
+    # block (#1903: opencode's `subtask: true` commands run unasked). A guarded (mission) text
+    # never reaches such a client that way; see `guarded_text_refusal`.
+    runs_slash_commands = False
 
     def __init__(self) -> None:
         # A turn the agent runs that no operator command owns, and its Send now target: minted
@@ -3797,6 +3843,7 @@ class OpencodeAcpCodec(_Codec):
     """
 
     ADAPTER = "opencode-acp"
+    runs_slash_commands = True
 
     def __init__(self, session_id: str | None = None, *, agent: str) -> None:
         super().__init__()
@@ -4593,6 +4640,7 @@ class CopilotAcpCodec(_Codec):
     """
 
     ADAPTER = "copilot-acp"
+    runs_slash_commands = True
 
     def __init__(self, session_id: str | None = None) -> None:
         super().__init__()

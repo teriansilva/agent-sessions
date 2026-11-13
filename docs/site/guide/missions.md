@@ -60,7 +60,7 @@ Objectives arrive a moment after the mission does; see below.
 A mission runs on **API sessions** only: an agent's API client, never its terminal. The agent
 picker offers only API clients that can hold a mission role and can start now, and it lists every
 other agent with the reason it is left out. A terminal agent's reason names its API client to use
-instead, or says none can hold a mission role yet. Today that is Claude's API client. If none is
+instead, or says none can hold a mission role yet. Today those are Claude's and opencode's API clients. If none is
 ready, planning stops with that reason: set one up in **Settings › Agents**, then plan again.
 
 A plan written before this rule that still names a terminal agent is refused when you press

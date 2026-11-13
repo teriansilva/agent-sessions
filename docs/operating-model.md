@@ -138,7 +138,7 @@ notification path and is not an outward action. Sending anything to anyone else 
 **Target**, rolled out as API clients become mission-ready (#1273). API sessions are the preferred execution surface: terminals are not reliable enough to drive
 unattended.
 
-**Today.** Missions run only on API sessions, on a mission-ready API client (Claude's today; #1898–#1902). Plan, dispatch, spawn and adopt refuse a terminal client server-side, with the API client to use. A mission that took a terminal session before then keeps it, but nothing automatic is typed into it: the supervisor's nudges, drafts and menu answers there are proposals the Commander taps. Automations may target API sessions (#1901); their terminal targets are legacy. **Target** (as API clients become mission-ready):
+**Today.** Missions run only on API sessions, on a mission-ready API client (Claude's and opencode's today; #1898–#1903). Plan, dispatch, spawn and adopt refuse a terminal client server-side, with the API client to use. A mission that took a terminal session before then keeps it, but nothing automatic is typed into it: the supervisor's nudges, drafts and menu answers there are proposals the Commander taps. Automations may target API sessions (#1901); their terminal targets are legacy. **Target** (as API clients become mission-ready):
 
 - **Missions and automations** run only on API sessions.
 - **New sessions** default to the engine's API client when one is ready. A terminal is an explicit choice.

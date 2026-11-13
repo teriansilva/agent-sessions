@@ -2887,6 +2887,12 @@ class Worker:
         if action in {"submit", "steer", "ahead"}:
             images = ()
             text = params["text"]
+            # A guarded turn (#1897) carries its caller's authority; its words never start a
+            # slash command the client would run unasked (#1903).
+            if "authority" in params:
+                refused = native_protocol.guarded_text_refusal(self.codec, text)
+                if refused:
+                    raise native_protocol.ProtocolError(refused)
             if params.get("attachments"):
                 try:
                     # Reverify before constructing either images or file references (#1396).

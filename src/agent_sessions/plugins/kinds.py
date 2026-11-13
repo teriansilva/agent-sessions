@@ -72,13 +72,14 @@ API_IMAGE_INPUT = {
 #: Which API kinds may hold a MISSION role (#1273 P3, #1898): a fact about how BattleLab supervises
 #: each protocol, never a value a manifest chooses. A capability bit only, never readiness: callers
 #: combine it with `registry.can_start`. A kind turns true only once it is proved end to end:
-#: Claude's stream-json by #1900 (`tests/test_mission_api_e2e.py`). Setting it false again is the
-#: rollback: no plan offers the client, no dispatch starts one and no automatic send reaches one,
-#: while observation and the operator's own words keep working.
+#: Claude's stream-json by #1900 (`tests/test_mission_api_e2e.py`), opencode's ACP by #1903
+#: (`tests/test_mission_tool_routes.py`, `tests/test_mission_api_adapters_e2e.py`). Setting it
+#: false again is the rollback: no plan offers the client, no dispatch starts one and no automatic
+#: send reaches one, while observation and the operator's own words keep working.
 API_MISSION_READY = {
     "codex-app-server": False,
     "claude-stream-json": True,
-    "opencode-acp": False,
+    "opencode-acp": True,
     "copilot-acp": False,
 }
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.

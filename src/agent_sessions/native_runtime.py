@@ -2159,6 +2159,14 @@ async def _effect(
             )
         try:
             if action == "submit" and "authority" in params:
+                # A mission text never starts a slash command the client would run unasked
+                # (#1903). The worker refuses it too, but a worker started before that check
+                # existed would not, so the app refuses first, whatever the worker's age.
+                refused = native_protocol.guarded_adapter_refusal(
+                    (current or {}).get("adapter"), str(params.get("text", ""))
+                )
+                if refused:
+                    raise NativeError(409, refused)
                 # An older worker can't check a caller's authority (#1897): refuse, never send the
                 # turn unchecked and never let its closed frame reject it as a lost request.
                 life = await asyncio.to_thread(native_state.read_lifecycle, gen.worker_id)

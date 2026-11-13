@@ -237,7 +237,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
         "probe",
     ) + (("enable_bypass",) if KINDS[source] in plugin_kinds.API_BYPASS_KINDS else ())
     # #1900 proved Claude's stream-json end to end; every other kind stays off.
-    assert described.mission_ready is (KINDS[source] == "claude-stream-json")
+    assert described.mission_ready is plugin_kinds.API_MISSION_READY[KINDS[source]]
     create = ident()
     created = await runtime.create_session(engine, str(project), operation_id=create)
     key = created["session_key"]

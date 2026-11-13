@@ -105,8 +105,12 @@ def test_the_ids_are_derived_from_the_attempt_and_pinned():
 
 def test_mission_ready_is_a_per_kind_capability_never_readiness(host, monkeypatch):
     assert set(kinds.API_MISSION_READY) == set(kinds.API_KINDS)
-    # #1900 proved exactly one kind end to end (`test_mission_api_e2e.py`); the rest stay off.
-    assert {k for k, on in kinds.API_MISSION_READY.items() if on} == {"claude-stream-json"}
+    # Each kind turns on only once proved end to end: Claude's by #1900 (`test_mission_api_e2e.py`),
+    # opencode's by #1903 (`test_mission_api_adapters_e2e.py`); the rest stay off.
+    assert {k for k, on in kinds.API_MISSION_READY.items() if on} == {
+        "claude-stream-json",
+        "opencode-acp",
+    }
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], False)
     assert not runtime.describe(ENGINE, check_ready=False).mission_ready
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], True)
