@@ -216,6 +216,50 @@ def test_the_codex_checked_walk_builds_each_unchanged_rollout_once(tmp_path, mon
     assert first == second and [s.uuid for s in first[0]] == [_U1]
 
 
+def _codex_rollout(root: Path, *, listable: bool) -> Path:
+    """A rollout; ``listable=False`` has no ``session_meta`` and so no cwd — read fine, no row."""
+    lines = [{"timestamp": "t", "type": "event_msg", "payload": {"type": "task_started"}}]
+    if listable:
+        meta = {"id": _U1, "cwd": "/home/u/p"}
+        lines.insert(0, {"timestamp": "t", "type": "session_meta", "payload": meta})
+    return _write(
+        root / "2026/05/15" / f"rollout-2026-05-15T15-33-57-{_U1}.jsonl",
+        "\n".join(json.dumps(x) for x in lines) + "\n",
+    )
+
+
+def test_a_checked_read_fine_none_is_reused_but_a_plain_fail_soft_none_never_crosses(
+    tmp_path, monkeypatch
+):
+    """Hermes on #1978: the two halves of "only a read that succeeded is ever reused".
+
+    A rollout with no cwd is read cleanly and is not listable — the checked builder's own
+    `None`, safe to reuse in the checked namespace. A `None` the PLAIN builder returned (fail-soft:
+    here, a stubbed failed read) sits in the plain namespace and must never hide that file's row
+    from the checked walk."""
+    root = tmp_path / "codex-sessions"
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(root))
+    rollout = _codex_rollout(root, listable=False)
+    build = _count_method(monkeypatch, cdx.CodexProvider, "_row_from_path")
+    prov = cdx.CodexProvider()
+    assert prov.scan_checked() == ([], [])
+    assert prov.scan_checked() == ([], [])
+    assert build.calls == 1  # the read-fine `None` was memoised and reused
+
+    rollout.unlink()
+    scancache.clear()
+    _codex_rollout(root, listable=True)
+    real = build.fn
+
+    def plain_fails_soft(self, path, *, checked=False):
+        return real(self, path, checked=checked) if checked else None
+
+    monkeypatch.setattr(cdx.CodexProvider, "_row_from_path", plain_fails_soft)
+    assert cdx.CodexProvider().scan() == []  # the plain namespace now holds a fail-soft `None`
+    rows, problems = cdx.CodexProvider().scan_checked()
+    assert [s.uuid for s in rows] == [_U1] and problems == []
+
+
 # --- Copilot, both walks ------------------------------------------------------------------------
 
 
