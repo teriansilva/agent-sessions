@@ -53,7 +53,7 @@ const updatedAt = (seconds: number) =>
  *  that an unattended update installed it on its offline checks (#1994). */
 function versionLine(v: Versions): string | null {
   if (!v.installed) return null;
-  if (v.available) return `${v.installed} → ${v.available}`;
+  if (v.available) return v.setupOnly ? `${v.installed} · setup update` : `${v.installed} → ${v.available}`;
   if (v.automatic) return `Updated automatically to ${v.installed} · offline checks · ${updatedAt(v.automatic.checkedAt)}`;
   return v.previous ? `${v.installed} active · ${v.previous.version ?? "previous"} kept` : `${v.installed} · current`;
 }
@@ -223,7 +223,9 @@ function RowView({
               className={button.ghost}
               to={action.to}
               aria-label={
-                versions.available ? `${action.label} ${row.label} to ${versions.available}` : undefined
+                versions.setupOnly
+                  ? `${action.label} ${row.label} setup`
+                  : versions.available ? `${action.label} ${row.label} to ${versions.available}` : undefined
               }
             >
               {action.label}

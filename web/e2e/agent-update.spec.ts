@@ -304,6 +304,32 @@ test("a newer bundled version beats an older signed cut: Update says it is bundl
   expect(m.writes).toEqual([]);
 });
 
+test("a same-version update says it changes BattleLab's setup, not the agent's version", async ({ page }) => {
+  const m = await mockApp(page, "update");
+  // The catalog keeps 1.2.3 but its recipe gained BattleLab's tool + memory wiring (a new digest).
+  const current = m.data.plugins[0].generations![0].review.entry.manifest;
+  m.data.catalog[0] = {
+    ...m.data.catalog[0], source: "bundled",
+    manifest: { ...current, tools: { mcp: "sample-mcp-flag" }, memory: { kind: "sample-memory" } } as typeof current,
+  };
+  const row = await agentRow(page);
+  await expect(row.getByTestId("agent-versions")).toHaveText("1.2.3 · setup update");
+  const update = row.getByRole("link", { name: "Update Sample agent setup" });
+  expect((await update.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await update.click();
+  const summary = page.getByRole("region", { name: "Update summary" });
+  await expect(summary.getByTestId("update-versions")).toHaveText("1.2.3 · same version");
+  await expect(summary.getByTestId("update-changes")).toHaveText(
+    "BattleLab’s setup for Sample agent: BattleLab tools, project memory. The Sample agent program itself stays the same.",
+  );
+  await expect(summary).toContainText("Runs the updated setup in a separate workspace");
+  await expect(summary).toContainText("If verification fails, nothing changes: the current 1.2.3 setup stays active.");
+  await expect(page.getByRole("button", { name: /^Update to/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Apply setup update" })).toBeVisible();
+  if (process.env.SHOTS_SETUP_ONLY) await page.screenshot({ path: `${process.env.SHOTS_SETUP_ONLY}/setup-only-${test.info().project.name}.png`, fullPage: true });
+  expect(m.writes).toEqual([]);
+});
+
 test("an older catalog version is never offered as an Update, and a hand-made link says why (#1861)", async ({ page }) => {
   const m = await mockApp(page, "updated");
   // 1.3.0 is active; the catalog pins 1.2.3 with another recipe. Going back is Roll back's job.

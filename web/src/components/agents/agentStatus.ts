@@ -298,11 +298,55 @@ export function manifestVersion(m: PluginManifest | undefined): string | null {
   return m?.install?.version ?? m?.identity.version ?? null;
 }
 
+/** Stable JSON for comparing manifest sections: object keys sorted at every depth. */
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** Operator-facing names for the manifest sections a setup-only update can change. */
+const SECTION_LABEL: Record<string, string> = {
+  tools: "BattleLab tools",
+  memory: "project memory",
+  models: "model list",
+  capabilities: "capabilities",
+  binary: "launch binary",
+  session_id: "session ids",
+  signin: "sign-in",
+  display: "display",
+  unattended: "unattended runs",
+  install: "install recipe",
+};
+
+/** A SETUP-ONLY update: the catalog entry is an update for the active generation
+ *  (`updateEligible`) but pins the SAME version — BattleLab changed how it installs, launches or
+ *  wires the agent, not the agent's program. Returns what changed, in operator words (sorted;
+ *  "download recipe" when only the artifacts moved), or null when this is not a setup-only update. */
+export function setupChanges(entry: CatalogEntry | undefined, active: PluginGeneration | undefined): string[] | null {
+  if (!entry || !active || !updateEligible(entry, active)) return null;
+  const now = active.review.entry.manifest;
+  if (manifestVersion(entry.manifest) !== manifestVersion(now)) return null;
+  const a = now as unknown as Record<string, unknown>;
+  const b = entry.manifest as unknown as Record<string, unknown>;
+  const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .filter((k) => k !== "identity" && stable(a[k]) !== stable(b[k]))
+    .map((k) => SECTION_LABEL[k] ?? k.replace(/_/g, " "))
+    .sort();
+  return changed.length ? changed : ["download recipe"];
+}
+
 export interface Versions {
   /** The active generation's version, or null when the installer manages nothing active. */
   installed: string | null;
   /** The catalog's version when it is an update for the active one (`updateEligible`), else null. */
   available: string | null;
+  /** The update keeps the version and changes only BattleLab's setup for the agent
+   *  (`setupChanges`): what it changes, else null. */
+  setupOnly: string[] | null;
   /** The generation that was active before this one, still verified: what Roll back activates. */
   previous: { id: string; version: string | null } | null;
   /** When older history cannot say which generation came before (#1741): the kept, verified
@@ -320,6 +364,7 @@ export function versionsOf(id: string, data: PluginCatalog | null): Versions {
   const { row, active, entry } = installer(id, data);
   const installed = manifestVersion(active?.review.entry.manifest);
   const available = updateEligible(entry, active) ? manifestVersion(entry?.manifest) : null;
+  const setupOnly = setupChanges(entry, active);
   let previous: Versions["previous"] = null;
   let undetermined: Versions["undetermined"] = [];
   if (row?.enabled && active) {
@@ -354,5 +399,5 @@ export function versionsOf(id: string, data: PluginCatalog | null): Versions {
     }
   }
   const automatic = active?.verification?.scope === "offline" ? { checkedAt: active.verification.checked_at } : null;
-  return { installed, available, previous, undetermined, automatic };
+  return { installed, available, setupOnly, previous, undetermined, automatic };
 }

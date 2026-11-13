@@ -66,7 +66,9 @@ function pluginOf(query: string, catalog: PluginCatalog | null, fallback: string
 /** `installed → available` for an installer-managed agent (#1741), as Settings → Agents says it. */
 function versionText(id: string, catalog: PluginCatalog | null): string | null {
   const v = versionsOf(id, catalog);
-  return v.installed ? (v.available ? `${v.installed} → ${v.available}` : v.installed) : null;
+  if (!v.installed) return null;
+  if (!v.available) return v.installed;
+  return v.setupOnly ? `${v.installed} · setup update` : `${v.installed} → ${v.available}`;
 }
 
 /** The query part of a `setupPath(...)` link, which the flow opens with. */

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useConfigRefresh } from "../../app/config";
 import { reloadRoster } from "../../app/reloadRoster";
 import { AgentEndpointCard } from "../settings/AgentEndpointCard";
-import { manifestVersion, olderThanInstalled, staleAgainst, updateEligible } from "../agents/agentStatus";
+import { manifestVersion, olderThanInstalled, setupChanges, staleAgainst, updateEligible } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, SETUP_STEP, SETUP_STEP_SIGNIN, setupPath, sourceLabel, verifiedGeneration } from "./model";
@@ -373,6 +373,9 @@ export function AgentSetupFlow({
   const activeGen = selectedRow?.generations?.find(g => g.id === selectedRow.active);
   const versionNow = manifestVersion(activeGen?.review.entry.manifest);
   const versionNext = manifestVersion(entryShown?.manifest);
+  // Same version, new setup (BattleLab changed how it installs, launches or wires the agent): the
+  // dialog says so instead of "2.1.317 → 2.1.317".
+  const setupOnly = setupChanges(entryShown, activeGen);
   // An update exists only for an ENABLED agent the catalog entry is an update for (`updateEligible`:
   // a different recipe, never an older version, #1861): a stale or hand-made `?update=1` (the agent
   // was disabled or removed meanwhile, is already current, or the catalog is older) offers nothing.
@@ -450,17 +453,18 @@ export function AgentSetupFlow({
         <button className={button.ghost} onClick={() => void readOperation()} disabled={busy}>Check operation status</button></div>}
       {showUpdate && <section className={s.panel} aria-label="Update summary">
         <dl className={s.kv}>
-          <dt>Version</dt><dd data-testid="update-versions">{versionNow ?? "not installed"} → <b>{versionNext ?? "?"}</b></dd>
+          <dt>Version</dt><dd data-testid="update-versions">{setupOnly ? <>{versionNow} · same version</> : <>{versionNow ?? "not installed"} → <b>{versionNext ?? "?"}</b></>}</dd>
+          {setupOnly && <><dt>What changes</dt><dd data-testid="update-changes">BattleLab’s setup for {entryShown?.manifest.identity.label}: {setupOnly.join(", ")}. The {entryShown?.manifest.identity.label} program itself stays the same.</dd></>}
           <dt>Source</dt><dd>{entryShown?.manifest.install?.authority ?? entryShown?.manifest.identity.publisher}{" · "}{entryShown?.source === "bundled" ? "bundled with BattleLab" : `signed catalog${catalog?.feed.sequence ? ` cut #${catalog.feed.sequence}` : ""}`}</dd>
           <dt>Account</dt><dd>Keeps this host’s {entryShown?.manifest.identity.label} sign-in. No new sign-in unless verification needs one.</dd>
           <dt>Running sessions</dt><dd>Keep their current version until they restart.</dd>
-          <dt>Verification</dt><dd>Runs the new version in a separate workspace before anything switches: it starts and resumes a test conversation, can access host files, create vendor history, contact the vendor and consume quota.</dd>
+          <dt>Verification</dt><dd>Runs the {setupOnly ? "updated setup" : "new version"} in a separate workspace before anything switches: it starts and resumes a test conversation, can access host files, create vendor history, contact the vendor and consume quota.</dd>
         </dl>
         <details className={s.details}><summary>Pinned recipe</summary><p className={s.digest}>Recipe: {entryShown?.digest}</p></details>
-        <p className={s.note}>If verification fails, nothing changes: {versionNow ?? "the current version"} stays active.</p>
+        <p className={s.note}>If verification fails, nothing changes: {setupOnly ? `the current ${versionNow} setup` : versionNow ?? "the current version"} stays active.</p>
         {entryShown?.reason && <p className={s.note}>{entryShown.reason}</p>}
       </section>}
-      {auto && <p role="status" aria-live="polite" data-testid="update-progress">Updating {entryShown?.manifest.identity.label ?? selected} to {versionNext}: {operation?.kind === "verify" ? "verifying with this host’s sign-in" : operation?.kind === "activate" ? "enabling" : "installing"}…</p>}
+      {auto && <p role="status" aria-live="polite" data-testid="update-progress">Updating {entryShown?.manifest.identity.label ?? selected} {setupOnly ? "setup" : `to ${versionNext}`}: {operation?.kind === "verify" ? "verifying with this host’s sign-in" : operation?.kind === "activate" ? "enabling" : "installing"}…</p>}
       {updateFrom && !auto && !isEnabled && operation && ["failed", "interrupted"].includes(operation.state) && <p className={s.note} data-testid="update-failed">
         {operation.kind === "verify" ? "Verification didn’t pass, so nothing changed" : "The update didn’t complete, so nothing changed"}: {updateFrom} stays active.
         {operation.kind === "verify" && hasSignin && " If it failed on the vendor sign-in, use Back to account setup to sign in, then verify again."}</p>}
@@ -595,7 +599,7 @@ export function AgentSetupFlow({
   return <Frame steps={STEPS} at={step} heading={showUpdate || auto ? `Update ${entryShown?.manifest.identity.label ?? selected}` : HEADINGS[step]}
     onBack={step === 1 && !operation && !unknownOperation ? () => { setStep(0); setReview(null); setLocalConfirmed(false); setAdoptConfirmed(false); } : undefined}
     onNext={showUpdate ? update : updateStep ? undefined : step === 0 ? prepare : step === 1 && !operation && !unknownOperation ? install : undefined}
-    nextLabel={showUpdate ? `Update to ${versionNext ?? "the new version"}` : step === 0 ? "Review installation" : "Install"}
+    nextLabel={showUpdate ? (setupOnly ? "Apply setup update" : `Update to ${versionNext ?? "the new version"}`) : step === 0 ? "Review installation" : "Install"}
     nextDisabled={showUpdate ? busy || !entryShown || entryShown.installable === false : step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected || catalog.catalog.find(c => c.manifest.identity.id === selected)?.installable === false : !local.trim()) : !canInstall}
     dirty={dirty}
     leaveTitle={signinLive ? "Leave sign-in?" : unresolved ? "Leave this operation?" : "Leave setup?"}

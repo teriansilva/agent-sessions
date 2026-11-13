@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import FIXTURE from "../../test/roster.fixture.json";
 import type { EngineInfo } from "../../types/api";
 import type { PluginCatalog, PluginGeneration } from "../../types/plugins";
-import { buildRows, catalogOnly, engineStatus, olderThanInstalled, rowMatches, updateEligible, versionsOf, type RosterRow } from "./agentStatus";
+import { buildRows, catalogOnly, engineStatus, olderThanInstalled, rowMatches, setupChanges, updateEligible, versionsOf, type RosterRow } from "./agentStatus";
 
 const ENGINES = FIXTURE.engines as unknown as EngineInfo[];
 const byId = (id: string) => ENGINES.find((e) => e.id === id)!;
@@ -150,7 +150,26 @@ describe("versionsOf — installed → available, and the rollback target (#1741
       catalog: [entry("2.1.311", "r-new")],
       operations: [activated("a1", "g1", 1)],
     });
-    expect(versionsOf("x", data)).toEqual({ installed: "2.1.286", available: "2.1.311", previous: null, undetermined: [], automatic: null });
+    expect(versionsOf("x", data)).toEqual({ installed: "2.1.286", available: "2.1.311", setupOnly: null, previous: null, undetermined: [], automatic: null });
+  });
+
+  it("names a same-version update as setup-only, with the manifest sections it changes", () => {
+    const active = verified("g1", "2.1.317", "r-old");
+    const next = {
+      ...entry("2.1.317", "r-new"),
+      manifest: { ...entry("2.1.317", "r-new").manifest, tools: { mcp: "claude-mcp-config-flag" }, memory: { kind: "claude-auto-memory" } },
+    };
+    const data = catalog({
+      plugins: [{ id: "x", active: "g1", candidate: "g1", enabled: true, generations: [active] }],
+      catalog: [next as never],
+      operations: [activated("a1", "g1", 1)],
+    });
+    expect(versionsOf("x", data)).toMatchObject({ installed: "2.1.317", available: "2.1.317", setupOnly: ["BattleLab tools", "project memory"] });
+    // Only the download recipe moved (same manifest, new digest): still setup-only, said as such.
+    expect(setupChanges(entry("2.1.317", "r-new") as never, active)).toEqual(["download recipe"]);
+    // A real version change is never setup-only, and neither is "no update".
+    expect(setupChanges(entry("2.1.318", "r-new") as never, active)).toBeNull();
+    expect(setupChanges(entry("2.1.317", "r-old") as never, active)).toBeNull();
   });
 
   it("offers no update toward a lower version, whatever the digest (#1861)", () => {
@@ -190,7 +209,7 @@ describe("versionsOf — installed → available, and the rollback target (#1741
       catalog: [entry("2.1.311", "r-new")],
       operations: [activated("a1", "g1", 1), activated("a2", "g2", 2)],
     });
-    expect(versionsOf("x", data)).toEqual({ installed: "2.1.311", available: null, previous: { id: "g1", version: "2.1.286" }, undetermined: [], automatic: null });
+    expect(versionsOf("x", data)).toEqual({ installed: "2.1.311", available: null, setupOnly: null, previous: { id: "g1", version: "2.1.286" }, undetermined: [], automatic: null });
     // An unverified old generation is not a rollback target (activate would refuse it).
     old.verification = null;
     expect(versionsOf("x", data).previous).toBeNull();
