@@ -1,0 +1,55 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1581 · board states</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1581 S4 · refused, unknown, budget, empty and recovery</h1>
+<p class="sub">Frames 4–7. The densest text states, at desktop and phone width. Tool requests from a step session are the session's own approvals card (unchanged): nothing is approved automatically, and the floor always asks you.</p>
+<div class="board">
+
+<div><div class="label">4 · REFUSED AND UNKNOWN RUNS</div>
+<section class="frame">
+ <div class="run">
+  <ul class="steps">
+   <li class="step run-bad"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="st warn">refused</span></div>
+    <div class="side"><button class="nj-plate btn primary">Start step</button></div>
+    <p class="why">Episode 2 was not started: the plan changed while it was being started (revision 6 → 7). Nothing ran. Read the plan, then start it again.</p></li>
+   <li class="step run-bad"><div class="sline"><span class="stitle">Cover letter</span><span class="sid">o1.cover_letter</span><span class="st warn">unknown</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Open session</button><button class="nj-plate btn ghost">Stop it…</button></div>
+    <p class="why">A session may have started and is not accounted for (<a class="sess" href="#">claude-api:51d8…a0e4</a>). It is never restarted or re-sent on its own. Stop it: its slot and its folder come back only once the stop is proved.</p></li>
+   <li class="step"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="st">not qualified</span></div>
+    <p class="why">application-reviewer: opus is ungraded on claude-api; an ungraded model meets no minimum grade (grade it in Settings → Agents).</p></li>
+  </ul>
+ </div>
+</section></div>
+
+<div><div class="label">5 · PAUSED: BUDGET — ONE DECISION</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PAUSED</span></div>
+ <div class="run">
+  <p class="alert"><b>PAUSED: BUDGET</b>This mission used 200 of its 200 turns. No new step or turn starts. Running steps finished their turn.</p>
+  <div class="meter"><span class="k">Budget</span><span class="bar hot"><i style="width:100%"></i></span><span class="n">200 / 200 turns · 3 h 40 m / 4 h</span><p class="est">Admission-bounded: a turn already running when the cap was crossed may finish past it.</p></div>
+  <div class="ctl"><p class="tsum">Raise the cap or stop. Nothing continues by itself.</p><button class="nj-plate btn ghost">Stop mission…</button><button class="nj-plate btn primary">Raise to 300 turns</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">6 · EMPTY — NOTHING CAN START YET</div>
+<section class="frame">
+ <div class="run">
+  <div class="thead"><span class="ttl">Steps</span><span class="rev">revision 3</span></div>
+  <div class="empty" style="padding:0"><p><b>No agent step can start yet.</b> 4 agent steps have no specialist: assemble the team first.</p><p>Operator steps (intake, approve, submit) never start an agent; they wait for you.</p></div>
+  <div class="ctl"><a class="nj-plate btn ghost" href="#">Go to Team</a></div>
+ </div>
+</section></div>
+
+<div><div class="label">7 · AFTER A RESTART — RECOVERED, NEVER RELAUNCHED</div>
+<section class="frame">
+ <div class="run">
+  <p class="okline"><b>RECOVERED</b>The app restarted at 11:20. o1.cv's session had its brief and is running; it was not sent again.</p>
+  <p class="alert"><b>1 UNKNOWN</b>o1.cover_letter's launch did not finish: a session may exist. It is shown, never restarted. Stop it or open it.</p>
+  <div class="ctl"><button class="nj-plate btn ghost">Open session</button><button class="nj-plate btn ghost">Stop it…</button></div>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -543,7 +543,7 @@ INSTRUCTION_GATES_MAX = 6
 #: Objective states that do NOT count as satisfied for the "adding a gate reopens `review`" rule.
 _UNMET_OBJECTIVE_STATES: frozenset[str] = frozenset({"pending", "active", "failed"})
 
-SESSION_ROLES: frozenset[str] = frozenset({"primary", "sub"})
+SESSION_ROLES: frozenset[str] = frozenset({"primary", "sub", "step"})
 #: ``skipped`` = the session was released and is now held by another OPEN mission, so tearing
 #: it down would kill that mission's agent. Named rather than silently omitted.
 ARCHIVE_STATES: frozenset[str] = frozenset(
@@ -1551,7 +1551,44 @@ def _migrate_38_to_39(con) -> None:
         con.execute(statement)
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38})
+#: v40 (#1581, #1613 D15): one durable row per agent-step EPISODE — the intent of a step launch,
+#: written in the claim transaction BEFORE anything is created (`claim_step`). Its `plan_id` IS the
+#: dispatch attempt's id (`mission_dispatches.plan_id`), so the session and brief ids derive from
+#: the row (`mission_structured.ids`) and a recovered launch replays the same create and brief.
+#: States: `claimed` → `running` → `done` | `failed` | `stopped`, plus `refused` (nothing was
+#: started) and `unknown` (a session may exist; never relaunched). `prior_state` is the mission
+#: state a launch that starts nothing returns it to. Cascades with the mission; no other table or
+#: column changes, so an older build ignores it (rollback: `user_version` only).
+STEP_RUNS_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_step_runs ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "step_id TEXT NOT NULL, episode INTEGER NOT NULL CHECK(episode >= 1), "
+    "revision INTEGER NOT NULL CHECK(revision >= 1), "
+    "state TEXT NOT NULL CHECK(state IN "
+    "('claimed','running','done','failed','stopped','refused','unknown')), "
+    "plan_id TEXT NOT NULL UNIQUE, session_key TEXT, "
+    "engine TEXT NOT NULL, model TEXT, effort TEXT, "
+    "specialist_id TEXT NOT NULL, specialist_version INTEGER NOT NULL, "
+    "use_kind TEXT NOT NULL CHECK(use_kind IN ('primary','alternate')), alternate_index INTEGER, "
+    "use_reason TEXT, project_id TEXT, cwd TEXT NOT NULL, "
+    "authority TEXT NOT NULL CHECK(authority IN ('operator','approval','consent')), "
+    "approval_id TEXT, consent_id TEXT, prior_state TEXT NOT NULL, detail TEXT, "
+    "created_at REAL NOT NULL, updated_at REAL NOT NULL, ended_at REAL, "
+    "PRIMARY KEY (mission_id, step_id, episode))",
+    "CREATE INDEX IF NOT EXISTS mission_step_runs_open_cwd ON mission_step_runs(cwd) "
+    "WHERE state IN ('claimed','running','unknown')",
+    "CREATE INDEX IF NOT EXISTS mission_step_runs_session ON mission_step_runs(session_key)",
+)
+_SCHEMA += ";\n".join(STEP_RUNS_DDL) + ";\n"
+
+
+def _migrate_39_to_40(con) -> None:
+    """Additive only (workflow §0): one table, two indexes. Idempotent."""
+    for statement in STEP_RUNS_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1560,10 +1597,10 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
     column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
-    approval (to 38); an older build never reads any of them. (A plan revision carrying a team,
-    #1950, reads fine on an older build. Applying another procedure there rebuilds every step
-    with `assignment: null`, so that one write drops the team: earlier revisions keep it, and
-    Assemble restores it.)
+    approval (to 38), v40 the step runs (to 39); an older build never reads any of them. (A plan
+    revision carrying a team, #1950, reads fine on an older build. Applying another procedure
+    there rebuilds every step with `assignment: null`, so that one write drops the team: earlier
+    revisions keep it, and Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1595,6 +1632,18 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
                 raise MissionError(
                     f"the missions store is at schema {version}; nothing to roll back", status=409
                 )
+            if to < 40 and _has_table(con, "mission_step_runs"):
+                # A build before v40 would read a step launch's dispatch record as the lead's own
+                # (#1581): restore its brief as the proposal, or settle the mission `failed`.
+                if con.execute(
+                    "SELECT 1 FROM mission_dispatches d JOIN mission_step_runs r "
+                    "ON r.plan_id = d.plan_id LIMIT 1"
+                ).fetchone():
+                    raise MissionError(
+                        "a step launch is still in flight or not accounted for; settle it "
+                        "before rolling back past schema 40",
+                        status=409,
+                    )
             con.execute(f"PRAGMA user_version={int(to)}")
             con.execute("COMMIT")
         except BaseException:
@@ -1723,6 +1772,8 @@ def _migrate(con) -> int:
             _migrate_37_to_38(con)
         if version < 39:
             _migrate_38_to_39(con)
+        if version < 40:
+            _migrate_39_to_40(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -3907,6 +3958,12 @@ def adopt(
     role = _require_str(role, "role")
     if role not in SESSION_ROLES:
         raise MissionError(f"unknown role {role!r}", status=422)
+    if role == "step":
+        # Only a step launch's own settlement mints a step member (#1581): a step session is tied
+        # to its run, and an adopted one would be tied to none.
+        raise MissionError(
+            "a step session joins a mission only through its step's launch", status=422
+        )
     key = (session_key or "").strip()
     if not key:
         raise MissionError("session_key is required", status=422)
@@ -8595,6 +8652,13 @@ def clear_dispatch(
                     "WHERE mission_id=? AND plan_id=?",
                     (mission_id, expect_plan),
                 )
+            # A STEP RUN LEFT `unknown` IS ANSWERED HERE (#1581): its dispatch record was the only
+            # obligation, and it goes only on proof. Proved stopped → `failed` (it never became the
+            # step's session); spared → another mission holds that session, so it is not this
+            # step's either. A run that is `running` (the success path clears its record too) is
+            # left alone.
+            if n and expect_plan:
+                _step_run_unknown_answered_tx(con, expect_plan, stopped=stopped, now=time.time())
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -8980,6 +9044,8 @@ def claim_plan(
                 # by construction rather than by observation — and it is discharged HERE, in the
                 # transaction that overwrites the row it belongs to, so the two cannot come apart.
                 _reconcile_reservation_tx(con, str(prior["plan_id"]), stopped=True, now=ts)
+                # …and a step run it launched is answered with it (#1581): it never started.
+                _step_run_unknown_answered_tx(con, str(prior["plan_id"]), stopped=True, now=ts)
             # THE INTENT, DURABLE BEFORE THE LAUNCH. `session_key` is NULL until the key is
             # minted; recovery reads that difference as "nothing was spawned" versus "something
             # may have been", which are the two crash outcomes that need different answers.
@@ -9092,6 +9158,13 @@ def note_dispatch_session(
                     "UPDATE mission_spawns SET session_key=?, state='launching' "
                     "WHERE plan_id=? AND ended_at IS NULL AND state='reserved'",
                     (session_key, expect_plan or ""),
+                )
+                # …AND ON THE STEP RUN IT LAUNCHES (#1581), in the same commit: the run names the
+                # session it is about to become before that session exists, never after.
+                con.execute(
+                    "UPDATE mission_step_runs SET session_key=?, updated_at=? "
+                    "WHERE plan_id=? AND state='claimed'",
+                    (session_key, time.time(), expect_plan or ""),
                 )
             con.execute("COMMIT")
         except BaseException:
@@ -9608,6 +9681,18 @@ def settle_dispatch(
                 # — somebody answers for the child: a proved stop, or another mission's ownership.
                 # On anything else it stays, and the next recovery pass looks again.
                 orphaned = session_key is not None
+                # A step run whose launch the mission moved out from under (#1581): nothing is
+                # adopted here, so it is `unknown` while a session may exist, else over.
+                _settle_step_run_tx(
+                    con,
+                    mission_id,
+                    expect_plan or "",
+                    adopted_key=None,
+                    refused=to == "planned",
+                    retained=bool(keep_record or orphaned),
+                    detail=f"the mission became {state} while the step was being started",
+                    ts=ts,
+                )
                 if not keep_record and not orphaned:
                     # THE OBLIGATION GOES WITH THE RECORD, HERE TOO (#894 review 6, finding 1).
                     # This exit deleted the dispatch and returned before the reconciliation below
@@ -9656,6 +9741,21 @@ def settle_dispatch(
             is_spawn = bool(spawn_row and spawn_row["spawn_parent"])
             # THE ATTEMPT'S OWN IDENTITY. Every discharge below names this and nothing else.
             this_plan = str(spawn_row["plan_id"]) if spawn_row else ""
+            # A STEP LAUNCH IS A DISPATCH TOO (#1581, D-1581-1), told apart by its step run, which
+            # carries the attempt's `plan_id`. Like a spawn, its outcome is the RUN's, not the
+            # mission's: a launch that started nothing returns the mission to the state it came
+            # from (`planned` or `running`), and never restores a dispatch proposal it never took.
+            step_run = (
+                con.execute(
+                    "SELECT step_id, episode, prior_state, state FROM mission_step_runs "
+                    "WHERE plan_id=?",
+                    (this_plan,),
+                ).fetchone()
+                if this_plan
+                else None
+            )
+            is_step = step_run is not None
+            asked = to
             # A CHILD'S OUTCOME IS NOT THE MISSION'S STATE (review 2, finding 2). The first pass
             # covered only `planned`, which was the refusal path — but a start-evidence timeout, a
             # post-launch exception and a cancellation all settle `failed`, and those took an
@@ -9668,6 +9768,10 @@ def settle_dispatch(
             # real outcome, so a possibly-live agent is still tracked and the timeline still says
             # the attempt failed. The mission's lifecycle and the attempt's outcome are two facts,
             # and only one of them belonged to `state`.
+            if is_step and to in ("planned", "failed"):
+                # An adopted session (recovery adopts a briefed one while settling `failed`) means
+                # the step is under way, whatever state the mission came from.
+                to = "running" if session_key else str(step_run["prior_state"] or "running")
             if is_spawn and to in ("planned", "failed"):
                 # THE PARENT WAS RUNNING AND STILL IS. For the mission's own launch these are
                 # the honest answers — "nothing started, offer the plan again" and "this failed".
@@ -9681,7 +9785,7 @@ def settle_dispatch(
                 # guard that matters must not be one. The transition is exercised end to end by
                 # `test_a_CHILD_refusal_does_not_rewind_the_running_parent`.
                 to = "running"
-            if to == "planned" and not is_spawn:
+            if to == "planned" and not is_spawn and not is_step:
                 # THE PROPOSAL GOES BACK, verbatim and under its own id, so the card the operator
                 # is looking at still matches and DISPATCH works on the next tap. Restored from
                 # the dispatch record because the claim deleted the plan row — the record is the
@@ -9731,7 +9835,18 @@ def settle_dispatch(
                     (mission_id,),
                 ).fetchone()
                 parent = str(d["spawn_parent"]) if d and d["spawn_parent"] else ""
-                if parent:
+                if is_step:
+                    # THE STEP'S OWN SESSION, named by the episode it was started for.
+                    _adopt_tx(
+                        con,
+                        mission_id,
+                        session_key,
+                        "step",
+                        f"step:{step_run['step_id']}#{int(step_run['episode'])}",
+                        ts,
+                        path,
+                    )
+                elif parent:
                     _adopt_tx(con, mission_id, session_key, "sub", parent, ts, path)
                     # THE SLOT NOW POINTS AT A PROCESS. Written in the settlement transaction so
                     # the ledger row and the roster entry become true together — a key on one and
@@ -9765,7 +9880,7 @@ def settle_dispatch(
             # may be deleted below, so what the dispatcher recorded on it is copied in this commit.
             # A record with no evidence copies `unknown`. Any other outcome supersedes old evidence.
             failure_meta: dict = {}
-            if to == "failed" and not is_spawn:
+            if to == "failed" and not is_spawn and not is_step:
                 ev = con.execute(
                     "SELECT plan_id, session_key, seed_outcome, teardown_confirmed, project_id, "
                     "cwd, engine, engine_reason, brief FROM mission_dispatches WHERE mission_id=?",
@@ -9832,6 +9947,17 @@ def settle_dispatch(
                 con.execute(
                     "DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,)
                 )
+            if is_step:
+                _settle_step_run_tx(
+                    con,
+                    mission_id,
+                    this_plan,
+                    adopted_key=session_key if adopted else None,
+                    refused=asked == "planned",
+                    retained=keep_record,
+                    detail=detail,
+                    ts=ts,
+                )
             _append_event(
                 con,
                 mission_id,
@@ -9891,6 +10017,658 @@ def settle_dispatch(
         finally:
             con.close()
     return {"settled": True, "state": to, "adopted": adopted}
+
+
+# ---------------------------------------------------------------- step runs (#1581, #1613 D15)
+#
+# One durable row per agent-step EPISODE, written by `claim_step` in the transaction that also
+# writes the dispatch record and moves the mission to `dispatching`: the intent is on disk before
+# anything is created, and its `plan_id` is the dispatch attempt's id, from which the session and
+# brief ids derive. Every later write is a compare-and-set on that `plan_id` and the run's state,
+# made inside the dispatch's own commits (`note_dispatch_session`, `settle_dispatch`,
+# `clear_dispatch`), so the run and the dispatch can never disagree. `mission_steps` is the only
+# caller of `claim_step`; read `docs/invariants/mission-steps.md` before changing either.
+
+STEP_RUN_STATES: frozenset[str] = frozenset(
+    {"claimed", "running", "done", "failed", "stopped", "refused", "unknown"}
+)
+#: A run in one of these holds a concurrency slot and its working directory.
+OPEN_STEP_STATES: tuple[str, ...] = ("claimed", "running", "unknown")
+#: Who asked for a step launch: the operator's tap (S1), or, from #1951 slice B, an approval in
+#: force or a standing consent through `mission_approval.admit`.
+STEP_AUTHORITIES: frozenset[str] = frozenset({"operator", "approval", "consent"})
+#: The mission states a step may be launched from (D-1581-3): no lead dispatch is required.
+STEP_LAUNCH_STATES: frozenset[str] = frozenset({"planned", "running"})
+#: Open step runs one mission may hold at once (D-1581-4): a RESOURCE guard, never a security
+#: control. Default 2, never above the hard maximum whatever the environment says.
+STEP_CONCURRENCY_MAX = 8
+STEP_CONCURRENCY = min(
+    STEP_CONCURRENCY_MAX,
+    max(1, int(os.environ.get("AGENT_SESSIONS_MISSION_STEP_CONCURRENCY", "2") or 2)),
+)
+#: `mission_team.STEP_ID_RE`, restated: this module cannot import it.
+_STEP_ID_RE = re.compile(r"\Ao[1-9][0-9]?\.[a-z][a-z0-9_-]{0,31}\Z")
+
+
+class StepRefused(MissionError):
+    """A step launch the store refused, with a closed `code` the caller and the browser read."""
+
+    def __init__(self, code: str, text: str, *, status: int = 409, **extra) -> None:
+        super().__init__(text, status=status)
+        self.code = code
+        self.extra = extra
+
+
+def validate_step_id(step_id: object) -> str:
+    if not isinstance(step_id, str) or not _STEP_ID_RE.fullmatch(step_id):
+        raise MissionError("not a plan step id", status=422)
+    return step_id
+
+
+def _step_run_row(row) -> dict:
+    d = dict(row)
+    d["episode"] = int(d["episode"])
+    d["revision"] = int(d["revision"])
+    d["specialist_version"] = int(d["specialist_version"])
+    return d
+
+
+def _step_event_tx(con, mission_id: str, run: dict, state: str, text: str, ts: float) -> None:
+    """The run's one deterministic thread row for this transition. No model is asked."""
+    _append_event(
+        con,
+        mission_id,
+        "session",
+        at=ts,
+        session_key=run.get("session_key") or None,
+        text=text,
+        meta={
+            "step": run["step_id"],
+            "episode": int(run["episode"]),
+            "step_run": state,
+            "specialist": {"id": run["specialist_id"], "version": int(run["specialist_version"])},
+            "engine": run["engine"],
+            "authority": run["authority"],
+        },
+    )
+
+
+def _settle_step_run_tx(
+    con,
+    mission_id: str,
+    plan_id: str,
+    *,
+    adopted_key: str | None,
+    refused: bool,
+    retained: bool,
+    detail: str,
+    ts: float,
+) -> None:
+    """Settle the `claimed` run a dispatch launched, inside that dispatch's settlement.
+
+    Adopted → `running` with its key; refused before anything ran → `refused`; a record kept
+    because a worker may exist → `unknown` (never relaunched); otherwise → `failed`."""
+    if not plan_id:
+        d = con.execute(
+            "SELECT plan_id FROM mission_dispatches WHERE mission_id=?", (mission_id,)
+        ).fetchone()
+        plan_id = str(d["plan_id"]) if d is not None else ""
+    if not plan_id:
+        return
+    row = con.execute(
+        "SELECT * FROM mission_step_runs WHERE plan_id=? AND state='claimed'", (plan_id,)
+    ).fetchone()
+    if row is None:
+        return
+    run = _step_run_row(row)
+    if adopted_key:
+        state, text = "running", f"step {run['step_id']} is running in {adopted_key}"
+        run["session_key"] = adopted_key
+    elif refused:
+        state, text = "refused", f"step {run['step_id']} was not started: {detail}"
+    elif retained:
+        state = "unknown"
+        text = (
+            f"step {run['step_id']}: a session may have started and is not accounted for "
+            f"({detail}); it is never restarted on its own"
+        )
+    else:
+        state, text = "failed", f"step {run['step_id']} failed to start: {detail}"
+    con.execute(
+        "UPDATE mission_step_runs SET state=?, session_key=COALESCE(?, session_key), detail=?, "
+        "updated_at=?, ended_at=? WHERE plan_id=? AND state='claimed'",
+        (
+            state,
+            adopted_key,
+            _cap(detail, EVENT_TEXT_MAX),
+            ts,
+            None if state in OPEN_STEP_STATES else ts,
+            plan_id,
+        ),
+    )
+    _step_event_tx(con, mission_id, run, state, text, ts)
+
+
+def _step_run_unknown_answered_tx(con, plan_id: str, *, stopped: bool, now: float) -> None:
+    """The dispatch record of `plan_id` is going: answer its run if it is still `unknown`, or
+    still `claimed` (its launch never settled: a crash after the mission was moved away)."""
+    row = con.execute(
+        "SELECT * FROM mission_step_runs WHERE plan_id=? AND state IN ('unknown','claimed')",
+        (plan_id,),
+    ).fetchone()
+    if row is None:
+        return
+    run = _step_run_row(row)
+    if row["state"] == "claimed" and not row["session_key"]:
+        state, detail = "refused", "its launch never started a session"
+    elif stopped:
+        state, detail = "failed", "the session it may have started was proved stopped"
+    else:
+        state, detail = "failed", "the session it may have started is held by another mission"
+    con.execute(
+        "UPDATE mission_step_runs SET state=?, detail=?, updated_at=?, ended_at=? "
+        "WHERE plan_id=? AND state=?",
+        (state, detail, now, now, plan_id, row["state"]),
+    )
+    _step_event_tx(con, run["mission_id"], run, state, f"step {run['step_id']}: {detail}", now)
+
+
+def claim_step(
+    mission_id: str,
+    step_id: str,
+    *,
+    revision: int,
+    engine: str,
+    model: str | None,
+    effort: str | None,
+    specialist: tuple[str, int],
+    use: str = "primary",
+    alternate_index: int | None = None,
+    use_reason: str = "",
+    project_id: str | None,
+    cwd: str,
+    brief: str,
+    authority: str = "operator",
+    approval_id: str | None = None,
+    consent_id: str | None = None,
+    cap: int | None = None,
+    owner: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Claim one agent step for a new episode and move the mission to `dispatching`. One winner,
+    one transaction (#1581 S1). Raises `StepRefused` (a closed `code`) and writes nothing when:
+
+    * the mission is not `planned` / `running` (`not_launchable`), or a launch is already in flight
+      for it (`launch_in_flight`: `mission_dispatches` is keyed by mission);
+    * `revision` is not the latest plan revision (`revision_superseded`), the step is not in it
+      (`unknown_step`), is not an agent step (`not_agent`) or has no assignment (`unassigned`);
+    * the step's DERIVED state is not `ready` (`not_ready`) or it already has an open run
+      (`open_run`);
+    * the mission holds `cap` open runs (`cap`), or an open run of a live mission anywhere has the
+      same resolved directory (`shared_cwd`, D-1581-5);
+    * a bound `approval_id` is no longer the approval in force (`approval_changed`).
+
+    Then the run row (the next episode), the dispatch row and the state move commit together with
+    one thread row. The returned dict is the plan `mission_dispatch.run` launches (its `plan_id`
+    is the run's) plus the run itself under ``"run"``."""
+    from . import mission_plan_document as plan_doc
+
+    validate_id(mission_id)
+    validate_step_id(step_id)
+    if authority not in STEP_AUTHORITIES:
+        raise MissionError(f"unknown step authority {authority!r}", status=500)
+    if use not in ("primary", "alternate"):
+        raise MissionError(f"unknown step use {use!r}", status=500)
+    if type(revision) is not int or revision < 1:
+        raise MissionError("revision must be a positive whole number", status=422)
+    if not cwd:
+        raise MissionError("a step launch needs a resolved directory", status=500)
+    limit = STEP_CONCURRENCY if cap is None else max(0, min(int(cap), STEP_CONCURRENCY_MAX))
+    ts = time.time() if now is None else now
+    sid, sver = specialist
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            m = con.execute(
+                "SELECT state, project_id FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if m is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            prior = str(m["state"] or "")
+            if prior not in STEP_LAUNCH_STATES:
+                raise StepRefused(
+                    "not_launchable", f"a mission that is {prior} cannot start a step"
+                )
+            if con.execute(
+                "SELECT 1 FROM mission_dispatches WHERE mission_id=?", (mission_id,)
+            ).fetchone():
+                raise StepRefused(
+                    "launch_in_flight",
+                    "another launch is in flight for this mission (or one it started is not "
+                    "accounted for yet); try again when it settles",
+                )
+            latest = _latest_plan_tx(con, mission_id)
+            if latest is None or latest["revision"] != revision:
+                raise StepRefused(
+                    "revision_superseded",
+                    "the plan changed since you read it; read it again",
+                    latest_revision=None if latest is None else latest["revision"],
+                )
+            doc = latest["document"]
+            step = next((x for x in doc["steps"] if x["id"] == step_id), None)
+            if step is None:
+                raise StepRefused("unknown_step", f"step {step_id} is not in this plan", status=404)
+            if step["actor"] != "agent":
+                raise StepRefused(
+                    "not_agent", f"step {step_id} is the operator's; it launches no agent"
+                )
+            if step["envelope"]["assignment"] is None:
+                raise StepRefused("unassigned", f"step {step_id} has no specialist assigned")
+            rows = [
+                _objective_row(r, m["project_id"])
+                for r in con.execute(
+                    "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
+                    (mission_id,),
+                ).fetchall()
+            ]
+            derived = plan_doc.step_states(doc, rows).get(step_id)
+            if derived != "ready":
+                raise StepRefused(
+                    "not_ready", f"step {step_id} is {derived}, not ready to start", step=derived
+                )
+            marks = ",".join("?" for _ in OPEN_STEP_STATES)
+            if con.execute(
+                f"SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "  # noqa: S608
+                f"AND state IN ({marks})",
+                (mission_id, step_id, *OPEN_STEP_STATES),
+            ).fetchone():
+                raise StepRefused("open_run", f"step {step_id} already has a run that is open")
+            n_open = con.execute(
+                f"SELECT COUNT(*) FROM mission_step_runs WHERE mission_id=? "  # noqa: S608
+                f"AND state IN ({marks})",
+                (mission_id, *OPEN_STEP_STATES),
+            ).fetchone()[0]
+            if n_open >= limit:
+                raise StepRefused(
+                    "cap",
+                    f"this mission already runs {n_open} step(s), its limit of {limit}; a slot "
+                    "comes back when one of them settles",
+                    open=int(n_open),
+                    cap=limit,
+                )
+            # ANY MISSION'S open run, a closed mission's included: closing a mission releases its
+            # roster and stops nothing, so its step's agent may still be working in that folder.
+            # Only a proved stop (or the step's own settlement) gives a folder back.
+            other = con.execute(
+                f"SELECT r.mission_id, r.step_id FROM mission_step_runs r "  # noqa: S608
+                f"WHERE r.cwd=? AND r.state IN ({marks}) LIMIT 1",
+                (cwd, *OPEN_STEP_STATES),
+            ).fetchone()
+            if other is not None:
+                where = (
+                    f"step {other['step_id']}"
+                    if other["mission_id"] == mission_id
+                    else f"a step of another mission ({other['mission_id']})"
+                )
+                raise StepRefused(
+                    "shared_cwd",
+                    f"{where} is working in the same folder; steps that share a folder never "
+                    "run at the same time",
+                    holder={"mission_id": other["mission_id"], "step": other["step_id"]},
+                )
+            if approval_id is not None:
+                live = con.execute(
+                    "SELECT id FROM mission_plan_approvals WHERE mission_id=? "
+                    "AND revoked_at IS NULL",
+                    (mission_id,),
+                ).fetchone()
+                if live is None or str(live["id"]) != approval_id:
+                    raise StepRefused(
+                        "approval_changed",
+                        "the plan approval this launch was admitted under is no longer in force",
+                    )
+            if consent_id is not None and not _consent_in_force_tx(con, mission_id, consent_id, ts):
+                raise StepRefused(
+                    "consent_changed",
+                    "the standing consent this launch was admitted under is no longer in force",
+                )
+            episode = int(
+                con.execute(
+                    "SELECT COALESCE(MAX(episode), 0) + 1 FROM mission_step_runs "
+                    "WHERE mission_id=? AND step_id=?",
+                    (mission_id, step_id),
+                ).fetchone()[0]
+            )
+            plan_id = f"stp_{uuid.uuid4().hex}"
+            con.execute(
+                "INSERT INTO mission_step_runs (mission_id, step_id, episode, revision, state, "
+                "plan_id, session_key, engine, model, effort, specialist_id, specialist_version, "
+                "use_kind, alternate_index, use_reason, project_id, cwd, authority, approval_id, "
+                "consent_id, prior_state, detail, created_at, updated_at, ended_at) "
+                "VALUES (?,?,?,?,'claimed',?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL)",
+                (
+                    mission_id,
+                    step_id,
+                    episode,
+                    revision,
+                    plan_id,
+                    engine,
+                    model,
+                    effort,
+                    sid,
+                    int(sver),
+                    use,
+                    alternate_index,
+                    _cap(use_reason, 200),
+                    project_id,
+                    cwd,
+                    authority,
+                    approval_id,
+                    consent_id,
+                    prior,
+                    ts,
+                    ts,
+                ),
+            )
+            con.execute(
+                "INSERT INTO mission_dispatches "
+                "(mission_id, plan_id, engine, cwd, session_key, started_at, project_id, "
+                " engine_reason, brief, owner, spawn_parent) "
+                "VALUES (?,?,?,?,NULL,?,?,?,?,?,NULL)",
+                (
+                    mission_id,
+                    plan_id,
+                    engine,
+                    cwd,
+                    ts,
+                    project_id,
+                    f"step {step_id}",
+                    brief,
+                    owner or process_owner(),
+                ),
+            )
+            # THE MISSION TAKES A DIRECTORY ONLY IF IT HAS NONE: the schema's launch CHECK needs
+            # one in `dispatching`, and a mission planned from the picker may have none yet.
+            moved = con.execute(
+                "UPDATE missions SET state='dispatching', cwd=COALESCE(cwd, ?), "
+                "project_id=COALESCE(project_id, ?), updated_at=? WHERE id=? AND state=?",
+                (cwd, project_id, ts, mission_id, prior),
+            ).rowcount
+            if not moved:
+                raise StepRefused("not_launchable", "the mission moved; read it again")
+            run = _step_run_row(
+                con.execute(
+                    "SELECT * FROM mission_step_runs WHERE plan_id=?", (plan_id,)
+                ).fetchone()
+            )
+            _step_event_tx(
+                con,
+                mission_id,
+                run,
+                "claimed",
+                f"step {step_id} ({step['title']}) is being started: episode {episode}, "
+                f"{sid} v{int(sver)} on {engine}"
+                + (f" (alternate: {use_reason})" if use == "alternate" else ""),
+                ts,
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "plan_id": plan_id,
+        "mission_id": mission_id,
+        "project_id": project_id,
+        "cwd": cwd,
+        "engine": engine,
+        "engine_reason": f"step {step_id}",
+        "brief": brief,
+        "model": model,
+        "effort": effort,
+        "specialist": (sid, int(sver)),
+        "run": run,
+    }
+
+
+def _consent_in_force_tx(con, mission_id: str, consent_id: str, now: float) -> bool:
+    row = con.execute(
+        "SELECT revoked_at, expires_at FROM mission_standing_consents WHERE id=? AND mission_id=?",
+        (consent_id, mission_id),
+    ).fetchone()
+    return row is not None and row["revoked_at"] is None and float(row["expires_at"]) > now
+
+
+def open_step_folders(*, path: Path | None = None) -> dict[str, dict]:
+    """``cwd -> {mission_id, step_id}`` for every open step run of any mission (the board's view of
+    the shared-folder rule; the claim's own transaction is what enforces it)."""
+    con = _ready(path)
+    try:
+        marks = ",".join("?" for _ in OPEN_STEP_STATES)
+        rows = con.execute(
+            f"SELECT cwd, mission_id, step_id FROM mission_step_runs "  # noqa: S608
+            f"WHERE state IN ({marks})",
+            OPEN_STEP_STATES,
+        ).fetchall()
+        return {r["cwd"]: {"mission_id": r["mission_id"], "step_id": r["step_id"]} for r in rows}
+    finally:
+        con.close()
+
+
+def step_runs(mission_id: str, *, path: Path | None = None) -> list[dict]:
+    """Every step run of a mission, oldest first."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return [
+            _step_run_row(r)
+            for r in con.execute(
+                "SELECT * FROM mission_step_runs WHERE mission_id=? "
+                "ORDER BY created_at ASC, step_id ASC, episode ASC",
+                (mission_id,),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+
+
+def step_run(
+    mission_id: str, step_id: str, episode: int, *, path: Path | None = None
+) -> dict | None:
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? AND episode=?",
+            (mission_id, step_id, int(episode)),
+        ).fetchone()
+        return None if row is None else _step_run_row(row)
+    finally:
+        con.close()
+
+
+def step_run_by_plan(plan_id: str, *, path: Path | None = None) -> dict | None:
+    con = _ready(path)
+    try:
+        row = con.execute("SELECT * FROM mission_step_runs WHERE plan_id=?", (plan_id,)).fetchone()
+        return None if row is None else _step_run_row(row)
+    finally:
+        con.close()
+
+
+def step_run_of_session(session_key: str, *, path: Path | None = None) -> dict | None:
+    """The newest step run whose session is `session_key`, or None (#1581's `run_of_session`)."""
+    if not isinstance(session_key, str) or not session_key:
+        return None
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT * FROM mission_step_runs WHERE session_key=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (session_key,),
+        ).fetchone()
+        return None if row is None else _step_run_row(row)
+    finally:
+        con.close()
+
+
+def step_member_verdict(mission_id: str, session_key: str, *, path: Path | None = None) -> str:
+    """Whose is a step's session now? `ours` (this mission's step member, released only by the
+    mission's own closing, and held by no other open mission), `detached` (the operator detached
+    it), `elsewhere` (another open mission holds it), `member` (this mission holds it as another
+    member) or `none` (an orphan nobody holds: an `unknown` run's session that never joined).
+    Read inside the adoption fence by `mission_fence.fenced_step_stop`."""
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT removed_at, release_reason FROM mission_sessions "
+            "WHERE mission_id=? AND session_key=? AND role='step'",
+            (mission_id, session_key),
+        ).fetchone()
+    finally:
+        con.close()
+    holder = holder_of(session_key, path=path)
+    if holder is not None and holder != mission_id:
+        return "elsewhere"
+    if row is None:
+        # Never this mission's step member: held here as another member (the operator adopted
+        # it), or an orphan nobody holds (an `unknown` run's session).
+        return "member" if holder == mission_id else "none"
+    if row["release_reason"] == "detached":
+        return "detached"
+    return "ours"
+
+
+def step_launch_verdict(plan_id: str, *, path: Path | None = None) -> str | None:
+    """Is the step launch `plan_id` still the one that was claimed? None, or why not.
+
+    Asked INSIDE the write fence at the create and again at the brief (`mission_steps`): the run
+    is still `claimed`, its plan revision is still the latest, and a bound approval (or standing
+    consent) is still the one in force. The facts outside this store (the specialist version, the
+    grade) are `mission_steps.fence_verdict`'s. Fails closed: an unreadable answer refuses."""
+    con = _ready(path)
+    try:
+        row = con.execute("SELECT * FROM mission_step_runs WHERE plan_id=?", (plan_id,)).fetchone()
+        if row is None or row["state"] != "claimed":
+            return "this step launch is no longer current, so nothing was started"
+        latest = con.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM mission_plan_revisions WHERE mission_id=?",
+            (row["mission_id"],),
+        ).fetchone()[0]
+        if int(latest) != int(row["revision"]):
+            return "the plan changed while this step was being started, so nothing was started"
+        if row["approval_id"] is not None:
+            live = con.execute(
+                "SELECT id FROM mission_plan_approvals WHERE mission_id=? AND revoked_at IS NULL",
+                (row["mission_id"],),
+            ).fetchone()
+            if live is None or str(live["id"]) != str(row["approval_id"]):
+                return (
+                    "the plan approval this step was started under is no longer in force, "
+                    "so nothing was started"
+                )
+        if row["consent_id"] is not None and not _consent_in_force_tx(
+            con, row["mission_id"], str(row["consent_id"]), time.time()
+        ):
+            return (
+                "the standing consent this step was started under is no longer in force, "
+                "so nothing was started"
+            )
+        return None
+    finally:
+        con.close()
+
+
+#: The transitions a settled step run may take outside a dispatch (`finish_step_run`).
+_STEP_FINISH: dict[str, frozenset[str]] = {
+    "done": frozenset({"running"}),
+    "failed": frozenset({"running", "unknown"}),
+    "stopped": frozenset({"running", "unknown"}),
+    "unknown": frozenset({"running"}),
+}
+
+
+def finish_step_run(
+    mission_id: str,
+    step_id: str,
+    episode: int,
+    *,
+    to: str,
+    detail: str,
+    expect: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict | None:
+    """Settle an open run outside a dispatch: the step's evidence is done or failed (reconcile),
+    or a Stop proved its session gone (`stopped`) or could not (`unknown`). A compare-and-set on
+    `expect`; returns the run as it now is, or None when it was not in `expect` any more."""
+    validate_id(mission_id)
+    if expect not in _STEP_FINISH.get(to, frozenset()):
+        raise MissionError(f"a {expect} step run cannot become {to}", status=500)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? AND episode=?",
+                (mission_id, step_id, int(episode)),
+            ).fetchone()
+            if row is None or row["state"] != expect:
+                con.execute("COMMIT")
+                return None
+            run = _step_run_row(row)
+            con.execute(
+                "UPDATE mission_step_runs SET state=?, detail=?, updated_at=?, ended_at=? "
+                "WHERE mission_id=? AND step_id=? AND episode=? AND state=?",
+                (
+                    to,
+                    _cap(detail, EVENT_TEXT_MAX),
+                    ts,
+                    None if to in OPEN_STEP_STATES else ts,
+                    mission_id,
+                    step_id,
+                    int(episode),
+                    expect,
+                ),
+            )
+            words = {
+                "done": "is done",
+                "failed": "failed",
+                "stopped": "was stopped",
+                "unknown": "could not be proved stopped",
+            }[to]
+            said = f"step {step_id} {words}" + (f": {detail}" if detail else "")
+            _step_event_tx(con, mission_id, run, to, said, ts)
+            if to not in OPEN_STEP_STATES and run.get("session_key"):
+                # THE STEP'S SESSION LEAVES THE ACTIVE ROSTER with its run (D-1581-6): released as
+                # `closed` (still the mission's to archive), never stopped here, so nothing the
+                # mission automates sends into a session whose step is over. `unknown` keeps it.
+                con.execute(
+                    "UPDATE mission_sessions SET removed_at=?, release_reason='closed' "
+                    "WHERE mission_id=? AND session_key=? AND role='step' AND removed_at IS NULL",
+                    (ts, mission_id, run["session_key"]),
+                )
+            out = _step_run_row(
+                con.execute(
+                    "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? "
+                    "AND episode=?",
+                    (mission_id, step_id, int(episode)),
+                ).fetchone()
+            )
+            con.execute("COMMIT")
+            return out
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
 
 def instantiate_objectives(

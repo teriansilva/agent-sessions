@@ -213,6 +213,7 @@ _NOT_MANIFEST_VALUES = {
     "PTY_ONLY_CAPABILITIES",
     "API_IMAGE_INPUT",  # a fact about each protocol, not a value a manifest chooses (#1332)
     "API_MISSION_READY",  # BattleLab's mission supervision of each protocol (#1898)
+    "API_MISSION_REFUSAL",  # why each off kind is off (#1903)
     "ACCOUNT_RECIPES",  # each account kind's reviewed recipe; a manifest chooses the kind (#1820)
 }
 

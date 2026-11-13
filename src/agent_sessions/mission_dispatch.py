@@ -467,6 +467,10 @@ async def run(
 ) -> dict:
     """Launch the plan and settle the mission. Returns what the console renders.
 
+    A STEP launch (#1581) is a plan from `missions.claim_step`: it carries the step's ``effort``
+    and ``specialist`` and its ``run``, which reach the structured create and the brief's
+    correlation; ``model`` comes from the plan when the caller passes none.
+
     Never raises for an ordinary failure: a dispatch that could not be attempted and one that was
     attempted and failed are both outcomes the operator needs to see, and an exception here would
     turn either into a 500 with the mission still `dispatching`.
@@ -616,6 +620,7 @@ async def run(
     # off", which is what the session runs with. The session gets the mission's shelf from its
     # first worker generation (#1900), and an optional model (#1189) is the client's own.
     try:
+        run = plan.get("run") if isinstance(plan.get("run"), dict) else None
         out = await mission_structured.dispatch(
             mission_id=mission_id,
             plan_id=plan_id,
@@ -624,7 +629,10 @@ async def run(
             brief=brief,
             on_key=on_key,
             authorize=authorize,
-            model=model,
+            model=model if model is not None else plan.get("model"),
+            effort=plan.get("effort"),
+            specialist=plan.get("specialist"),
+            step=None if run is None else (run["step_id"], run["episode"]),
         )
     except headless_dispatch.DispatchError as e:
         # Could not be ATTEMPTED — an ineligible engine, a brief the sanitiser refused. Nothing

@@ -838,12 +838,12 @@ def test_hq_has_no_tool_that_approves_or_consents():
 # ---- schema --------------------------------------------------------------------------------------
 
 
-def test_the_schema_is_v39_and_rolls_back_to_38(app):
+def test_the_schema_rolls_back_to_38(app):
     db = missions._db_path()
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 39
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION >= 39
     con.close()
-    assert missions.rollback_schema(38, path=db) == {"from": 39, "to": 38}
+    assert missions.rollback_schema(38, path=db) == {"from": missions.SCHEMA_VERSION, "to": 38}
     missions.reset_schema_cache_for_test()
     assert missions.plan_revision(app["mid"])["revision"] == 1  # converges, nothing dropped
 

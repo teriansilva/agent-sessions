@@ -94,6 +94,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Procedures (#1777): list the project's procedures by index, apply one or a mission-local one (in a project chosen by index, after earlier objectives); read a plan revision with its derived step and objective states | GET …/procedures, GET …/procedures/projects, GET …/procedures/{index}/inputs, POST …/procedure, GET …/plan/revisions/{latest\|n} | P5 W/R |
 | Team (#1950): read the team with its re-derived verdicts, the per-step candidate and model lists; assemble, assign, override a step's model, clear it | GET …/plan/team, GET …/plan/team/choices, POST …/plan/ops | have (`read_plan`, `read_pool`; `assemble`, `assign`, `set_override`, `clear_override` as cards) |
 | Plan approval (#1951): read the card (pins, re-check, consent); approve a plan revision; give standing consent; revoke either | GET …/plan/approval, POST …/plan/approve, POST …/plan/consent, POST …/plan/approval/revoke, POST …/plan/consent/revoke | read and revoke P6 R/W (revoking narrows); **never** for approve and consent (the Commander's own tap, D3: HQ may stage, never decide) |
+| Steps (#1581): read each step's runs and whether it can start; start an agent step in its own API session; stop a step's session | GET …/steps, POST …/steps/{step}/start, POST …/steps/{step}/stop | read and stop P6 R/W (stopping narrows); **never** for start (the operator's tap; HQ launches steps only under an approval in force, #1951 slice B) |
 | Relay words to a held session; edit an AI-drafted direction and send | POST …/relay | P5 W |
 | Spawn a sub-agent beside a held session | POST …/spawn | P5 W (starts agents) |
 | Answer menus automatically (auto-choose) | PATCH …/autonomy | **never** for on (widens autonomy); off is P5 W |
@@ -445,6 +446,9 @@ PATCH  /api/missions/{mission_id}/shelf/{item_id}                               
 GET    /api/missions/{mission_id}/shelf/{item_id}/diff                            P5
 GET    /api/missions/{mission_id}/shelf/{item_id}/raw                             n/a  # file bytes
 POST   /api/missions/{mission_id}/spawn                                           P5
+GET    /api/missions/{mission_id}/steps                                           P6
+POST   /api/missions/{mission_id}/steps/{step_id}/start                           never  # the operator's tap; HQ only under an approval (#1951)
+POST   /api/missions/{mission_id}/steps/{step_id}/stop                            P6
 POST   /api/missions/{mission_id}/state                                           P5
 POST   /api/missions/{mission_id}/turns/{turn_id}/ack                             P5
 POST   /api/missions/{mission_id}/unarchive                                       P5

@@ -135,7 +135,7 @@ def test_a_fresh_store_and_an_upgraded_one_get_the_same_shelf_schema(tmp_path):
     missions.create_mission("upgraded", cwd="/tmp")
     assert _tables(fresh_db) == fresh
     con = sqlite3.connect(fresh_db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 39
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     con.close()
 
 

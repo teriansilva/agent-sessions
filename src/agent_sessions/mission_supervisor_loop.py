@@ -468,6 +468,11 @@ async def _sweep_batch(
     """Run one pass per mission in `batch`, advancing the durable cursor after every attempt."""
     for mid in batch:
         failed = False
+        # A step whose evidence settled since the last look records it, with its one thread row,
+        # and frees its slot (#1581). Store-only and best-effort: it never sends or launches.
+        from . import mission_steps
+
+        await mission_steps.reconcile(mid)
         # A mission whose EARLY reading is still pending is left to it (#1214): the early reading
         # waits for the agent to have done something (#1064), and a 30 s sweep reading the empty
         # screen right after dispatch would spend the call the early reading exists to place well.

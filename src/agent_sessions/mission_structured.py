@@ -163,13 +163,20 @@ async def dispatch(
     on_key: Callable[[str], None],
     authorize: Callable[[str | None], str | None],
     model: str | None = None,
+    effort: str | None = None,
+    specialist: tuple[str, int] | None = None,
+    step: tuple[str, int] | None = None,
 ) -> headless_dispatch.Dispatch:
     """Launch a mission's API session and hand it its brief. The structured twin of
     `headless_dispatch.dispatch`: it raises `DispatchError` only when nothing was attempted, and
     otherwise returns the facts (`launched`, `started`, `briefed`, `seed_outcome`, `reason`).
 
     ``authorize(observed_policy)`` is the dispatch's own fenced check; it runs inside the write
-    fence for the create AND again for the brief, so a withdrawal between the two refuses it."""
+    fence for the create AND again for the brief, so a withdrawal between the two refuses it.
+
+    A step launch (#1581) also names its ``specialist`` ``(id, version)`` and ``effort`` (the
+    create reserves the specialist's capacity per generation, #1693 S4b) and its ``step``
+    ``(step_id, episode)``, which rides on the brief turn's correlation."""
     prov = engines.get(engine)
     if prov is None:
         raise headless_dispatch.DispatchError(f"{engine!r} is not an available agent")
@@ -207,13 +214,18 @@ async def dispatch(
         on_key(key)  # the record is ahead of the session, never behind it
     except missions.MissionError as exc:
         raise headless_dispatch.DispatchError(str(exc)) from None
+    context: dict = {"mission_id": mission_id, "reservation_id": plan_id}
+    if step is not None:
+        context["step_id"], context["episode"] = step[0], int(step[1])
     return await _create_and_brief(
         out,
         text=text,
         brief_id=brief_id,
         admission=mission_guard,
-        context={"mission_id": mission_id, "reservation_id": plan_id},
+        context=context,
         model=model,
+        effort=effort,
+        specialist=specialist,
         # The mission's shelf tool on the first generation (#1900): the session joins the
         # roster only once it runs, and the broker re-checks membership on every add.
         shelf_mission=mission_id,
@@ -229,6 +241,8 @@ async def _create_and_brief(
     context: dict,
     model: str | None = None,
     shelf_mission: str | None = None,
+    effort: str | None = None,
+    specialist: tuple[str, int] | None = None,
 ) -> headless_dispatch.Dispatch:
     """The structured create and its ONE guarded first turn, shared by a mission's dispatch and an
     automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect."""
@@ -239,6 +253,9 @@ async def _create_and_brief(
             out.cwd,
             operation_id=out.native,
             model=model,
+            # Sent only when chosen, so every other create is the call it always was.
+            **({"effort": effort} if effort is not None else {}),
+            **({"specialist": specialist} if specialist is not None else {}),
             bypass=False,
             execution_admission=admission,
             wait_ready=True,

@@ -102,6 +102,7 @@ from .routes import maintenance as maintenance_routes
 from .routes import memory as memory_routes
 from .routes import mission_plans as mission_plans_routes
 from .routes import mission_shelf as mission_shelf_routes
+from .routes import mission_steps as mission_steps_routes
 from .routes import missions as missions_routes
 from .routes import playbooks as playbooks_routes
 from .routes import prompts as prompts_routes
@@ -809,6 +810,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # The specialist pool (#1693, #1613 P3): same auth surface; grades derived at read.
     specialists_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     mission_plans_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    mission_steps_routes.register(
+        app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
+    )
 
     from .routes import plugins as plugin_routes
 

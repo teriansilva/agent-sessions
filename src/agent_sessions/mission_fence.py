@@ -254,6 +254,62 @@ async def fenced_teardown(key: str, *, spare_if=None) -> str:
     return await asyncio.to_thread(_fenced)
 
 
+async def fenced_step_stop(mission_id: str, key: str, settle, *, idle=None) -> str:
+    """Stop a STEP's session under the adoption fence, and settle its run in the same fence
+    (#1581). The roster key and the session's physical key are held from the ownership read to
+    ``settle(outcome)``, so no adoption, detach or guarded turn lands between them. Outcomes:
+
+    * ``stopped`` — this mission's step member, or an orphan nobody holds (an `unknown` run's
+      session that never joined), its worker PROVED gone (`contain_native`);
+    * ``detached`` / ``elsewhere`` / ``member`` — the operator detached it, another open mission
+      holds it, or this mission holds it as another member: nothing is stopped;
+    * ``busy`` — ``idle()`` (a blocking predicate, asked inside the fence) said a turn or task
+      still runs: nothing is stopped;
+    * ``leaked`` — the stop could not be proved, or ownership could not be read.
+
+    The run's state never picks the path: the session's membership does (independent review on
+    #2001). Never raises."""
+    import asyncio
+
+    from . import runtime_cleanup
+
+    def _fenced() -> str:
+        try:
+            prov, _native = engines.parse_key(key)
+            phys = physical_of(key)
+            keys = adoption_keys(mission_id, key, physical_key=phys)
+        except Exception:  # noqa: BLE001 — a target that can't be named proves nothing
+            settle("leaked")
+            return "leaked"
+        with session_input.sessions_transaction(keys):
+            try:
+                whose = missions.step_member_verdict(mission_id, key)
+            except Exception:  # noqa: BLE001 — unprovable ownership must not authorise a kill
+                whose = "unreadable"
+            if whose in ("detached", "elsewhere", "member"):
+                outcome = whose
+            elif whose not in ("ours", "none"):
+                outcome = "leaked"
+            elif idle is not None and not idle():
+                outcome = "busy"
+            else:
+                try:
+                    asyncio.run(
+                        runtime_cleanup.contain_native(prov.engine_id, phys.partition(":")[2])
+                    )
+                    outcome = "stopped"
+                except Exception:  # noqa: BLE001 — not proved gone
+                    outcome = "leaked"
+            settle(outcome)
+            return outcome
+
+    try:
+        return await asyncio.to_thread(_fenced)
+    except Exception:  # noqa: BLE001 — a busy fence or a failed settle is not a proof
+        log.warning("step session %s: fenced stop failed", key, exc_info=True)
+        return "leaked"
+
+
 async def abandon(key: str) -> str:
     """`fenced_teardown` that never raises, and SAYS WHICH of the three things happened (#904 r13).
 

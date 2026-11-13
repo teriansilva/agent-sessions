@@ -82,6 +82,16 @@ API_MISSION_READY = {
     "opencode-acp": True,
     "copilot-acp": False,
 }
+#: Why each kind whose bit is false stays false, naming the issue that lifts it (#1903). A kind
+#: absent from here is true; a test pins both directions, so flipping a bit means touching this
+#: map and that test. The operator-facing refusal text is `mission_structured.NOT_MISSION_READY`.
+API_MISSION_REFUSAL = {
+    # Edits are decline-only, and no step-level "needs file edits" admission check exists yet.
+    "copilot-acp": "needs a server-side edit-refusal boundary at admission (#2004, after #1581)",
+    # Operator, #1903 comment 125177: no mission role until the applied patch is bound to the
+    # shown patch.
+    "codex-app-server": "applied patch is not yet bound to the shown patch (#2005)",
+}
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
