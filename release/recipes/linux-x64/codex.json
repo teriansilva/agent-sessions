@@ -30,16 +30,16 @@
       "id": "codex",
       "label": "Codex",
       "publisher": "battlelab",
-      "version": "0.167.0"
+      "version": "0.167.1"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:2dc9aa871abb513c3539d20d025f701faf1974c46ee906bda3a1e1f5026d4434",
+      "digest": "sha256:944cbabe58a2c599a30141bc0220c31963205c33e69b43b414dd5da6adaf957f",
       "entrypoint": "node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
       "kind": "npm-prefix",
       "package": "@openai/codex",
       "platform": "linux-x64",
-      "version": "0.167.0-linux-x64"
+      "version": "0.167.1-linux-x64"
     },
     "instructions": {
       "files": [
@@ -117,8 +117,8 @@
     "artifacts": [
       {
         "destination": "node_modules/@openai/codex",
-        "sha256": "2dc9aa871abb513c3539d20d025f701faf1974c46ee906bda3a1e1f5026d4434",
-        "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.167.0-linux-x64.tgz"
+        "sha256": "944cbabe58a2c599a30141bc0220c31963205c33e69b43b414dd5da6adaf957f",
+        "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.167.1-linux-x64.tgz"
       }
     ]
   }
