@@ -65,8 +65,33 @@
   clip-path: polygon(calc(var(--c) - 1px) 0, 100% 0, 100% 100%, 0 100%, 0 calc(var(--c) - 1px));
 }
 
-/* The operator's image (#1931) fills the square edge to edge, cropped to cover; the square's own
-   cut clips it, so it reads as the same plate as the initials did. */
+/* With the operator's image (#1931) the square is the plate's FACE: one pixel inside the edge on
+   every side, cut top-left AND bottom-right exactly like the face (`nj-plate`'s ::after), so the
+   plate's 1 px grey edge frames the picture and both chamfers stay cut. (The initials' square may
+   cover the edge; a photo must not, or the corner it overruns reads as a crop error.) */
+.square[data-image] {
+  width: 30px;
+  height: 30px;
+  margin: 1px;
+  background: transparent;
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+}
+.tile:has(.square[data-image]) {
+  --nj-edge: var(--line-strong);
+}
+.tile:has(.square[data-image]):hover {
+  --nj-edge: var(--hud-dim);
+}
+.tile:has(.square[data-image])[aria-expanded="true"] {
+  --nj-edge: var(--hud);
+}
 .squareImg {
   display: block;
   width: 100%;
@@ -141,6 +166,11 @@
     width: 100%;
     height: 100%;
     background: transparent;
+  }
+  /* The whole plate's face, one pixel in from its edge. */
+  .square[data-image] {
+    width: calc(100% - 2px);
+    height: calc(100% - 2px);
   }
 }
 

@@ -286,6 +286,27 @@ test("the operator's API session: discs on every message and the head's connecte
   expect(fit.fit).toBe("cover");
   expect(fit.dw).toBeLessThanOrEqual(0.5);
   expect(fit.dh).toBeLessThanOrEqual(0.5);
+  // …but INSIDE the plate: one pixel in from its grey edge on every side, and cut at both chamfers
+  // (top-left and bottom-right), so the picture never overruns the plate's corner or its frame.
+  const plate = await tileImg.evaluate((i) => {
+    const sq = i.parentElement!;
+    const tile = sq.closest("[data-testid='operator-menu']") as HTMLElement;
+    const t = tile.getBoundingClientRect();
+    const b = parseFloat(getComputedStyle(tile).borderTopWidth);
+    const r = sq.getBoundingClientRect();
+    const clip = getComputedStyle(sq).clipPath;
+    return {
+      insets: [r.left - (t.left + b), r.top - (t.top + b), t.right - b - r.right, t.bottom - b - r.bottom],
+      points: (clip.match(/,/g) ?? []).length + 1,
+      bottomRightCut: /100% calc\(100% - /.test(clip),
+      edge: getComputedStyle(tile).getPropertyValue("--nj-edge").trim(),
+      grey: getComputedStyle(tile).getPropertyValue("--line-strong").trim(),
+    };
+  });
+  for (const inset of plate.insets) expect(inset).toBeGreaterThanOrEqual(0.9);
+  expect(plate.points).toBe(6);
+  expect(plate.bottomRightCut).toBe(true);
+  expect(plate.edge).toBe(plate.grey);
 
   const theirs = turns.nth(1).locator("[data-avatar]").first();
   await expectDiscBeside(theirs, turns.nth(1).getByText("Jana · via public link"), 22);

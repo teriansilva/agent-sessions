@@ -117,7 +117,11 @@ export function OperatorMenu({
       }
       trigger={
         <>
-          <span className={styles.square} aria-hidden="true">
+          <span
+            className={styles.square}
+            aria-hidden="true"
+            data-image={avatarSrc && brokenSrc !== avatarSrc ? "" : undefined}
+          >
             {avatarSrc && brokenSrc !== avatarSrc ? (
               <img
                 className={styles.squareImg}
