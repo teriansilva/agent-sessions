@@ -3307,6 +3307,100 @@ def running_session_keys() -> set[str]:
     return found
 
 
+_ACTIVITY_TTL = 5.0
+_Activity = tuple[frozenset[str], frozenset[str], bool]
+#: Before the first pass has finished: nothing known, and it says so.
+_ACTIVITY_UNKNOWN: _Activity = (frozenset(), frozenset(), False)
+_activity_cache: tuple[Path, float, _Activity] | None = None
+_activity_refresh: threading.Thread | None = None
+_activity_lock = threading.Lock()
+
+
+def session_activity(*, wait: bool = False) -> _Activity:
+    """``(running, working, complete)`` for API sessions, for the session list (#2022).
+
+    *Running*: the session's current worker runs (:func:`running_session_keys`' rule). *Working*:
+    a running session whose LIVE worker has a turn in flight — a ``submit`` it was handed
+    (``sent``) whose turn has not ended — or last reported work of its own (a turn it runs for
+    itself, a background task: the projection's ``background_active``). A message still queued is
+    not a turn; an unsettled operation of a dead or replaced worker is not this worker's turn.
+    ``complete`` is False when a running session's journal could not be read, or before the first
+    pass has finished: such a session reads as not working, and the caller must not pass the
+    count off as whole.
+
+    **Never waits for the pass** unless ``wait``: a list request gets the last finished pass, and
+    one older than :data:`_ACTIVITY_TTL` starts the next in a background thread. Folding every
+    running session's journal for the first time after a restart takes seconds; a list must not.
+    The pass reads records, `/proc` and `native_journal.read` (a cached fold; no journal byte is
+    read when nothing changed). It never writes and takes no session lock — unlike a snapshot,
+    which can settle stranded turns."""
+    global _activity_refresh
+    try:
+        root = native_state.root()
+    except (OSError, native_state.StateError, ValueError):
+        return _ACTIVITY_UNKNOWN
+    if wait:
+        return _activity_pass(root)
+    with _activity_lock:
+        cached = _activity_cache
+        known = cached is not None and cached[0] == root
+        if known and time.monotonic() - cached[1] < _ACTIVITY_TTL:
+            return cached[2]
+        if _activity_refresh is None or not _activity_refresh.is_alive():
+            _activity_refresh = threading.Thread(
+                target=_activity_pass, args=(root,), name="api-session-activity", daemon=True
+            )
+            _activity_refresh.start()
+        return cached[2] if known else _ACTIVITY_UNKNOWN
+
+
+def _activity_pass(root: Path) -> _Activity:
+    """One pass of :func:`session_activity`, cached when it finishes. Never raises."""
+    global _activity_cache
+    running: set[str] = set()
+    working: set[str] = set()
+    complete = True
+    try:
+        paths = list(root.glob("*.json"))
+    except OSError:
+        log.warning("session activity: the API session records could not be listed", exc_info=True)
+        paths, complete = [], False
+    for path in paths:
+        try:
+            record = native_state.read(path)
+            if not isinstance(record, dict) or record.get("closed") is True:
+                continue
+            key = record.get("session_key")
+            if not isinstance(key, str) or not record.get("current_worker"):
+                continue
+            worker = _live_worker(path.stem)
+        except (OSError, ValueError, TypeError, native_state.StateError):
+            log.warning("session activity: unreadable API session record %s", path.name)
+            continue
+        if worker is None:
+            continue
+        running.add(key)
+        try:
+            prov = _api_provider(key.split(":", 1)[0], retiring_ok=True)
+            journal = native_journal.read(_journal_root(prov), path.stem)
+        except Exception:  # noqa: BLE001 — any failure is "could not read", never "idle"
+            log.warning("session activity: unreadable journal for %s", path.stem)
+            complete = False
+            continue
+        if journal.events.own_work_of(worker) or any(
+            op.request.get("action") == "submit"
+            and op.handoff == "sent"
+            and not op.turn_settled
+            and op.worker_id == worker
+            for op in journal.operations.values()
+        ):
+            working.add(key)
+    result = (frozenset(running), frozenset(working), complete)
+    with _activity_lock:
+        _activity_cache = (root, time.monotonic(), result)
+    return result
+
+
 def _exit_proved(session_id: str, worker_id: str) -> bool:
     """Authoritative evidence that this generation can never hand a queued message off (#1538).
 

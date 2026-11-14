@@ -23,6 +23,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -1137,6 +1138,39 @@ CLOSED = "closed:"
 CLOSED_KEEP_S = 30 * 86400
 CLOSED_MAX = 5000
 
+#: The ANNOUNCEMENT RECORD (#2021): per session, what its last PUSHED episode was pushed over — the
+#: session's last activity and its HQ report id. An episode that opens with neither newer is the
+#: same stop coming back onto the list (a proposal that expired and was proposed again, a review
+#: that cleared and re-raised the flag), so it opens quietly: a bell row, no push. Facts only, never
+#: model text. A record that aged out or was dropped by the cap allows one more push.
+SAID = "said:"
+SAID_KEEP_S = 7 * 86400
+SAID_MAX = 2000
+
+
+def _is_open_key(key: str) -> bool:
+    """An OPEN episode's key is the session key itself; every other entry carries a prefix."""
+    return not key.startswith((CLOSING, CLOSED, SAID))
+
+
+def _activity(value: object) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
+
+
+def _said_before(record: dict | None, info: dict) -> bool:
+    """Whether ``record`` already announced the stop ``info`` describes: no activity newer than
+    the one it was pushed over, and no other HQ report. Activity that cannot be read is not newer
+    activity."""
+    if record is None:
+        return False
+    report = str(info.get("report_id") or "")
+    if report and report != str(record.get("report") or ""):
+        return False
+    seen, was = _activity(info.get("last_activity")), _activity(record.get("activity"))
+    return seen is None or (was is not None and seen <= was)
+
 
 def owed_close_tags(path: Path | None = None) -> list[str]:
     """Every retracted device tag in the recovery horizon — what the app closes EXACTLY, and what
@@ -1217,9 +1251,16 @@ def sync_needs_you(
     it instead let a retraction close a newer mission escalation under the same tag, and let a
     session joining a mission retire the mission's own new escalation (Hermes 5275, findings 1-2).
 
-    Returns ``opened`` (new rows to push), ``closed``, ``pending`` (tags awaiting retraction) and
-    ``keep`` (the newest open, pushed episode's row — what a retraction may be delivered with).
-    Blocking.
+    **One push per stop (#2021).** ``current`` also carries each session's ``last_activity`` and
+    ``report_id``. An episode that opens for a stop already pushed (:func:`_said_before`) opens
+    QUIETLY: its bell row comes back, read as the row it replaces was, and nothing is pushed, so
+    nothing is owed a retraction. While an episode stays open, newer activity pushes nothing: the
+    operator already holds that notification. A REPLACEMENT HQ report on an open episode is the
+    one exception: the agent said something new on purpose, so the episode closes and a new one
+    opens in the same pass.
+
+    Returns ``opened`` (new rows to push), ``reopened`` (quiet rows: never pushed, never handed to
+    HQ's dispatches), ``closed``, ``pending`` (tags awaiting retraction) and ``open``. Blocking.
     """
     now = time.time() if now is None else now
     live = set(current) | set(keep)
@@ -1233,12 +1274,15 @@ def sync_needs_you(
                 episodes[f"{CLOSING}{tag}"] = {"tag": tag, "closing": True, "ts": now}
                 episodes[f"{CLOSED}{tag}"] = {"tag": tag, "closed": True, "ts": now}
 
-        def _is_open(k: str) -> bool:
-            return not (k.startswith(CLOSING) or k.startswith(CLOSED))
+        _is_open = _is_open_key
 
         # Owed retractions expire from the PUSH path after CLOSING_KEEP_S; the closed ledger keeps
         # covering them for the app for CLOSED_KEEP_S, then the oldest beyond CLOSED_MAX go.
-        for prefix, keep_s in ((CLOSING, CLOSING_KEEP_S), (CLOSED, CLOSED_KEEP_S)):
+        for prefix, keep_s in (
+            (CLOSING, CLOSING_KEEP_S),
+            (CLOSED, CLOSED_KEEP_S),
+            (SAID, SAID_KEEP_S),
+        ):
             for k in [k for k in episodes if k.startswith(prefix)]:
                 ts = episodes[k].get("ts")
                 if not isinstance(ts, int | float) or now - float(ts) > keep_s:
@@ -1251,6 +1295,37 @@ def sync_needs_you(
         for k in ledger[: max(0, len(ledger) - CLOSED_MAX)]:
             del episodes[k]
             changed = True
+        said = sorted(
+            (k for k in episodes if k.startswith(SAID)),
+            key=lambda k: float(episodes[k].get("ts") or 0),
+        )
+        for k in said[: max(0, len(said) - SAID_MAX)]:
+            del episodes[k]
+            changed = True
+
+        def _say(sid: str, info: dict) -> None:
+            episodes[f"{SAID}{sid}"] = {
+                "tag": "",  # every entry of this map carries one (`_shape`)
+                "said": True,
+                "ts": now,
+                "activity": _activity(info.get("last_activity")),
+                "report": str(info.get("report_id") or ""),
+            }
+
+        def _replaced_report(sid: str, ep: dict) -> bool:
+            """An open, announced episode whose session now holds ANOTHER HQ report."""
+            nonlocal changed
+            if ep.get("deferred") or sid not in current:
+                return False
+            report = str(current[sid].get("report_id") or "")
+            record = episodes.get(f"{SAID}{sid}")
+            if record is None:
+                # An episode from before the record existed: remember what it stands for now,
+                # so the upgrade itself announces nothing again.
+                _say(sid, current[sid])
+                changed = True
+                return False
+            return bool(report) and report != str(record.get("report") or "")
 
         def _escalated(sid: str) -> bool:
             return any(
@@ -1263,11 +1338,15 @@ def sync_needs_you(
 
         closed: list[dict] = []
         for sid in sorted(k for k in episodes if _is_open(k)):
-            if sid in live:
+            if sid in live and not _replaced_report(sid, episodes[sid]):
                 continue
             ep = episodes.pop(sid)
             changed = True
             tag = str(ep.get("tag") or "")
+            # The stop's record names the episode that last stood for it, so a quiet return
+            # inherits THAT row's read state and no older stop's (Hermes 8161).
+            if not ep.get("deferred") and f"{SAID}{sid}" in episodes:
+                episodes[f"{SAID}{sid}"]["last"] = tag
             for r in rows:
                 if r.get("needs_you") is True and r.get("tag") == tag and not r.get("retired"):
                     r["retired"] = True
@@ -1285,6 +1364,7 @@ def sync_needs_you(
             )
 
         opened: list[dict] = []
+        reopened: list[dict] = []
         for sid in sorted(current):
             if sid in episodes:
                 continue
@@ -1299,11 +1379,31 @@ def sync_needs_you(
                 episodes[sid] = ep
                 changed = True
                 continue
+            quiet = _said_before(episodes.get(f"{SAID}{sid}"), info)
+            read = False
+            if quiet:
+                # Nothing is pushed, so nothing is owed a retraction when it ends. The row comes
+                # back as its predecessor was left — the row of the episode that last stood for
+                # THIS stop, by its tag: unread only if that row is still there and was never
+                # read. A row the operator dismissed, or one evicted, comes back read.
+                ep.update({"pushed": False, "quiet": True})
+                before = str(episodes[f"{SAID}{sid}"].get("last") or "")
+                last = next(
+                    (
+                        r
+                        for r in rows
+                        if before and r.get("needs_you") is True and r.get("tag") == before
+                    ),
+                    None,
+                )
+                read = last is None or last.get("read") is True
+            else:
+                _say(sid, info)
             episodes[sid] = ep
             rec = {
                 "id": hashlib.sha256(f"{tag}".encode()).hexdigest()[:16],
                 "ts": now,
-                "read": False,
+                "read": read,
                 "title": str(info.get("title") or "A session needs you")[:TITLE_MAX],
                 "project": str(info.get("project") or "")[:BODY_MAX],
                 "reason": KIND_REASON.get(str(info.get("kind") or ""))
@@ -1319,12 +1419,15 @@ def sync_needs_you(
                 "activity_at": None,
             }
             # The episode's own tag is its dispatch tag (#1837): a tag, never text.
-            if valid_dispatch_tag(tag):
+            # A quiet row carries none: HQ was told about this stop when it was pushed.
+            if quiet:
+                pass
+            elif valid_dispatch_tag(tag):
                 rec["dispatch"] = tag
             else:
                 log.warning("notifications: an episode tag is not a valid dispatch tag; none kept")
             rows.append(rec)
-            opened.append(rec)
+            (reopened if quiet else opened).append(rec)
             changed = True
         if changed:
             rows = _evict(rows)
@@ -1341,6 +1444,7 @@ def sync_needs_you(
         )
         return {
             "opened": opened,
+            "reopened": reopened,
             "closed": closed,
             "pending": [str(ep["tag"]) for ep in owed],
             "open": sorted(k for k in episodes if _is_open(k)),

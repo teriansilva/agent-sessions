@@ -62,16 +62,10 @@ _running_lock = threading.Lock()
 _running_cache: tuple[float, frozenset[str], bool] | None = None
 
 
-def _running_keys() -> frozenset[str]:
-    """Physical keys (``engine:native``) of every session whose agent is running right now.
-
-    Fail-soft: a runtime dir that cannot be listed reads as "none running", never an error — this
-    feeds counts, and a count must not take the session list down with it."""
-    return _running_state()[0]
-
-
 def _running_state() -> tuple[frozenset[str], bool]:
-    """``(keys, ok)`` — the same probe as :func:`_running_keys`, with its READ HEALTH (#1123).
+    """``(keys, ok)``: physical keys (``engine:native``) of every TERMINAL session whose agent
+    runs right now, with the probe's READ HEALTH (#1123). Fail-soft: a runtime dir that cannot be
+    listed reads as "none running", never an error.
 
     The list fails soft to "none running", which is right for them. A dashboard
     tile that shows "0 running" after a failed probe states something false, so it reads ``ok``
@@ -89,9 +83,47 @@ def _running_state() -> tuple[frozenset[str], bool]:
         keys = frozenset(f"{e}:{sid}" for e, sid in found)
     except Exception:  # noqa: BLE001 — see docstring
         keys, ok = frozenset(), False
+    # TERMINAL sessions only. API sessions have no dtach master (#2022) and are never copied
+    # into this cache: their running keys, working keys and read health are ONE snapshot
+    # (`_api_activity`) that a request captures once and uses for all three, so a pass finishing
+    # mid-request, or while this cache is still warm, can never pair one pass's rows with
+    # another's health (Hermes 8158).
     with _running_lock:
         _running_cache = (time.monotonic(), keys, ok)
     return keys, ok
+
+
+def _stamp_activity(rows: list[dict], aliases: dict) -> tuple[bool, bool]:
+    """Stamp ``running`` and ``working`` on ``rows`` from ONE reading (#1085, #2022), and return
+    ``(running_ok, working_ok)``. The list and the one-session lookup both stamp through here, so
+    a row reads the same wherever it is read (Hermes 8162).
+
+    Running: a live dtach master, or an API session's running worker. Working: `_row`'s
+    terminal-output window, or an API session's turn in flight. One API activity snapshot feeds
+    the union, the working stamp and the health returned (Hermes 8158)."""
+    terminal, running_ok = _running_state()
+    api_running, api_working, working_ok = _api_activity()
+    running = terminal | api_running
+    for r in rows:
+        phys = engines.physical_key(r["id"], aliases)
+        r["running"] = phys in running
+        if phys in api_working:
+            r["working"] = True
+    return running_ok, working_ok
+
+
+def _api_activity() -> tuple[frozenset[str], frozenset[str], bool]:
+    """API sessions' ``(running, working, complete)`` (#2022): `native_runtime.session_activity`.
+    Fail-soft like the probe above: a failure is "none, and not known", never an error. Imported
+    here, not at module load: the native runtime imports the upload route, which imports this
+    package."""
+    try:
+        from .. import native_runtime
+
+        return native_runtime.session_activity()
+    except Exception:  # noqa: BLE001 — a count must not take the session list down
+        log.warning("session list: API session activity could not be read", exc_info=True)
+        return frozenset(), frozenset(), False
 
 
 # Compose-draft (#477) bounds: keep a server-side draft sane and the sidecar small. A draft
@@ -484,7 +516,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         from .. import orchestrator, pulse
 
-        rows, _memberships, _pinned, _aliases, running_ok = _scoped_rows(archived=False)
+        rows, _memberships, _pinned, _aliases, running_ok, working_ok = _scoped_rows(archived=False)
         now = time.time()
 
         def _project(r: dict) -> dict:
@@ -495,7 +527,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return sorted(rs, key=lambda r: (-float(r.get("last_mtime") or 0), r["id"]))
 
         if running_ok:
-            live_rows = _latest([r for r in rows if r["running"]])
+            # Working first, then by last activity: the default limit is the dashboard's
+            # "Working now" preview (#2022); the rest come from the `?running=` drill-downs.
+            live_rows = sorted(
+                (r for r in rows if r["running"]),
+                key=lambda r: (not r["working"], -float(r.get("last_mtime") or 0), r["id"]),
+            )
             by_engine: dict[str, dict[str, int]] = {}
             for r in live_rows:
                 e = by_engine.setdefault(r["engine"], {"live": 0, "working": 0})
@@ -503,6 +540,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 e["working"] += 1 if r["working"] else 0
             live: dict = {
                 "health": "ok",
+                # "partial": an API session's journal could not be read, so `working` (and what
+                # is idle) may be short. The rows that could be read are still listed (#2022).
+                "working_health": "ok" if working_ok else "partial",
                 "total": len(live_rows),
                 "working": sum(1 for r in live_rows if r["working"]),
                 "by_engine": dict(sorted(by_engine.items())),
@@ -579,7 +619,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except OSError:
             log.warning("session limit: the running sessions could not be read", exc_info=True)
             return out | {"readable": False, "running": None, "others": 0, "sessions": []}
-        scoped, _memberships, _pinned, aliases, _ok = _scoped_rows(archived=False, snapshot=None)
+        scoped, _memberships, _pinned, aliases, _ok, _wok = _scoped_rows(
+            archived=False, snapshot=None
+        )
         stems = {session_capacity.stem(k) for k in keys}
         rows = sorted(
             (
@@ -655,7 +697,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     def _scoped_rows(
         *, archived: bool, snapshot: str | None = None
-    ) -> tuple[list[dict], dict[str, dict] | None, dict[str, str], dict, bool]:
+    ) -> tuple[list[dict], dict[str, dict] | None, dict[str, str], dict, bool, bool]:
         """The list's rows AFTER its scope (#567), with the mission and running stamps — the one
         set every count that links to the session list is computed over (#1123: a dashboard
         count equals its destination). Returns ``(rows, memberships, pinned, aliases,
@@ -742,9 +784,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             _stamp_mission(r, memberships, aliases)
         # Running (#1085): stamped before filtering so `live_total` describes the filtered set,
         # not the page — the footer's count, like `total`, is about the list, not the window.
-        running, running_ok = _running_state()
-        for r in scoped:
-            r["running"] = engines.physical_key(r["id"], aliases) in running
+        running_ok, working_ok = _stamp_activity(scoped, aliases)
         pressures = _memory_pressures()
         for r in scoped:
             r["memory_pressure"] = pressures.get(r["id"])
@@ -752,7 +792,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         notes = _agent_notes()
         for r in scoped:
             r["agent_report"] = notes.get(engines.physical_key(r["id"], aliases))
-        return scoped, memberships, pinned, aliases, running_ok
+        return scoped, memberships, pinned, aliases, running_ok, working_ok
 
     def _list_sessions_sync(
         *,
@@ -766,7 +806,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         snapshot: str | None = None,
         running: str | None = None,
     ) -> dict:
-        scoped, memberships, pinned, aliases, running_ok = _scoped_rows(
+        scoped, memberships, pinned, aliases, running_ok, _working_ok = _scoped_rows(
             archived=archived, snapshot=snapshot
         )
         project_index = projects.load()
@@ -1057,7 +1097,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # sidebar row can never disagree about which mission holds this session.
             _stamp_mission(row, _membership_index(), aliases)
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
-            row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
+            _stamp_activity([row], aliases)
             row["memory_pressure"] = _memory_pressures().get(row["id"])
             row["agent_report"] = _agent_notes().get(engines.physical_key(row["id"], aliases))
             # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.

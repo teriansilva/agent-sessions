@@ -2023,7 +2023,10 @@ def test_a_dismissal_covers_only_the_report_the_row_showed(hq, world, pushes, ap
     assert needs_you_dismissals.suppressed_detail()[A]["report_id"] == ""  # A was not current
     (row,) = pulse_routes.build_needs_you(1, strict=True)["rows"]
     assert row["report"]["summary"] == "a newer question"
-    assert needs_you_notify.sync_once()["closed"] == 0  # still announced
+    # Still announced, and announced as the NEWER report (#2021): the episode that stood for
+    # the replaced one closes and a new one opens in the same pass, never a gap between them.
+    assert needs_you_notify.sync_once() == {"opened": 1, "closed": 1}
+    assert needs_you_notify.sync_once() == {"opened": 0, "closed": 0}
     newer = agent_reports.current(A)
     _dismiss(app, shown_report_id=newer["id"])
     assert pulse_routes.build_needs_you(1, strict=True)["rows"] == []
@@ -2053,7 +2056,8 @@ def test_details_never_names_a_report_it_did_not_show(hq, world, app, pushes):
     assert needs_you_dismissals.suppressed_detail()[A]["report_id"] == ""
     (row,) = pulse_routes.build_needs_you(1, strict=True)["rows"]
     assert row["report"]["summary"] == "B"
-    assert needs_you_notify.sync_once()["closed"] == 0
+    # B is announced in A's place (#2021): one episode closes, one opens, in the same pass.
+    assert needs_you_notify.sync_once() == {"opened": 1, "closed": 1}
 
 
 # ---- Hermes on #1884 (round 5) ------------------------------------------------------------------

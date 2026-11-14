@@ -234,6 +234,9 @@ class Events(Sequence):
         # Folded from every `background` record at append (#1805), per worker: the newest plain
         # heartbeat's (cursor, active), and the task inventory with that worker's ended ids.
         self._beats: dict[str, tuple[int, bool]] = {}
+        # Per worker, its newest report of work of its OWN (#2022): a `background` record's
+        # `active`, or a completed turn's `background_active`. The session list asks only this.
+        self._own: dict[str, bool] = {}
         self._tasks: dict[str, tuple[dict[str, dict], set[str]]] = {}
         # (cursor, item id) of the newest settled question the agent asked (#1463): what an
         # answer's `reply_to` must still name when it is claimed.
@@ -277,6 +280,7 @@ class Events(Sequence):
         result._agent_turns = set(self._agent_turns)
         result._global = self._global[:]
         result._beats = dict(self._beats)
+        result._own = dict(self._own)
         result._tasks = {
             worker: ({task_id: dict(task) for task_id, task in tasks.items()}, set(ended))
             for worker, (tasks, ended) in self._tasks.items()
@@ -311,6 +315,10 @@ class Events(Sequence):
             self.last_question = (item["cursor"], event["data"]["item_id"])
         if event["kind"] == "tool":
             self.counts.observe(event["data"])
+        if event["kind"] == "background":
+            self._own[item["worker_id"]] = bool(event["data"].get("active"))
+        elif event["kind"] == "turn_completed":
+            self._own[item["worker_id"]] = bool(event["data"].get("background_active"))
         if event["kind"] == "wakeup":
             self.wakeup = (index, item["worker_id"])
             return
@@ -424,6 +432,12 @@ class Events(Sequence):
             return None
         return {key: data[key] for key in ("at", "reason") if key in data}
 
+    def own_work_of(self, worker_id: str) -> bool:
+        """Whether ``worker_id`` last reported work of its own under way: a turn it runs for
+        itself or a background task (#2022). The projection's ``background_active``, kept at
+        append so asking it reads no record."""
+        return self._own.get(worker_id, False)
+
     def heartbeat_of(self, worker_id: str) -> tuple[int, bool] | None:
         """(cursor, active) of ``worker_id``'s newest plain heartbeat, if it wrote one."""
         return self._beats.get(worker_id)
@@ -457,6 +471,8 @@ class Events(Sequence):
             )
             + sys.getsizeof(self._agent_turns)
             + sum(sys.getsizeof(key) for key in self._agent_turns)
+            + sys.getsizeof(self._own)
+            + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in self._own.items())
             + sys.getsizeof(self._beats)
             + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in self._beats.items())
             + sys.getsizeof(self._tasks)

@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -2386,3 +2388,89 @@ async def test_a_create_holds_its_slot_from_before_its_record_through_its_launch
     assert created["session_key"]
     assert competitor == ["refused"]
     assert len(host.launches) == launched + 1
+
+
+# --- the session list's running / working stamps for API sessions (#2022) --------------------
+
+
+def _activity_now():
+    return native_runtime.session_activity(wait=True)
+
+
+@pytest.mark.anyio
+async def test_a_turn_in_flight_is_working_and_a_settled_or_queued_one_is_not(host, project):
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    await settle(key, first)
+    running, working, complete = _activity_now()
+    assert key in running and key not in working and complete  # settled: running, idle
+
+    hang = ident()
+    await runtime.submit_turn(key, operation_id=hang, text="HANG")
+    for _ in range(200):
+        if key in _activity_now()[1]:
+            break
+        await asyncio.sleep(0.05)
+    assert key in _activity_now()[1]
+    # A message queued behind the busy turn changes nothing: it is not a second turn, and when
+    # the turn in flight ends the session is working on IT only once it is handed over.
+    queued = ident()
+    await runtime.submit_turn(key, operation_id=queued, text="later")
+    assert key in _activity_now()[1]
+
+    await runtime.stop(key)
+    running, working, _ = _activity_now()
+    # The worker is gone with an operation still unsettled in its journal: neither.
+    assert key not in running and key not in working
+
+
+@pytest.mark.anyio
+async def test_activity_is_cached_and_an_unreadable_journal_is_incomplete_not_idle(
+    host, project, monkeypatch
+):
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="one")
+    await settle(key, turn)
+    assert _activity_now() == (frozenset({key}), frozenset(), True)
+
+    real_read, broken = native_journal.read, [True]
+
+    def unreadable(root, session_id):
+        if broken[0]:
+            raise native_journal.JournalError("unavailable", "unreadable")
+        return real_read(root, session_id)
+
+    monkeypatch.setattr(native_runtime.native_journal, "read", unreadable)
+    # A list request never waits: inside the window it gets the last finished pass ...
+    assert native_runtime.session_activity() == (frozenset({key}), frozenset(), True)
+    # ... and a pass that could not read the journal says so, with the session still running.
+    assert _activity_now() == (frozenset({key}), frozenset(), False)
+    # Past the window a request still returns at once, and starts the next pass behind it.
+    root, _at, result = native_runtime._activity_cache
+    native_runtime._activity_cache = (root, time.monotonic() - 60, result)
+    broken[0] = False
+    assert native_runtime.session_activity() == result
+    native_runtime._activity_refresh.join(10)
+    assert native_runtime.session_activity() == (frozenset({key}), frozenset(), True)
+
+
+def test_before_the_first_pass_activity_is_unknown_not_idle(host, monkeypatch):
+    gate = threading.Event()
+    monkeypatch.setattr(native_runtime, "_activity_cache", None)
+    monkeypatch.setattr(native_runtime, "_activity_pass", lambda root: gate.wait(10))
+    assert native_runtime.session_activity() == (frozenset(), frozenset(), False)
+    gate.set()
+    native_runtime._activity_refresh.join(10)
+
+
+@pytest.mark.anyio
+async def test_a_corrupt_api_record_is_skipped_by_the_activity_pass(host, project):
+    (native_state.root()).mkdir(parents=True, exist_ok=True)
+    (native_state.root() / f"{ident()}.json").write_text("{nope")
+    assert _activity_now() == (frozenset(), frozenset(), True)

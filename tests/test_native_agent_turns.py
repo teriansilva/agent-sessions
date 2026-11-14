@@ -523,3 +523,25 @@ def test_a_colliding_operator_id_never_resurrects_a_quiet_own_turn(conversation,
     (only,) = snapshot(root, sid, binding)["turns"]
     assert only["kind"] == "operator" and only["turn_id"] == colliding
     assert only["reply"] == "operator reply"
+
+
+def test_the_fold_keeps_what_the_session_list_asks_without_a_projection(conversation, monkeypatch):
+    """#2022: a worker's last report of work of its own, kept at append. It must agree with the
+    projection's `background_active` at every step, and say nothing for another worker."""
+    root, sid, binding = conversation
+
+    def both():
+        events = journal.read(root, sid).events
+        assert events.own_work_of(str(uuid.uuid4())) is False
+        return events.own_work_of(binding.worker_id), raw(root, sid, binding)["native"][
+            "background_active"
+        ]
+
+    assert both() == (False, False)
+    agent(root, sid, binding, monkeypatch, T0, "x", end=None)  # an own turn, still running
+    assert both() == (True, True)
+    at(monkeypatch, T0 + 1)
+    journal.append_events(root, binding, [background(None, "completed")])
+    assert both() == (False, False)
+    operator(root, sid, binding, monkeypatch, T0 + 2, "hello")  # a completed operator turn
+    assert both() == (False, False)

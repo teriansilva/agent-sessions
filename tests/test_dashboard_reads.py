@@ -233,3 +233,137 @@ def test_review_excluded_sessions_are_omitted_from_recent(auth_cfg, fake_jsonl, 
 def test_the_dashboard_read_needs_a_login(auth_cfg, fake_jsonl):
     c = TestClient(create_app(auth_cfg), base_url="https://testserver")
     assert c.get("/api/dashboard/sessions").status_code in (401, 403)
+
+
+# ---- API sessions: running is a live worker, working is a turn in flight (#2022) ----
+
+
+def _api(monkeypatch, *, running=(), working=(), complete=True):
+    monkeypatch.setattr(
+        sessions_routes,
+        "_api_activity",
+        lambda: (frozenset(running), frozenset(working), complete),
+    )
+    sessions_routes._running_cache = None
+
+
+def test_an_api_session_counts_as_running_and_working_and_equals_its_drill_downs(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """The physical key is all the list knows a session by, so the stamp is engine-agnostic: A is
+    stamped through the API path here (no dtach master, no terminal output)."""
+    _running(monkeypatch, B)
+    monkeypatch.setattr(webterm, "get_last_output_at", lambda k: None)
+    _api(monkeypatch, running=[f"claude:{A}"], working=[f"claude:{A}"])
+    c = _client(auth_cfg)
+    live = _dash(c)["live"]
+    assert live["total"] == 2 and live["working"] == 1 and live["working_health"] == "ok"
+    # Working first: the default limit is the "Working now" preview.
+    assert [r["id"] for r in live["rows"]] == [f"claude:{A}", f"claude:{B}"]
+    assert live["rows"][0]["working"] is True and live["rows"][1]["working"] is False
+    assert c.get("/api/sessions?running=live").json()["total"] == 2
+    working = c.get("/api/sessions?running=working").json()
+    assert working["total"] == 1 and working["sessions"][0]["id"] == f"claude:{A}"
+
+
+def test_a_working_api_session_outside_the_lists_scope_counts_nowhere(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    prefs.set_folder_exclusions(["/tmp/other"])  # C is excluded from the list
+    _running(monkeypatch)
+    _api(monkeypatch, running=[f"claude:{C}", f"claude:{A}"], working=[f"claude:{C}"])
+    live = _dash(_client(auth_cfg))["live"]
+    assert live["total"] == 1 and live["working"] == 0
+
+
+def test_an_unreadable_api_journal_is_partial_and_keeps_what_could_be_read(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    _running(monkeypatch)
+    _api(
+        monkeypatch,
+        running=[f"claude:{A}", f"claude:{B}"],
+        working=[f"claude:{A}"],
+        complete=False,
+    )
+    live = _dash(_client(auth_cfg))["live"]
+    # The running census is healthy; only the working evidence is short, and it says so.
+    assert live["health"] == "ok" and live["working_health"] == "partial"
+    assert live["total"] == 2 and live["working"] == 1
+    assert live["rows"][0]["id"] == f"claude:{A}"
+
+
+def test_a_failed_api_activity_read_never_fails_the_list(auth_cfg, fake_jsonl, monkeypatch):
+    from agent_sessions import native_runtime
+
+    def boom():
+        raise RuntimeError("records unreadable")
+
+    monkeypatch.setattr(native_runtime, "session_activity", boom)
+    _running(monkeypatch, A)
+    sessions_routes._running_cache = None
+    c = _client(auth_cfg)
+    live = _dash(c)["live"]
+    assert live["total"] == 1 and live["working_health"] == "partial"
+    assert c.get("/api/sessions").status_code == 200
+
+
+# ---- one activity snapshot per request (Hermes 8158) ----
+
+UNKNOWN = (frozenset(), frozenset(), False)
+
+
+def _done(sid):
+    return (frozenset({f"claude:{sid}"}), frozenset({f"claude:{sid}"}), True)
+
+
+def test_a_pass_finishing_MID_REQUEST_never_pairs_old_rows_with_new_health(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """The first pass finishes between the rows being stamped and the health being reported."""
+    _running(monkeypatch)
+    answers = [UNKNOWN]
+    monkeypatch.setattr(
+        sessions_routes, "_api_activity", lambda: answers.pop(0) if answers else _done(A)
+    )
+    live = _dash(_client(auth_cfg))["live"]
+    assert live["total"] == 0 and live["working_health"] == "partial"  # never a healthy zero
+
+
+def test_a_pass_finishing_while_the_terminal_cache_is_WARM_is_seen_at_once(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    _running(monkeypatch, B)
+    state = {"now": UNKNOWN}
+    monkeypatch.setattr(sessions_routes, "_api_activity", lambda: state["now"])
+    c = _client(auth_cfg)
+    first = _dash(c)["live"]
+    assert first["total"] == 1 and first["working_health"] == "partial"
+    assert sessions_routes._running_cache is not None  # the terminal census is cached ...
+    state["now"] = _done(A)  # ... and the first API pass completes inside its window
+    live = _dash(c)["live"]
+    assert live["total"] == 2 and live["working"] == 1 and live["working_health"] == "ok"
+    row = next(r for r in c.get("/api/sessions").json()["sessions"] if r["id"] == f"claude:{A}")
+    assert row["running"] is True and row["working"] is True  # never working yet not running
+    assert c.get("/api/sessions?running=live").json()["total"] == 2
+    assert c.get("/api/sessions?running=working").json()["total"] == 1
+
+
+def test_the_list_and_the_one_session_lookup_stamp_the_same_activity(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """Hermes 8162: the pane's row endpoint reads the same running and working as the list."""
+    _running(monkeypatch, B)
+    ages = {f"claude:{B}": 1}  # B: a terminal session printing now; A: API activity only
+    monkeypatch.setattr(
+        webterm, "get_last_output_at", lambda k: time.time() - ages[k] if k in ages else None
+    )
+    _api(monkeypatch, running=[f"claude:{A}"], working=[f"claude:{A}"])
+    c = _client(auth_cfg)
+    listed = {r["id"]: r for r in c.get("/api/sessions").json()["sessions"]}
+    for sid in (A, B, D):  # API-working, terminal-working, neither
+        one = c.get(f"/api/sessions/claude:{sid}").json()
+        row = listed[f"claude:{sid}"]
+        assert (one["running"], one["working"]) == (row["running"], row["working"]), sid
+    assert listed[f"claude:{A}"]["working"] is True and listed[f"claude:{B}"]["working"] is True
+    assert listed[f"claude:{D}"]["running"] is False and listed[f"claude:{D}"]["working"] is False

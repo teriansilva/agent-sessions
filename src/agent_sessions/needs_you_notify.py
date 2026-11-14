@@ -69,6 +69,10 @@ def _facts(row: dict) -> dict:
         "engine": row.get("engine") or "",
         "kind": row.get("kind") or "needs_inspection",
         "action_id": action.get("id") or "",
+        # What a push is "about" (#2021): a stop already pushed is not pushed again until the
+        # session has newer activity or another HQ report. Facts, never text.
+        "last_activity": row.get("last_activity"),
+        "report_id": (row.get("report") or {}).get("id") or "",
     }
 
 

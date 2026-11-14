@@ -30,6 +30,11 @@ you, an *episode*. It is the same list as [HQ → Needs you](/guide/hq#needs-you
 isn't on that list never notifies. The episode is remembered across restarts, so the same
 situation is never announced twice, and clearing the bell doesn't bring it back.
 
+Your device is told **once per stop**. A session can drop off the Needs you list and come back
+with nothing about it changed, for example when a suggested nudge expires and is suggested again.
+Its bell row comes back, but nothing is pushed again until the session has done something new or
+its agent has filed a new report.
+
 When the session stops needing you (answered in its terminal, its decision settled, dismissed in
 Needs you, archived, or taken into a mission), the notification is **taken back**. The bell row goes on
 the next check: straight away after a settlement, a dismissal or an archive, otherwise within a

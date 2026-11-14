@@ -129,7 +129,8 @@ def test_a_restart_or_a_bell_dismissal_does_not_re_announce_an_open_episode(worl
     needs_you_notify.sync_once()
     # The episode is on disk beside the rows — a fresh process reads the same file.
     _rows, _announced, episodes = notifications._load_doc(notifications._notifications_path())
-    assert set(episodes) == {A}
+    # ... and with it the record of what was pushed (#2021).
+    assert set(episodes) == {A, f"{notifications.SAID}{A}"}
     # The operator clears the bell (a DELETE of every row): the episode survives it.
     notifications.dismiss(None)
     notifications.mark_read(None)
@@ -233,7 +234,8 @@ def test_other_writers_never_drop_the_open_episodes(world, pushes):
     notifications.mark_read(None)
     notifications.dismiss(None)
     _rows, _a, episodes = notifications._load_doc(notifications._notifications_path())
-    assert set(episodes) == {A}
+    # ... and with it the record of what was pushed (#2021).
+    assert set(episodes) == {A, f"{notifications.SAID}{A}"}
     assert needs_you_notify.sync_once() == {"opened": 0, "closed": 0}
 
 
@@ -666,3 +668,158 @@ def test_joining_a_mission_closes_the_standalone_episode_and_KEEPS_the_missions_
     rows = _escalation_rows(A)
     assert len(rows) == 1 and not rows[0].get("retired")
     assert URL_TAG_A not in _bell()["close_tags"]
+
+
+# --- one push per stop (#2021) ----------------------------------------------------------------
+
+
+def _fact(activity=1000.0, report=""):
+    return {
+        "title": "t",
+        "project": "Alpha",
+        "engine": "claude",
+        "kind": "needs_inspection",
+        "action_id": "",
+        "last_activity": activity,
+        "report_id": report,
+    }
+
+
+def _sync(current, now, **kw):
+    return notifications.sync_needs_you(current, push=True, now=now, **kw)
+
+
+def _stored():
+    return notifications._load_doc(notifications._notifications_path())
+
+
+def test_the_same_stop_coming_back_onto_the_list_is_pushed_ONCE(world, pushes, monkeypatch):
+    """The measured loop: a proposal expires, the session leaves the list, the next sweep proposes
+    again. Nothing about the session changed, so the device hears about it once."""
+    handed: list[str] = []
+    monkeypatch.setattr(
+        needs_you_notify.hq_dispatch, "announce", lambda rec: handed.append(rec["tag"])
+    )
+    stop = _card(A)
+    world["cards"] = [dict(stop)]
+    assert needs_you_notify.sync_once()["opened"] == 1
+    first = _needs_you_rows()[0]["tag"]
+    for _ in range(3):
+        world["cards"] = [dict(stop, intervention_required=False)]
+        needs_you_notify.sync_once()
+        time.sleep(0.002)  # episode ids are millisecond starts
+        world["cards"] = [dict(stop)]
+        assert needs_you_notify.sync_once()["opened"] == 0
+    assert [p["tag"] for p in pushes] == [first] and handed == [first]
+    # The bell still agrees with the NEEDS YOU list: the row is back, under a new episode.
+    (row,) = _needs_you_rows()
+    assert row["tag"] != first
+    rows, _a, eps = _stored()
+    assert "dispatch" not in next(r for r in rows if r["tag"] == row["tag"])
+    assert eps[A]["pushed"] is False
+    # Only the pushed episode was ever owed a retraction; a quiet one closing owes none.
+    world["cards"] = [dict(stop, intervention_required=False)]
+    needs_you_notify.sync_once()
+    assert _pending() == [first]
+
+
+def test_new_activity_after_a_close_is_a_new_stop_and_is_pushed(world, pushes):
+    stop = _card(A)
+    world["cards"] = [dict(stop)]
+    needs_you_notify.sync_once()
+    world["cards"] = [dict(stop, intervention_required=False)]
+    needs_you_notify.sync_once()
+    time.sleep(0.002)
+    world["cards"] = [dict(stop, last_activity=stop["last_activity"] + 30)]
+    assert needs_you_notify.sync_once()["opened"] == 1
+    assert len(pushes) == 2
+
+
+def test_new_activity_on_an_episode_that_STAYED_open_pushes_nothing():
+    assert len(_sync({A: _fact(1000.0)}, 10.0)["opened"]) == 1
+    res = _sync({A: _fact(2000.0)}, 20.0)
+    assert res["opened"] == [] and res["reopened"] == [] and res["closed"] == []
+
+
+def test_a_replacement_report_on_an_open_episode_is_pushed_under_a_new_tag():
+    (first,) = _sync({A: _fact(report="r1")}, 10.0)["opened"]
+    assert _sync({A: _fact(report="r1")}, 20.0)["opened"] == []
+    res = _sync({A: _fact(report="r2")}, 30.0)
+    (second,) = res["opened"]
+    assert second["tag"] != first["tag"]
+    assert [c["tag"] for c in res["closed"]] == [first["tag"]]
+    assert res["pending"] == [first["tag"]]  # the replaced notification is retracted
+
+
+def test_a_quiet_row_comes_back_as_its_predecessor_was_left():
+    (first,) = _sync({A: _fact()}, 10.0)["opened"]
+    _sync({}, 20.0)
+    (back,) = _sync({A: _fact()}, 30.0)["reopened"]
+    assert back["read"] is False  # never read: it still counts
+    notifications.mark_read([back["id"]])
+    _sync({}, 40.0)
+    (again,) = _sync({A: _fact()}, 50.0)["reopened"]
+    assert again["read"] is True
+    notifications.dismiss([again["id"], back["id"], first["id"]])
+    _sync({}, 60.0)
+    (gone,) = _sync({A: _fact()}, 70.0)["reopened"]
+    assert gone["read"] is True  # nothing left to inherit from: not a new unread
+
+
+def test_a_dismissed_stop_never_returns_unread_through_an_OLDER_stops_row():
+    """Hermes 8161: stop A is left unread; stop B (newer activity) is read and its row dismissed.
+    B coming back must not inherit A's surviving unread row."""
+    (a,) = _sync({A: _fact(1000.0)}, 10.0)["opened"]
+    _sync({}, 20.0)
+    (b,) = _sync({A: _fact(2000.0)}, 30.0)["opened"]
+    notifications.mark_read([b["id"]])
+    notifications.dismiss([b["id"]])
+    _sync({}, 40.0)
+    (back,) = _sync({A: _fact(2000.0)}, 50.0)["reopened"]
+    assert back["read"] is True
+    rows, _a, _e = _stored()
+    assert next(r for r in rows if r["id"] == a["id"])["read"] is False  # A's row is untouched
+    # ... and the chain holds through a further quiet round.
+    _sync({}, 60.0)
+    assert _sync({A: _fact(2000.0)}, 70.0)["reopened"][0]["read"] is True
+
+
+def test_activity_that_cannot_be_read_is_not_new_activity():
+    _sync({A: _fact(1000.0)}, 10.0)
+    _sync({}, 20.0)
+    assert _sync({A: _fact(None)}, 30.0)["opened"] == []
+
+
+def test_an_aged_out_or_dropped_record_allows_ONE_more_push(monkeypatch):
+    _sync({A: _fact()}, 10.0)
+    _sync({}, 20.0)
+    later = 10.0 + notifications.SAID_KEEP_S + 1
+    assert len(_sync({A: _fact()}, later)["opened"]) == 1
+    _sync({}, later + 10)
+    assert _sync({A: _fact()}, later + 20)["opened"] == []
+    # The cap drops the oldest record first.
+    monkeypatch.setattr(notifications, "SAID_MAX", 1)
+    _sync({A: _fact(), B: _fact()}, later + 30)  # B's record is newer than A's
+    _sync({}, later + 40)
+    res = _sync({A: _fact(), B: _fact()}, later + 50)
+    assert [r["session_id"] for r in res["opened"]] == [A]
+    assert [r["session_id"] for r in res["reopened"]] == [B]
+
+
+def test_an_episode_open_before_the_record_existed_is_not_announced_again():
+    _sync({A: _fact(report="r1")}, 10.0)
+    p = notifications._notifications_path()
+    rows, _a, eps = _stored()
+    del eps[f"{notifications.SAID}{A}"]
+    notifications._write(p, rows, episodes=eps)
+    res = _sync({A: _fact(report="r1")}, 20.0)
+    assert res["opened"] == [] and res["closed"] == []
+    assert _stored()[2][f"{notifications.SAID}{A}"]["report"] == "r1"
+
+
+def test_the_record_is_never_an_open_episode():
+    _sync({A: _fact()}, 10.0)
+    res = _sync({}, 20.0)
+    assert res["open"] == []
+    assert notifications.has_open_episode(A) is False
+    assert notifications.owed_close_tags() == [res["closed"][0]["tag"]]
