@@ -30,6 +30,7 @@ const TOOL_WORDS: Record<string, string> = {
   list_folders: "Listing your folders…",
   propose_session_change: "Preparing the change for you to confirm…",
   propose_project_change: "Preparing the change for you to confirm…",
+  propose_mission: "Preparing the draft mission for you to confirm…",
 };
 
 const plural = (n: number, one: string, many: string) =>

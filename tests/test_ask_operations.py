@@ -98,6 +98,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1, "revision": 2}
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
     fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
+    fields.update(instruction="apply for the job")  # a draft mission (#1950)
     # A team card (#1950): the op and the index it names.
     fields.update(op="assemble", operation_id="x", expected_revision=1, reason="r", step="o1.a",
                   index=0, listing="l")  # fmt: skip

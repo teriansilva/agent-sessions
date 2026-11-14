@@ -585,6 +585,7 @@ const OPERATION_GROUP: Record<string, string> = {
   skill: "Skill",
   automation: "Automation",
   secret: "Secret",
+  mission: "Mission",
 };
 
 /** An automation the tap lets run unattended reads as such, not as a bare "External". */

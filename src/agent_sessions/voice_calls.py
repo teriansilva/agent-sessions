@@ -169,6 +169,7 @@ TOOL_ACTIVITY = {
     "propose_session": "preparing a card for you",
     "propose_session_change": "preparing a card for you",
     "propose_project_change": "preparing a card for you",
+    "propose_mission": "preparing a card for you",
     "propose_library": "preparing a card for you",
     "propose_secret": "preparing a card for you",
 }
@@ -1839,8 +1840,9 @@ def _voice_operation(op_id: object) -> bool:
     op = ask_operations.CATALOG.get(op_id) if isinstance(op_id, str) else None
     # A secret operation (#1786) is never voice-confirmed: turning agent access on widens what
     # agents can read, and the operator approved HQ proposing it only as a card they tap.
-    # A team card (#1950) names its step and model on screen; it is a screen decision too.
-    return op is not None and op.group not in (*ask_library.GROUPS, "secret", "team")
+    # A team card (#1950) names its step and model on screen; it is a screen decision too, and so
+    # is a draft mission (#1950): its instruction is on the card.
+    return op is not None and op.group not in (*ask_library.GROUPS, "secret", "team", "mission")
 
 
 #: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only

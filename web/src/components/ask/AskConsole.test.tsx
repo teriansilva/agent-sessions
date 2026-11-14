@@ -2362,6 +2362,33 @@ test("an operation card shows the server's wording and confirms with nothing but
   ).toHaveTextContent("Running");
 });
 
+// --- #1950: a draft-mission card ---------------------------------------------------------------
+
+test("a draft-mission card says Mission, not Session, and is confirmed with a plain tap", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "mission.create",
+        label: "Create a draft mission",
+        verb: "Create draft",
+        title: "Marcus Privat",
+        text: "Creates a draft mission: “Apply for the job”. Nothing runs until you press Begin.",
+        needs: [],
+      }),
+    ),
+  ]);
+  vi.mocked(api.decideAskOperation).mockResolvedValue({
+    proposal: { state: "deciding", summary: "", reason: "", can_confirm: false, can_dismiss: false },
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Mission");
+  expect(card).not.toHaveTextContent("Session");
+  expect(within(card).getByTestId("ask-operation-text")).toHaveTextContent("press Begin");
+  await userEvent.click(within(card).getByTestId("ask-operation-confirm"));
+  expect(api.decideAskOperation).toHaveBeenCalledWith(PID, "confirm", undefined);
+});
+
 // --- #1786: secret cards ----------------------------------------------------------------------
 
 test("a store-secret card takes the value on the card, sends it once and keeps none of it", async () => {

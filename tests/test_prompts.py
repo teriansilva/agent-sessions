@@ -150,7 +150,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "f7b500cfe4423db4",  # #1960: send_nudge sends at once
+    "ask_orchestrator": "4d89e14e5c00e99c",  # #1960; #1950: propose_mission
     "ask_route": "a9d2edf93a7108c3",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
@@ -202,6 +202,25 @@ def test_default_text_is_pinned_by_hash():
     """A digest per prompt: any reword anywhere in the catalog surfaces as a failing id."""
     actual = {p.id: hashlib.sha256(p.default.encode()).hexdigest()[:16] for p in prompts.REGISTRY}
     assert actual == EXPECTED_DEFAULT_SHA
+
+
+def test_hq_prompt_creates_the_draft_and_keeps_new_mission_as_the_fallback():
+    """#1950: HQ proposes the draft itself (propose_mission), continues with read_plan and assemble,
+    never says it cannot plan, and names New mission and Begin only as the fallback."""
+    text = " ".join(prompts.get("ask_orchestrator").default.split())
+    for needle in (
+        "propose_mission",
+        "Begin, which you cannot do",
+        "read_plan",
+        "assemble the team",
+        "Never say you cannot plan or create a mission",
+        "do not ask for inputs such as a job posting before the draft exists",
+        "Only if propose_mission is refused",
+        "choose New mission",
+        "nothing runs until Begin",
+        "You cannot approve or start missions",
+    ):
+        assert needle in text, needle
 
 
 def test_editable_falls_back_to_default_and_survives_a_blank(tmp_home):

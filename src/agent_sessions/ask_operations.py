@@ -200,6 +200,12 @@ _OPTIONAL_INPUT_OPS: dict[str, frozenset[str]] = {
 }
 
 
+def _instruction(v: object) -> str:
+    from . import ask_mission
+
+    return ask_mission.instruction(v)
+
+
 GATES: dict[str, Callable[[object], object]] = {
     "title": _title,
     "tag": _tag,
@@ -208,6 +214,7 @@ GATES: dict[str, Callable[[object], object]] = {
     "days": _days,
     "secret_name": _secret_name,
     "description": _description,
+    "instruction": _instruction,
 }
 
 
@@ -338,7 +345,7 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # "session" | "project" | "playbook" | "skill" | "automation" | "secret" | "team"
+    group: str  # session, project, playbook, skill, automation, secret, team or mission
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
@@ -827,10 +834,11 @@ def _ops() -> tuple[Operation, ...]:
 
 def _all_ops() -> tuple[Operation, ...]:
     from .ask_library import library_ops
+    from .ask_mission import mission_ops
     from .ask_secrets import secret_ops
     from .ask_team import team_ops
 
-    return (*_ops(), *library_ops(), *secret_ops(), *team_ops())
+    return (*_ops(), *library_ops(), *secret_ops(), *team_ops(), *mission_ops())
 
 
 CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
@@ -861,6 +869,10 @@ async def facts_for(
             if not facts["dest"]:
                 return None  # a destination already gone stages nothing
         return facts
+    if op.group == "mission":  # a draft mission's project (#1950): its name, not archived
+        from . import ask_mission
+
+        return await ask_mission.facts(target, app, operator)
     if op.target == "project":
         return await _project_facts(app, operator, target)
     if op.id == "sessions.archive_older":

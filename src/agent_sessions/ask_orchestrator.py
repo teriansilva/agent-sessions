@@ -1995,6 +1995,26 @@ async def _propose_session_change(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return await _stage(turn, op, key, title, fields)
 
 
+async def _propose_mission(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """A DRAFT mission from a project and an instruction (#1950). The card's tap runs
+    `POST /api/missions` as the operator; the server writes the objectives and plan from the
+    project's playbook. This starts nothing: Begin stays the operator's; HQ has no tool for it."""
+    from . import ask_mission, ask_operations
+
+    op = ask_operations.CATALOG["mission.create"]
+    row = _index_arg(args, "project_index", turn.projects, "list_projects")
+    try:
+        fields = ask_operations.gate_fields(op, args)
+    except ask_operations.Refused as e:
+        raise _ToolRefused(f"refused: {e}", e.code) from None
+    # The dry run: what the route would refuse (archived, no folder) is HQ's tool result now.
+    operator, app = _operator(turn)
+    why = await ask_mission.refusal(row["id"], app, operator)
+    if why:
+        raise _ToolRefused(f"refused: {why}. Nothing was written", "not_available")
+    return await _stage(turn, op, row["id"], row["name"], fields)
+
+
 async def _propose_project_change(turn: _Turn, args: dict) -> tuple[dict, dict]:
     from . import ask_operations
 
@@ -2598,6 +2618,25 @@ TOOLS: dict[str, Tool] = {
                 ["action"],
             ),
             _propose_session_change,
+        ),
+        Tool(
+            "propose_mission",
+            "proposal",
+            _spec(
+                "propose_mission",
+                "Propose a new DRAFT mission: a project by the index list_projects returned in "
+                "this turn (its playbook supplies the objectives and plan) and the instruction, "
+                "one or two sentences in the operator's words. Use it when the operator wants to "
+                "plan a mission that does not exist yet. The operator confirms a card; the "
+                "server then writes the objectives and plan in the background, and nothing "
+                "runs until the operator presses Begin: you cannot start it. After the card is "
+                "confirmed, find the mission with list_missions (state draft), then read_plan "
+                "(it says when the plan is not written yet: wait a moment and read again) and "
+                "assemble. If you cannot tell which project, ask_operator.",
+                {"project_index": {"type": "integer"}, "instruction": {"type": "string"}},
+                ["project_index", "instruction"],
+            ),
+            _propose_mission,
         ),
         Tool(
             "propose_project_change",
