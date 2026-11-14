@@ -2884,6 +2884,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except (missions.MissionError, mission_approval.ApprovalRefused) as e:
             return _approval_fail(e)
         out = {k: done[k] for k in ("id", "revision", "digest", "created_at", "replayed")}
+        # A refusal notified under the approval this one replaced no longer stands (#1951 B).
+        from .. import mission_runner
+
+        await asyncio.to_thread(mission_runner.retract_sync, mission_id)
         return JSONResponse(out, headers=_NO_STORE)
 
     @app.post("/api/missions/{mission_id}/plan/approval/revoke")
@@ -2906,6 +2910,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row = await missions.run_admitted(lambda: missions.revoke_approval(mission_id, aid))
         except (missions.MissionError, mission_approval.ApprovalRefused) as e:
             return _approval_fail(e)
+        from .. import mission_runner
+
+        await asyncio.to_thread(mission_runner.retract_sync, mission_id)
         return JSONResponse({"id": row["id"], "revoked_at": row["revoked_at"]}, headers=_NO_STORE)
 
     @app.post("/api/missions/{mission_id}/plan/consent")

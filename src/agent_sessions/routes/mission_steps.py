@@ -3,6 +3,7 @@
 * ``GET  /api/missions/{id}/steps``                       — each step, its runs, can it start now
 * ``POST /api/missions/{id}/steps/{step}/start``          — ``{revision, expect_cwd, alternate?}``
 * ``POST /api/missions/{id}/steps/{step}/stop``           — ``{episode}``
+* ``POST /api/missions/{id}/steps/{step}/hold``           — ``{hold}`` (#1951 slice B)
 * ``POST /api/missions/{id}/budget``   — ``{turns_cap, seconds_cap, expect_revision}``
 * ``POST /api/missions/{id}/steps/pause`` ``{interrupt?}``, ``…/continue``, ``…/stop-all``
 
@@ -14,6 +15,7 @@ one seam #1951 slice B also launches through. Stop only reduces an effect.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import Depends, FastAPI, Request
@@ -162,6 +164,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
+        if out.get("outcome") == "started":
+            # The operator started a step whose launch the approval refused: its notification no
+            # longer stands (#1951 slice B).
+            from .. import mission_runner
+
+            await asyncio.to_thread(mission_runner.retract_sync, mission_id, step_id=step_id)
         return _json(out)
 
     @app.post("/api/missions/{mission_id}/steps/{step_id}/stop")
@@ -181,6 +189,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except missions.MissionError as e:
             return _fail(e)
         return _json({"run": run})
+
+    @app.post("/api/missions/{mission_id}/steps/{step_id}/hold")
+    async def mission_step_hold(
+        mission_id: str,
+        step_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """ "Ask me before this step starts" (#1951 slice B, D-1581-10): the runner that starts
+        steps under an approval never starts a held step; the operator's own Start still does.
+        Setting or clearing it starts nothing."""
+        try:
+            missions.validate_id(mission_id)
+            missions.validate_step_id(step_id)
+            body = await _body(request, frozenset({"hold"}))
+            hold = body.get("hold")
+            if type(hold) is not bool:
+                raise missions.MissionError("hold is true or false", status=422)
+            out = await missions.run_admitted(
+                lambda: missions.set_step_hold(mission_id, step_id, hold=hold)
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        return _json({"step_id": step_id, "held": out})
 
     @app.post("/api/missions/{mission_id}/budget")
     async def mission_budget_set(

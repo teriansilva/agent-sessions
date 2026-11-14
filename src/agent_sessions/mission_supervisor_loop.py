@@ -363,6 +363,13 @@ async def sweep(
     await mission_steps.finish_recorded_stops()
     if not _enabled():
         return {"skipped": "disabled"}
+    # HQ STARTS THE APPROVED PLAN'S READY STEPS (#1951 slice B): once per fast ring, each mission
+    # under an approval in force in a background task, through #1581's one seam.
+    if "running" in states:
+        from . import mission_runner
+
+        with contextlib.suppress(Exception):
+            await mission_runner.sweep(registry)
     await _forget_legacy_state()
     if paced:
         # The judge runs once per WINDOW, not per sweep (#1214; per sweep since #1088 review).

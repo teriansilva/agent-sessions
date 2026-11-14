@@ -148,8 +148,25 @@ the playbook's own operator steps, still come to you every time.
   plan voids it; you can revoke it at any time. Approving or importing a plan never creates one.
   No automation uses it yet.
 
-HQ cannot approve a plan, give consent or revoke either. HQ starting the approved steps by itself
-comes later; today you start each step yourself on the Steps card.
+HQ cannot approve a plan, give consent or revoke either.
+
+**Once you approve, HQ starts the steps.** Each agent step of the approved revision starts, on its
+approved specialist, as soon as it is ready, after the approval is checked again. The Steps card
+says so ("under your approval"), and each run says who started it.
+
+- **A launch the approval refuses starts nothing**: no session, no reservation. The step reads
+  **refused**, with what changed (old → new), and you are asked once per change. You get one
+  notification for it, whether or not the mission is open; it goes away when you approve again, revoke, or the
+  step starts (by HQ or by your own Start step).
+- **HQ starts each step once.** A step that has run, whoever started it (you or HQ), is not
+  started again by HQ, even after you stopped it or its launch failed; start it again yourself.
+- **Nothing starts while orchestration is off** (or its autonomy is off); the Steps card says so.
+- **Ask me before this step starts** holds one step: HQ leaves it for your own **Start step**.
+- **An approved alternate** starts in its pick's place only when the pick's client can't run it
+  (out of usage, or not mission-ready). A full pool waits.
+- **Tool requests in those steps** still ask you. If the plan changed since you approved it,
+  allowing one is refused; declining always works. A plan can be approved again only before the
+  mission runs: once it runs, stop the step or start the steps yourself.
 
 ## Steps — one session per agent step
 

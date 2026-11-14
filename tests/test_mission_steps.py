@@ -306,6 +306,29 @@ def test_a_failed_launch_that_kept_its_record_is_unknown_until_proved_stopped():
     assert nxt["run"]["episode"] == 2 and nxt["plan_id"] != plan["plan_id"]
 
 
+@pytest.mark.parametrize("ended", ["failed", "refused"])
+def test_a_launch_nobody_tapped_for_is_refused_once_the_step_has_run(ended):
+    """HQ starts each step ONCE (#1951 slice B, independent review of #2019), enforced in the
+    claim's own transaction: any run that is not `refused`, whoever started it, refuses a launch
+    nobody tapped for (`already_ran`); a refused one started nothing and does not count. The
+    operator's own Start is never fenced by it."""
+    mid, _ = _mission()
+    plan = _claim(mid)  # the operator's
+    to = "failed" if ended == "failed" else "planned"
+    missions.settle_dispatch(mid, to=to, detail="x", expect_plan=plan["plan_id"])
+    assert _runs(mid)[0]["state"] == ended
+    if ended == "failed":
+        with pytest.raises(missions.StepRefused) as e:
+            _claim(mid, authority="approval")
+        assert _code(e) == "already_ran"
+        assert len(_runs(mid)) == 1, "a refused claim wrote a run"
+        nxt = _claim(mid)  # the operator may always start it again
+        assert nxt["run"]["episode"] == 2
+    else:
+        nxt = _claim(mid, authority="approval")
+        assert nxt["run"]["authority"] == "approval" and nxt["run"]["episode"] == 2
+
+
 def test_a_failed_launch_with_nothing_left_is_failed():
     mid, _ = _mission()
     plan = _claim(mid)
@@ -856,13 +879,14 @@ async def test_a_change_after_the_preflight_refuses_the_create_under_the_fence(
     authority = mission_steps.OPERATOR
     if change == "newer_version":
         # D-P6-1 applies to an APPROVAL-bound launch: bind one through a harness admission.
+        pins = _real_pins(seam["mid"])
         con = missions._ready(None)
         try:
             con.execute(
                 "INSERT INTO mission_plan_approvals (id, mission_id, revision, digest, pins_json, "
                 "operation_id, request_digest, created_at) VALUES "
-                "('apr-test', ?, 1, 'd', '{}', 'op-1', 'r', 1.0)",
-                (seam["mid"],),
+                "('apr-test', ?, 1, 'd', ?, 'op-1', 'r', 1.0)",
+                (seam["mid"], pins),
             )
             con.commit()
         finally:
@@ -899,15 +923,29 @@ async def test_a_change_after_the_preflight_refuses_the_create_under_the_fence(
     assert _users(seam["project"]) == []
 
 
+def _real_pins(mid: str) -> str:
+    """The pins the approve route would store for the latest revision (#1951 slice B: the write
+    fence re-reads the objective and equipment pins of an approval-bound launch)."""
+    import json
+
+    from agent_sessions import mission_approval as appr
+
+    latest = missions.plan_revision(mid)
+    doc = latest["document"]
+    p = appr.pins(doc, latest["revision"], appr.context_for(doc), appr.read_facts(doc))
+    return json.dumps(p)
+
+
 def _bind_authority(mid: str, *, consent: bool) -> dict:
     """An approval in force (and a standing consent on it), as slice A's store writes them."""
+    pins = _real_pins(mid)
     con = missions._ready(None)
     try:
         con.execute(
             "INSERT INTO mission_plan_approvals (id, mission_id, revision, digest, pins_json, "
             "operation_id, request_digest, created_at) VALUES "
-            "('apr-bound', ?, 1, 'd', '{}', 'op-apr', 'r', 1.0)",
-            (mid,),
+            "('apr-bound', ?, 1, 'd', ?, 'op-apr', 'r', 1.0)",
+            (mid, pins),
         )
         if consent:
             con.execute(

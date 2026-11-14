@@ -10,6 +10,7 @@ Snapshots preserve adapter-recorded reply times; absent evidence remains unknown
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import subprocess
 from collections.abc import Callable
@@ -856,6 +857,68 @@ async def submit_turn(
     return out
 
 
+#: The declines: the only decisions a step session started under a plan approval or a standing
+#: consent settles without re-checking the approval first (#1951 slice B, D-P6-10). A DENY list,
+#: so every other decision (`approve`, `always`, `answer`, and any kind added later) is gated by
+#: default (independent review of #2019).
+_DECLINES = frozenset({"reject", "cancel"})
+
+
+async def _admit_gate(session_key: str) -> None:
+    """THE GATE BOUNDARY (#1951 §2(b)): before the operator's settlement lets a step session's
+    tool request take effect, a session started under an approval re-checks it through the one
+    boundary function, which records a refusal once per change. Fails closed when the run can't
+    be read."""
+    from . import mission_approval, missions
+
+    try:
+        run = await asyncio.to_thread(missions.step_run_of_session, session_key)
+    except Exception:  # noqa: BLE001 — an unreadable membership is not permission
+        raise StructuredError(
+            503, "could not read whether this session runs a mission step; try again"
+        ) from None
+    if run is None or run.get("authority") not in ("approval", "consent"):
+        return
+    # An approved alternate's session is gated on ITS OWN pin, never the pick's (independent
+    # review of #2019): the pick's state says nothing about what this session runs as.
+    alt = run.get("alternate_index") if run.get("use_kind") == "alternate" else None
+
+    def check() -> tuple[dict, str]:
+        verdict = mission_approval.admit(
+            run["mission_id"],
+            run["step_id"],
+            "gate",
+            **({"alternate": int(alt)} if alt is not None else {}),
+        )
+        state = ""
+        if not verdict.get("ok"):
+            # The remedy's wording only: a plan can be approved again only before it runs.
+            with contextlib.suppress(Exception):
+                m = missions.get_mission(run["mission_id"], events_limit=1) or {}
+                state = str(m.get("state") or "")
+        return verdict, state
+
+    try:
+        verdict, state = await asyncio.to_thread(check)
+    except Exception:  # noqa: BLE001 — a re-check that can't run is not permission
+        raise StructuredError(
+            503, "could not re-check the plan approval this step runs under; try again"
+        ) from None
+    if not verdict.get("ok"):
+        what = mission_approval.class_text(verdict.get("reasons") or [])
+        remedy = (
+            "approve the plan again or stop the step"
+            if state in ("draft", "planned")
+            else "stop the step; a running mission's plan can't be approved again"
+        )
+        raise StructuredError(
+            409,
+            f"This step was started under your plan approval, and {what}: {remedy}. Declining "
+            "is always possible.",
+            reason="approval_refused",
+        )
+
+
 async def decide(
     session_key: str,
     *,
@@ -873,6 +936,8 @@ async def decide(
     adapter = _adapter(engine, "decide")
     if answers is not None and not isinstance(adapter, _NativeAdapter):
         raise StructuredError(422, "this client's requests take no answer")
+    if decision not in _DECLINES:
+        await _admit_gate(f"{engine}:{native}")
     result = await adapter.decide(
         engine,
         native,

@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1613,6 +1613,17 @@ BUDGET_DDL: tuple[str, ...] = (
 )
 _SCHEMA += ";\n".join(BUDGET_DDL) + ";\n"
 
+#: v42 (#1951 slice B, D-1581-10): "ask me before this step starts". One row per held step; the
+#: runner that starts steps under an approval never starts a held one, and the operator's own
+#: Start still does. Only the operator writes it. Cascades with the mission.
+STEP_HOLDS_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_step_holds ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "step_id TEXT NOT NULL, created_at REAL NOT NULL, "
+    "PRIMARY KEY (mission_id, step_id))",
+)
+_SCHEMA += ";\n".join(STEP_HOLDS_DDL) + ";\n"
+
 
 def _migrate_40_to_41(con) -> None:
     """Additive only (workflow §0): two tables, one index. Idempotent, and it converges a table an
@@ -1624,7 +1635,13 @@ def _migrate_40_to_41(con) -> None:
         con.execute("ALTER TABLE mission_budgets ADD COLUMN stopping INTEGER NOT NULL DEFAULT 0")
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40})
+def _migrate_41_to_42(con) -> None:
+    """Additive only (workflow §0): one table. Idempotent."""
+    for statement in STEP_HOLDS_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40, 41})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1633,10 +1650,12 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
     column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
-    approval (to 38), v40 the step runs (to 39), v41 the mission budget (to 40); an older build
-    never reads any of them. (A plan revision carrying a team, #1950, reads fine on an older
-    build. Applying another procedure there rebuilds every step with `assignment: null`, so that
-    one write drops the team: earlier revisions keep it, and Assemble restores it.)
+    approval (to 38), v40 the step runs (to 39), v41 the mission budget (to 40), v42 the step
+    holds (to 41); an older build never reads any of them. (A v41 build starts no step by itself,
+    so the holds it does not read hold nothing it would start. A plan revision carrying a team,
+    #1950, reads fine on an older build. Applying another procedure there rebuilds every step
+    with `assignment: null`, so that one write drops the team: earlier revisions keep it, and
+    Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1812,6 +1831,8 @@ def _migrate(con) -> int:
             _migrate_39_to_40(con)
         if version < 41:
             _migrate_40_to_41(con)
+        if version < 42:
+            _migrate_41_to_42(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -10247,6 +10268,9 @@ def claim_step(
       same resolved directory (`shared_cwd`, D-1581-5);
     * a bound `approval_id` is no longer the approval in force (`approval_changed`), or a bound
       `consent_id` no longer covers it (`consent_changed`);
+    * a launch nobody tapped for (`authority` not `operator`) of a step the operator holds
+      (`held`, #1951 slice B), or of a step that has a run that is not `refused`, whoever
+      started it (`already_ran`: HQ starts each step once);
     * the mission's budget is held or spent (`budget`). This one refusal WRITES: a cap reached
       here holds the mission, committed before the refusal, so the decision surfaces.
 
@@ -10375,6 +10399,31 @@ def claim_step(
                 raise StepRefused(
                     "consent_changed",
                     "the standing consent this launch was admitted under is no longer in force",
+                )
+            if authority != "operator" and _step_held_tx(con, mission_id, step_id):
+                # "ASK ME BEFORE THIS STEP STARTS" (#1951 slice B) holds every launch nobody
+                # tapped for, in the claim's own transaction: a hold that lands after the runner
+                # read the step as ready still stops it here (and at the effects, below).
+                raise StepRefused(
+                    "held", "you asked to be asked before this step starts; start it yourself"
+                )
+            if (
+                authority != "operator"
+                and con.execute(
+                    "SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "
+                    "AND state != 'refused' LIMIT 1",
+                    (mission_id, step_id),
+                ).fetchone()
+            ):
+                # HQ STARTS EACH STEP ONCE (#1951 slice B, independent review of #2019): the
+                # seam's own fence, not only the runner's offer, so two app instances can't both
+                # start a step, and a step the operator started (and stopped) is never restarted
+                # by a launch nobody tapped for. Any run counts, whoever started it, except a
+                # refused one (it started nothing).
+                raise StepRefused(
+                    "already_ran",
+                    "this step has run already, and HQ starts a step only once; start it again "
+                    "yourself",
                 )
             # THE MISSION'S BUDGET (#1581 S3): created by its first step claim; a hold or a spent
             # cap refuses, and a cap reached here is recorded (and committed) before the refusal.
@@ -10930,6 +10979,91 @@ def set_pause(
             con.close()
 
 
+def set_step_hold(
+    mission_id: str, step_id: str, *, hold: bool, now: float | None = None, path: Path | None = None
+) -> bool:
+    """The operator's "ask me before this step starts" (#1951 slice B, D-1581-10): set or clear
+    it. The step must be in the latest plan revision. Returns the hold as it now is. Starts and
+    stops nothing: the runner reads it before every start it would make."""
+    validate_id(mission_id)
+    validate_step_id(step_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            row = con.execute(
+                "SELECT document_json FROM mission_plan_revisions WHERE mission_id=? "
+                "ORDER BY revision DESC LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+            steps = json.loads(row["document_json"])["steps"] if row is not None else []
+            if not any(x.get("id") == step_id for x in steps):
+                raise MissionError(f"step {step_id} is not in this plan", status=404)
+            if hold:
+                con.execute(
+                    "INSERT OR IGNORE INTO mission_step_holds (mission_id, step_id, created_at) "
+                    "VALUES (?,?,?)",
+                    (mission_id, step_id, ts),
+                )
+            else:
+                con.execute(
+                    "DELETE FROM mission_step_holds WHERE mission_id=? AND step_id=?",
+                    (mission_id, step_id),
+                )
+            con.execute("COMMIT")
+            return hold
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def _step_held_tx(con, mission_id: str, step_id: str) -> bool:
+    return (
+        con.execute(
+            "SELECT 1 FROM mission_step_holds WHERE mission_id=? AND step_id=?",
+            (mission_id, step_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def step_holds(mission_id: str, *, path: Path | None = None) -> set[str]:
+    """The steps the operator asked to be asked about before they start."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return {
+            r["step_id"]
+            for r in con.execute(
+                "SELECT step_id FROM mission_step_holds WHERE mission_id=?", (mission_id,)
+            ).fetchall()
+        }
+    finally:
+        con.close()
+
+
+def approved_missions(*, path: Path | None = None) -> list[str]:
+    """Missions a step could start in under an approval IN FORCE right now: not archived, in a
+    state a step claim accepts (`STEP_LAUNCH_STATES`). In id order. The runner's worklist; every
+    fact here is re-checked by the seam it then calls."""
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT m.id AS id, m.state AS state FROM missions m JOIN mission_plan_approvals a "
+            "ON a.mission_id = m.id AND a.revoked_at IS NULL "
+            "WHERE m.archived_at IS NULL ORDER BY m.id"
+        ).fetchall()
+        return [r["id"] for r in rows if str(r["state"] or "") in STEP_LAUNCH_STATES]
+    finally:
+        con.close()
+
+
 def stopping_missions(*, path: Path | None = None) -> list[str]:
     """Missions whose Stop is recorded and not cancelled (the supervisor finishes them, on or
     off)."""
@@ -11057,6 +11191,12 @@ def step_launch_verdict(plan_id: str, *, path: Path | None = None) -> str | None
                     "the plan approval this step was started under is no longer in force, "
                     "so nothing was started"
                 )
+        if row["authority"] != "operator" and _step_held_tx(con, row["mission_id"], row["step_id"]):
+            # The operator's per-step hold beats a pending automatic launch, like a pause.
+            return (
+                "you asked to be asked before this step starts, so nothing was started; "
+                "start it yourself"
+            )
         held = con.execute(
             "SELECT hold, stopping FROM mission_budgets WHERE mission_id=?", (row["mission_id"],)
         ).fetchone()
@@ -12173,7 +12313,10 @@ def record_refusal(
     path: Path | None = None,
 ) -> bool:
     """Record one refused boundary; True when it is NEW. The key is (approval, step, what
-    changed), so a launch retried against the same stale binding raises nothing new."""
+    changed), so a launch retried against the same stale binding raises nothing new. A REPEAT
+    moves the row's `created_at` to now (it is "last refused at"), never `new`: when a change comes
+    back after another one, the board shows the refusal actually made last (independent review
+    of #2019)."""
     validate_id(mission_id)
     ts = time.time() if now is None else now
     blob = json.dumps(reasons, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -12186,8 +12329,15 @@ def record_refusal(
                 "change_digest, boundary, reasons_json, created_at) VALUES (?,?,?,?,?,?,?)",
                 (mission_id, approval_id, step, change_digest, boundary, blob, ts),
             )
+            new = cur.rowcount == 1
+            if not new:
+                con.execute(
+                    "UPDATE mission_approval_refusals SET created_at=MAX(created_at, ?) "
+                    "WHERE mission_id=? AND approval_id=? AND step=? AND change_digest=?",
+                    (ts, mission_id, approval_id, step, change_digest),
+                )
             con.execute("COMMIT")
-            return cur.rowcount == 1
+            return new
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 con.execute("ROLLBACK")

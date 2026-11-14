@@ -513,6 +513,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # everything it uses is still up.
             with contextlib.suppress(Exception):
                 await missions_routes.drain_turns()
+            # …and the plan runner's step launches in flight (#1951): each claim is joined to its
+            # launch; one cut short is settled by startup recovery, never re-sent.
+            with contextlib.suppress(Exception):
+                from . import mission_runner
+
+                await mission_runner.drain()
             # A call in progress ends first (#1397): its worker is a child process of this one.
             with contextlib.suppress(Exception):
                 await voice_calls.REGISTRY.end_all("server_stopping")

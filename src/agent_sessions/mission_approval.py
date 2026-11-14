@@ -378,8 +378,24 @@ def _objective_reasons(opin: dict, facts: Facts) -> list[dict]:
     return out
 
 
-def _step_reasons(spin: dict, doc: dict, ctx: team.Context) -> list[dict]:
+#: `qualify` codes a reason keeps as its `cause`: they say the pick's CLIENT can't run it (out of
+#: quota, or not mission-ready), which is when an approved alternate may launch instead (D6). The
+#: refusal's key ignores the cause.
+SWITCH_CAUSES = frozenset({"usage_exhausted", "engine_not_mission_ready"})
+
+
+def _cause(reason: dict, qualify_code: str) -> dict:
+    if qualify_code in SWITCH_CAUSES:
+        reason["cause"] = qualify_code
+    return reason
+
+
+def _step_reasons(
+    spin: dict, doc: dict, ctx: team.Context, *, alternate: int | None = None
+) -> list[dict]:
     sid = spin["id"]
+    if alternate is not None:
+        return _alternate_reasons(spin, doc, ctx, alternate)
     pinned = spin["specialist"]
     name = pinned["id"]
     versions = team._versions(ctx)
@@ -428,8 +444,79 @@ def _step_reasons(spin: dict, doc: dict, ctx: team.Context) -> list[dict]:
                 "old": (step.get("role") or {}).get("min_grade"),
                 "new": team.grade_of(ctx, eff.get("engine") or "", eff.get("model")),
             }
-        out.append(_r(code, reason["text"], step=sid, **extra))
+        out.append(_cause(_r(code, reason["text"], step=sid, **extra), reason["code"]))
     return out
+
+
+def _alternate_reasons(spin: dict, doc: dict, ctx: team.Context, index: int) -> list[dict]:
+    """The re-check of approved alternate `index` of a pinned step, launched in its pick's place
+    (D6, #1951 slice B): its OWN pin, on its own effective model, through the same predicate. An
+    alternate the approval did not enumerate is never covered (fail closed)."""
+    sid = spin["id"]
+    alts = spin.get("alternates") or []
+    if not 0 <= index < len(alts):
+        return [_r("approval_revoked", f"this approval covers no alternate {index + 1}", step=sid)]
+    pinned = alts[index]
+    name = pinned["id"]
+    versions = team._versions(ctx)
+    cur = versions.get(name)
+    out: list[dict] = []
+    if cur is None or cur.get("archived"):
+        out.append(_r("specialist_archived", f"{name} is archived", step=sid))
+    elif cur.get("version") != pinned["version"]:
+        out.append(
+            _r(
+                "specialist_version_changed",
+                f"{name} changed from v{pinned['version']} to v{cur.get('version')}",
+                step=sid,
+                old=f"v{pinned['version']}",
+                new=f"v{cur.get('version')}",
+            )
+        )
+    step = next((s for s in doc["steps"] if s["id"] == sid), None)
+    a = (step or {}).get("envelope", {}).get("assignment")
+    listed = [dict(x["specialist"]) for x in (a or {}).get("alternates") or []]
+    v = team.version_of(ctx, pinned, versions)
+    if step is None or pinned not in listed or v is None:
+        if not out:
+            out.append(_r("specialist_archived", f"{name} v{pinned['version']} is gone", step=sid))
+        return out
+    eff = team.own_effective(v)
+    for reason in team.qualify(step, v, eff, ctx)["reasons"]:
+        code = _QUALIFY_MAP.get(reason["code"], "model_unavailable")
+        if code == "specialist_archived" and any(r["code"] == code for r in out):
+            continue
+        extra = {}
+        if code in ("grade_below_min", "ungraded"):
+            extra = {
+                "old": (step.get("role") or {}).get("min_grade"),
+                "new": team.grade_of(ctx, eff.get("engine") or "", eff.get("model")),
+            }
+        out.append(_cause(_r(code, reason["text"], step=sid, **extra), reason["code"]))
+    return out
+
+
+def effect_reasons(approval: dict, doc: dict, step: str) -> list[dict]:
+    """The pins that can still move between a launch's preflight and its effects, outside the
+    store and outside the specialist (#1951 slice B, Hermes 128628): the step's objective (its
+    project, procedure and deployment) and that project's equipment, read NOW. Blocking, and no
+    client is asked (the write fence's rule: cheap reads only); the specialist version and its
+    grade are `mission_steps.fence_verdict`'s own reads. `[]` when nothing moved."""
+    here = next((s for s in doc["steps"] if s["id"] == step), None)
+    if here is None:
+        return [_r("plan_revision_superseded", f"step {step} is not in this plan")]
+    p = approval["pins"]
+    opin = next((o for o in p["objectives"] if o["id"] == here["objective"]), None)
+    if opin is None:
+        return [
+            _r("approval_revoked", f"this approval does not cover objective {here['objective']}")
+        ]
+    facts = read_facts({"objectives": [o for o in doc["objectives"] if o["id"] == opin["id"]]})
+    pid = opin["project"]
+    now = (facts.projects.get(pid) or {}).get("equipment")
+    return _objective_reasons(opin, facts) + _equipment_reasons(
+        pid, p["equipment"].get(pid, []), now
+    )
 
 
 def recheck(
@@ -440,10 +527,12 @@ def recheck(
     facts: Facts,
     *,
     step: str | None = None,
+    alternate: int | None = None,
 ) -> dict:
     """Re-resolve every pin of `approval` against the state now (`doc` is the LATEST plan at
     `revision`). `step` narrows the step checks to one step (its objective and project are always
-    checked); None checks the whole plan. `{ok, reasons[]}`; codes from `CODES`."""
+    checked); None checks the whole plan. `alternate` (with `step`) checks that approved alternate
+    in place of the pick, as its launch does. `{ok, reasons[]}`; codes from `CODES`."""
     p = approval["pins"]
     reasons: list[dict] = []
     if approval.get("revoked_at") is not None:
@@ -484,18 +573,54 @@ def recheck(
             )
         )
     for spin in steps:
-        reasons.extend(_step_reasons(spin, doc, ctx))
+        reasons.extend(_step_reasons(spin, doc, ctx, alternate=alternate))
     return {"ok": not reasons, "reasons": reasons}
 
 
-def change_digest(approval: dict, step: str, reasons: list[dict]) -> str:
-    """What a refusal is deduplicated on: the approval, the step and exactly what changed."""
+#: A refusal's class in the server's words (#1951 slice B: the board's refused state and the
+#: unwatched notification). A class, never model text or a value.
+_CLASS_TEXT = {
+    "grade_below_min": "its model's grade dropped below the step's minimum",
+    "ungraded": "its model is no longer graded",
+    "model_unavailable": "its model is not available",
+    "approval_revoked": "the approval does not cover it any more",
+    "approval_expired": "the approval expired",
+    "project_unavailable": "its project is not available",
+}
+_CHANGED_TEXT = "the plan changed since you approved it"
+
+
+def class_text(reasons: list[dict]) -> str:
+    """What kind of change refused a boundary, in the server's words."""
+    for r in reasons:
+        if r.get("code") in _CLASS_TEXT:
+            return _CLASS_TEXT[r["code"]]
+    return _CHANGED_TEXT
+
+
+def change_digest(
+    approval: dict,
+    step: str,
+    reasons: list[dict],
+    *,
+    alternate: int | None = None,
+    boundary: str | None = None,
+    episode: int | None = None,
+) -> str:
+    """What a refusal is deduplicated on: the approval, the step (and the alternate it would have
+    launched), exactly what changed, and (#1951 slice B) the boundary and the step's episode, so a
+    gate refusal never swallows a later launch's, and a change that comes back after the step ran
+    again is a new decision (independent review of #2019)."""
     core = [
         [r["code"], r.get("step"), r.get("old"), r.get("new")]
         + ([] if r.get("old") is not None or r.get("new") is not None else [r["text"]])
         for r in reasons
     ]
-    return digest([approval["digest"], step, sorted(core, key=json.dumps)])
+    where = step if alternate is None else [step, alternate]
+    key: list = [approval["digest"], where, sorted(core, key=json.dumps)]
+    if boundary is not None or episode is not None:
+        key.append([boundary, episode])
+    return digest(key)
 
 
 # ---- the card: the pins in plain words -----------------------------------------------------------
@@ -820,18 +945,23 @@ def admit(
     boundary: str,
     *,
     consent_id: str | None = None,
+    alternate: int | None = None,
     now: float | None = None,
 ) -> dict:
     """THE boundary check (#1951 §2): may `step` of `mission_id` launch (or its gate take effect)
     under the approval in force? Reads the state fresh, re-checks every pin, and on a refusal
     records it once per (step, what changed). Blocking. Returns `{ok, reasons, approval_id,
-    new}`; `new` says whether this refusal was not recorded before (the one decision).
+    new, change}`; `new` says whether this refusal was not recorded before (the one decision), and
+    `change` is its key (`change_digest`), None when admitted.
 
-    A `consent` boundary must also name a standing consent that still covers the launch."""
+    A `consent` boundary must also name a standing consent that still covers the launch. An
+    `alternate` launch (D6) is checked on that approved alternate's own pin (slice B)."""
     from . import missions
 
     if boundary not in BOUNDARIES or boundary == "read":
         raise ValueError(f"unknown boundary {boundary!r}")
+    if alternate is not None and (type(alternate) is not int or alternate < 0):
+        raise ValueError("alternate must be an index")
     approval = missions.approval(mission_id)
     if approval is None or approval.get("revoked_at") is not None:
         text = "no plan approval is in force" if approval is None else "the approval was revoked"
@@ -840,12 +970,13 @@ def admit(
             "reasons": [_r("approval_revoked", text, step=step)],
             "approval_id": None if approval is None else approval["id"],
             "new": False,
+            "change": None,
         }
     latest = missions.plan_revision(mission_id)
     doc, revision = latest["document"], latest["revision"]
     ctx = context_for(doc)
     facts = read_facts(doc)
-    check = recheck(approval, doc, revision, ctx, facts, step=step)
+    check = recheck(approval, doc, revision, ctx, facts, step=step, alternate=alternate)
     reasons = list(check["reasons"])
     if boundary == "consent":
         c = missions.consent(mission_id, consent_id) if consent_id else None
@@ -858,17 +989,34 @@ def admit(
                 r for r in verdict["reasons"] if (r["code"], r.get("step"), r["text"]) not in seen
             ]
     if not reasons:
-        return {"ok": True, "reasons": [], "approval_id": approval["id"], "new": False}
+        return {
+            "ok": True,
+            "reasons": [],
+            "approval_id": approval["id"],
+            "new": False,
+            "change": None,
+        }
+    # The step's episode count: a launch is for the next episode, a gate for the latest one.
+    episode = sum(1 for r in missions.step_runs(mission_id) if r["step_id"] == step)
+    change = change_digest(
+        approval, step, reasons, alternate=alternate, boundary=boundary, episode=episode
+    )
     new = missions.record_refusal(
         mission_id,
         approval_id=approval["id"],
         step=step,
-        change_digest=change_digest(approval, step, reasons),
+        change_digest=change,
         boundary=boundary,
         reasons=reasons,
         now=now,
     )
-    return {"ok": False, "reasons": reasons, "approval_id": approval["id"], "new": new}
+    return {
+        "ok": False,
+        "reasons": reasons,
+        "approval_id": approval["id"],
+        "new": new,
+        "change": change,
+    }
 
 
 __all__ = [
@@ -879,9 +1027,11 @@ __all__ = [
     "ApprovalRefused",
     "Facts",
     "admit",
+    "class_text",
     "consent_scope",
     "consent_verdict",
     "digest",
+    "effect_reasons",
     "lines",
     "pins",
     "read_facts",

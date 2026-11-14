@@ -7,6 +7,11 @@
  * **Redirect** (one message into a running step's session, through the session's own route). The
  * budget meter shows turns and time; a `paused: budget` hold offers to raise the cap.
  *
+ * **Under a plan approval** (#1951 slice B; mockups `docs/mockups/plan-approval-1951-b/`): HQ's
+ * runner starts the ready steps (the head says so, each run says who started it), a launch the
+ * approval refused shows as **refused** with old → new, and **Ask me before this step starts**
+ * holds one step for the operator's own Start.
+ *
  * **The client decides nothing.** Every state, reason and number is server text from
  * `GET …/steps`. Nothing here starts anything on its own: HQ never sees a Start.
  */
@@ -19,6 +24,7 @@ import type {
   MissionBudget,
   MissionStep,
   MissionSteps,
+  StepRefusal,
   StepRun,
 } from "../../types/missionSteps";
 import action from "../ui/actionButton.module.css";
@@ -61,10 +67,14 @@ function stateOf(step: MissionStep): {
       tone: last.state === "unknown" ? "warn" : "live",
     };
   }
+  // A launch the plan approval refused before anything was claimed (#1951 slice B).
+  if (step.refusal && step.derived !== "done")
+    return { word: "refused", tone: "warn" };
   if (last && (last.state === "refused" || last.state === "failed")) {
     if (step.derived !== "done") return { word: last.state, tone: "warn" };
   }
   if (step.derived === "done") return { word: "done", tone: "live" };
+  if (step.hold_text) return { word: "held", tone: "" };
   if (step.derived === "failed") return { word: "failed", tone: "warn" };
   return { word: step.derived, tone: "" };
 }
@@ -88,8 +98,56 @@ function RunLine({ run }: { run: StepRun }) {
       {run.use_kind === "alternate" && run.use_reason
         ? ` · alternate: ${run.use_reason}`
         : ""}
+      {run.started_by ? ` · ${run.started_by}` : ""}
       {run.detail ? ` · ${run.detail}` : ""}
     </p>
+  );
+}
+
+function shown(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.map(shown).join(", ");
+  if (typeof v === "object") {
+    const o = v as { model?: unknown };
+    return o.model ? String(o.model) : JSON.stringify(v);
+  }
+  return String(v);
+}
+
+function clock(at: number): string {
+  return new Date(at * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** A refused launch's one decision on its step (frame 7): what changed, old → new, its code. */
+function RefusalLine({ refusal }: { refusal: StepRefusal }) {
+  return (
+    <div className={styles.why} data-testid="step-refusal">
+      <p className={styles.rtext}>
+        Checked at {refusal.boundary} {clock(refusal.at)}. {refusal.text}
+      </p>
+      <ul className={styles.changes}>
+        {refusal.reasons.map((r, i) => (
+          <li key={`${r.code}-${i}`}>
+            {r.old !== undefined || r.new !== undefined ? (
+              <>
+                <span className={styles.sr}>changed from </span>
+                <s>{shown(r.old)}</s>
+                <span className={styles.arrow} aria-hidden="true">
+                  {" → "}
+                </span>
+                <span className={styles.sr}>changed to </span>
+                {shown(r.new)}
+                {": "}
+              </>
+            ) : null}
+            {r.text} <span className={styles.code}>{r.code}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -266,12 +324,23 @@ export function MissionStepsCard({
           revision {data.revision}
           {conc ? ` · ${conc.open} of ${conc.cap} running` : ""}
         </span>
+        {data.approval && data.runner ? (
+          <span className={styles.auth} data-testid="steps-under-approval">
+            under your approval
+          </span>
+        ) : null}
       </div>
-      <p className={styles.tsum}>
-        Each agent step runs in its own API session, started by you. At most{" "}
-        {conc?.cap ?? 2} at once; steps that share a folder take turns. Every
-        tool request still asks you.
-      </p>
+      {data.runner ? (
+        <p className={styles.tsum} data-testid="steps-runner">
+          {data.runner} Every tool request still asks you.
+        </p>
+      ) : (
+        <p className={styles.tsum}>
+          Each agent step runs in its own API session, started by you. At most{" "}
+          {conc?.cap ?? 2} at once; steps that share a folder take turns. Every
+          tool request still asks you.
+        </p>
+      )}
       {data.budget ? (
         <div className={styles.side} data-testid="steps-controls">
           {data.budget.hold === "operator" || data.budget.stopping ? (
@@ -283,7 +352,9 @@ export function MissionStepsCard({
               <b>{data.budget.stopping ? "STOPPING" : "PAUSED"}</b>
               {data.budget.stopping
                 ? "By you. Every open step is stopped as soon as it can be, and nothing new starts. Continue cancels the stop."
-                : "By you. No new step or automatic turn starts. Continue lets automatic nudges resume; steps still start only on your tap."}
+                : data.runner
+                  ? "By you. No new step or automatic turn starts. Continue lets automatic nudges resume, and HQ starts ready steps again under your approval."
+                  : "By you. No new step or automatic turn starts. Continue lets automatic nudges resume; steps still start only on your tap."}
             </p>
           ) : null}
           {data.budget.hold === "operator" || data.budget.stopping ? (
@@ -349,6 +420,20 @@ export function MissionStepsCard({
           {note}
         </p>
       ) : null}
+      {data.steps
+        .filter((s) => s.refusal && s.derived !== "done")
+        .map((s) => (
+          <p
+            key={`refused-${s.id}`}
+            className={styles.alert}
+            role="status"
+            data-testid="steps-refused"
+          >
+            <b>REFUSED</b>
+            {s.id}: {(s.refusal as StepRefusal).text}{" "}
+            {(s.refusal as StepRefusal).remedy ?? ""}
+          </p>
+        ))}
       {assigned === 0 ? (
         <p className={styles.tsum} data-testid="steps-empty">
           <b>No agent step can start yet.</b> {agent.length} agent step
@@ -446,6 +531,19 @@ export function MissionStepsCard({
                 </div>
               ) : null}
               {last ? <RunLine run={last} /> : null}
+              {s.refusal && s.derived !== "done" ? (
+                <RefusalLine refusal={s.refusal} />
+              ) : null}
+              {s.runner_text ? (
+                <p className={styles.why} data-testid="step-runner-done">
+                  {s.runner_text}
+                </p>
+              ) : null}
+              {s.hold_text ? (
+                <p className={styles.why} data-testid="step-held">
+                  {s.hold_text}
+                </p>
+              ) : null}
               {s.actor === "agent" &&
               s.why_not &&
               !lastOpen &&
@@ -463,6 +561,26 @@ export function MissionStepsCard({
               s.derived === "ready" &&
               !lastOpen ? (
                 <p className={styles.why}>in {s.cwd}</p>
+              ) : null}
+              {s.actor === "agent" &&
+              data.approval &&
+              s.derived !== "done" &&
+              !lastOpen ? (
+                <label className={styles.hold}>
+                  <input
+                    type="checkbox"
+                    checked={!!s.held}
+                    disabled={busy}
+                    data-testid="step-hold"
+                    onChange={(e) => {
+                      const hold = e.currentTarget.checked;
+                      void act(async () => {
+                        await api.holdStep(missionId, s.id, hold);
+                      });
+                    }}
+                  />
+                  Ask me before this step starts
+                </label>
               ) : null}
             </li>
           );

@@ -2978,6 +2978,13 @@ export const api = {
       `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/start`,
       body,
     ),
+  /** "Ask me before this step starts" (#1951 slice B): the operator's own hold on one step. */
+  holdStep: (missionId: string, stepId: string, hold: boolean) =>
+    mutateJson<{ step_id: string; held: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/hold`,
+      { hold },
+    ),
   stopStep: (missionId: string, stepId: string, episode: number) =>
     mutateJson<{ run: StepRun }>(
       "POST",

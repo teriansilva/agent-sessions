@@ -40,7 +40,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import missions, model_grades, prefs, projects, scopedspawn, session_input
+from . import mission_approval, missions, model_grades, prefs, projects, scopedspawn, session_input
 
 log = logging.getLogger(__name__)
 
@@ -82,8 +82,8 @@ class Use:
 
 OPERATOR = Authority()
 PRIMARY = Use()
-#: `mission_approval.admit`'s shape: ``(mission_id, step_id, boundary, *, consent_id)`` →
-#: ``{ok, reasons, approval_id, new}``.
+#: `mission_approval.admit`'s shape: ``(mission_id, step_id, boundary, *, consent_id, alternate)``
+#: → ``{ok, reasons, approval_id, new, change}``.
 Admit = Callable[..., dict]
 
 
@@ -336,8 +336,9 @@ def fence_verdict(plan_id: str) -> str | None:
     `claimed`, the revision still the latest, a bound approval or consent still in force), then the
     facts outside the store that can change in the window since the preflight: the specialist
     version still exists and is not archived, is still the CURRENT one when an approval is bound
-    (D-P6-1), and its model still meets the step's minimum grade. Cheap reads only (no client is
-    asked). Fails closed."""
+    (D-P6-1), and its model still meets the step's minimum grade; with an approval bound, also its
+    objective's project, procedure and deployment and the project's equipment (#1951 slice B).
+    Cheap reads only (no client is asked). Fails closed."""
     from . import specialists_store as store
 
     why = missions.step_launch_verdict(plan_id)
@@ -352,8 +353,19 @@ def fence_verdict(plan_id: str) -> str | None:
         step = next(x for x in latest["document"]["steps"] if x["id"] == run["step_id"])
         need = (step.get("role") or {}).get("min_grade")
         got = _grade_now(version["engine"], version.get("model")) if need else None
+        moved: list[dict] = []
+        if run["approval_id"] is not None:
+            # EVERY OTHER MUTABLE PIN (#1951 slice B, Hermes 128628): the objective's project,
+            # procedure and deployment, and the project's equipment, re-read at each effect.
+            approval = missions.approval(run["mission_id"])
+            moved = mission_approval.effect_reasons(approval, latest["document"], run["step_id"])
     except Exception:  # noqa: BLE001 — an unreadable fact is not permission
         return "what this step starts as could not be re-read, so nothing was started"
+    if moved:
+        return (
+            f"{mission_approval.class_text(moved)} while the step was being started "
+            f"({moved[0]['text']}), so nothing was started"
+        )
     if current.get("archived"):
         return f"{sid} was archived while the step was being started, so nothing was started"
     if (
@@ -397,19 +409,20 @@ async def start_step(
     policy_epoch = session_input.policy_fingerprint()
     _launch_fences()
     await reconcile(mission_id)
-    facts = await asyncio.to_thread(launch_facts, mission_id, step_id, revision=revision, use=use)
-    if expect_cwd is not None and expect_cwd != facts["cwd"]:
-        raise StepRefused(
-            "cwd_moved", "that project now resolves somewhere else; read the steps again"
-        )
+    # THE ADMISSION FIRST (#1951 slice B): an approved launch is refused by the approval's own
+    # re-check, recorded once per change with its closed codes, before the launch facts are read,
+    # so no refusal of a launch nobody tapped goes unrecorded (a stale or archived specialist
+    # would otherwise be refused by the team's predicate alone, silently).
     approval_id: str | None = None
     if admit is not None:
         boundary = "consent" if authority.kind == "consent" else "launch"
-        verdict = await asyncio.to_thread(
-            lambda: admit(mission_id, step_id, boundary, consent_id=authority.consent_id)
-            if authority.consent_id
-            else admit(mission_id, step_id, boundary)
-        )
+        # An approved alternate (D6) is admitted on ITS OWN pin, never the pick's (#1951 B).
+        akw: dict = {}
+        if authority.consent_id:
+            akw["consent_id"] = authority.consent_id
+        if use.kind == "alternate":
+            akw["alternate"] = use.index
+        verdict = await asyncio.to_thread(lambda: admit(mission_id, step_id, boundary, **akw))
         if not verdict.get("ok"):
             # Recorded by the admission itself, once per (step, what changed): nothing claimed.
             raise StepRefused(
@@ -418,8 +431,15 @@ async def start_step(
                 or "the launch was not admitted",
                 reasons=verdict.get("reasons") or [],
                 new=bool(verdict.get("new")),
+                change=verdict.get("change"),
+                approval_id=verdict.get("approval_id"),
             )
         approval_id = verdict.get("approval_id")
+    facts = await asyncio.to_thread(launch_facts, mission_id, step_id, revision=revision, use=use)
+    if expect_cwd is not None and expect_cwd != facts["cwd"]:
+        raise StepRefused(
+            "cwd_moved", "that project now resolves somewhere else; read the steps again"
+        )
 
     def claim() -> dict:
         return missions.claim_step(
@@ -791,10 +811,43 @@ _PUBLIC = (
 )
 
 
+#: Who started a run, in the board's words (server text).
+STARTED_BY = {
+    "operator": "started by you",
+    "approval": "started by HQ under your approval",
+    "consent": "started by an automation under your standing consent",
+}
+
+
 def public_run(run: dict) -> dict:
     out = {k: run.get(k) for k in _PUBLIC}
     out["specialist"] = {"id": run["specialist_id"], "version": int(run["specialist_version"])}
+    out["started_by"] = STARTED_BY.get(str(run.get("authority") or ""), "")
     return out
+
+
+def _refusal_view(refusals: list[dict], runs: list[dict], state: str = "") -> dict | None:
+    """A step's standing refusal under the approval in force (#1951 slice B, D-P6-8): the newest
+    recorded one, unless the step started since. Server text and the closed codes only."""
+    if not refusals:
+        return None
+    last = refusals[-1]
+    if any(float(r.get("created_at") or 0) > float(last["created_at"]) for r in runs):
+        return None
+    reasons = [{k: r[k] for k in ("code", "text", "old", "new") if k in r} for r in last["reasons"]]
+    return {
+        "boundary": last["boundary"],
+        "at": last["created_at"],
+        "codes": sorted({r["code"] for r in reasons}),
+        "reasons": reasons,
+        "text": f"Not started: {mission_approval.class_text(reasons)}. Nothing was reserved, "
+        "given or started. HQ asks once per change.",
+        # The remedy by the mission's state: a plan can be approved again only before it runs.
+        "remedy": "Approve the plan again to let HQ go on, or start the step yourself."
+        if state in ("draft", "planned")
+        else "Start the step yourself, or stop the mission: a running mission's plan can't be "
+        "approved again.",
+    }
 
 
 def _why_not(mission: dict, step: dict, derived: str, runs: list[dict], open_n: int) -> str | None:
@@ -839,6 +892,17 @@ def view_sync(mission_id: str) -> dict:
     switched_off = not cfg.get("enabled") or str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]
     budget = missions.budget(mission_id)
     held = "stopping" if (budget or {}).get("stopping") else (budget or {}).get("hold")
+    # UNDER AN APPROVAL IN FORCE (#1951 slice B): who starts the ready steps, the operator's
+    # per-step holds, and each step's standing refusal.
+    approval = missions.approval(mission_id)
+    if approval is not None and approval.get("revoked_at") is not None:
+        approval = None
+    holds = missions.step_holds(mission_id)
+    refusals: dict[str, list[dict]] = {}
+    if approval is not None:
+        for r in missions.refusals(mission_id):
+            if r["approval_id"] == approval["id"] and r["boundary"] != "gate":
+                refusals.setdefault(r["step"], []).append(r)
     steps = []
     for s in doc["steps"]:
         mine = [r for r in runs if r["step_id"] == s["id"]]
@@ -866,6 +930,14 @@ def view_sync(mission_id: str) -> dict:
                 "operator": "the mission is paused",
                 "stopping": "the mission is being stopped",
             }.get(held, "the budget is spent")
+        on_hold = s["id"] in holds
+        # HQ STARTS EACH STEP ONCE under an approval (#1951; independent reviews of #2019): a step
+        # that has run at all, whoever started it (the operator's Start included) and under
+        # whichever approval, is never started again by the runner. A run that ended without its
+        # evidence (a Stop, a failed launch, a lost session) is the operator's to restart. A
+        # refused create started nothing and does not count. The claim enforces the same rule
+        # (`already_ran`); rework reopens are the only further episodes (bounded rework, §4).
+        ran = approval is not None and any(r["state"] != "refused" for r in mine)
         steps.append(
             {
                 "id": s["id"],
@@ -878,15 +950,68 @@ def view_sync(mission_id: str) -> dict:
                 "cwd": cwd,
                 "can_start": why is None,
                 "why_not": why,
+                "held": on_hold,
+                "hold_text": (
+                    "Ready, and waiting for you: you asked to be asked before it starts."
+                    if on_hold and why is None and approval is not None
+                    else None
+                ),
+                "runner_done": ran,
+                "runner_text": (
+                    "This step has run already, and HQ starts a step only once; start it again "
+                    "yourself."
+                    if ran
+                    and derived not in ("done",)
+                    and not any(r["state"] in missions.OPEN_STEP_STATES for r in mine)
+                    else None
+                ),
+                "refusal": _refusal_view(
+                    refusals.get(s["id"], []), mine, str(mission.get("state") or "")
+                ),
                 "runs": [public_run(r) for r in mine],
             }
         )
+    runner = None
+    from . import mission_runner  # at call time: it imports this module
+
+    if approval is not None and not mission_runner.runs():
+        # A host kill switch (`AGENT_SESSIONS_MISSION_RUNNER=0` or
+        # `AGENT_SESSIONS_MISSION_SUPERVISOR=0`): only the runner is off, never the operator's
+        # Start.
+        runner = (
+            "HQ starts no step: starting steps by itself is switched off on this host. Start "
+            "steps yourself."
+        )
+    elif approval is not None and switched_off:
+        runner = (
+            "HQ starts no step while orchestration or its autonomy is off; start steps yourself, "
+            "or turn orchestration on."
+        )
+    elif approval is not None:
+        runner = (
+            f"HQ starts each agent step of revision {latest['revision']} when it is ready, on its "
+            "approved specialist, after checking the approval again. A step you hold waits for "
+            "your Start."
+            if int(approval["revision"]) == int(latest["revision"])
+            else f"Your approval covers revision {approval['revision']}, and the plan is at "
+            f"revision {latest['revision']}, so HQ starts no step. "
+            + (
+                "Approve it again to let HQ start steps."
+                if mission.get("state") in ("draft", "planned")
+                else "Start each step yourself; a running mission's plan can't be approved again."
+            )
+        )
     return {
         "mission_id": mission_id,
+        "title": mission.get("title"),
         "mission_state": mission.get("state"),
         "revision": latest["revision"],
         "concurrency": {"open": open_n, "cap": missions.STEP_CONCURRENCY},
         "budget": budget,
+        "approval": None
+        if approval is None
+        else {"id": approval["id"], "revision": int(approval["revision"])},
+        "runner": runner,
         "steps": steps,
     }
 
@@ -905,6 +1030,7 @@ __all__ = [
     "reconcile",
     "resolve_dir",
     "run_of_session",
+    "STARTED_BY",
     "start_step",
     "stop_step",
     "view_sync",

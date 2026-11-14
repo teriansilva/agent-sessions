@@ -1,0 +1,50 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1951 slice B · rework and lost access</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1951 slice B · bounded rework, a session that lost its access</h1>
+<p class="sub">Frames 8, 8b and 9. Rework reopens a step as a new episode, in a new session, inside the bound the approval states (up to 1 + 3 runs of o1.cv). Past the bound HQ asks one question and starts nothing.</p>
+<div class="board">
+
+<div><div class="label">8B · REWORK INSIDE THE BOUND — A NEW EPISODE</div>
+<section class="frame">
+ <div class="run">
+  <ul class="steps">
+   <li class="step run-live"><div class="sline"><span class="led"></span><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="st live">running</span><span class="round">rework 2 of 3</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Stop step…</button></div>
+    <p class="why">The review asked for changes (o1.review, episode 2). <b>cv-writer v2</b> · episode 3 · a new session · started by HQ under your approval. Episode 2's evidence does not count for this one.</p></li>
+   <li class="step"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="st">waiting</span></div>
+    <p class="why">Runs again as episode 3 once o1.cv is done.</p></li>
+  </ul>
+ </div>
+</section></div>
+
+<div><div class="label">8 · REWORK EXHAUSTED — ONE QUESTION, NOTHING LAUNCHED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="run">
+  <p class="alert"><b>QUESTION</b>The review asked for changes a 4th time. Your approval covers 3 rework rounds (o1.review → o1.cv), so HQ started nothing.</p>
+  <ul class="pins">
+   <li class="pin"><span class="k">round 4 of 3</span><span class="v">o1.review, episode 4: “The review passes” not met</span><span class="b code">rework_exhausted</span></li>
+  </ul>
+  <p class="tsum">Start o1.cv yourself for another round (your tap, outside the approval), or stop the mission. HQ asks this once.</p>
+  <div class="ctl"><button class="nj-plate btn ghost">Stop mission…</button><button class="nj-plate btn ghost">Open the review</button><button class="nj-plate btn primary">Start o1.cv myself</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">9 · A SESSION LOST ITS ACCESS AFTER A RESTART</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="run">
+  <p class="alert"><b>ACCESS REVOKED</b>BattleLab restarted and could not prove o1.cv's session was still live, so its equipment was revoked: secret GITHUB_TOKEN, project memory. The session was not stopped.</p>
+  <ul class="steps">
+   <li class="step run-bad"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="st warn">no access</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Open session</button><button class="nj-plate btn primary">Stop step…</button></div>
+    <p class="why"><a class="sess" href="#">claude-api:9a41…2c7b</a> keeps running without its equipment. Stop it; Start step then runs a new episode with new grants after a new reservation. No turn is replayed.</p></li>
+  </ul>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

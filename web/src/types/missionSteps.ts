@@ -24,6 +24,19 @@ export type StepRun = {
   updated_at: number;
   ended_at: number | null;
   specialist: { id: string; version: number };
+  /** Who started it, in the server's words (#1951 slice B). */
+  started_by?: string;
+};
+
+/** A launch the plan approval refused (#1951 slice B): nothing was reserved, given or started. */
+export type StepRefusal = {
+  boundary: string;
+  at: number;
+  codes: string[];
+  reasons: { code: string; text: string; old?: unknown; new?: unknown }[];
+  text: string;
+  /** What the operator can do, by the mission's state (server text). */
+  remedy?: string;
 };
 
 export type StepAssignment = {
@@ -45,6 +58,12 @@ export type MissionStep = {
   cwd: string | null;
   can_start: boolean;
   why_not: string | null;
+  /** "Ask me before this step starts" (#1951 slice B). */
+  held?: boolean;
+  hold_text?: string | null;
+  refusal?: StepRefusal | null;
+  /** HQ already started this step under the approval and won't again (server text). */
+  runner_text?: string | null;
   runs: StepRun[];
 };
 
@@ -69,5 +88,8 @@ export type MissionSteps = {
   revision: number | null;
   concurrency: { open: number; cap: number } | null;
   budget?: MissionBudget | null;
+  /** The plan approval in force, and who starts the ready steps under it (#1951 slice B). */
+  approval?: { id: string; revision: number } | null;
+  runner?: string | null;
   steps: MissionStep[];
 };

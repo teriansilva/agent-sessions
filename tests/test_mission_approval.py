@@ -864,3 +864,68 @@ def test_approvals_consents_and_refusals_leave_with_their_mission(live):
             assert con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table  # noqa: S608
     finally:
         con.close()
+
+
+# ---- refusal notices leave with the approval they were raised under (#1951 slice B) --------------
+
+
+def _notice(mid: str, approval_id: str, step: str, change: str) -> str:
+    from agent_sessions import mission_runner, notifications
+
+    missions.record_refusal(
+        mid,
+        approval_id=approval_id,
+        step=step,
+        change_digest=change,
+        boundary="launch",
+        reasons=[{"code": "grade_below_min", "text": "graded fast"}],
+    )
+    key = mission_runner.notice_key(approval_id, change)
+    assert notifications.add(
+        title="Mission step not started: Apply",
+        project="",
+        session_id="",
+        engine="",
+        reason=f"{step}: x",
+        action_id=key,
+    )
+    return key
+
+
+def _notices() -> set[str]:
+    from agent_sessions import notifications
+
+    return {
+        str(r.get("action_id") or "")
+        for r in notifications.listing()["notifications"]
+        if str(r.get("action_id") or "").startswith("mission-refusal:")
+    }
+
+
+@pytest.mark.parametrize("how", ["revoke", "re-approve"])
+def test_a_refusal_notice_is_retracted_when_its_approval_stops_being_in_force(app, how):
+    """Independent re-review of #2019: revoking, or approving again (which supersedes), retracts
+    every refusal notice raised under the approval that is no longer in force, through the
+    route; one raised under the approval in force stays."""
+    first = _approve(app).json()["id"]
+    old = _notice(app["mid"], first, "o1.cv", "sha256:" + "1" * 64)
+    assert _notices() == {old}
+    if how == "revoke":
+        url = f"/api/missions/{app['mid']}/plan/approval/revoke"
+        r = app["c"].post(url, json={"approval_id": first}, headers=app["hdr"])
+        assert r.status_code == 200, r.text
+        assert _notices() == set(), "a revoked approval's refusal notice outlived it"
+        return
+    store_plan(app["mid"], assembled())  # a new revision to approve
+    r = _approve(app)
+    assert r.status_code == 200, r.text
+    second = r.json()["id"]
+    assert second != first
+    assert _notices() == set(), "a superseded approval's refusal notice outlived it"
+    live = _notice(app["mid"], second, "o1.cv", "sha256:" + "2" * 64)
+    from agent_sessions import mission_runner
+
+    mission_runner.retract_sync(app["mid"])
+    assert _notices() == {live}, "a refusal under the approval in force was retracted"
+    mission_runner.retract_sync(app["mid"], step_id="o1.cv")  # the step started
+    assert _notices() == set()
