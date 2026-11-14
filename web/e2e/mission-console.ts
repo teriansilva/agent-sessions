@@ -109,6 +109,11 @@ export async function mockMissions(
   await page.route("**/api/missions/*/plan/team**", (r) =>
     r.fulfill({ json: opts.team ?? { revision: null, team: null } }),
   );
+  // The running board (#1581): no plan unless a spec says otherwise. After the catch-all, so a
+  // board read (it polls) is never answered with, or counted as, a LIST read.
+  await page.route("**/api/missions/*/steps", (r) =>
+    r.fulfill({ json: { mission_id: "msn_1", revision: null, concurrency: null, steps: [] } }),
+  );
   // Plan approval (#1951): nothing to approve unless a spec says otherwise. After the catch-all.
   await page.route("**/api/missions/*/plan/approval", (r) =>
     r.fulfill({

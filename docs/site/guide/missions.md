@@ -148,9 +148,34 @@ the playbook's own operator steps, still come to you every time.
   plan voids it; you can revoke it at any time. Approving or importing a plan never creates one.
   No automation uses it yet.
 
-HQ cannot approve a plan, give consent or revoke either. Launching the approved steps one session
-per step arrives with the step runner; until then the approval is recorded and checked, and
-missions start as before.
+HQ cannot approve a plan, give consent or revoke either. HQ starting the approved steps by itself
+comes later; today you start each step yourself on the Steps card.
+
+## Steps — one session per agent step
+
+Under the approval card, the **Steps** card lists every step of the plan. Each agent step runs in
+**its own API session**, started from its specialist (its agent, model, effort and skills) in its
+project's folder.
+
+- **Start step** starts a step that is ready, when every step before it is done. The card sends
+  the plan revision and the folder it showed; if either moved, nothing starts and you read it
+  again. No permission bypass applies: every tool request still asks you.
+- **At most two steps run at once** in a mission. Two steps that share a folder never run at the
+  same time, even in different missions.
+- **A step is done when its evidence is met**, judged as for any objective. Its session is then
+  stopped once it is between turns, and the next step can use its folder.
+- **Stop step…** asks the step's session to stop. The step reads **stopped** only once the stop is
+  proved; otherwise it reads **unknown** and keeps its folder until you stop it again. A session
+  you detached, or one another mission holds, is never stopped.
+- **Redirect…** sends one message into a running step's session.
+- **Pause new steps** stops anything new from starting, including automatic nudges, until you
+  press **Continue**. Running steps either finish their turn or are interrupted, as you choose.
+  **Stop mission…** pauses and stops every running step. The mission stays open for you to close.
+- **The budget.** A mission whose steps run has a budget of turns and time (60 turns and 4 hours by
+  default). It counts the brief each step starts with and each automatic nudge. Your own messages
+  don't count. It is an estimate in turns and time, never tokens or money. When it is used up the
+  mission is **paused: budget**. Nothing new starts until you raise the cap, and the mission shows
+  as needing you.
 
 ## Objectives — what "done" means, decided before the work
 

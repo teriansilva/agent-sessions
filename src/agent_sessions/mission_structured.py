@@ -604,9 +604,21 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
         # Anything the check raises is "authority could not be verified": a known refusal before
         # any claim, never an ambiguous outcome.
         try:
-            return check()
+            ok, why = check()
         except Exception as exc:  # noqa: BLE001
             return False, f"authority could not be verified ({type(exc).__name__})"
+        if not ok or not (autonomous and mission_id):
+            return ok, why
+        # AN AUTOMATIC TURN SPENDS THE MISSION'S BUDGET (#1581 S3), admitted here inside the write
+        # fence, after every other check: a refusal costs nothing, and the last unit is taken by
+        # exactly one turn. A mission with no budget (not step-mode) is not charged.
+        try:
+            spent = missions.charge_turn(mission_id, action_operation_id(action_id), key)
+        except Exception as exc:  # noqa: BLE001 — an unreadable budget is not permission
+            return False, f"the mission's budget could not be read ({type(exc).__name__})"
+        if spent:
+            return False, f"nothing was sent: {spent}"
+        return ok, why
 
     binding = f"mission:{mission_id}" if mission_id else "orchestrator"
     try:

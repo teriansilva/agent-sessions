@@ -1,4 +1,5 @@
 import type { MissionApproval } from "../types/missionApproval";
+import type { MissionBudget, MissionSteps, StepRun } from "../types/missionSteps";
 import type { MissionTeam, TeamChoices, TeamOp } from "../types/missionTeam";
 import { appUrl } from "./appBase";
 import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
@@ -2957,6 +2958,58 @@ export const api = {
       "POST",
       `/api/missions/${encodeURIComponent(missionId)}/plan/consent/revoke`,
       { consent_id },
+    ),
+  /** One API session per agent step (#1581): the board, the operator's Start and Stop, the budget. */
+  missionSteps: (missionId: string) =>
+    getJsonWithDetail<MissionSteps>(`/api/missions/${encodeURIComponent(missionId)}/steps`),
+  startStep: (
+    missionId: string,
+    stepId: string,
+    body: { revision: number; expect_cwd: string; alternate?: number },
+  ) =>
+    mutateJson<{
+      outcome: string;
+      reason: string;
+      state: string;
+      session_key: string | null;
+      run: StepRun | null;
+    }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/start`,
+      body,
+    ),
+  stopStep: (missionId: string, stepId: string, episode: number) =>
+    mutateJson<{ run: StepRun }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/stop`,
+      { episode },
+    ),
+  pauseSteps: (missionId: string, interrupt: boolean) =>
+    mutateJson<{ budget: MissionBudget; interrupted: string[]; not_interrupted: string[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/pause`,
+      { interrupt },
+    ),
+  continueSteps: (missionId: string) =>
+    mutateJson<{ budget: MissionBudget }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/continue`,
+      {},
+    ),
+  stopAllSteps: (missionId: string) =>
+    mutateJson<{ stopped: StepRun[]; pending: StepRun[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/stop-all`,
+      {},
+    ),
+  setMissionBudget: (
+    missionId: string,
+    body: { turns_cap: number; seconds_cap: number; expect_revision: number },
+  ) =>
+    mutateJson<{ budget: MissionBudget }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/budget`,
+      body,
     ),
   missionPlanRevision: (missionId: string) =>
     getJsonWithDetail<MissionPlanRevision>(

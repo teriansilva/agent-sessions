@@ -1,0 +1,231 @@
+/* THE RUNNING BOARD (#1581 S4; mockups docs/mockups/mission-steps-1581/). Tokens only. Status colour
+   means state: the up colour a running or done step, the warn edge a refused, unknown or held one;
+   the accent is never a status. */
+.board {
+  composes: appr from "./missionApproval.module.css";
+}
+.thead {
+  composes: thead from "./missionApproval.module.css";
+}
+.ttl {
+  composes: ttl from "./missionApproval.module.css";
+}
+.rev {
+  composes: rev from "./missionApproval.module.css";
+}
+.tsum {
+  composes: tsum from "./missionApproval.module.css";
+}
+.alert {
+  composes: alert from "./missionApproval.module.css";
+}
+.btn {
+  composes: btn from "./missionApproval.module.css";
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.step {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px var(--sp-3);
+  padding: var(--sp-2) 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.live {
+  border-left: 3px solid var(--status-up);
+}
+.bad {
+  border-left: 3px solid var(--warn-text);
+}
+.quiet {
+  background: transparent;
+  border-style: dashed;
+}
+.sline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-2);
+  min-width: 0;
+}
+.stitle {
+  font-weight: 600;
+  font-size: var(--fs-row);
+}
+.sid {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.st {
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.stLive {
+  border-color: var(--status-up);
+  color: var(--ok-text);
+}
+.stWarn {
+  border-color: var(--warn-text);
+  color: var(--warn-text);
+}
+.side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+.why {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.why b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.sess {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
+.meter {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--sp-1) 10px;
+  align-items: center;
+  padding: var(--sp-2) 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.mk {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.bar {
+  position: relative;
+  height: 8px;
+  background: var(--surface-3);
+}
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+}
+.hot {
+  background: var(--warn-text);
+}
+.mn {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-1);
+  white-space: nowrap;
+}
+.est {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.dialog {
+  composes: dialog narrow from "../HudDialog.module.css";
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+}
+.dialog::backdrop {
+  background: var(--scrim);
+}
+.dhead {
+  composes: head from "../HudDialog.module.css";
+}
+.dtag {
+  composes: tag from "../HudDialog.module.css";
+}
+.dbody {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.dlist {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-row);
+}
+.dactions {
+  composes: actions from "../HudDialog.module.css";
+  flex-wrap: wrap;
+}
+.text {
+  composes: input from "../HudDialog.module.css";
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  font: inherit;
+}
+.choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-1) 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+}
+.choice input {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+@media (max-width: 800px) {
+  .step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side {
+    justify-content: stretch;
+  }
+  .side > * {
+    flex: 1 1 auto;
+  }
+  .meter {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .bar {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+}

@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1588,7 +1588,43 @@ def _migrate_39_to_40(con) -> None:
         con.execute(statement)
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39})
+#: v41 (#1581 S3): one budget per STEP-MODE mission (created by its first step claim) and one
+#: charge per admitted mission turn. `hold` is the run hold: `budget` when a cap was reached,
+#: `operator` for the operator's pause (#1581 S4). `stopping` is the operator's Stop mission,
+#: durable: every open step run is stopped as soon as it can be (the reconcile pass), a launch
+#: still settling included, until Continue. A charge is keyed by the turn's operation id, so
+#: an admission that is checked again (a replay, a queued handoff) never charges twice. Cascades
+#: with the mission.
+BUDGET_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_budgets ("
+    "mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE, "
+    "turns_cap INTEGER NOT NULL CHECK(turns_cap >= 1), "
+    "seconds_cap INTEGER NOT NULL CHECK(seconds_cap >= 60), "
+    "revision INTEGER NOT NULL DEFAULT 1, started_at REAL NOT NULL, "
+    "hold TEXT CHECK(hold IS NULL OR hold IN ('budget','operator')), "
+    "hold_detail TEXT, hold_at REAL, stopping INTEGER NOT NULL DEFAULT 0, "
+    "updated_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS mission_turn_charges ("
+    "operation_id TEXT PRIMARY KEY, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "session_key TEXT, kind TEXT NOT NULL CHECK(kind IN ('brief','send')), "
+    "created_at REAL NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS mission_turn_charges_mission ON mission_turn_charges(mission_id)",
+)
+_SCHEMA += ";\n".join(BUDGET_DDL) + ";\n"
+
+
+def _migrate_40_to_41(con) -> None:
+    """Additive only (workflow §0): two tables, one index. Idempotent, and it converges a table an
+    earlier build of this version made without `stopping`."""
+    for statement in BUDGET_DDL:
+        con.execute(statement)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(mission_budgets)").fetchall()}
+    if "stopping" not in cols:
+        con.execute("ALTER TABLE mission_budgets ADD COLUMN stopping INTEGER NOT NULL DEFAULT 0")
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1597,10 +1633,10 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
     column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
-    approval (to 38), v40 the step runs (to 39); an older build never reads any of them. (A plan
-    revision carrying a team, #1950, reads fine on an older build. Applying another procedure
-    there rebuilds every step with `assignment: null`, so that one write drops the team: earlier
-    revisions keep it, and Assemble restores it.)
+    approval (to 38), v40 the step runs (to 39), v41 the mission budget (to 40); an older build
+    never reads any of them. (A plan revision carrying a team, #1950, reads fine on an older
+    build. Applying another procedure there rebuilds every step with `assignment: null`, so that
+    one write drops the team: earlier revisions keep it, and Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1774,6 +1810,8 @@ def _migrate(con) -> int:
             _migrate_38_to_39(con)
         if version < 40:
             _migrate_39_to_40(con)
+        if version < 41:
+            _migrate_40_to_41(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -10207,7 +10245,10 @@ def claim_step(
       (`open_run`);
     * the mission holds `cap` open runs (`cap`), or an open run of a live mission anywhere has the
       same resolved directory (`shared_cwd`, D-1581-5);
-    * a bound `approval_id` is no longer the approval in force (`approval_changed`).
+    * a bound `approval_id` is no longer the approval in force (`approval_changed`), or a bound
+      `consent_id` no longer covers it (`consent_changed`);
+    * the mission's budget is held or spent (`budget`). This one refusal WRITES: a cap reached
+      here holds the mission, committed before the refusal, so the decision surfaces.
 
     Then the run row (the next episode), the dispatch row and the state move commit together with
     one thread row. The returned dict is the plan `mission_dispatch.run` launches (its `plan_id`
@@ -10335,6 +10376,12 @@ def claim_step(
                     "consent_changed",
                     "the standing consent this launch was admitted under is no longer in force",
                 )
+            # THE MISSION'S BUDGET (#1581 S3): created by its first step claim; a hold or a spent
+            # cap refuses, and a cap reached here is recorded (and committed) before the refusal.
+            spent = _budget_admit_tx(con, mission_id, ts)
+            if spent is not None:
+                con.execute("COMMIT")
+                raise StepRefused("budget", spent)
             episode = int(
                 con.execute(
                     "SELECT COALESCE(MAX(episode), 0) + 1 FROM mission_step_runs "
@@ -10399,6 +10446,10 @@ def claim_step(
             ).rowcount
             if not moved:
                 raise StepRefused("not_launchable", "the mission moved; read it again")
+            # The brief is the turn this claim admits: charged now, under its own operation id.
+            from .mission_structured import ids as _structured_ids
+
+            _charge_tx(con, mission_id, _structured_ids(plan_id)[1], None, "brief", ts)
             run = _step_run_row(
                 con.execute(
                     "SELECT * FROM mission_step_runs WHERE plan_id=?", (plan_id,)
@@ -10456,6 +10507,440 @@ def open_step_folders(*, path: Path | None = None) -> dict[str, dict]:
             OPEN_STEP_STATES,
         ).fetchall()
         return {r["cwd"]: {"mission_id": r["mission_id"], "step_id": r["step_id"]} for r in rows}
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------- the budget (#1581 S3)
+#
+# One budget per step-mode mission, over every turn BattleLab admits into its sessions without a
+# tap: each step's brief and each automatic send. Two always-on caps: TURNS and WALL CLOCK (from
+# the first step claim). No mission-ready client reports token usage on its turns today, so a
+# budget is a workload limit (turns and time), never a token or money ceiling, and says so. An
+# admission is one transaction: the last unit is taken by exactly one turn. Reaching a cap holds
+# the mission (`hold = 'budget'`): no step claim and no automatic send until the operator raises a
+# cap or stops. Turns already running finish (admission-bounded).
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """A bounded integer from the environment; anything unreadable is the default (never a crash
+    at import)."""
+    raw = os.environ.get(name, "")
+    try:
+        value = int(raw) if raw.strip() else default
+    except ValueError:
+        return default
+    return min(hi, max(lo, value))
+
+
+BUDGET_TURNS_DEFAULT = _env_int("AGENT_SESSIONS_MISSION_BUDGET_TURNS", 60, 1, 10_000)
+BUDGET_SECONDS_DEFAULT = _env_int("AGENT_SESSIONS_MISSION_BUDGET_SECONDS", 14_400, 60, 7 * 86_400)
+BUDGET_TURNS_MAX = 10_000
+BUDGET_SECONDS_MAX = 7 * 86_400
+
+
+def _budget_row_tx(con, mission_id: str):
+    return con.execute("SELECT * FROM mission_budgets WHERE mission_id=?", (mission_id,)).fetchone()
+
+
+def _turns_used_tx(con, mission_id: str) -> int:
+    return int(
+        con.execute(
+            "SELECT COUNT(*) FROM mission_turn_charges WHERE mission_id=?", (mission_id,)
+        ).fetchone()[0]
+    )
+
+
+def _hold_tx(con, mission_id: str, why: str, ts: float) -> None:
+    con.execute(
+        "UPDATE mission_budgets SET hold='budget', hold_detail=?, hold_at=?, updated_at=? "
+        "WHERE mission_id=? AND hold IS NULL",
+        (why, ts, ts, mission_id),
+    )
+    _append_event(
+        con,
+        mission_id,
+        "state",
+        at=ts,
+        text=f"paused: budget — {why}. Raise the cap or stop the mission.",
+        meta={"paused": "budget", "detail": why},
+    )
+
+
+def _spent_tx(con, mission_id: str, row, ts: float) -> str | None:
+    """Why the budget is spent now (a cap REACHED), or None."""
+    used = _turns_used_tx(con, mission_id)
+    if used >= int(row["turns_cap"]):
+        return f"{used} of its {int(row['turns_cap'])} turns are used"
+    if ts - float(row["started_at"]) >= int(row["seconds_cap"]):
+        hours = int(row["seconds_cap"]) / 3600
+        return f"its {hours:g} h of running time are used"
+    return None
+
+
+def _budget_admit_tx(con, mission_id: str, ts: float) -> str | None:
+    """May one more turn be admitted? None, or why not (and the hold is written). Creates the
+    budget with the defaults on a step-mode mission's first claim."""
+    row = _budget_row_tx(con, mission_id)
+    if row is None:
+        con.execute(
+            "INSERT INTO mission_budgets (mission_id, turns_cap, seconds_cap, started_at, "
+            "updated_at) VALUES (?,?,?,?,?)",
+            (mission_id, BUDGET_TURNS_DEFAULT, BUDGET_SECONDS_DEFAULT, ts, ts),
+        )
+        row = _budget_row_tx(con, mission_id)
+    if row["hold"] is not None or row["stopping"]:
+        return f"the mission is paused: {row['hold_detail'] or row['hold'] or 'stopping'}"
+    why = _spent_tx(con, mission_id, row, ts)
+    if why is not None:
+        _hold_tx(con, mission_id, why, ts)
+        return f"the mission's budget is spent: {why}"
+    return None
+
+
+def _charge_tx(con, mission_id: str, operation_id: str, session_key, kind: str, ts: float) -> bool:
+    """Record one admitted turn. False when this operation was charged before (a replay)."""
+    try:
+        con.execute(
+            "INSERT INTO mission_turn_charges (operation_id, mission_id, session_key, kind, "
+            "created_at) VALUES (?,?,?,?,?)",
+            (operation_id, mission_id, session_key, kind, ts),
+        )
+    except sqlite3.IntegrityError:
+        return False
+    row = _budget_row_tx(con, mission_id)
+    if row is not None and row["hold"] is None:
+        # REACHING a cap holds the mission now, so the decision surfaces with the last turn
+        # rather than with the next refusal. This turn itself was admitted.
+        why = _spent_tx(con, mission_id, row, ts)
+        if why is not None:
+            _hold_tx(con, mission_id, why, ts)
+    return True
+
+
+def charge_turn(
+    mission_id: str,
+    operation_id: str,
+    session_key: str,
+    *,
+    now: float | None = None,
+    path: Path | None = None,
+) -> str | None:
+    """Admit one AUTOMATIC turn into a step-mode mission's session: None (admitted, or not a
+    step-mode mission), or why not. One transaction, so two turns contending for the last unit
+    admit exactly one. A replay of a charged operation is admitted again without a second charge.
+    Called inside the write fence (`mission_structured.send`): read, decide and write only."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = _budget_row_tx(con, mission_id)
+            if row is None:
+                con.execute("COMMIT")
+                return None  # not a step-mode mission: no budget applies
+            if con.execute(
+                "SELECT 1 FROM mission_turn_charges WHERE operation_id=?", (operation_id,)
+            ).fetchone():
+                con.execute("COMMIT")
+                # Admitted before: never a second charge. A re-check of it (a retried admission)
+                # still yields to the operator's pause; a spent budget does not refuse a turn
+                # that was already paid for.
+                if row["hold"] == "operator":
+                    return "the mission is paused: paused by you"
+                return None
+            why = _budget_admit_tx(con, mission_id, ts)
+            if why is None:
+                _charge_tx(con, mission_id, operation_id, session_key, "send", ts)
+            con.execute("COMMIT")
+            return why
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+#: The mission states a budget hold means anything in (a step can still start, or a turn be sent).
+_BUDGET_LIVE_STATES = ("planned", "dispatching", "running")
+
+
+def _spent_quick(row, ts: float) -> str | None:
+    """The wall clock alone (the turn count is checked at every admission)."""
+    if ts - float(row["started_at"]) >= int(row["seconds_cap"]):
+        return "clock"
+    return None
+
+
+def hold_if_spent(mission_id: str, *, now: float | None = None, path: Path | None = None) -> bool:
+    """The wall clock, between turns: hold a step-mode mission whose running time is used up.
+    True when it holds now. Idempotent; the reconcile pass calls it."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    # READ FIRST: most passes find nothing to write, and the sweep calls this every pass.
+    con = _ready(path)
+    try:
+        row = _budget_row_tx(con, mission_id)
+        live = con.execute(
+            "SELECT state FROM missions WHERE id=? AND archived_at IS NULL", (mission_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    # Only a mission that can still start something is held: a `review` or closed mission
+    # launches nothing, and holding it would only raise a false decision (independent review).
+    if row is None or row["hold"] is not None or live is None:
+        return False
+    if str(live["state"]) not in _BUDGET_LIVE_STATES:
+        return False
+    if _spent_quick(row, ts) is None:
+        return False
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = _budget_row_tx(con, mission_id)
+            held = False
+            state = con.execute(
+                "SELECT state FROM missions WHERE id=? AND archived_at IS NULL", (mission_id,)
+            ).fetchone()
+            if state is None or str(state["state"]) not in _BUDGET_LIVE_STATES:
+                row = None  # it moved meanwhile: a mission that launches nothing is never held
+            if row is not None and row["hold"] is None:
+                why = _spent_tx(con, mission_id, row, ts)
+                if why is not None:
+                    _hold_tx(con, mission_id, why, ts)
+                    held = True
+            con.execute("COMMIT")
+            return held
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def _budget_view(con, mission_id: str, row, ts: float) -> dict:
+    return {
+        "turns": {"used": _turns_used_tx(con, mission_id), "cap": int(row["turns_cap"])},
+        "seconds": {
+            "used": max(0, int(ts - float(row["started_at"]))),
+            "cap": int(row["seconds_cap"]),
+        },
+        # No mission-ready client reports token usage on its turns: a workload limit, honestly.
+        "units": "turns and time",
+        "estimated": True,
+        "revision": int(row["revision"]),
+        "hold": row["hold"],
+        "hold_detail": row["hold_detail"],
+        "hold_at": row["hold_at"],
+        "stopping": bool(row["stopping"]),
+        # THE RAISE THE BOARD OFFERS, the server's (the client decides nothing): half again on a
+        # spent turn count (at least 10), two more hours on a spent clock, each within its max.
+        "offer": _raise_offer(con, mission_id, row, ts),
+    }
+
+
+def _raise_offer(con, mission_id: str, row, ts: float) -> dict:
+    turns, secs = int(row["turns_cap"]), int(row["seconds_cap"])
+    used = _turns_used_tx(con, mission_id)
+    elapsed = int(ts - float(row["started_at"]))
+    return {
+        "turns_cap": min(BUDGET_TURNS_MAX, turns + max(10, turns // 2)) if used >= turns else turns,
+        "seconds_cap": min(BUDGET_SECONDS_MAX, elapsed + 7200) if elapsed >= secs else secs,
+    }
+
+
+def budget(mission_id: str, *, now: float | None = None, path: Path | None = None) -> dict | None:
+    """The budget as the board shows it, or None (not a step-mode mission yet)."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = _budget_row_tx(con, mission_id)
+        return (
+            None
+            if row is None
+            else _budget_view(con, mission_id, row, time.time() if now is None else now)
+        )
+    finally:
+        con.close()
+
+
+def set_budget(
+    mission_id: str,
+    *,
+    turns_cap: int,
+    seconds_cap: int,
+    expect_revision: int,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """The operator's caps (a compare-and-set on the budget's revision). A hold for a spent
+    budget lifts only when the new caps leave room; nothing restarts by itself."""
+    validate_id(mission_id)
+    for v, lo, hi, what in (
+        (turns_cap, 1, BUDGET_TURNS_MAX, "turns_cap"),
+        (seconds_cap, 60, BUDGET_SECONDS_MAX, "seconds_cap"),
+        (expect_revision, 1, 1_000_000, "expect_revision"),
+    ):
+        if type(v) is not int or not lo <= v <= hi:
+            raise MissionError(f"{what} must be a whole number from {lo} to {hi}", status=422)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = _budget_row_tx(con, mission_id)
+            if row is None:
+                raise MissionError(
+                    "this mission has no budget until its first step starts", status=409
+                )
+            if int(row["revision"]) != expect_revision:
+                raise MissionError(
+                    "the budget changed since you read it; read it again", status=409
+                )
+            con.execute(
+                "UPDATE mission_budgets SET turns_cap=?, seconds_cap=?, revision=revision+1, "
+                "updated_at=? WHERE mission_id=?",
+                (turns_cap, seconds_cap, ts, mission_id),
+            )
+            row = _budget_row_tx(con, mission_id)
+            lifted = False
+            if row["hold"] == "budget" and _spent_tx(con, mission_id, row, ts) is None:
+                con.execute(
+                    "UPDATE mission_budgets SET hold=NULL, hold_detail=NULL, hold_at=NULL "
+                    "WHERE mission_id=?",
+                    (mission_id,),
+                )
+                lifted = True
+            _append_event(
+                con,
+                mission_id,
+                "state",
+                at=ts,
+                text=f"budget set to {turns_cap} turns and {seconds_cap / 3600:g} h"
+                + ("; the pause is lifted" if lifted else ""),
+                meta={
+                    "budget": {"turns_cap": turns_cap, "seconds_cap": seconds_cap},
+                    "lifted": lifted,
+                },
+            )
+            out = _budget_view(con, mission_id, _budget_row_tx(con, mission_id), ts)
+            con.execute("COMMIT")
+            return out
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def set_pause(
+    mission_id: str,
+    *,
+    paused: bool,
+    stopping: bool = False,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """The operator's pause (#1581 S4): `hold = 'operator'` on a step-mode mission's budget, so no
+    step is claimed, no automatic turn is admitted, and a launch already claimed is refused at its
+    effects. Continue lifts only the operator's own pause; a spent budget is lifted by raising a
+    cap (`set_budget`). Returns the budget view."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = _budget_row_tx(con, mission_id)
+            if row is None:
+                raise MissionError(
+                    "no step of this mission has started, so there is nothing to pause", status=409
+                )
+            if paused and stopping:
+                # STOP MISSION, recorded: whatever the hold, every open run is stopped as soon as
+                # it can be (a launch still settling included) until the operator continues.
+                con.execute(
+                    "UPDATE mission_budgets SET stopping=1, updated_at=? WHERE mission_id=?",
+                    (ts, mission_id),
+                )
+            if paused:
+                if row["hold"] == "budget" and not stopping:
+                    raise MissionError(
+                        "the mission is already paused: its budget is spent", status=409
+                    )
+                if row["hold"] is None:
+                    con.execute(
+                        "UPDATE mission_budgets SET hold='operator', hold_detail=?, hold_at=?, "
+                        "updated_at=? WHERE mission_id=? AND hold IS NULL",
+                        ("paused by you", ts, ts, mission_id),
+                    )
+                    _append_event(
+                        con,
+                        mission_id,
+                        "state",
+                        at=ts,
+                        text="paused by the operator: no new step or automatic turn starts",
+                        meta={"paused": "operator"},
+                    )
+            else:
+                if row["hold"] == "budget" and row["stopping"]:
+                    # Continue cancels a recorded stop; the spent budget still holds (a raise
+                    # lifts that one).
+                    con.execute(
+                        "UPDATE mission_budgets SET stopping=0, updated_at=? WHERE mission_id=?",
+                        (ts, mission_id),
+                    )
+                    _append_event(
+                        con,
+                        mission_id,
+                        "state",
+                        at=ts,
+                        text="the operator cancelled the stop; the budget still holds",
+                        meta={"stopping": False},
+                    )
+                elif row["hold"] == "budget":
+                    raise MissionError("the budget is spent: raise a cap to continue", status=409)
+                if row["hold"] == "operator" or row["stopping"]:
+                    con.execute(
+                        "UPDATE mission_budgets SET hold=NULL, hold_detail=NULL, hold_at=NULL, "
+                        "stopping=0, updated_at=? WHERE mission_id=? AND hold IS NOT 'budget'",
+                        (ts, mission_id),
+                    )
+                    _append_event(
+                        con,
+                        mission_id,
+                        "state",
+                        at=ts,
+                        text="continued by the operator",
+                        meta={"paused": None},
+                    )
+            out = _budget_view(con, mission_id, _budget_row_tx(con, mission_id), ts)
+            con.execute("COMMIT")
+            return out
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def stopping_missions(*, path: Path | None = None) -> list[str]:
+    """Missions whose Stop is recorded and not cancelled (the supervisor finishes them, on or
+    off)."""
+    con = _ready(path)
+    try:
+        return [
+            r["mission_id"]
+            for r in con.execute(
+                "SELECT mission_id FROM mission_budgets WHERE stopping=1"
+            ).fetchall()
+        ]
     finally:
         con.close()
 
@@ -10572,6 +11057,16 @@ def step_launch_verdict(plan_id: str, *, path: Path | None = None) -> str | None
                     "the plan approval this step was started under is no longer in force, "
                     "so nothing was started"
                 )
+        held = con.execute(
+            "SELECT hold, stopping FROM mission_budgets WHERE mission_id=?", (row["mission_id"],)
+        ).fetchone()
+        if held is not None and (held["hold"] == "operator" or held["stopping"]):
+            # THE OPERATOR'S PAUSE BEATS A PENDING LAUNCH (#1581 S4): committed after the claim,
+            # it refuses the create and the brief. A budget hold does not: this launch's brief was
+            # admitted (charged) before the cap was reached.
+            return (
+                "the mission was paused while this step was being started, so nothing was started"
+            )
         if row["consent_id"] is not None and not _consent_in_force_tx(
             con, row["mission_id"], str(row["consent_id"]), time.time()
         ):
@@ -12753,10 +13248,10 @@ def derive_needs_you(mission_ids: list[str], *, path: Path | None = None) -> dic
 
     con = _ready(path)
     try:
-        rows, open_q, escalated = _attention_rows(con, mission_ids)
+        rows, open_q, escalated, held = _attention_rows(con, mission_ids)
     finally:
         con.close()
-    return _attention_merge(out, mission_ids, rows, open_q, escalated)
+    return _attention_merge(out, mission_ids, rows, open_q, escalated, held)
 
 
 def _attention_rows(con, mission_ids: list[str]):
@@ -12815,7 +13310,17 @@ def _attention_rows(con, mission_ids: list[str]):
         f"  AND ep.question_seq IS NULL",
         tuple(mission_ids),
     ).fetchall()
-    return rows, open_q, escalated
+    # A BUDGET HOLD IS A DECISION (#1581 S3): raise a cap or stop. Never silent.
+    # Only while the mission can still start something: a closed, reviewed or archived mission
+    # holds nothing anyone could raise (independent review: the flag must not stick to it).
+    held = con.execute(
+        f"SELECT b.mission_id AS mission_id FROM mission_budgets b "  # noqa: S608
+        f"JOIN missions m ON m.id = b.mission_id "
+        f"WHERE b.mission_id IN ({placeholders}) AND b.hold='budget' "
+        f"AND m.archived_at IS NULL AND m.state IN ('planned','dispatching','running')",
+        tuple(mission_ids),
+    ).fetchall()
+    return rows, open_q, escalated, held
 
 
 def permission_hold_add(
@@ -12969,7 +13474,7 @@ def escalation_settled(
     return True  # the objective was dropped
 
 
-def _attention_merge(out, mission_ids, rows, open_q, escalated):
+def _attention_merge(out, mission_ids, rows, open_q, escalated, held=()):
     """The LEDGER and SIDECAR terms, folded onto the store's. Both are outside the store, so they
     are read after the snapshot and degrade rather than fail — a hiccup dims the flag, it never
     fails the list."""
@@ -13012,6 +13517,9 @@ def _attention_merge(out, mission_ids, rows, open_q, escalated):
         out[r["mission_id"]]["needs_you"] = True
     for r in escalated:
         out[r["mission_id"]]["why"].append("escalation")
+        out[r["mission_id"]]["needs_you"] = True
+    for r in held:
+        out[r["mission_id"]]["why"].append("budget")
         out[r["mission_id"]]["needs_you"] = True
     return out
 

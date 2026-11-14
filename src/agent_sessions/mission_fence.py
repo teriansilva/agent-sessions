@@ -293,11 +293,18 @@ async def fenced_step_stop(mission_id: str, key: str, settle, *, idle=None) -> s
             elif idle is not None and not idle():
                 outcome = "busy"
             else:
+                from . import mission_structured
+
                 try:
-                    asyncio.run(
-                        runtime_cleanup.contain_native(prov.engine_id, phys.partition(":")[2])
-                    )
-                    outcome = "stopped"
+                    # Nothing ever ran (a key minted, no create recorded): proved empty, as
+                    # `fenced_teardown` answers it (independent review on #2001).
+                    if asyncio.run(mission_structured._nothing_runs(phys)):
+                        outcome = "stopped"
+                    else:
+                        asyncio.run(
+                            runtime_cleanup.contain_native(prov.engine_id, phys.partition(":")[2])
+                        )
+                        outcome = "stopped"
                 except Exception:  # noqa: BLE001 — not proved gone
                     outcome = "leaked"
             settle(outcome)

@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -532,6 +533,106 @@ async def stop_step(mission_id: str, step_id: str, episode: int) -> dict:
     return public_run(settled)
 
 
+# ---- the mission's controls (S4) ----------------------------------------------------------------
+
+
+async def _settled_or_claimed(mission_id: str, wait_s: float) -> list[dict]:
+    """The runs, after waiting up to ``wait_s`` for every launch still in flight (`claimed`) to
+    settle: a brief can be handed over just before a pause commits, and its run stays `claimed`
+    until the settlement adopts the session (Hermes on #2007). Holds no lock while it waits."""
+    import time as _time
+
+    deadline = _time.monotonic() + wait_s
+    while True:
+        runs = await missions.run_admitted(lambda: missions.step_runs(mission_id))
+        if not any(r["state"] == "claimed" for r in runs) or _time.monotonic() >= deadline:
+            return runs
+        await asyncio.sleep(0.25)
+
+
+async def pause(mission_id: str, *, interrupt: bool = False) -> dict:
+    """Pause new steps: no step starts and no automatic turn is admitted until Continue. Steps
+    already running finish their current turn, or (``interrupt``) have it interrupted: they stay
+    running and take the operator's messages. A launch still settling is waited for (bounded);
+    one that has not settled is reported as NOT interrupted, never skipped silently. Returns
+    ``{budget, interrupted, not_interrupted}``."""
+    from . import structured_runtime as runtime
+
+    missions.validate_id(mission_id)
+    budget = await missions.run_admitted(lambda: missions.set_pause(mission_id, paused=True))
+    interrupted: list[str] = []
+    pending: list[str] = []
+    if interrupt:
+        for r in await _settled_or_claimed(mission_id, SETTLE_WAIT_S):
+            key = r.get("session_key")
+            if r["state"] == "claimed":
+                pending.append(r["step_id"])
+                continue
+            if r["state"] != "running" or not key:
+                continue
+            try:
+                snap = await runtime.snapshot(key)
+                turn = snap.get("active_turn")
+                if turn:
+                    await runtime.interrupt(key, operation_id=str(uuid.uuid4()), turn_id=turn)
+                    interrupted.append(r["step_id"])
+            except Exception:  # noqa: BLE001 — an interrupt only reduces an effect
+                log.info("mission %s: step %s not interrupted", mission_id, r["step_id"])
+                pending.append(r["step_id"])
+    return {"budget": budget, "interrupted": interrupted, "not_interrupted": pending}
+
+
+async def resume(mission_id: str) -> dict:
+    """Continue: lift the operator's pause. Nothing starts by itself; Start is still a tap."""
+    missions.validate_id(mission_id)
+    return {
+        "budget": await missions.run_admitted(lambda: missions.set_pause(mission_id, paused=False))
+    }
+
+
+#: How long Pause (with interrupt) and Stop mission wait for a launch already in flight to settle
+#: before answering. Short, so a proxied request does not time out; a Stop is recorded anyway and
+#: finished by the reconcile pass (`stopping`).
+SETTLE_WAIT_S = 10.0
+
+
+async def stop_all(mission_id: str) -> dict:
+    """Stop the mission's steps. The request is RECORDED first (`mission_budgets.stopping`, with
+    the operator's hold): nothing new starts, a launch not yet past its effects is refused at
+    them, and the reconcile pass stops every open run as soon as it can, a launch that settles
+    later included, until Continue. Then, after waiting briefly for launches in flight, every open
+    run is stopped now through the fence. Returns ``{stopped, pending}``: `pending` are launches
+    still settling, which the recorded stop will finish (Hermes on #2007: never reported as done).
+    Steps that never started stay unstarted. The mission is closed by the operator's controls."""
+    missions.validate_id(mission_id)
+    try:
+        await missions.run_admitted(
+            lambda: missions.set_pause(mission_id, paused=True, stopping=True)
+        )
+    except missions.MissionError:
+        pass  # no budget yet: nothing has started, so nothing can be in flight either
+    out, pending = [], []
+    for r in await _settled_or_claimed(mission_id, SETTLE_WAIT_S):
+        if r["state"] == "claimed":
+            pending.append(
+                {
+                    **public_run(r),
+                    "note": "still being started; it is stopped as soon as its launch settles",
+                }
+            )
+        elif r["state"] in ("running", "unknown"):
+            try:
+                out.append(await stop_step(mission_id, r["step_id"], r["episode"]))
+            except missions.MissionError as exc:
+                # The run moved between the read and the stop (reconcile settled it): say so.
+                now = await missions.run_admitted(
+                    lambda r=r: missions.step_run(mission_id, r["step_id"], r["episode"])
+                )
+                if now is not None:
+                    out.append({**public_run(now), "note": str(exc)})
+    return {"stopped": out, "pending": pending}
+
+
 # ---- reconcile, read ----------------------------------------------------------------------------
 
 
@@ -565,6 +666,28 @@ def _idle(key: str) -> bool:
     return not (snap.get("active_turn") or (snap.get("native") or {}).get("background_active"))
 
 
+async def finish_recorded_stops() -> int:
+    """Stop every open run of every mission whose Stop is recorded. Runs on every supervisor tick
+    whether or not supervision is enabled (a recorded stop is the operator's, and it only
+    reduces an effect). Never raises."""
+    try:
+        mids = await missions.run_admitted(missions.stopping_missions)
+    except Exception:  # noqa: BLE001 — retried by the next tick
+        return 0
+    n = 0
+    for mid in mids:
+        try:
+            runs = await missions.run_admitted(lambda m=mid: missions.step_runs(m))
+            for r in runs:
+                if r["state"] in ("running", "unknown") and r.get("session_key"):
+                    with contextlib.suppress(missions.MissionError):
+                        await stop_step(mid, r["step_id"], r["episode"])
+                        n += 1
+        except Exception:  # noqa: BLE001 — one mission must not stop the others
+            log.debug("mission %s: recorded stop not finished", mid, exc_info=True)
+    return n
+
+
 async def reconcile(mission_id: str) -> int:
     """Settle `running` runs whose step the evidence now says is `done` or `failed` (D-1581-6).
 
@@ -577,6 +700,24 @@ async def reconcile(mission_id: str) -> int:
     Never raises (the supervisor calls it every pass)."""
     from . import mission_fence
 
+    # THE WALL CLOCK, between turns (#1581 S3): a step-mode mission whose running time is used up
+    # is held here, so no new step or automatic turn starts; turns already running finish.
+    try:
+        await missions.run_admitted(lambda: missions.hold_if_spent(mission_id))
+    except Exception:  # noqa: BLE001 — retried by the next pass
+        log.debug("mission %s: budget clock not read", mission_id, exc_info=True)
+    # A RECORDED STOP (Stop mission) is finished here: every open run that has settled is stopped
+    # through the fence, a launch that settled after the request included.
+    try:
+        b = await missions.run_admitted(lambda: missions.budget(mission_id))
+        if b and b.get("stopping"):
+            runs = await missions.run_admitted(lambda: missions.step_runs(mission_id))
+            for r in runs:
+                if r["state"] in ("running", "unknown") and r.get("session_key"):
+                    with contextlib.suppress(missions.MissionError):
+                        await stop_step(mission_id, r["step_id"], r["episode"])
+    except Exception:  # noqa: BLE001 — retried by the next pass
+        log.debug("mission %s: recorded stop not finished", mission_id, exc_info=True)
     try:
         todo = await missions.run_admitted(lambda: _settled_runs(mission_id))
     except Exception:  # noqa: BLE001 — retried by the next pass
@@ -696,6 +837,8 @@ def view_sync(mission_id: str) -> dict:
     folders = missions.open_step_folders()
     cfg = prefs.get_mission_orchestration()
     switched_off = not cfg.get("enabled") or str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]
+    budget = missions.budget(mission_id)
+    held = "stopping" if (budget or {}).get("stopping") else (budget or {}).get("hold")
     steps = []
     for s in doc["steps"]:
         mine = [r for r in runs if r["step_id"] == s["id"]]
@@ -718,6 +861,11 @@ def view_sync(mission_id: str) -> dict:
             )
         if why is None and switched_off:
             why = "orchestration is off or its autonomy is off"
+        if why is None and held:
+            why = {
+                "operator": "the mission is paused",
+                "stopping": "the mission is being stopped",
+            }.get(held, "the budget is spent")
         steps.append(
             {
                 "id": s["id"],
@@ -738,6 +886,7 @@ def view_sync(mission_id: str) -> dict:
         "mission_state": mission.get("state"),
         "revision": latest["revision"],
         "concurrency": {"open": open_n, "cap": missions.STEP_CONCURRENCY},
+        "budget": budget,
         "steps": steps,
     }
 

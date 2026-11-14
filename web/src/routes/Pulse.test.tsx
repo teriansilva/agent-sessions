@@ -67,6 +67,13 @@ vi.mock("../lib/api", async () => {
         consent_offer: null,
         consent_days: { default: 7, max: 30 },
       }),
+      // The running board (#1581): no plan here, so the board renders nothing.
+      missionSteps: vi.fn().mockResolvedValue({
+        mission_id: "m",
+        revision: null,
+        concurrency: null,
+        steps: [],
+      }),
     },
   };
 });

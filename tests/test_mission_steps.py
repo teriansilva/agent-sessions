@@ -583,9 +583,9 @@ def test_the_schema_is_v40_and_rolls_back_to_39():
     missions.settle_dispatch(mid, to="planned", detail="x", expect_plan=plan["plan_id"])
     db = missions._db_path()
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 40
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION >= 40
     con.close()
-    assert missions.rollback_schema(39, path=db) == {"from": 40, "to": 39}
+    assert missions.rollback_schema(39, path=db) == {"from": missions.SCHEMA_VERSION, "to": 39}
     missions.reset_schema_cache_for_test()
     assert len(_runs(mid)) == 1  # converges, nothing dropped
 
@@ -614,7 +614,7 @@ def test_an_upgraded_store_gets_the_same_step_runs_schema_as_a_fresh_one():
     }
     con = sqlite3.connect(db)
     con.execute("DROP TABLE mission_step_runs")
-    con.execute("PRAGMA user_version=39")
+    con.execute("PRAGMA user_version=39")  # a v39 store: the later steps are idempotent
     con.commit()
     con.close()
     missions.reset_schema_cache_for_test()

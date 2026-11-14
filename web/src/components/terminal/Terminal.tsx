@@ -83,6 +83,12 @@ import { LOOKUP_FAILED_TEXT, termCover } from "./termCover";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
 import { openTerminalLink } from "../../lib/terminalLink";
+import {
+  activateOscLink,
+  OSC_LINK_HANDLER,
+  oscLinkAtCell,
+  registerOscTailLinks,
+} from "../../lib/oscLink";
 import { stripHoverMouseReports } from "../../lib/hoverMouse";
 import { TermUplinkVeil } from "./TermUplinkVeil";
 import { useUplinkVeil } from "./useUplinkVeil";
@@ -510,9 +516,18 @@ export function Terminal({
       // the PTY. Alt is now the Mac selection modifier, so an Alt+click would both select AND
       // inject keystrokes into the agent. Alt selects; it never moves the cursor.
       altClickMovesCursor: false,
+      // #2024: an OSC 8 hyperlink (the agent attaches a target to any visible text) is confirmed
+      // with its full target and opened through openTerminalLink — the same policy the touch
+      // tap below applies (lib/oscLink).
+      linkHandler: OSC_LINK_HANDLER,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // #2024: xterm's own OSC 8 provider drops a link that starts in a row's last occupied cell
+    // (a one-cell final fragment of a hard-wrapped URL). This provider, registered after it and
+    // BEFORE the web-links addon, offers those runs from per-cell data; the linkifier prefers
+    // earlier providers, so it only ever answers where xterm's own did not. Disposed with `term`.
+    registerOscTailLinks(term);
     // Make URLs in agent output clickable (#158). A BattleLab link on this origin opens here, the
     // way an outside link would; anything else opens in a new tab with no opener and no Referer
     // (#1232, see lib/terminalLink).
@@ -1618,6 +1633,14 @@ export function Terminal({
       if (rect.width > 0 && rect.height > 0) {
         const col = Math.floor(((cx - rect.left) / rect.width) * cols);
         const vrow = Math.floor(((cy - rect.top) / rect.height) * rows);
+        // #2024: an OSC 8 link under the finger carries its full target (Claude's /login URL is
+        // hard-wrapped rows, each a link to the whole URL). Confirm-and-open, or nothing on
+        // cancel/refusal — never fall through to the visible fragment below.
+        const oscTarget = oscLinkAtCell(term, buf.viewportY + vrow, col);
+        if (oscTarget !== null) {
+          activateOscLink(oscTarget);
+          return;
+        }
         // #664: a long URL soft-wraps across buffer rows; hit-test the joined logical
         // line (as WebLinksAddon does on desktop), never a single row's fragment.
         const url = urlAtCell(buf, buf.viewportY + vrow, col, cols);

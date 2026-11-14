@@ -356,6 +356,11 @@ async def sweep(
     if reconcile:
         await _reconcile_delivered()
         await _rebind_api_members()
+    # …and a RECORDED STOP (#1581): the operator's Stop mission only reduces an effect, so it is
+    # finished on every ring whether supervision is on or off. One query when there is none.
+    from . import mission_steps
+
+    await mission_steps.finish_recorded_stops()
     if not _enabled():
         return {"skipped": "disabled"}
     await _forget_legacy_state()

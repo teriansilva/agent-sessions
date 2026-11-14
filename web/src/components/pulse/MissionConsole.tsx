@@ -41,6 +41,7 @@ import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionApprovalCard } from "./MissionApprovalCard";
+import { MissionStepsCard } from "./MissionStepsCard";
 import { MissionTeamCard } from "./MissionTeamCard";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionNowStrip } from "./MissionNowStrip";
@@ -909,6 +910,15 @@ function MissionBody({
                 key={`approval-${missionId}`}
                 missionId={missionId}
                 state={d.mission.state}
+                refresh={approvalReads}
+              />
+            ) : null}
+            {/* THE RUNNING BOARD (#1581): each agent step in its own API session, started and
+                stopped by the operator's own taps. */}
+            {d.mission ? (
+              <MissionStepsCard
+                key={`steps-${missionId}`}
+                missionId={missionId}
                 refresh={approvalReads}
               />
             ) : null}
