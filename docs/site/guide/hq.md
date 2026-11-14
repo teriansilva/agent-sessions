@@ -309,7 +309,8 @@ follows you to every device.
   of the answer. The speaker is stored with the answer, so earlier answers keep their name after
   you switch. Answers with the contact Off, from a contact that no longer exists, or from before
   HQ read **HQ**. If your AI endpoint refuses tool calls and HQ falls back to a plain search, the
-  answer still carries the contact's name but not their character.
+  answer still carries the contact's name but not their character. An answer HQ gives without
+  searching (see [Question routing](#question-routing)) speaks in the contact's character.
 - **You can switch contact mid-conversation.** The new General reads the earlier answers as
   someone else's, with the name of whoever gave them, and answers under their own name.
 - Only the chosen contact's loop is downloaded, and the installed app doesn't keep the loops for
@@ -528,6 +529,28 @@ Settings → **Session review**:
 
 The Recent work window is set from the page itself (**1 day | 2 | 3**).
 
+### Question routing
+
+Some AI endpoints can't use tools. With one of those, HQ can't look things up as it goes, so it
+used to search all your sessions for every message, even "hi". Now one quick call decides
+first: a question about your work (a session, a mission, a project, what happened, what needs
+you) still searches; anything else (greetings, "which model are you?", a summary of what you
+just discussed) is answered straight away. When unsure, it searches. The search line says
+what it searched: "Searching 3 matching sessions and your recent ones…", or "Searching your
+recent sessions…" when nothing matched by name.
+
+Settings → AI → **HQ** → Question routing:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Search your sessions only when a question needs it | on | Off: every message searches, as before. |
+| Model for this decision | Same as HQ | A faster model for the deciding call only, from your endpoint's list. On a call, "Same as HQ" is the call's model. |
+| Thinking for this decision | Off · fastest | The thinking level for the deciding call only. "Same as HQ" uses HQ's own level. |
+
+HQ's answers keep the model and thinking set under Endpoint & model (or HQ calls, on a call).
+With an endpoint that does use tools, HQ decides by itself whether to search, and these
+settings change nothing.
+
 ::: info Verified against
-`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
+`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events, _prefilter_hits`; `src/agent_sessions/ask_orchestrator.py § _route, _no_tools_turn`; `src/agent_sessions/prefs.py § HQ_ROUTE_DEFAULTS`; `web/src/routes/HqRouteSettings.tsx`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
 :::

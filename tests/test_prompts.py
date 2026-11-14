@@ -63,7 +63,8 @@ def test_registry_covers_every_system_prompt():
     # #1715 voice_confirm_judge (on a call: did the reply confirm a read-back card?); #1837
     # hq_notify (HQ's one line about a notification, guarded: the persona speaks first)
     # #1740 P2 mission_debrief (the finished mission's "what was done", from its records).
-    assert len(prompts.REGISTRY) == 43
+    # #2028 ask_route (HQ's question router on an endpoint without tools, guarded).
+    assert len(prompts.REGISTRY) == 44
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -76,6 +77,9 @@ def test_registry_covers_every_system_prompt():
         # `ask_orchestrator` (#1443) reads agents' screens and transcripts through its tools on
         # every turn: session content is always in front of it.
         "ask_orchestrator",
+        # `ask_route` (#2028) reads the conversation, whose earlier answers quote what searches
+        # found in agents' sessions, and its direct answer goes straight to the Commander.
+        "ask_route",
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
@@ -147,6 +151,7 @@ EXPECTED_DEFAULT_SHA = {
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
     "ask_orchestrator": "f7b500cfe4423db4",  # #1960: send_nudge sends at once
+    "ask_route": "a9d2edf93a7108c3",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
     "hq_persona_asia_man": "eba5c28d6ff47fe6",

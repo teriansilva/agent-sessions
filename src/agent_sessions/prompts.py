@@ -201,6 +201,25 @@ _ASK_VERIFY = (
     'max 140 chars>"}]}.'
 )
 
+# HQ's question router (#2028): on an endpoint that takes no tools, ONE call decides whether the
+# Commander's message needs a search of their sessions and missions, or can be answered directly.
+# It sees the conversation and the message only, never the catalog, so a direct answer cannot be
+# about a session it was never shown; when in doubt it must ask for the search.
+_ASK_ROUTE = (
+    "You decide, for HQ inside BattleLab, whether the Commander's latest message needs a search "
+    "of their agent sessions and missions before it can be answered.\n"
+    "Search when the message asks about, refers to, or depends on anything in their work: a "
+    "session, a mission, a project, an agent, a file, a bug, a change, what is running, what "
+    "happened, what needs them, their settings, or something earlier in this conversation that "
+    'came from such a search ("and the other one?", "open it"). When unsure, search.\n'
+    "Answer directly only when the conversation so far and general knowledge are enough: "
+    "greetings, thanks, small talk, questions about you or your model, general questions, or "
+    "rephrasing and summarising what was already said here. You have no data about their "
+    "sessions or missions: never state or guess a fact about them in a direct answer.\n"
+    'Reply with ONLY a JSON object: {"search": true} to search, or {"search": false, '
+    '"answer": "<your reply to the Commander, plain text>"} to answer directly.'
+)
+
 _ASK_ORCHESTRATOR = """You answer for HQ inside BattleLab, the place where the Commander runs \
 and organises their AI-coding sessions and missions. Answer the Commander's questions about that \
 work from what your tools return.
@@ -829,6 +848,22 @@ REGISTRY: tuple[Prompt, ...] = (
         field="ask_orchestrator",
         # GUARDED. Its tool results carry agents' screens and transcripts verbatim, so session
         # content is in front of it on every turn — the condition the guard clause is for.
+        guarded=True,
+    ),
+    Prompt(
+        id="ask_route",
+        group="Mission control",
+        label="HQ — question routing",
+        description="On an AI endpoint that takes no tools (#2028): decides whether a message "
+        "needs a search of your sessions and missions, or answers it directly. Model and thinking "
+        "are set in Settings → AI → HQ.",
+        contract='{"search": true} | {"search": false, "answer": str}',
+        default=_ASK_ROUTE,
+        max_chars=4000,
+        block=BLOCK,
+        field="ask_route",
+        # GUARDED. It reads the conversation so far, and earlier HQ answers quote what searches
+        # found in agents' sessions; its direct answer goes straight to the Commander.
         guarded=True,
     ),
     Prompt(

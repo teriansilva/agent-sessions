@@ -263,8 +263,18 @@ function AnswerHead({ contact }: { contact: string }) {
 /** Fold one streamed progress line into its turn. */
 function applyEvent(t: AskTurn, ev: AskTurnEvent): AskTurn {
   if (ev.type !== "progress") return t;
+  if (ev.step === "classify") return { ...t, step: { step: "classify" } };
   if (ev.step === "catalog")
-    return { ...t, step: { step: "catalog", sessions: ev.sessions, missions: ev.missions } };
+    return {
+      ...t,
+      step: {
+        step: "catalog",
+        sessions: ev.sessions,
+        missions: ev.missions,
+        hits: ev.hits,
+        missionHits: ev.mission_hits,
+      },
+    };
   if (ev.step === "content") return { ...t, step: { step: "content", candidates: ev.candidates } };
   if (ev.step === "tool") return { ...t, step: { step: "tool", tool: ev.tool } };
   return { ...t, step: { step: "thinking", round: ev.round } };

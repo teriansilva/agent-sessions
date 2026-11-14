@@ -540,6 +540,63 @@ def set_hq_reports(value: bool, path: Path | None = None) -> bool:
     return _set("hq_reports", bool(value), path)
 
 
+#: HQ's question router (#2028): when HQ's endpoint takes no tools, one small call decides whether
+#: a message needs a session search or can be answered directly. `model` empty = the turn's own
+#: answering model; `thinking` one of HQ_ROUTE_THINKING ("hq" = the turn's own level).
+HQ_ROUTE_THINKING = ("off", "low", "medium", "high", "hq")
+HQ_ROUTE_DEFAULTS: dict = {"enabled": True, "model": "", "thinking": "off"}
+
+
+def _route_model_ok(value: object) -> bool:
+    """A model id as the endpoint lists it, or empty: one printable line, bounded (the same rule
+    as Settings → AI → HQ calls' model, `hq_calls_settings._is_model`)."""
+    return (
+        isinstance(value, str)
+        and len(value) <= AI_REVIEW_MODEL_MAX
+        and (value == "" or value.strip().isprintable())
+    )
+
+
+def _coerce_hq_route(raw: object) -> dict:
+    out = dict(HQ_ROUTE_DEFAULTS)
+    if isinstance(raw, dict):
+        if isinstance(raw.get("enabled"), bool):
+            out["enabled"] = raw["enabled"]
+        if _route_model_ok(raw.get("model")):
+            out["model"] = raw["model"].strip()
+        if raw.get("thinking") in HQ_ROUTE_THINKING:
+            out["thinking"] = raw["thinking"]
+    return out
+
+
+def get_hq_route(path: Path | None = None) -> dict:
+    """Settings → AI → HQ → Question routing (#2028). Unknown or malformed fields read as their
+    defaults (on, the turn's own model, thinking off)."""
+    return _coerce_hq_route(_load(path or _default_path()).get("hq_route"))
+
+
+def validate_hq_route_patch(patch: object) -> dict:
+    """The fields a PATCH may set, validated; raises ValueError naming the first bad one."""
+    if not isinstance(patch, dict) or not patch:
+        raise ValueError("hq_route must be an object with enabled, model or thinking")
+    unknown = sorted(set(patch) - set(HQ_ROUTE_DEFAULTS))
+    if unknown:
+        raise ValueError(f"hq_route has unknown fields: {', '.join(unknown)}")
+    if "enabled" in patch and not isinstance(patch["enabled"], bool):
+        raise ValueError("hq_route.enabled must be a boolean")
+    if "model" in patch and not _route_model_ok(patch["model"]):
+        raise ValueError("hq_route.model must be a model id, or empty for HQ's own model")
+    if "thinking" in patch and patch["thinking"] not in HQ_ROUTE_THINKING:
+        raise ValueError("hq_route.thinking must be one of " + ", ".join(HQ_ROUTE_THINKING))
+    return {k: (v.strip() if k == "model" else v) for k, v in patch.items()}
+
+
+def set_hq_route(patch: object, path: Path | None = None) -> dict:
+    """Merge a validated partial patch under the prefs lock; returns the stored block."""
+    clean = validate_hq_route_patch(patch)
+    return _mutate("hq_route", lambda cur: {**_coerce_hq_route(cur), **clean}, path)
+
+
 def get_artifacts_enabled(path: Path | None = None) -> bool:
     """Settings → Artifacts (#1932): OFF unless explicitly turned on. It governs whether NEW
     launches whose session, mission or project has artifacts turned on get the

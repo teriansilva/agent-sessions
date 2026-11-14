@@ -411,6 +411,9 @@ def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
     spoken = _SPOKEN.get()
     if spoken is not None and spoken[0] is not None:
         level = spoken[0]  # a spoken call turn: the level for calls, not the one for typing
+    own = _REQUEST_THINKING.get()
+    if own is not None:
+        level = own  # one request with a level of its own (HQ's question router, #2028)
     off = level == "off" or (level == "auto" and not interactive)
     if p.thinking == _STYLE_CHAT_TEMPLATE:
         # Today: the opt-out rides on EVERY call, interactive or not.
@@ -455,6 +458,55 @@ def spoken_turn(thinking: str | None = "off", model: str | None = None):
         yield
     finally:
         _SPOKEN.reset(token)
+
+
+#: The thinking level for the requests made inside `request_thinking` (#2028), or ``None``: the
+#: turn's own level (Settings → AI, or a spoken call's). Innermost wins; ``None`` outside.
+_REQUEST_THINKING: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_thinking", default=None
+)
+
+
+@contextlib.contextmanager
+def request_thinking(level: str | None):
+    """Every request made inside this block is sent with thinking `level` (one of
+    THINKING_LEVELS), or with the turn's own level for ``None`` / anything else (#2028).
+
+    Narrow on purpose: it changes only the thinking fields, never the model and never what counts
+    as a spoken turn. HQ's question router uses it so its one JSON call can run with thinking off
+    while the answer the turn goes on to make keeps the turn's level. A context, not a changed
+    configuration: it is restored on success, error and cancellation alike, and two concurrent
+    turns (each its own task) never see each other's level."""
+    token = _REQUEST_THINKING.set(level if level in THINKING_LEVELS else None)
+    try:
+        yield
+    finally:
+        _REQUEST_THINKING.reset(token)
+
+
+#: True inside `pinned_model`: the requests made there name their model ON PURPOSE (#2028), so
+#: the transport must not read "the configured model" as "inherit" and swap it.
+_MODEL_PINNED: contextvars.ContextVar[bool] = contextvars.ContextVar("model_pinned", default=False)
+
+
+@contextlib.contextmanager
+def pinned_model(pinned: bool = True):
+    """Requests made inside this block send exactly the model they name (#2028).
+
+    `review._post_chat` treats a body asking for the configured model as "the turn's model" and
+    swaps it for a spoken turn's call model (#1996) or the Auto pick. HQ's question router with an
+    operator-CHOSEN model that happens to equal the typed HQ model meant that model, not the
+    call's; string equality can't tell the two apart, so the intent rides here instead. Restored
+    on every exit; per task."""
+    token = _MODEL_PINNED.set(bool(pinned))
+    try:
+        yield
+    finally:
+        _MODEL_PINNED.reset(token)
+
+
+def model_pinned() -> bool:
+    return _MODEL_PINNED.get()
 
 
 def in_spoken_turn() -> bool:

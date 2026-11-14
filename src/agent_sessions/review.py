@@ -1414,10 +1414,13 @@ async def _post_chat(
     # A spoken call turn with a model of its own (#1996): every request of that turn asking for
     # the configured model goes to the call's instead, on the same endpoint with the same key.
     # A caller that named another model itself is left alone.
+    # A caller that CHOSE its model (`ai_providers.pinned_model`, HQ's question router with an
+    # operator-picked model, #2028) is left alone even when that model equals the configured one.
+    pinned = ai_providers.model_pinned()
     spoken_model = ai_providers.spoken_model()
-    if spoken_model and body.get("model") == cfg.get("model"):
+    if spoken_model and not pinned and body.get("model") == cfg.get("model"):
         body["model"] = spoken_model
-    if ai_providers.is_auto(cfg) and body.get("model") == cfg.get("model"):
+    if ai_providers.is_auto(cfg) and not pinned and body.get("model") == cfg.get("model"):
         body["model"] = await _auto_model(cfg)
     url = _base(cfg) + "/chat/completions"
     # The configured thinking level as this provider spells it (#1657). For Custom and the

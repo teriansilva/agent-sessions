@@ -65,6 +65,7 @@ from . import (
     hq_usage,
     mission_plan,
     missions,
+    prefs,
     prompts,
     pulse_chat,
     review,
@@ -3105,6 +3106,125 @@ def _sanitize(calls: list) -> list[dict] | None:
     )
 
 
+#: Endpoints (base URL, model on the wire, key fingerprint) that said in a capability's own words
+#: that they take no tool calls (#2028): their later turns skip the tools request and go straight
+#: to the no-tools path. In-process; a restart probes once more. Only a DEFINITIVE refusal is
+#: remembered — a malformed tool schema, a transient failure or any other 400 that merely names
+#: `tool` still takes this turn's fallback (`chat_runtime._tools_rejected`) but is never cached,
+#: or one bad request would switch tools off for a tool-capable endpoint until a restart.
+_TOOLS_UNSUPPORTED: set[tuple[str, str, str]] = set()
+_TOOLS_UNSUPPORTED_RE = re.compile(
+    r"\b(?:tools|tool calls?|tool use|tool calling|function calls?|function calling)"
+    r"\s+(?:is|are)\s+(?:not supported|not available|unavailable|disabled)"
+    r"|\bdoes(?:n't| not) support\s+(?:tools|tool calls?|tool use|tool calling|function calling)",
+    re.IGNORECASE,
+)
+
+
+def _tools_unsupported(r) -> bool:
+    """A 400/422 whose text says tool calling itself is unsupported — the capability, not a
+    request that happened to carry a bad tool (live wording, `anthropic-claude-server` via
+    LiteLLM: "OpenAI tool calls are not supported by this adapter")."""
+    if r.status_code not in (400, 422):
+        return False
+    return bool(_TOOLS_UNSUPPORTED_RE.search(r.text[:4000]))
+
+
+def _tools_key(cfg: dict) -> tuple[str, str, str]:
+    """The memo key for the model that ANSWERS this turn: a spoken turn's call model when it has
+    one (the transport sends that model instead, #1996), else the model on the wire for the
+    configured one. Never the question router's own model."""
+    spoken = ai_providers.spoken_model()
+    if spoken:
+        return review._capability_key(cfg, spoken)
+    return _vision_key(cfg)
+
+
+#: A direct answer from the question router is at most this long; anything longer, empty, or not
+#: a string is not trusted as an answer and the turn searches instead.
+ROUTE_ANSWER_MAX = 4000
+
+
+async def _route(turn: _Turn, history: list[dict], switched: bool) -> str | None:
+    """HQ's question router (#2028), for an endpoint that takes no tools: ONE JSON call decides
+    whether the message needs the two-stage session search. Returns the direct answer, or
+    ``None`` to search.
+
+    It sees the persona, the conversation and the question — never the catalog — with
+    `ask_route` guarded last. Settings → AI → HQ → Question routing sets it: off means every
+    turn searches (the behaviour before #2028); the model ("" = the turn's own answering model)
+    and the thinking level ("hq" = the turn's own) apply to THIS request only.
+
+    Best-effort recall, fail toward searching: anything but ``{"search": false}`` with a
+    non-empty string answer of bounded length — ``true``, a missing or non-boolean ``search``,
+    an empty or oversize answer, invalid JSON, a transport error or a timeout — searches."""
+    setting = prefs.get_hq_route()
+    if not setting["enabled"]:
+        return None
+    turn.progress({"type": "progress", "step": "classify"})
+    thinking = None if setting["thinking"] == "hq" else setting["thinking"]
+    try:
+        cfg = review._require_config()
+        convo: list[dict] = [
+            # The persona first and the guarded prompt LAST (`prompt-registry.md`), as on the
+            # tool path: a direct answer speaks as the contact, and on a call as speech.
+            *_persona(turn),
+            *_handover(turn, switched),
+            *_call_style(turn),
+            {"role": "system", "content": prompts.effective("ask_route")},
+            # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
+            *pulse_chat.bound_history(history),
+            {"role": "user", "content": _user_content(turn)},
+        ]
+        body = {
+            # "" = the turn's own answering model: the configured one, which the transport
+            # swaps for a spoken turn's call model when it has one (#1996).
+            "model": setting["model"] or cfg["model"],
+            "messages": convo,
+            "temperature": 0,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        # An operator-chosen model is sent as chosen, even when it equals the typed HQ model and
+        # this is a call with a model of its own; "" inherits (the transport's swap applies).
+        with (
+            hq_usage.hq_call(),
+            ai_providers.request_thinking(thinking),
+            ai_providers.pinned_model(bool(setting["model"])),
+        ):
+            r = await review.post_chat_response(cfg, body)
+        if r.status_code != 200:
+            return None
+        payload = r.json()
+        review._reject_if_truncated(payload, subject="endpoint")
+        obj = review._extract_json(str(payload["choices"][0]["message"]["content"]))
+    except Exception as e:  # noqa: BLE001 — every failure means "search", never a failed turn
+        log.info("hq question router failed, searching instead: %s", type(e).__name__)
+        return None
+    if not isinstance(obj, dict) or obj.get("search") is not False:
+        return None
+    answer = obj.get("answer")
+    if not isinstance(answer, str) or not answer.strip() or len(answer) > ROUTE_ANSWER_MAX:
+        return None
+    return answer.strip()
+
+
+async def _no_tools_turn(turn: _Turn, history: list[dict], switched: bool, cfg: dict) -> list[dict]:
+    """The endpoint takes no tools: the router answers directly, or the two-stage find does
+    (#2028). The call-end judgement runs here as on the tool path — there is no `end_call` tool."""
+    try:
+        direct = await _route(turn, history, switched)
+        if direct is not None:
+            records = [_assistant(turn, direct), _status(turn, "done")]
+        else:
+            records = await _fallback_find(turn, history)
+    except review.ReviewError as e:
+        return [_status(turn, "failed", str(e))]
+    if _judges_call_end(turn):
+        turn.end_call = await _call_is_over(turn, cfg, records[0]["text"])
+    return records
+
+
 async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:
     """The endpoint refused tools: answer as the transient Ask does (two-stage find). The
     question carries its attachments' sanitized note and excerpts too — a file-only turn must
@@ -3537,6 +3657,9 @@ async def _run_turn(turn: _Turn) -> list[dict]:
     ]
     question_at = len(convo) - 1
     asked_again = False
+    if _tools_key(cfg) in _TOOLS_UNSUPPORTED:
+        # This endpoint already said it takes no tools (#2028): don't send a request it refuses.
+        return await _no_tools_turn(turn, history, switched, cfg)
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
         turn.progress({"type": "progress", "step": "thinking", "round": round_no})
@@ -3572,13 +3695,9 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             return fail(str(e))
         if r.status_code != 200:
             if round_no == 0 and _tools_rejected(r):
-                try:
-                    records = await _fallback_find(turn, history)
-                except review.ReviewError as e:
-                    return fail(str(e))
-                if _judges_call_end(turn):  # no `end_call` tool here: the judgement still runs
-                    turn.end_call = await _call_is_over(turn, cfg, records[0]["text"])
-                return records
+                if _tools_unsupported(r):  # the capability itself: remembered (#2028)
+                    _TOOLS_UNSUPPORTED.add(_tools_key(cfg))
+                return await _no_tools_turn(turn, history, switched, cfg)
             what = {401: "the key was rejected", 403: "access was refused", 429: "rate limited"}
             suffix = f" — {what[r.status_code]}" if r.status_code in what else ""
             return fail(f"the endpoint refused the request (HTTP {r.status_code}{suffix})")

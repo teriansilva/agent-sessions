@@ -59,7 +59,13 @@ interface Pending {
 function stepOf(ev: Extract<MissionTurnEvent, { type: "progress" }>): AskStep {
   switch (ev.step) {
     case "catalog":
-      return { step: "catalog", sessions: ev.sessions, missions: ev.missions };
+      return {
+        step: "catalog",
+        sessions: ev.sessions,
+        missions: ev.missions,
+        hits: ev.hits,
+        missionHits: ev.mission_hits,
+      };
     case "content":
       return { step: "content", candidates: ev.candidates };
     case "instruct":

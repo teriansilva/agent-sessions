@@ -167,6 +167,22 @@ def _card_haystack(card: dict) -> str:
     ).lower()
 
 
+def _prefilter_hits(
+    catalog: list[dict], query: str, cap: int = CATALOG_SLICE_MAX
+) -> tuple[list[dict], int]:
+    """`_prefilter`'s slice, and how many of its entries are keyword HITS (the rest is recency
+    padding). The progress line says what was searched with it (#2028): a padded slice of 150
+    is not "150 matching sessions"."""
+    slice_ = _prefilter(catalog, query, cap)
+    keywords = _keywords(query)
+    hits = (
+        sum(1 for card in slice_ if any(k in _card_haystack(card) for k in keywords))
+        if keywords
+        else 0
+    )
+    return slice_, hits
+
+
 def _prefilter(catalog: list[dict], query: str, cap: int = CATALOG_SLICE_MAX) -> list[dict]:
     """Bound the catalog slice sent to the model: keyword HITS are taken first (so a match is
     preferred over mere recency), then most-recent-first recency fills the remainder up to
@@ -426,13 +442,16 @@ async def ask_events(
         }
         return
     now = time.time()
-    slice_ = _prefilter(catalog, query)
-    mission_slice = _prefilter(mission_catalog, query, MISSION_SLICE_MAX)
+    slice_, hits = _prefilter_hits(catalog, query)
+    mission_slice, mission_hits = _prefilter_hits(mission_catalog, query, MISSION_SLICE_MAX)
     yield {
         "type": "progress",
         "step": "catalog",
         "sessions": len(slice_),
         "missions": len(mission_slice),
+        # Keyword hits among them (#2028); the rest is recency padding.
+        "hits": hits,
+        "mission_hits": mission_hits,
     }
     by_id = {c["id"]: c for c in (*slice_, *mission_slice)}
     user = {

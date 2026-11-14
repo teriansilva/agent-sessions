@@ -2,7 +2,8 @@
  *  they say what is actually happening. Its own module for the fast-refresh rule: `AskWorking.tsx`
  *  exports a component and nothing else. */
 export type AskStep =
-  | { step: "catalog"; sessions: number; missions: number }
+  // `hits`: keyword hits among the sessions searched (#2028); absent from older servers.
+  | { step: "catalog"; sessions: number; missions: number; hits?: number; missionHits?: number }
   | { step: "content"; candidates: number }
   // A mission turn's own steps (#1224): what it is deciding, and what an instruction reads.
   | { step: "classify" }
@@ -43,6 +44,19 @@ export function askStepLabel(step: AskStep | null): string {
     return step.sessions
       ? `Drafting the instruction for ${plural(step.sessions, "session", "sessions")}…`
       : "Drafting the instruction…";
+  }
+  if (step.step === "catalog" && step.hits !== undefined) {
+    // What was actually searched (#2028): the slice is keyword hits padded with recent sessions
+    // up to a cap, so its size is never "N matching sessions".
+    const hits = step.hits;
+    const missionHits = step.missionHits ?? 0;
+    const parts = [
+      hits > 0 ? plural(hits, "matching session", "matching sessions") : "",
+      missionHits > 0 ? plural(missionHits, "matching mission", "matching missions") : "",
+    ].filter(Boolean);
+    if (parts.length === 0) return "Searching your recent sessions…";
+    const padded = step.sessions > hits || step.missions > missionHits;
+    return `Searching ${parts.join(" and ")}${padded ? " and your recent ones" : ""}…`;
   }
   if (step.step === "catalog") {
     const what = [

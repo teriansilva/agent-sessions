@@ -197,6 +197,11 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("analytics_consent must be a boolean")
     if "hq_reports" in payload and not isinstance(payload["hq_reports"], bool):
         raise bad("hq_reports must be a boolean")
+    if "hq_route" in payload:
+        try:
+            prefs.validate_hq_route_patch(payload["hq_route"])
+        except ValueError as e:
+            raise bad(str(e)) from None
     if "operator_name" in payload:
         v = payload["operator_name"]
         if not (v is None or v == "" or prefs.clean_operator_name(v) is not None):
@@ -770,6 +775,10 @@ def register(
                 # Settings → HQ → "Sessions can report to HQ" (#1882): off by default (#1889);
                 # governs whether NEW pty launches get the report tool.
                 "hq_reports": prefs.get_hq_reports(),
+                # Settings → AI → HQ → Question routing (#2028): on/off, model ("" = the turn's
+                # own) and thinking for the one call that decides whether a message needs a
+                # session search when HQ's endpoint takes no tools.
+                "hq_route": prefs.get_hq_route(),
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -1193,6 +1202,13 @@ def register(
             if not isinstance(v, bool):
                 raise HTTPException(status_code=422, detail="hq_reports must be a boolean")
             out["hq_reports"] = prefs.set_hq_reports(v)
+        if "hq_route" in payload:
+            # Settings → AI → HQ → Question routing (#2028). Validated in the preflight; a
+            # partial patch merges under the prefs lock.
+            try:
+                out["hq_route"] = prefs.set_hq_route(payload["hq_route"])
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
         if "whats_new_seen" in payload:
             # What's new (#971). The store keeps the numeric maximum, so the response carries the
             # value actually kept — which is newer than the request's when another device got there.

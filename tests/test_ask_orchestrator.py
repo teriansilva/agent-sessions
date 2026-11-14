@@ -1663,3 +1663,369 @@ def test_orphans_stay_until_the_conversations_absence_is_durable(app, monkeypatc
     failing["on"] = False
     assert app.c.get("/api/ask/conversations").status_code == 200
     assert not any(p.exists() for p in side)
+
+
+# ---- the question router on an endpoint that takes no tools (#2028) ----------------------------
+
+NO_TOOLS = httpx.Response(
+    400,
+    json={
+        "error": {
+            "message": "litellm.BadRequestError: OpenAIException - OpenAI tool calls are not "
+            "supported by this adapter. Received Model Group=m",
+            "code": "400",
+        }
+    },
+)
+
+
+class NoToolsScript(Script):
+    """An endpoint that refuses EVERY request carrying tools (as the live adapter does, retries
+    included) and answers the others — the router's — from ``replies`` in order."""
+
+    def __init__(self, refusal, *replies):
+        super().__init__(*replies)
+        self.refusal = refusal
+        self.router_calls = 0
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "tools" in body:
+            self.bodies.append(body)
+            return self.refusal
+        self.router_calls += 1
+        self.bodies.append(body)
+        reply = self.replies[min(self.router_calls - 1, len(self.replies) - 1)]
+        if isinstance(reply, httpx.Response):
+            return reply
+        reply = dict(reply)
+        finish = reply.pop("_finish", "stop")
+        return httpx.Response(200, json={"choices": [{"message": reply, "finish_reason": finish}]})
+
+
+@pytest.fixture
+def no_tools(ai, monkeypatch):
+    def install(*replies, refusal=None) -> NoToolsScript:
+        ai(answer("unused"))  # configures the endpoint
+        script = NoToolsScript(refusal or NO_TOOLS, *replies)
+        monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(script.handler))
+        return script
+
+    return install
+
+
+def route(obj) -> dict:
+    """The router's JSON reply as the endpoint sends it."""
+    return answer(obj if isinstance(obj, str) else json.dumps(obj))
+
+
+def _router_bodies(script: Script) -> list[dict]:
+    return [b for b in script.bodies if "tools" not in b]
+
+
+def test_a_chat_question_is_answered_directly_without_any_search(app, no_tools, found, monkeypatch):
+    def no_reads(*a, **k):  # pragma: no cover - the assertion is that it never runs
+        raise AssertionError("a direct answer read a transcript")
+
+    monkeypatch.setattr(review, "gather_input", no_reads)
+    script = no_tools(route({"search": False, "answer": "I'm HQ, on model m."}))
+    turn = app.ask(app.new(), "What model are u?").json()["turn"]
+    assert turn["status"] == "done"
+    assert turn["answer"] == "I'm HQ, on model m."
+    assert turn["matches"] == [] and found == []  # no two-stage find at all
+    # Exactly ONE model call that is not the refused tools request (which the transport may send
+    # twice: its own thinking-field retry, #1657): the router.
+    routers = _router_bodies(script)
+    assert len(routers) == 1 and "tools" in script.bodies[0]
+    body = routers[0]
+    assert "tools" not in body and body["response_format"] == {"type": "json_object"}
+    systems = [m["content"] for m in body["messages"] if m["role"] == "system"]
+    from agent_sessions import prompts
+
+    assert systems[-1] == prompts.effective("ask_route")  # the guarded prompt is the last word
+    assert body["messages"][-1] == {"role": "user", "content": "What model are u?"}
+
+
+def test_a_question_about_the_work_still_searches(app, no_tools, found):
+    script = no_tools(route({"search": True}))
+    turn = app.ask(app.new(), "which session fixed the login bug?").json()["turn"]
+    assert turn["answer"] == "found it" and [m["id"] for m in turn["matches"]] == [S1]
+    assert found == ["which session fixed the login bug?"]
+    assert len(_router_bodies(script)) == 1
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        route({"search": "false", "answer": "x"}),  # not a boolean
+        route({"search": 0, "answer": "x"}),
+        route({"answer": "x"}),  # no decision
+        route({"search": False}),  # no answer
+        route({"search": False, "answer": "   "}),
+        route({"search": False, "answer": 42}),
+        route({"search": False, "answer": "x" * (ask_orchestrator.ROUTE_ANSWER_MAX + 1)}),
+        route("[]"),
+        answer("not json at all"),
+        httpx.Response(500, text="boom"),
+        {"role": "assistant", "content": '{"search": false, "answer": "cut', "_finish": "length"},
+    ],
+    ids=[
+        "string-false",
+        "zero",
+        "no-search",
+        "no-answer",
+        "blank-answer",
+        "non-string-answer",
+        "oversize-answer",
+        "not-an-object",
+        "invalid-json",
+        "http-500",
+        "truncated",
+    ],
+)
+def test_every_unusable_router_reply_falls_back_to_the_search(app, no_tools, found, reply):
+    no_tools(reply)
+    turn = app.ask(app.new(), "hi").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "found it"
+    assert found == ["hi"]
+
+
+def test_a_router_transport_failure_searches(app, no_tools, found, monkeypatch):
+    async def boom(*a, **k):
+        raise review.TransportTimeout("the endpoint did not answer in time")
+
+    no_tools()
+    real = review.post_chat_response
+
+    async def router_times_out(cfg, body, **kw):
+        if "tools" not in body:
+            return await boom()
+        return await real(cfg, body, **kw)
+
+    monkeypatch.setattr(review, "post_chat_response", router_times_out)
+    turn = app.ask(app.new(), "hi").json()["turn"]
+    assert turn["answer"] == "found it" and found == ["hi"]
+
+
+def test_routing_switched_off_always_searches_with_no_router_call(app, no_tools, found):
+    prefs.set_hq_route({"enabled": False})
+    script = no_tools()
+    turn = app.ask(app.new(), "What model are u?").json()["turn"]
+    assert turn["answer"] == "found it" and found == ["What model are u?"]
+    assert _router_bodies(script) == []
+
+
+def test_a_later_turn_skips_the_tools_request_the_endpoint_refused(app, no_tools, found):
+    script = no_tools(route({"search": False, "answer": "hello"}))
+    cid = app.new()
+    assert app.ask(cid, "hi").json()["turn"]["answer"] == "hello"
+    script.replies = [route({"search": False, "answer": "again"})]
+    script.bodies.clear()
+    assert app.ask(cid, "hi again").json()["turn"]["answer"] == "again"
+    assert script.bodies and all("tools" not in b for b in script.bodies)  # router only
+
+
+def test_a_changed_model_forgets_the_refusal(app, ai, no_tools, found):
+    no_tools(route({"search": False, "answer": "hello"}))
+    cid = app.new()
+    app.ask(cid, "hi")
+    assert ask_orchestrator._TOOLS_UNSUPPORTED  # remembered for model "m"
+    prefs.set_ai_review({**prefs.get_ai_review(), "model": "m2"})
+    script = ai(answer("answered with tools"))  # m2 takes tools
+    assert app.ask(cid, "hi").json()["turn"]["answer"] == "answered with tools"
+    assert "tools" in script.bodies[0]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        httpx.Response(400, text='{"error": "Invalid schema for function noop: missing type"}'),
+        httpx.Response(422, text='{"detail": "tool_choice must be one of auto, none"}'),
+        httpx.Response(400, text='{"error": "tools[0].function.parameters: not supported type"}'),
+    ],
+    ids=["bad-schema", "tool-choice", "param-type"],
+)
+def test_a_request_error_that_merely_names_tools_is_not_remembered(
+    app, ai, no_tools, found, refusal
+):
+    # It still takes this turn's fallback (`_tools_rejected` as before) — but a tool-capable
+    # endpoint that once refused one malformed request keeps getting tools on the next turn.
+    no_tools(route({"search": True}), refusal=refusal)
+    cid = app.new()
+    assert app.ask(cid, "which session?").json()["turn"]["answer"] == "found it"
+    assert ask_orchestrator._TOOLS_UNSUPPORTED == set()
+    script = ai(answer("answered with tools"))
+    app.ask(cid, "and now?")
+    assert "tools" in script.bodies[0]
+
+
+def test_a_server_error_is_not_remembered(app, ai):
+    ai(httpx.Response(500, text="tool calls are not supported"))
+    turn = app.ask(app.new(), "hi").json()["turn"]
+    assert turn["status"] == "failed"
+    assert ask_orchestrator._TOOLS_UNSUPPORTED == set()
+
+
+@pytest.mark.parametrize(
+    ("status", "text", "definitive"),
+    [
+        (400, "OpenAI tool calls are not supported by this adapter", True),
+        (400, '{"error": "tools are not supported by this model"}', True),
+        (422, "This model does not support function calling", True),
+        (400, "Tool use is not available for this model", True),
+        (400, "Invalid schema for function noop", False),
+        (400, "tool_choice must be auto", False),
+        (500, "tool calls are not supported", False),
+        (400, "the image is not supported", False),
+    ],
+)
+def test_only_a_capability_refusal_counts_as_definitive(status, text, definitive):
+    assert ask_orchestrator._tools_unsupported(httpx.Response(status, text=text)) is definitive
+
+
+def test_a_direct_answer_after_a_found_session_reads_no_transcript(
+    app, no_tools, found, monkeypatch
+):
+    """Through `_run_turn` with a previously matched session: the carry-forward (#2008) still runs,
+    the model-side search does not."""
+    script = no_tools(route({"search": True}))
+    cid = app.new()
+    assert app.ask(cid, "which session was the rebase?").json()["turn"]["matches"]
+    assert found == ["which session was the rebase?"]
+
+    def no_reads(*a, **k):  # pragma: no cover
+        raise AssertionError("a direct answer read a transcript")
+
+    monkeypatch.setattr(review, "gather_input", no_reads)
+    script.replies = [route({"search": False, "answer": "You're welcome."})]
+    turn = app.ask(cid, "thanks!").json()["turn"]
+    assert turn["answer"] == "You're welcome."
+    assert found == ["which session was the rebase?"]  # no second search
+
+
+def test_the_router_sends_its_own_model_and_thinking_and_only_on_its_request(app, no_tools, found):
+    prefs.set_hq_route({"model": "fast-router", "thinking": "off"})
+    script = no_tools(route({"search": True}))
+    app.ask(app.new(), "which session?")
+    tools_req, router_req = script.bodies[0], _router_bodies(script)[0]
+    assert router_req["model"] == "fast-router"
+    assert tools_req["model"] == "m"  # the answer path keeps HQ's own model
+
+
+def test_an_empty_router_model_is_the_turns_answering_model(ai):
+    """Typed turn: `ai_review.model`. Spoken turn with a call model (#1996): the call's model."""
+    from agent_sessions import ai_providers
+
+    script = ai(route({"search": False, "answer": "ok"}))
+
+    def turn() -> ask_orchestrator._Turn:
+        return ask_orchestrator._Turn(
+            cid="ask_" + "0" * 32,
+            turn_id=str(uuid.uuid4()),
+            question="hi",
+            working_keys=set(),
+            progress=lambda ev: None,
+        )
+
+    assert asyncio.run(ask_orchestrator._route(turn(), [], False)) == "ok"
+    assert script.bodies[-1]["model"] == "m"
+
+    async def spoken():
+        with ai_providers.spoken_turn(thinking="off", model="call-model"):
+            return await ask_orchestrator._route(turn(), [], False)
+
+    assert asyncio.run(spoken()) == "ok"
+    assert script.bodies[-1]["model"] == "call-model"
+
+
+@pytest.mark.parametrize(
+    ("router_model", "sent"),
+    [("", "call-model"), ("fast-router", "fast-router"), ("m", "m")],
+    ids=["empty-inherits-the-call-model", "explicit-other", "explicit-equal-to-typed-model"],
+)
+def test_an_explicit_router_model_is_sent_as_chosen_on_a_call(ai, router_model, sent):
+    """Hermes on PR #2031: an operator-picked router model equal to the typed HQ model ("m") was
+    swapped for the call's model by the transport, which reads equality as "inherit". Through the
+    real `_route` → `post_chat_response` → `_post_chat` path."""
+    from agent_sessions import ai_providers
+
+    prefs.set_hq_route({"model": router_model})
+    script = ai(route({"search": False, "answer": "ok"}))
+    turn = ask_orchestrator._Turn(
+        cid="ask_" + "0" * 32,
+        turn_id=str(uuid.uuid4()),
+        question="hi",
+        working_keys=set(),
+        progress=lambda ev: None,
+    )
+
+    async def spoken():
+        with ai_providers.spoken_turn(thinking="off", model="call-model"):
+            return await ask_orchestrator._route(turn, [], False)
+
+    assert asyncio.run(spoken()) == "ok"
+    assert script.bodies[-1]["model"] == sent
+    assert not ai_providers.model_pinned()  # restored after the request
+
+
+def test_the_router_reports_a_classify_step_before_any_search(app, no_tools, found, monkeypatch):
+    seen: list[dict] = []
+    real = ask_orchestrator._route
+
+    async def spy(turn, history, switched):
+        original = turn.progress
+        turn.progress = lambda ev: (seen.append(ev), original(ev))
+        return await real(turn, history, switched)
+
+    monkeypatch.setattr(ask_orchestrator, "_route", spy)
+    no_tools(route({"search": True}))
+    app.ask(app.new(), "which session?")
+    assert seen and seen[0] == {"type": "progress", "step": "classify"}
+
+
+# ---- the router's settings (#2028) -------------------------------------------------------------
+
+
+def test_route_settings_default_and_round_trip(app):
+    assert app.c.get("/api/config").json()["hq_route"] == {
+        "enabled": True,
+        "model": "",
+        "thinking": "off",
+    }
+    r = app.c.post(
+        "/api/prefs",
+        json={"hq_route": {"model": " fast ", "thinking": "hq"}},
+        headers=app.hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["hq_route"] == {"enabled": True, "model": "fast", "thinking": "hq"}
+    assert app.c.get("/api/config").json()["hq_route"]["thinking"] == "hq"
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"enabled": "yes"},
+        {"thinking": "auto"},
+        {"thinking": "max"},
+        {"model": "a\nb"},
+        {"model": "x" * (prefs.AI_REVIEW_MODEL_MAX + 1)},
+        {"other": 1},
+        {},
+        "on",
+    ],
+)
+def test_route_settings_refuse_bad_values_and_store_nothing(app, patch):
+    r = app.c.post("/api/prefs", json={"hq_route": patch}, headers=app.hdr)
+    assert r.status_code == 422, r.text
+    assert app.c.get("/api/config").json()["hq_route"] == prefs.HQ_ROUTE_DEFAULTS
+
+
+def test_route_settings_need_the_csrf_token(app):
+    r = app.c.post(
+        "/api/prefs",
+        json={"hq_route": {"enabled": False}},
+        headers={"Origin": app.hdr["Origin"]},
+    )
+    assert r.status_code in (401, 403)
+    assert prefs.get_hq_route()["enabled"] is True

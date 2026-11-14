@@ -333,6 +333,16 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_tools_capability_memo(monkeypatch) -> None:
+    """HQ remembers, per process, an endpoint that said it takes no tools (#2028). The suite's
+    scripted endpoints share one base URL, model and key, so one test's refusal would otherwise
+    send every later test straight down the no-tools path."""
+    from agent_sessions import ask_orchestrator
+
+    monkeypatch.setattr(ask_orchestrator, "_TOOLS_UNSUPPORTED", set())
+
+
+@pytest.fixture(autouse=True)
 def _no_usage_analytics(monkeypatch) -> None:
     """The suite never reports usage (#1009). Every config fetch would otherwise be a candidate
     report, so the server-wide switch is off for every test; the analytics tests turn it back on

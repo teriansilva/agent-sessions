@@ -1041,6 +1041,10 @@ export type PulseAskEvent =
       step: "catalog";
       sessions: number;
       missions: number;
+      /** Keyword hits among `sessions` / `missions` (#2028); the rest is recency padding.
+       *  Absent on older servers. */
+      hits?: number;
+      mission_hits?: number;
     }
   | { type: "progress"; step: "content"; candidates: number }
   | ({ type: "answer"; final: boolean } & PulseAskResult)
@@ -1334,7 +1338,15 @@ export interface AskFollow {
 /** One line of `POST /api/ask/conversations/{id}/message/stream` (#1443): `progress` while the
  *  turn runs, then exactly one `turn` (the settled turn) or one `error`. */
 export type AskTurnEvent =
-  | { type: "progress"; step: "catalog"; sessions: number; missions: number }
+  | { type: "progress"; step: "classify" }
+  | {
+      type: "progress";
+      step: "catalog";
+      sessions: number;
+      missions: number;
+      hits?: number;
+      mission_hits?: number;
+    }
   | { type: "progress"; step: "content"; candidates: number }
   | { type: "progress"; step: "thinking"; round: number }
   | { type: "progress"; step: "tool"; tool: string }
@@ -1568,6 +1580,8 @@ export interface AppConfig {
   /** Settings → HQ → "Sessions can report to HQ" (#1882): off by default (#1889); new launches only.
    *  Absent on older servers. */
   hq_reports?: boolean;
+  /** Settings → AI → HQ → Question routing (#2028). Absent on older servers. */
+  hq_route?: HqRouteSettings;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;
@@ -2896,7 +2910,14 @@ export interface MissionTurn {
  *  exactly one `turn` — the very body `/message` returns — or one `error`. */
 export type MissionTurnEvent =
   | { type: "progress"; step: "classify" }
-  | { type: "progress"; step: "catalog"; sessions: number; missions: number }
+  | {
+      type: "progress";
+      step: "catalog";
+      sessions: number;
+      missions: number;
+      hits?: number;
+      mission_hits?: number;
+    }
   | { type: "progress"; step: "content"; candidates: number }
   | { type: "progress"; step: "instruct"; sessions: number }
   | { type: "answer"; final: false; answer: string }
@@ -3410,4 +3431,14 @@ export interface AgentEndpointPatch {
   context_window?: number;
   max_output_tokens?: number;
   tools?: AgentTools;
+}
+
+/** Settings → AI → HQ → Question routing (#2028): when HQ's endpoint takes no tools, one call
+ *  decides whether a message needs a session search. `model` "" = the turn's own answering model;
+ *  `thinking` "hq" = the turn's own level. */
+export type HqRouteThinking = "off" | "low" | "medium" | "high" | "hq";
+export interface HqRouteSettings {
+  enabled: boolean;
+  model: string;
+  thinking: HqRouteThinking;
 }
