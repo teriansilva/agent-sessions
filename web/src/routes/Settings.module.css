@@ -17,6 +17,14 @@
 }
 
 /* HQ's existing settings panels, with independent session/mission grants (#2037). */
+.modelRows { display: grid; gap: 16px; margin-top: 20px; }
+.modelRow { min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--line); }
+.modelRow legend { padding-inline: 8px; color: var(--text-1); font-weight: 600; }
+.modelRow .aiFieldLabel { color: var(--text-2); }
+.modelGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.modelSource { color: var(--text-2); font-size: var(--fs-micro); line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 800px) { .modelGrid { grid-template-columns: minmax(0, 1fr); } }
+
 .hqGroups {
   display: flex;
   flex-wrap: wrap;

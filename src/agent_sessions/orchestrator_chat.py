@@ -31,7 +31,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import orchestrator, prefs, prompts, pulse_chat, review
+from . import ai_providers, orchestrator, prefs, prompts, pulse_chat, review
 from . import orchestrator_ledger as ledger
 
 QUERY_MAX = 2_000
@@ -194,6 +194,33 @@ async def ask(
       what it raises is swallowed, and nothing it does can change what the turn returns.
     """
 
+    scope = (
+        ai_providers.model_override(**prefs.get_hq_models()["mission"])
+        if mission_id
+        else contextlib.nullcontext()
+    )
+    with scope:
+        return await _ask(
+            query,
+            history,
+            working_keys=working_keys,
+            turn_id=turn_id,
+            mission_id=mission_id,
+            reserve_write=reserve_write,
+            on_progress=on_progress,
+        )
+
+
+async def _ask(
+    query: str,
+    history: object = None,
+    *,
+    working_keys: set[str] | None = None,
+    turn_id: str | None = None,
+    mission_id: str | None = None,
+    reserve_write: Callable[[list[str]], bool] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
+) -> dict:
     def emit(ev: dict) -> None:
         if on_progress is None:
             return

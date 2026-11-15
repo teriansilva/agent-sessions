@@ -253,7 +253,7 @@ test("thinking and model on calls: their own settings, saved at once, kept acros
   await thinking.scrollIntoViewIfNeeded();
   await expect(thinking).toHaveValue("off"); // a call does not think unless told to
   await expect(model).toHaveValue("");
-  await expect(model.locator("option")).toHaveText(["Same as HQ", "hq-big", "hq-fast"]);
+  await expect(model.locator("option")).toHaveText(["Inherit", "hq-big", "hq-fast"]);
   for (const field of [thinking, model]) {
     const box = (await field.boundingBox())!;
     if (PHONE(page)) expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);

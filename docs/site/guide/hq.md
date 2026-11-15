@@ -545,10 +545,11 @@ Settings → AI → **HQ** → Question routing:
 | Setting | Default | What it does |
 |---|---|---|
 | Search your sessions only when a question needs it | on | Off: every message searches, as before. |
-| Model for this decision | Same as HQ | A faster model for the deciding call only, from your endpoint's list. On a call, "Same as HQ" is the call's model. |
-| Thinking for this decision | Off · fastest | The thinking level for the deciding call only. "Same as HQ" uses HQ's own level. |
+| Model for question routing (in HQ models) | Inherit | The deciding request only. Inherit follows the enclosing call, otherwise Endpoint & model. |
+| Thinking for question routing (in HQ models) | Off | The deciding request only. Inherit follows the enclosing call, otherwise Endpoint & model; Auto uses provider policy. |
 
-HQ's answers keep the model and thinking set under Endpoint & model (or HQ calls, on a call).
+HQ's answers use the Typed turns or Calls row in **HQ models**. A typed-only choice does not
+change what question routing inherits.
 With an endpoint that does use tools, HQ decides by itself whether to search, and these
 settings change nothing.
 

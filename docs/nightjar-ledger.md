@@ -65,6 +65,7 @@ the same list.
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
 | `components/hq/HqPage.module.css` | css | 4 | done | route:hq route:hq-missing route:mission | none of its own: the conversation and shared HQ view links are static; the thread's motion is AskConsole's |
 | `web/src/routes/HqSettings.tsx` | page | 11 | done | route:settings-hq route:settings-hq-autonomy route:settings-hq-unavailable | none of its own: existing settings panels, static group links and independent policy editors |
+| `web/src/routes/HqModelsSettings.tsx` | page | 11 | done | route:settings-hq-models-defaults route:settings-hq-models-mixed route:settings-hq-models-catalog-unavailable route:settings-hq-models-save-failed route:settings-hq-models-mixed-route route:settings-hq-models-mixed-call route:settings-hq-models-mixed-mission | none: static fieldsets, per-field source labels and confirmed save feedback |
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
 | `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

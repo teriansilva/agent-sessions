@@ -154,6 +154,17 @@ const HQ_POLICY = {
   max_actions_per_pass: 4, proposal_ttl_minutes: 30, stale_hours: 24,
   nudge_template: "Continue.", default_nudge_template: "Continue.", notify: "escalations",
 };
+const HQ_MODEL_CALLS = { stt: { base_url: "http://gpu-1.lan:8000/v1", model: "whisper-1", api_key_set: false }, tts: { base_url: "http://gpu-1.lan:8880/v1", model: "kokoro", api_key_set: true }, voices: { woman: "af_heart", man: "am_michael" }, turn_taking: "natural", hq_model: "", thinking: "off", interrupt: true, mic: "open", answers: "brief", captions: true, configured: true, contacts: {}, contact_defaults: {"asia-woman": {"group": "woman", "style": "calm", "speed": 1.0}, "asia-man": {"group": "man", "style": "serious", "speed": 0.95}, "europe-woman": {"group": "woman", "style": "narrator", "speed": 1.0}, "europe-man": {"group": "man", "style": "neutral", "speed": 1.0}, "russia-woman": {"group": "woman", "style": "serious", "speed": 1.0}, "russia-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "us-woman": {"group": "woman", "style": "energetic", "speed": 1.05}, "us-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "africa-woman": {"group": "woman", "style": "energetic", "speed": 1.0}, "africa-man": {"group": "man", "style": "calm", "speed": 0.95}, "southamerica-woman": {"group": "woman", "style": "dramatic", "speed": 1.05}, "southamerica-man": {"group": "man", "style": "calm", "speed": 1.0}, "romania-woman": {"group": "woman", "style": "dramatic", "speed": 1.0}}, language: "auto", tts_styles: ["calm", "dramatic"], tts_languages: ["en", "de", "fr"], tts_voices: ["af_heart", "am_michael"], preview_languages: ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "ja", "zh", "hi", "ko"], stt_detects_language: true, tts_accepts_language: true };
+
+const HQ_MODEL_API = {
+      // The COMPLETE public settings shape (the profiles section reads every list): a partial
+      // fixture captured a page that throws, not the page. `contact_defaults` is what the server
+      // returns (hq_calls_settings.public: each General's own group, style and speed).
+      "/api/voice/settings": HQ_MODEL_CALLS,
+      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
+      "/api/voice/local": { installed: { runtime: true, server: true }, token: true, settings_token_mismatch: false, unit: true, systemd: true, stt: "base", last_error: null, stale: null, url: "http://127.0.0.1:8766/v1", limits: "hard", running: true, in_use: false, voices: { woman: "af_heart", man: "am_michael" } },
+    };
+
 const HQ_AUTOMATION = {
   version: 1, legacy_compatible: false,
   session: { ...HQ_POLICY, revision: "session-fixture" },
@@ -1011,14 +1022,7 @@ export const SWEEP = [
   {
     id: "route:settings-hq-calls",
     path: "/settings/ai-hq-calls",
-    api: {
-      // The COMPLETE public settings shape (the profiles section reads every list): a partial
-      // fixture captured a page that throws, not the page. `contact_defaults` is what the server
-      // returns (hq_calls_settings.public: each General's own group, style and speed).
-      "/api/voice/settings": { stt: { base_url: "http://gpu-1.lan:8000/v1", model: "whisper-1", api_key_set: false }, tts: { base_url: "http://gpu-1.lan:8880/v1", model: "kokoro", api_key_set: true }, voices: { woman: "af_heart", man: "am_michael" }, turn_taking: "natural", interrupt: true, mic: "open", answers: "brief", captions: true, configured: true, contacts: {}, contact_defaults: {"asia-woman": {"group": "woman", "style": "calm", "speed": 1.0}, "asia-man": {"group": "man", "style": "serious", "speed": 0.95}, "europe-woman": {"group": "woman", "style": "narrator", "speed": 1.0}, "europe-man": {"group": "man", "style": "neutral", "speed": 1.0}, "russia-woman": {"group": "woman", "style": "serious", "speed": 1.0}, "russia-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "us-woman": {"group": "woman", "style": "energetic", "speed": 1.05}, "us-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "africa-woman": {"group": "woman", "style": "energetic", "speed": 1.0}, "africa-man": {"group": "man", "style": "calm", "speed": 0.95}, "southamerica-woman": {"group": "woman", "style": "dramatic", "speed": 1.05}, "southamerica-man": {"group": "man", "style": "calm", "speed": 1.0}, "romania-woman": {"group": "woman", "style": "dramatic", "speed": 1.0}}, language: "auto", tts_styles: ["calm", "dramatic"], tts_languages: ["en", "de", "fr"], tts_voices: ["af_heart", "am_michael"], preview_languages: ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "ja", "zh", "hi", "ko"], stt_detects_language: true, tts_accepts_language: true },
-      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
-      "/api/voice/local": { installed: { runtime: true, server: true }, token: true, settings_token_mismatch: false, unit: true, systemd: true, stt: "base", last_error: null, stale: null, url: "http://127.0.0.1:8766/v1", limits: "hard", running: true, in_use: false, voices: { woman: "af_heart", man: "am_michael" } },
-    },
+    api: HQ_MODEL_API,
     // The capture counts only once the route's own content rendered (each General's row).
     present: "[data-testid='hq-calls-contacts']",
   },
@@ -1036,6 +1040,37 @@ export const SWEEP = [
   },
   { id: "route:settings-mission-control", path: "/settings/ai-mission-control", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
   { id: "route:settings-hq", path: "/settings/ai-hq", present: "nav[aria-label='HQ settings groups']" },
+  ...["defaults", "mixed", "catalog-unavailable", "save-failed", "mixed-route", "mixed-call", "mixed-mission"].map((state) => ({
+    id: `route:settings-hq-models-${state}`, path: "/settings/ai-hq#hq-models-h",
+    // A scrolling settings pane clips an over-tall element screenshot. Photograph real
+    // viewports; the additional phone frames show every row below the fold.
+    ...(state.startsWith("mixed-")
+      ? { widths: ["phone"], present: `fieldset:has(#hq-model-${state.slice(6)})` }
+      : { height: 1400, present: "#hq-models-h" }),
+    mock: { config: {
+      hq_contact: "off", ai_review: { model: "endpoint-model", thinking: "medium" },
+      hq_route: { enabled: true, model: "", thinking: "off" },
+      hq_models: {
+        typed: { model: state === "catalog-unavailable" ? "saved-unlisted" : "", thinking: "hq" },
+        mission: { model: state.startsWith("mixed") ? "mission-model" : "", thinking: "hq" },
+      },
+    } },
+    api: {
+      ...HQ_MODEL_API,
+      "/api/voice/settings": { ...HQ_MODEL_CALLS,
+        ...(state.startsWith("mixed") ? { hq_model: "call-fast", thinking: "high" } : {}) },
+      "/api/ai-review/models": state === "catalog-unavailable"
+        ? { status: 503, json: { detail: "Model list unavailable" } }
+        : { models: ["endpoint-model", "call-fast", "mission-model"] },
+      ...(state === "save-failed" ? {
+        "/api/prefs": { status: 503, json: { detail: "Could not save. Your confirmed choice is unchanged." } },
+      } : {}),
+    },
+    ...(state === "save-failed" ? { open: [
+      { css: "#hq-model-typed", select: "call-fast" },
+      { css: "[data-testid='hq-models-settings'] [role='alert']", wait: "visible" },
+    ] } : {}),
+  })),
   { id: "route:settings-hq-autonomy", path: "/settings/ai-hq#orch-h", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
   {
     id: "route:settings-hq-unavailable", path: "/settings/ai-hq#orch-h",

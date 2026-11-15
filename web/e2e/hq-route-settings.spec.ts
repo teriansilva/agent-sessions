@@ -48,8 +48,8 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto("/settings/ai-hq");
     await page.evaluate((value) => (document.documentElement.dataset.theme = value), theme);
     const toggle = page.getByTestId("hq-route-toggle");
-    const model = page.getByLabel("Model for this decision");
-    const thinking = page.getByLabel("Thinking for this decision");
+    const model = page.getByLabel("Model for question routing");
+    const thinking = page.getByLabel("Thinking for question routing");
     await expect(toggle).toBeChecked();
     await expect(model).toHaveValue("");
     await expect(model.getByRole("option", { name: "deepseek-v4.1-flash" })).toBeAttached();
@@ -72,6 +72,6 @@ for (const theme of ["dark", "light"] as const) {
     await toggle.click();
     await expect.poll(() => saves.length).toBe(2);
     expect(saves[1]).toEqual({ hq_route: { enabled: false } });
-    await expect(model).toBeDisabled();
+    await expect(model).toBeEnabled(); // The saved choice remains editable while routing is off.
   });
 }

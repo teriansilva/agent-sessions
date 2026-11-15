@@ -541,9 +541,9 @@ def set_hq_reports(value: bool, path: Path | None = None) -> bool:
 
 
 #: HQ's question router (#2028): when HQ's endpoint takes no tools, one small call decides whether
-#: a message needs a session search or can be answered directly. `model` empty = the turn's own
-#: answering model; `thinking` one of HQ_ROUTE_THINKING ("hq" = the turn's own level).
-HQ_ROUTE_THINKING = ("off", "low", "medium", "high", "hq")
+#: a message needs a session search or can be answered directly. Empty model / thinking "hq"
+#: inherit the enclosing call's field, else the endpoint's. "auto" is provider policy (#2040).
+HQ_ROUTE_THINKING = ("off", "low", "medium", "high", "auto", "hq")
 HQ_ROUTE_DEFAULTS: dict = {"enabled": True, "model": "", "thinking": "off"}
 
 
@@ -571,7 +571,7 @@ def _coerce_hq_route(raw: object) -> dict:
 
 def get_hq_route(path: Path | None = None) -> dict:
     """Settings → AI → HQ → Question routing (#2028). Unknown or malformed fields read as their
-    defaults (on, the turn's own model, thinking off)."""
+    defaults (on, inherited model, thinking off)."""
     return _coerce_hq_route(_load(path or _default_path()).get("hq_route"))
 
 
@@ -595,6 +595,52 @@ def set_hq_route(patch: object, path: Path | None = None) -> dict:
     """Merge a validated partial patch under the prefs lock; returns the stored block."""
     clean = validate_hq_route_patch(patch)
     return _mutate("hq_route", lambda cur: {**_coerce_hq_route(cur), **clean}, path)
+
+
+# Only the missing rows live here. Routing and calls retain their existing keys/APIs.
+HQ_MODEL_ROWS = ("typed", "mission")
+HQ_MODEL_DEFAULTS = {"model": "", "thinking": "hq"}
+
+
+def _coerce_hq_models(raw: object) -> dict:
+    out = {row: dict(HQ_MODEL_DEFAULTS) for row in HQ_MODEL_ROWS}
+    if isinstance(raw, dict):
+        for row in HQ_MODEL_ROWS:
+            block = raw.get(row)
+            if not isinstance(block, dict):
+                continue
+            if _route_model_ok(block.get("model")):
+                out[row]["model"] = block["model"].strip()
+            if block.get("thinking") in HQ_ROUTE_THINKING:
+                out[row]["thinking"] = block["thinking"]
+    return out
+
+
+def get_hq_models(path: Path | None = None) -> dict:
+    return _coerce_hq_models(_load(path or _default_path()).get("hq_models"))
+
+
+def validate_hq_models_patch(patch: object) -> dict:
+    if not isinstance(patch, dict) or not patch or set(patch) - set(HQ_MODEL_ROWS):
+        raise ValueError("hq_models must contain typed or mission settings")
+    clean = {}
+    for row, block in patch.items():
+        if not isinstance(block, dict) or not block or set(block) - set(HQ_MODEL_DEFAULTS):
+            raise ValueError(f"hq_models.{row} must contain model or thinking")
+        clean[row] = validate_hq_route_patch(block)
+    return clean
+
+
+def set_hq_models(patch: object, path: Path | None = None) -> dict:
+    clean = validate_hq_models_patch(patch)
+
+    def merge(cur):
+        out = _coerce_hq_models(cur)
+        for row, block in clean.items():
+            out[row].update(block)
+        return out
+
+    return _mutate("hq_models", merge, path)
 
 
 def get_artifacts_enabled(path: Path | None = None) -> bool:

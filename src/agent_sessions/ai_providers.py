@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
 import hashlib
 import ipaddress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 #: The provider ids, in picker order.
@@ -408,12 +409,12 @@ def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
     block's wire is byte-identical."""
     p = row_for(cfg)
     level = cfg.get("thinking") if cfg.get("thinking") in THINKING_LEVELS else "auto"
-    spoken = _SPOKEN.get()
-    if spoken is not None and spoken[0] is not None:
-        level = spoken[0]  # a spoken call turn: the level for calls, not the one for typing
-    own = _REQUEST_THINKING.get()
-    if own is not None:
-        level = own  # one request with a level of its own (HQ's question router, #2028)
+    state = _MODEL_CONTEXT.get()
+    for override in (state.call, state.row):
+        if override is not None and override[0] is not None:
+            level = override[0]
+    if state.request_thinking is not None:
+        level = state.request_thinking
     off = level == "off" or (level == "auto" and not interactive)
     if p.thinking == _STYLE_CHAT_TEMPLATE:
         # Today: the opt-out rides on EVERY call, interactive or not.
@@ -431,11 +432,63 @@ def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
     return {}
 
 
-#: How the model is asked while a spoken call turn is being answered (`spoken_turn`): the
-#: thinking level and the model for calls, either ``None`` for "as HQ is set". ``None`` outside.
-_SPOKEN: contextvars.ContextVar[tuple[str | None, str | None] | None] = contextvars.ContextVar(
-    "hq_spoken_turn", default=None
+@dataclass(frozen=True)
+class _ModelContext:
+    # One immutable request context. Call identity survives a nested row override; a
+    # row inherits each empty field from the call, never from a different row.
+    call: tuple[str | None, str | None] | None = None
+    row: tuple[str | None, str | None] | None = None
+    request_thinking: str | None = None
+    pinned: bool = False
+
+
+_EMPTY_MODEL_CONTEXT = _ModelContext()
+_MODEL_CONTEXT: contextvars.ContextVar[_ModelContext] = contextvars.ContextVar(
+    "hq_model_context", default=_EMPTY_MODEL_CONTEXT
 )
+
+
+@contextlib.contextmanager
+def _model_scope(state: _ModelContext):
+    token = _MODEL_CONTEXT.set(state)
+    try:
+        yield
+    finally:
+        _MODEL_CONTEXT.reset(token)
+
+
+def _override(thinking: str | None, model: str | None) -> tuple[str | None, str | None]:
+    return thinking if thinking in THINKING_LEVELS else None, (model or "").strip() or None
+
+
+def clear_model_context():
+    """A new turn/background job has no inherited choices, even if its parent spawned it
+    inside an override. Clearing at the entry point also covers children outliving a parent."""
+    return _model_scope(_ModelContext())
+
+
+def independent_model_work(func):
+    """Fence an async background-work entry point, not its shared transport or helpers."""
+
+    @functools.wraps(func)
+    async def independent(*args, **kwargs):
+        with clear_model_context():
+            return await func(*args, **kwargs)
+
+    return independent
+
+
+def model_override(thinking: str | None = None, model: str | None = None):
+    """An HQ row: its own field → enclosing call's field → endpoint default. Empty fields
+    do not inherit another row (e.g. typed → router). Speech identity stays intact."""
+    return _model_scope(
+        replace(
+            _MODEL_CONTEXT.get(),
+            row=_override(thinking, model),
+            request_thinking=None,
+            pinned=False,
+        )
+    )
 
 
 @contextlib.contextmanager
@@ -446,25 +499,16 @@ def spoken_turn(thinking: str | None = "off", model: str | None = None):
     HQ's own). The defaults are no extended thinking on HQ's own model: the Commander is waiting
     on the line, and a model that reasons first spends about two seconds before its first word
     (measured 2026-11-13, a short answer: first content after 2.3 s with thinking, 0.2 s
-    without). The operator sets both in Settings → HQ calls (`hq_calls_settings.spoken`).
+    without). The operator sets both in Settings → AI → HQ → HQ models
+    (`hq_calls_settings.spoken`).
 
     A context, not a changed configuration: it reaches every request the turn makes — each tool
     round, the call-end judgement, the tools-refused fallback and a session search, which read
     the configuration themselves — and nothing outside it. The stored AI settings are never
-    touched, so a typed turn is sent as set. Tasks and threads started inside inherit it."""
-    level = thinking if thinking in THINKING_LEVELS else None
-    token = _SPOKEN.set((level, (model or "").strip() or None))
-    try:
+    touched. Tasks and threads started inside inherit it; independent background entry points
+    clear that inheritance with `independent_model_work`. Nested rows retain speech identity."""
+    with _model_scope(_ModelContext(call=_override(thinking, model))):
         yield
-    finally:
-        _SPOKEN.reset(token)
-
-
-#: The thinking level for the requests made inside `request_thinking` (#2028), or ``None``: the
-#: turn's own level (Settings → AI, or a spoken call's). Innermost wins; ``None`` outside.
-_REQUEST_THINKING: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "request_thinking", default=None
-)
 
 
 @contextlib.contextmanager
@@ -473,20 +517,14 @@ def request_thinking(level: str | None):
     THINKING_LEVELS), or with the turn's own level for ``None`` / anything else (#2028).
 
     Narrow on purpose: it changes only the thinking fields, never the model and never what counts
-    as a spoken turn. HQ's question router uses it so its one JSON call can run with thinking off
-    while the answer the turn goes on to make keeps the turn's level. A context, not a changed
+    as a spoken turn. Kept for callers that override only thinking; HQ's row-specific requests
+    use `model_override`. A context, not a changed
     configuration: it is restored on success, error and cancellation alike, and two concurrent
     turns (each its own task) never see each other's level."""
-    token = _REQUEST_THINKING.set(level if level in THINKING_LEVELS else None)
-    try:
+    with _model_scope(
+        replace(_MODEL_CONTEXT.get(), request_thinking=level if level in THINKING_LEVELS else None)
+    ):
         yield
-    finally:
-        _REQUEST_THINKING.reset(token)
-
-
-#: True inside `pinned_model`: the requests made there name their model ON PURPOSE (#2028), so
-#: the transport must not read "the configured model" as "inherit" and swap it.
-_MODEL_PINNED: contextvars.ContextVar[bool] = contextvars.ContextVar("model_pinned", default=False)
 
 
 @contextlib.contextmanager
@@ -498,25 +536,30 @@ def pinned_model(pinned: bool = True):
     operator-CHOSEN model that happens to equal the typed HQ model meant that model, not the
     call's; string equality can't tell the two apart, so the intent rides here instead. Restored
     on every exit; per task."""
-    token = _MODEL_PINNED.set(bool(pinned))
-    try:
+    with _model_scope(replace(_MODEL_CONTEXT.get(), pinned=bool(pinned))):
         yield
-    finally:
-        _MODEL_PINNED.reset(token)
 
 
 def model_pinned() -> bool:
-    return _MODEL_PINNED.get()
+    return _MODEL_CONTEXT.get().pinned
 
 
 def in_spoken_turn() -> bool:
-    return _SPOKEN.get() is not None
+    return _MODEL_CONTEXT.get().call is not None
 
 
 def spoken_model() -> str | None:
     """The model for calls, inside a spoken turn that has one; else ``None``."""
-    spoken = _SPOKEN.get()
+    spoken = _MODEL_CONTEXT.get().call
     return spoken[1] if spoken is not None else None
+
+
+def override_model() -> str | None:
+    """The row/call's explicit model, including one equal to the endpoint default."""
+    state = _MODEL_CONTEXT.get()
+    if state.row is not None and state.row[1] is not None:
+        return state.row[1]
+    return spoken_model()
 
 
 def with_fields(body: dict, fields: dict) -> dict:

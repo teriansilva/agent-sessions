@@ -1,75 +1,38 @@
-/** Settings → AI → HQ → Question routing (#2028): on by default, saved on change, a model list
- *  from the endpoint, and "Same as HQ" for the model and the thinking level. */
+/** Routing enablement keeps its save; model choices live in the shared HQ models group. */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-
 import { ConfigCtx } from "../app/config";
 import { api } from "../lib/api";
 import type { AppConfig } from "../types/api";
 import { HqRouteSettings } from "./HqRouteSettings";
 
-vi.mock("../lib/api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/api")>();
-  return { ...actual, api: { setPrefs: vi.fn(), aiReviewModels: vi.fn() } };
-});
-
+vi.mock("../lib/api", () => ({ api: { setPrefs: vi.fn() } }));
 function renderWith(config: Partial<AppConfig>) {
-  render(
-    <ConfigCtx.Provider value={config as AppConfig}>
-      <HqRouteSettings />
-    </ConfigCtx.Provider>,
-  );
+  render(<MemoryRouter><ConfigCtx.Provider value={config as AppConfig}><HqRouteSettings /></ConfigCtx.Provider></MemoryRouter>);
 }
+beforeEach(() => { vi.mocked(api.setPrefs).mockReset(); });
 
-beforeEach(() => {
-  vi.mocked(api.setPrefs).mockReset();
-  vi.mocked(api.aiReviewModels).mockReset();
-  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: ["fast-1", "big-2"] } as never);
-});
-
-test("an older server's config reads as the defaults: on, HQ's model, thinking off", async () => {
+test("the routing default is enabled, and model choices have one home", () => {
   renderWith({});
   expect(screen.getByRole("checkbox", { name: /only when a question needs it/ })).toBeChecked();
-  expect(screen.getByLabelText("Model for this decision")).toHaveValue("");
-  expect(screen.getByLabelText("Thinking for this decision")).toHaveValue("off");
-  expect(await screen.findByRole("option", { name: "fast-1" })).toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "HQ models" })).toHaveAttribute("href", "/settings/ai-hq#hq-models-h");
 });
 
-test("switching it off saves only that field, and greys the model and thinking", async () => {
-  vi.mocked(api.setPrefs).mockResolvedValue({
-    hq_route: { enabled: false, model: "", thinking: "off" },
-  });
-  renderWith({ hq_route: { enabled: true, model: "", thinking: "off" } });
-  await userEvent.click(screen.getByRole("checkbox", { name: /only when a question needs it/ }));
+test("switching routing off saves only enablement", async () => {
+  vi.mocked(api.setPrefs).mockResolvedValue({ hq_route: { enabled: false, model: "router", thinking: "off" } });
+  renderWith({ hq_route: { enabled: true, model: "router", thinking: "off" } });
+  await userEvent.click(screen.getByRole("checkbox"));
   expect(api.setPrefs).toHaveBeenCalledWith({ hq_route: { enabled: false } });
-  expect(screen.getByRole("checkbox", { name: /only when a question needs it/ })).not.toBeChecked();
-  expect(screen.getByLabelText("Model for this decision")).toBeDisabled();
-  expect(screen.getByLabelText("Thinking for this decision")).toBeDisabled();
+  expect(screen.getByRole("checkbox")).not.toBeChecked();
 });
 
-test("a model and a thinking level are saved as picked", async () => {
-  vi.mocked(api.setPrefs)
-    .mockResolvedValueOnce({ hq_route: { enabled: true, model: "fast-1", thinking: "off" } })
-    .mockResolvedValueOnce({ hq_route: { enabled: true, model: "fast-1", thinking: "hq" } });
-  renderWith({ hq_route: { enabled: true, model: "", thinking: "off" } });
-  await screen.findByRole("option", { name: "fast-1" });
-  await userEvent.selectOptions(screen.getByLabelText("Model for this decision"), "fast-1");
-  expect(api.setPrefs).toHaveBeenLastCalledWith({ hq_route: { model: "fast-1" } });
-  await userEvent.selectOptions(screen.getByLabelText("Thinking for this decision"), "hq");
-  expect(api.setPrefs).toHaveBeenLastCalledWith({ hq_route: { thinking: "hq" } });
-  expect(screen.getByLabelText("Thinking for this decision")).toHaveValue("hq");
-});
-
-test("a saved model the endpoint no longer lists stays choosable", async () => {
-  renderWith({ hq_route: { enabled: true, model: "retired-9", thinking: "low" } });
-  expect(screen.getByLabelText("Model for this decision")).toHaveValue("retired-9");
-  expect(screen.getByRole("option", { name: "retired-9" })).toBeInTheDocument();
-});
-
-test("a refused save says so", async () => {
-  vi.mocked(api.setPrefs).mockRejectedValue(new Error("hq_route.thinking must be one of …"));
+test("a refused save keeps the confirmed value", async () => {
+  vi.mocked(api.setPrefs).mockRejectedValue(new Error("save refused"));
   renderWith({});
-  await userEvent.selectOptions(screen.getByLabelText("Thinking for this decision"), "high");
-  expect(await screen.findByRole("alert")).toHaveTextContent("hq_route.thinking");
+  await userEvent.click(screen.getByRole("checkbox"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("save refused");
+  expect(screen.getByRole("checkbox")).toBeChecked();
 });

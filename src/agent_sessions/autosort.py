@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 
-from . import engines, metadata, prefs, projects, prompts, review
+from . import ai_providers, engines, metadata, prefs, projects, prompts, review
 
 log = logging.getLogger("agent_sessions.autosort")
 
@@ -99,6 +99,7 @@ async def _classify(cand: dict, projects_payload: list[dict]) -> tuple[str | Non
     return pid, conf
 
 
+@ai_providers.independent_model_work
 async def run_sort(*, cap: int | None = None) -> dict:
     """One auto-sort pass. Returns a report dict ``{candidates, scanned, assigned[],
     near_misses[], …}``.

@@ -189,7 +189,7 @@ test("every settings group is reachable and moved controls keep their existing s
   await page.goto("/settings/ai-hq");
   const groups = page.getByRole("navigation", { name: "HQ settings groups" });
   for (const [name, id] of [
-    ["Contact", "hq-contact"], ["Question routing", "hq-route-h"], ["Autonomy", "orch-h"],
+    ["Contact", "hq-contact"], ["HQ models", "hq-models-h"], ["Question routing", "hq-route-h"], ["Autonomy", "orch-h"],
     ["Reports", "hq-reports-h"], ["Session scan", "pulse-h"], ["Mission checks", "hq-forge"],
     ["Calls", "hq-calls"], ["Connectors", "hq-connectors"],
   ]) {

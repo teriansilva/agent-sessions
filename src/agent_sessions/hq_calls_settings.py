@@ -31,7 +31,7 @@ ANSWERS = ("brief", "detailed")
 #: How much HQ's model thinks before it answers a SPOKEN turn (#1996): its own setting, apart
 #: from the level Settings → AI holds for typed turns. `off` is the default, because the
 #: Commander is waiting on the line; `hq` follows the typed level.
-CALL_THINKING = ("off", "low", "medium", "high", "hq")
+CALL_THINKING = ("off", "low", "medium", "high", "auto", "hq")
 
 MODEL_MAX = prefs.AI_REVIEW_MODEL_MAX
 VOICE_MAX = 120

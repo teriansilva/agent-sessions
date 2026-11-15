@@ -63,6 +63,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from . import ai_providers
 from .atomicjson import atomic_write_json, json_write_lock
 
 log = logging.getLogger("agent_sessions.hq_dispatch")
@@ -1082,6 +1083,7 @@ async def _write_line(members: list[dict], now: float) -> dict:
 _flight = threading.Lock()
 
 
+@ai_providers.independent_model_work
 async def pass_once(now: float | None = None) -> dict:
     """One writer pass: reconcile, seal, give up, then claim and write each sealed, unclaimed
     bundle one at a time. Single-flight in this process (across processes, the claim is)."""

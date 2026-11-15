@@ -1,4 +1,5 @@
 // Types mirroring the existing FastAPI `/api/*` contract (backend is unchanged).
+import type { HqModelSettings, HqThinking } from "./hq";
 
 /** An engine id (#853 P4). A plain string: the roster is RUNTIME data from `/api/engines`, and
  *  the client keeps no list of its own — adding or removing an agent is a manifest, not an edit
@@ -1582,6 +1583,7 @@ export interface AppConfig {
   hq_reports?: boolean;
   /** Settings → AI → HQ → Question routing (#2028). Absent on older servers. */
   hq_route?: HqRouteSettings;
+  hq_models?: HqModelSettings;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;
@@ -3439,7 +3441,7 @@ export interface AgentEndpointPatch {
 /** Settings → AI → HQ → Question routing (#2028): when HQ's endpoint takes no tools, one call
  *  decides whether a message needs a session search. `model` "" = the turn's own answering model;
  *  `thinking` "hq" = the turn's own level. */
-export type HqRouteThinking = "off" | "low" | "medium" | "high" | "hq";
+export type HqRouteThinking = HqThinking;
 export interface HqRouteSettings {
   enabled: boolean;
   model: string;

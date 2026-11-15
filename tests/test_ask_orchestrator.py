@@ -2008,7 +2008,6 @@ def test_route_settings_default_and_round_trip(app):
     "patch",
     [
         {"enabled": "yes"},
-        {"thinking": "auto"},
         {"thinking": "max"},
         {"model": "a\nb"},
         {"model": "x" * (prefs.AI_REVIEW_MODEL_MAX + 1)},

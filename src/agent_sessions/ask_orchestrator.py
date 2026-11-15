@@ -3170,12 +3170,7 @@ def _tools_unsupported(r) -> bool:
 
 
 def _tools_key(cfg: dict) -> tuple[str, str, str]:
-    """The memo key for the model that ANSWERS this turn: a spoken turn's call model when it has
-    one (the transport sends that model instead, #1996), else the model on the wire for the
-    configured one. Never the question router's own model."""
-    spoken = ai_providers.spoken_model()
-    if spoken:
-        return review._capability_key(cfg, spoken)
+    """The answering row/call's model on the wire, never the nested question router's."""
     return _vision_key(cfg)
 
 
@@ -3216,9 +3211,9 @@ async def _route(turn: _Turn, history: list[dict], switched: bool) -> str | None
             {"role": "user", "content": _user_content(turn)},
         ]
         body = {
-            # "" = the turn's own answering model: the configured one, which the transport
-            # swaps for a spoken turn's call model when it has one (#1996).
-            "model": setting["model"] or cfg["model"],
+            # The row context below resolves each field: own → call → endpoint. A typed
+            # turn's override is not the router's fallback (#2040).
+            "model": cfg["model"],
             "messages": convo,
             "temperature": 0,
             "stream": False,
@@ -3228,8 +3223,7 @@ async def _route(turn: _Turn, history: list[dict], switched: bool) -> str | None
         # this is a call with a model of its own; "" inherits (the transport's swap applies).
         with (
             hq_usage.hq_call(),
-            ai_providers.request_thinking(thinking),
-            ai_providers.pinned_model(bool(setting["model"])),
+            ai_providers.model_override(thinking=thinking, model=setting["model"]),
         ):
             r = await review.post_chat_response(cfg, body)
         if r.status_code != 200:
@@ -3447,8 +3441,9 @@ def _images_refused(r, model: str) -> bool:
 def _vision_key(cfg: dict) -> tuple[str, str, str]:
     """The memo key for the model ACTUALLY on the wire: under Auto the transport may resolve a
     different model than the turn's snapshot named, so the provider's own listing decides."""
-    model = cfg["model"]
-    if ai_providers.is_auto(cfg):
+    own = ai_providers.override_model()
+    model = own or cfg["model"]
+    if not own and ai_providers.is_auto(cfg):
         model = ai_providers.auto_model(cfg, ai_providers.fingerprint(cfg.get("api_key")))
     return review._capability_key(cfg, model)
 
@@ -3661,6 +3656,7 @@ def _leaked_calls(text: str) -> bool:
     return False
 
 
+@ai_providers.independent_model_work
 async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it. A
     spoken call turn is asked with the call's own thinking level and model (#1996, Settings →
@@ -3668,7 +3664,8 @@ async def run_turn(turn: _Turn) -> list[dict]:
     if turn.via == "call":
         with ai_providers.spoken_turn(**hq_calls_settings.spoken()):
             return await _run_turn(turn)
-    return await _run_turn(turn)
+    with ai_providers.model_override(**prefs.get_hq_models()["typed"]):
+        return await _run_turn(turn)
 
 
 async def _run_turn(turn: _Turn) -> list[dict]:
@@ -3714,12 +3711,13 @@ async def _run_turn(turn: _Turn) -> list[dict]:
         try:
             with hq_usage.hq_call():  # the footer's HQ token count (#1531)
                 r = await review.post_chat_response(cfg, body)
-            if r.status_code != 200 and shown and _images_refused(r, cfg["model"]):
+            wire_model = _vision_key(cfg)[1]
+            if r.status_code != 200 and shown and _images_refused(r, wire_model):
                 # The endpoint cannot take these images (#1779): asked ONCE more without them,
                 # every note now saying they were not shown — never a failed turn, and never a
                 # "shown" note without the pixels. Only a refusal of the CAPABILITY is
                 # remembered: a 413 or one bad picture says nothing about the next one.
-                if _images_unsupported(r, cfg["model"]):
+                if _images_unsupported(r, wire_model):
                     _IMAGES_REFUSED.add(_vision_key(cfg))
                 shown = frozenset()
                 convo[question_at] = {

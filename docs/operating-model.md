@@ -136,16 +136,21 @@ notification path and is not an outward action. Sending anything to anyone else 
 ### One HQ surface, separate authority
 
 **Today (#2037, #2029 P0/P1):** HQ groups Conversations, Missions and Dispatches. Settings → AI → HQ
-holds contact, question routing, two autonomy policies, reports, scans, mission checks, calls and
+holds contact, HQ models, question routing, two autonomy policies, reports, scans, mission checks, calls and
 connectors. The session-assistance policy applies only to sessions no active mission holds; the
 mission-orchestration policy applies to mission work. Each saves through its own revision-checked
 API. Neither policy grants the other authority, and neither grants tool permission bypass to
 mission agents. A conflicting edit reloads without replay; unreadable authority disables editing.
 
-This is navigation and settings consolidation. Model overrides (#2029 P2), routing mission turns
-through HQ (P3, after its approval/lifecycle prerequisites), and physical storage migration (P4)
-remain separate work. Existing mission turns, approval, retention and execution paths remain their
-current owners until those phases land.
+**HQ models (#2040, #2029 P2):** typed turns, question routing, calls and mission conversations
+share one endpoint with independent model/thinking rows. Each field resolves its own choice,
+then an enclosing call's choice, then the endpoint default. Typed/mission rows inherit by default;
+routing/call thinking remains Off. This is request configuration, not permission or execution
+authority. The mission row wraps its existing conversation entry point.
+
+Routing mission turns through HQ (P3, after its approval/lifecycle prerequisites) and physical
+storage migration (P4) remain separate work. Existing mission turns, approval, retention and
+execution paths remain their current owners until those phases land.
 
 ## 7. API first
 

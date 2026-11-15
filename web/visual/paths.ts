@@ -371,6 +371,14 @@ export const VISUAL_PATHS: VisualPath[] = [
   },
   {
     group: "authed",
+    path: "/settings/ai-hq#hq-models-h",
+    name: "settings-hq-models",
+    description: "HQ models — four independent model/thinking rows and inheritance sources (#2040)",
+    requireAuth: "admin",
+    waitFor: { selector: '#hq-models-h', timeoutMs: 8000 },
+  },
+  {
+    group: "authed",
     path: "/settings/ai-hq#orch-h",
     name: "settings-hq-autonomy",
     description: "HQ autonomy — independent session assistance and mission orchestration (#2037)",

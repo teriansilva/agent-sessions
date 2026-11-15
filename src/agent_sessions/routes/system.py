@@ -202,6 +202,11 @@ def _preflight_prefs(payload: dict) -> None:
             prefs.validate_hq_route_patch(payload["hq_route"])
         except ValueError as e:
             raise bad(str(e)) from None
+    if "hq_models" in payload:
+        try:
+            prefs.validate_hq_models_patch(payload["hq_models"])
+        except ValueError as e:
+            raise bad(str(e)) from None
     if "operator_name" in payload:
         v = payload["operator_name"]
         if not (v is None or v == "" or prefs.clean_operator_name(v) is not None):
@@ -779,6 +784,7 @@ def register(
                 # own) and thinking for the one call that decides whether a message needs a
                 # session search when HQ's endpoint takes no tools.
                 "hq_route": prefs.get_hq_route(),
+                "hq_models": prefs.get_hq_models(),
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -1207,6 +1213,11 @@ def register(
             # partial patch merges under the prefs lock.
             try:
                 out["hq_route"] = prefs.set_hq_route(payload["hq_route"])
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
+        if "hq_models" in payload:
+            try:
+                out["hq_models"] = prefs.set_hq_models(payload["hq_models"])
             except ValueError as e:
                 raise HTTPException(status_code=422, detail=str(e)) from None
         if "whats_new_seen" in payload:

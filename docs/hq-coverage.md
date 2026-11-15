@@ -136,6 +136,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | HQ contact | POST /api/prefs `hq_contact` | P2 W |
 | Sessions can report to HQ (#1882) | POST /api/prefs `hq_reports` | P2 W off only (turning it on gives new launches a capability: never) |
 | Question routing (#2028): on/off, model, thinking | POST /api/prefs `hq_route` | P2 W (the model from the endpoint's own list, as `ai_review.model`) |
+| Typed HQ turns and mission conversations (#2040): model, thinking | POST /api/prefs `hq_models` | P2 W (the model from the endpoint's own list, as `ai_review.model`; no new authority) |
 | AI endpoint provider, URL and key; the egress acknowledgement; remove key; test | POST /api/prefs `ai_review`, POST /api/ai-review/endpoint/test | **never** (decides where HQ's own requests go, and who receives session content; `ai-key-origin.md`, `ai-providers.md`) |
 | Connectors (#1750): list them and their state | GET /api/connectors | have (`list_connectors` reads the enabled ones; the store, not this route) |
 | Connectors: add, set origin and token, test, enable or disable read, remove | POST/PATCH/DELETE /api/connectors/instances* | **never** (a connector token is a credential, and its origin decides where HQ's requests go; #1746 out of scope) |
@@ -729,6 +730,7 @@ forge.kind                      never  # credential surface
 forge.owner                     never  # credential surface
 forge.token                     never  # credential
 hq_contact                      P2
+hq_models                       P2  # typed/mission conversation model and thinking (#2040); model from the server's list
 hq_reports                      P2  # off only; turning it on is never (#1882)
 hq_route                        P2  # question routing (#2028): on/off, model from the server's list, thinking
 model_grades                    P2  # which grade a model is; specialists derive theirs from it

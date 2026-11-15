@@ -40,7 +40,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from . import mission_shelf, missions, prefs, prompts, review
+from . import ai_providers, mission_shelf, missions, prefs, prompts, review
 
 log = logging.getLogger(__name__)
 
@@ -485,6 +485,7 @@ def wants_first(payload: dict) -> bool:
     )
 
 
+@ai_providers.independent_model_work
 async def generate(mission_id: str, *, path: Path | None = None) -> None:
     """Write the summary from the records now. Raises `DebriefError` with the reason. The git
     collection runs first (waiting for one in flight), so found items are in the records."""

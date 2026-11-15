@@ -1,12 +1,13 @@
 /** Calling HQ (#1397 P1): the shapes of `/api/voice/*` and the call socket's messages.
  *  Server side: `routes/voice.py`, `voice_calls.py`, `hq_calls_settings.py`. */
+import type { HqThinking } from "./hq";
 
 export type TurnTaking = "quick" | "natural" | "patient";
 export type MicMode = "open" | "push";
 export type AnswerLength = "brief" | "detailed";
 /** How much HQ's model thinks before answering a spoken turn (#1996): its own level for calls,
  *  or `hq` for the level Settings → AI holds. */
-export type CallThinking = "off" | "low" | "medium" | "high" | "hq";
+export type CallThinking = HqThinking;
 export type VoiceGroup = "woman" | "man";
 /** Where an endpoint sits, derived from its URL by the server. */
 export type HostKind = "loopback" | "lan" | "remote" | "invalid";

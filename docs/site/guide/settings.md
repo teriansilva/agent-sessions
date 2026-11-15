@@ -151,7 +151,8 @@ link, `/settings/appearance#hq-contact`, also redirects here.
 
 - **Contact** — who answers in [HQ](/guide/hq#hq-contacts): Random (a new contact each day), one
   of the thirteen contacts, or Off. Arrow keys move and select. This choice follows you across devices.
-- **Question routing** — the session-search classifier, its model and thinking effort. On endpoints without tool support, routing skips the session search for general questions.
+- **HQ models** — model and thinking choices for typed turns, question routing, calls and mission conversations. Each field saves separately on the shared AI endpoint. **Inherit** follows the enclosing call when present, otherwise **Endpoint & model**; a typed-only choice does not become the default for the other rows. Source labels show the rule beside each field. **Auto · provider policy** is distinct from Inherit. Typed/mission rows inherit by default; routing/calls keep thinking Off. A model-list failure preserves saved choices and offers **Reload model list**. A failed save keeps the last confirmed value and offers **Reload settings**.
+- **Question routing** — enables the session-search classifier. On endpoints without tool support, routing skips the session search for general questions.
   With routing off, every message searches. Tool-capable endpoints keep their tool-routing path.
 - **Autonomy** — two independent policies, **Session assistance** for sessions no active mission
   holds, and **Mission orchestration** for mission work. Each has its own enable switch, Off / Suggest /
@@ -165,7 +166,7 @@ link, `/settings/appearance#hq-contact`, also redirects here.
 - **Mission checks** — the existing **Forge connection** for reading PRs, checks and reviews.
   Its token stays server-side. An unavailable reading is unknown, not failed.
 - **Calls** — speech services, local speech runtime, each General's voice, language, turn-taking,
-  interruption, model, thinking, captions and where the audio goes. See [Calling HQ](/guide/calls).
+  interruption, captions and where the audio goes. See [Calling HQ](/guide/calls).
 - **Connectors** — the services [HQ reads from](/guide/hq#connectors), including Forgejo, GitHub,
   Nextcloud, Telegram, Matrix and Email. Each keeps its address, write-only credentials, test,
   read permission, recipient selection and messaging opt-in. Changing the address requires the
