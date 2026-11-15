@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #726 Phase 3: where the notification bell lives.
 //
@@ -108,11 +109,19 @@ test("the unread badge is reachable and opens the panel", async ({ page }) => {
   });
   await expect(trigger).toBeVisible();
 
-  // 44px touch target (design rule) — the bell must not shrink below it on mobile, where
-  // it is the only surviving topbar action.
+  // The compact header shares one tile width across all controls; its touch floor is
+  // on height. The desktop bell retains its own minimum width.
   const box = (await trigger.boundingBox())!;
-  expect(box.width).toBeGreaterThanOrEqual(32);
-  expect(box.height).toBeGreaterThanOrEqual(32);
+  const phone = (page.viewportSize()?.width ?? 0) <= 800;
+  if (phone) {
+    const tileWidth = await trigger.evaluate((el) =>
+      parseFloat(getComputedStyle(el).getPropertyValue("--tb-tile")),
+    );
+    expect(box.width).toBe(tileWidth);
+  } else {
+    expect(box.width).toBeGreaterThanOrEqual(32);
+  }
+  expect(box.height).toBeGreaterThanOrEqual(phone ? TOUCH_FLOOR : 32);
 
   await trigger.click();
   const panel = page.getByRole("dialog", { name: /notifications/i });

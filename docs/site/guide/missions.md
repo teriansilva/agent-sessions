@@ -1,6 +1,10 @@
-# Mission control
+# Missions in HQ
 
-Mission control answers one question: **what needs me right now** — and then lets you do something
+Open **HQ → Missions** from the top bar or the HQ view links. Conversations, Missions and
+Dispatches are views of HQ. Existing `/mission?m=<id>` and `/pulse` links still open the same
+console; `/mission/<id>` is also accepted.
+
+HQ’s Missions view answers one question: **what needs me right now** — and then lets you do something
 about it without opening a terminal.
 
 It is the `/mission` route (`/pulse` redirects there), and it used to be a dashboard: a grid of session cards, a "state of your
@@ -262,7 +266,7 @@ Some objectives have no fact a server can fetch — *a finding is written down*,
   only — a quote from the transcript or the diff is needed. Quotes are stored and shown as plain text, with credentials in
   URLs removed.
 - **The threshold.** A judgment counts as met only at or above **Judge an objective met at or
-  above** in [Settings → AI → Mission control](/guide/settings) — **0.90** by default, and 0.90 is
+  above** in [Settings → AI → HQ](/guide/settings) — **0.90** by default, and 0.90 is
   also the floor. The row reads **judged met (0.93)** with a `judged` tag, never *observed*; below
   the threshold it reads **judged not yet (0.62)**. **Show evidence** opens the quotes, the reason
   and when it was checked. Changing the threshold re-applies it to the judgments already made, on
@@ -325,7 +329,7 @@ once for that stop, at most three model readings per session in any five minutes
 that call your forge or a web address keep their five-minute pace.
 
 A mission that took a terminal session before missions ran on API sessions keeps it, for you.
-Mission control types nothing automatic into it any more: a nudge, an AI-written direction or a
+HQ types nothing automatic into it any more: a nudge, an AI-written direction or a
 menu answer for it waits in **Needs you** as a proposal you approve, whatever the autonomy tier.
 Your own messages to it are sent as before.
 
@@ -384,7 +388,7 @@ such as `PR #{pr} checks are {checks} on {branch}. Open the failing check and fi
   and it goes as your own message. **Dismiss** drops it. A draft you send counts against the
   objective's nudge budget like a nudge does; your own edited message does not.
 - **The one exception, off unless you turn it on.** On **YOLO** only, **Let mission control send
-  AI-written directions on its own** (Settings → AI → Mission control) lets a draft the model rates
+  AI-written directions on its own** (Settings → AI → HQ) lets a draft the model rates
   at or above a threshold you set be sent with nobody reading it first. The threshold cannot go
   below **0.90**; below it a draft still waits for your tap. At most one such send happens per
   objective attempt, every send is announced as a notification ("sent automatically by mission
@@ -429,8 +433,8 @@ has to be abandoned first, and the console says so before you confirm.
 
 ## What the session scan costs
 
-Mission control keeps a **Sessions without a mission** list current with a session scan. The scan
-is configured under Settings → AI → Mission control → **Session scan**, and it has two depths that
+HQ keeps session scan results current with a session scan. The scan
+is configured under Settings → AI → HQ → **Session scan**, and it has two depths that
 differ in how much model work they do — not in how much they see.
 
 | Depth | Model calls | What you get |

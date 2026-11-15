@@ -16,7 +16,7 @@ const LEGACY_AI_TAB = "/settings/ai-review";
 
 const CHAT_INSTRUCT = {
   id: "chat_instruct",
-  group: "Orchestrator",
+  group: "Session assistance",
   label: "Chat instruct",
   description: "Turns an instruction into the text typed at a session.",
   contract: '{"message": str}',
@@ -199,13 +199,13 @@ test.describe("phone", () => {
 
     // A tap 2px inside the row's top edge still lands on the row — the 44px is the hit area,
     // not just the paint.
-    const row = rows.filter({ hasText: "Mission control" });
+    const row = settingsNav(page).getByRole("link", { name: "HQ", exact: true });
     await row.scrollIntoViewIfNeeded();
     const rb = (await row.boundingBox())!;
     await page.touchscreen.tap(rb.x + rb.width / 2, rb.y + 2);
-    await expect(page).toHaveURL(urlOf(settingsPath("ai-mission-control")));
+    await expect(page).toHaveURL(urlOf(settingsPath("ai-hq")));
     await expect(
-      page.getByRole("heading", { name: "Orchestrator" }),
+      page.getByRole("heading", { name: "Session assistance" }),
     ).toBeVisible();
     // No sidebar on a phone.
     await expect(settingsNav(page)).toHaveCount(0);
@@ -225,7 +225,7 @@ test.describe("phone", () => {
     await mockSettings(page);
     const pages: [string, string][] = [
       [settingsPath(), "Settings"],
-      [settingsPath("ai-mission-control"), "Orchestrator"],
+      [settingsPath("ai-hq"), "Session assistance"],
       [settingsPath("ai-endpoint"), "Connection"],
       [settingsPath("agents"), "Agents"],
     ];

@@ -109,7 +109,7 @@ test("Off: a placeholder with Open HQ and Select contact, no face and no media (
   await userEvent.click(within(card).getByRole("button", { name: "Open HQ →" }));
   expect(openAsk).toHaveBeenCalledTimes(1);
   await userEvent.click(within(card).getByRole("link", { name: "Select contact" }));
-  expect(screen.getByTestId("where")).toHaveTextContent("/settings/appearance");
+  expect(screen.getByTestId("where")).toHaveTextContent("/settings/ai-hq");
 });
 
 test("New is a menu: a session, a mission, a project (#1294)", async () => {

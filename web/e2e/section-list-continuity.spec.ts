@@ -1,3 +1,4 @@
+import { openMissionsView } from "./hq-navigation";
 import { expect, test, type Page } from "@playwright/test";
 
 import { EMPTY_MISSIONS, missionList, missionRow } from "./mission-console";
@@ -147,7 +148,7 @@ test.describe("section switches keep the session list (#1233)", () => {
     expect(scrolled).toBeGreaterThan(200);
     const settled = reqs.length;
 
-    await sectionLink(page, "mission").click();
+    await openMissionsView(page);
     await expect(page).toHaveURL(/\/mission/);
     // Hidden while the rail owns the sidebar — never visible under or beside it.
     await expect(sidebarRows(page).first()).toBeHidden();
@@ -213,12 +214,12 @@ test.describe("section switches keep the session list (#1233)", () => {
     const rows = page.getByTestId("rail-mission");
 
     await page.goto(NEW_SESSION_PATH);
-    await sectionLink(page, "mission").click();
+    await openMissionsView(page);
     await expect(rows).toHaveCount(1);
     await sectionLink(page, "sessions").click();
     await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
 
-    await sectionLink(page, "mission").click();
+    await openMissionsView(page);
     await expect(page).toHaveURL(/\/mission/);
     await expect.poll(() => calls, { message: "the return still revalidates" }).toBe(2);
     await expect(rows).toHaveCount(1);

@@ -1,3 +1,4 @@
+import { openMissionsView } from "./hq-navigation";
 /** The mission route is `/mission`, and `/pulse` keeps working (#948 P1).
  *
  * `/pulse` is carried by bookmarks, notifications already sitting in the OS tray and push payloads
@@ -69,11 +70,11 @@ function missionDetailRequests(page: Page): string[] {
 test("the Missions section lives at /mission", async ({ page }) => {
   await setup(page);
   await page.goto(NEW_SESSION_PATH);
-  const link = page.getByRole("navigation", { name: "Main sections" }).getByRole("link", { name: "Missions" });
-  await expect(link).toHaveAttribute("href", "/mission");
-  await link.click();
+  const link = page.getByRole("navigation", { name: "Main sections" }).getByRole("link", { name: "HQ", exact: true });
+  await expect(link).toHaveAttribute("href", "/hq");
+  await openMissionsView(page);
   await expect(page).toHaveURL(/\/mission$/);
-  await expect(link).toHaveAttribute("aria-current", "page");
+  await expect(link).toHaveAttribute("aria-current", "true");
 });
 
 test("/pulse redirects to /mission and keeps ?m=, which selects that mission", async ({ page }) => {
@@ -99,3 +100,17 @@ test("a malformed ?m= selects nothing, costs no request, and the URL still settl
   await expect(page.locator('[data-testid="rail-mission"][aria-current="true"]')).toHaveCount(0);
   expect(details.some((id) => id.includes("not-a-mission-id"))).toBe(false);
 });
+
+for (const shape of ["query", "path", "legacy"] as const) {
+  test(`${shape} mission links select once and preserve other query parameters and hash`, async ({ page }) => {
+    await setup(page);
+    const details = missionDetailRequests(page);
+    const path = shape === "path" ? `/mission/${LINKED}?source=bookmark`
+      : `${shape === "legacy" ? "/pulse" : "/mission"}?m=${LINKED}&source=bookmark`;
+    await page.goto(`${path}#evidence`);
+    await expect(page.getByTestId("console-title")).toHaveText("Deep linked mission");
+    await expect(page).toHaveURL(/\/mission\?source=bookmark#evidence$/);
+    expect(details).toContain(LINKED);
+    expect(details).not.toContain("invalid");
+  });
+}

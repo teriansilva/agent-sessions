@@ -79,11 +79,6 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
 - **Opening links**: how a session link from outside the app opens on this device: *Ask each
   time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
   [Opening links](/guide/sessions#opening-links).
-- **Select your primary HQ contact**: who answers in [HQ](/guide/hq#hq-contacts), as a gallery of
-  portrait cards: **Random** (the default, *A new contact every day*), the thirteen contacts, and
-  **Off** (*No portrait*). Arrow keys move and select. Unlike the rest of Appearance, it is saved
-  on the server and follows you across devices. `/settings/appearance#hq-contact` links straight
-  to it.
 
 ### Terminal sessions · `terminal-appearance`
 
@@ -148,57 +143,45 @@ When enabled, sessions that belong to no project are classified against your exi
 assigned automatically — but only when the classifier clears the confidence floor, and never a
 session you assigned yourself.
 
-### Mission control · `ai-mission-control`
+### HQ · `ai-hq`
 
-Three panels, everything that tunes [Mission control](/guide/missions):
+One home for HQ, with links to each group. Old `ai-mission-control`, `ai-hq-calls` and
+`ai-hq-connectors` addresses redirect to the matching group here. The former Appearance contact
+link, `/settings/appearance#hq-contact`, also redirects here.
 
-- **Orchestrator** — **Mission control may act on my sessions**. Off stops the scheduled pass, the
-  mission supervisor, delivering nudges, and starting or dispatching missions. The autonomy tier is
-  **Off**, **Suggest** (every action mission control proposes waits for your approval) or **YOLO**
-  (acts without asking above the confidence threshold). In Suggest and YOLO, HQ sends the messages
-  you tell it to send into a session at once; Off stops those too. **Run now** runs one pass immediately. **Judge an objective met at or
-  above** is the confidence a [judged objective](/guide/missions#judged-objectives) needs before it
-  counts as met: 0.90 to 1.00, default 0.90, saved when you let go of the slider. 0.90 is the floor
-  and cannot be lowered. Confidence is the model's own opinion, so a judgment can at most move a
-  mission to review; you still close it. Missions run with permission bypass off: their agents
-  are API sessions, which never skip tool prompts, whatever the **Permission bypass for new
-  sessions and missions** default under **Agents › Defaults** says.
-- **Session scan** — keeps the **Sessions without a mission** list current: a background scan and
-  its interval, how many days back it looks, the scan depth (**Fast** or **Slow**), and **Scan
-  now**.
-- **Forge connection** — the forge (Forgejo, Gitea or GitHub) where mission objectives such as "a PR
-  is open" or "checks are green" are checked. Read-only; the token is stored server-side. Without
-  one, forge objectives read as *unknown* rather than failed.
+- **Contact** — who answers in [HQ](/guide/hq#hq-contacts): Random (a new contact each day), one
+  of the thirteen contacts, or Off. Arrow keys move and select. This choice follows you across devices.
+- **Question routing** — the session-search classifier, its model and thinking effort. On endpoints without tool support, routing skips the session search for general questions.
+  With routing off, every message searches. Tool-capable endpoints keep their tool-routing path.
+- **Autonomy** — two independent policies, **Session assistance** for sessions no active mission
+  holds, and **Mission orchestration** for mission work. Each has its own enable switch, Off / Suggest /
+  YOLO tier, confidence, notifications and nudge. Changing one does not grant anything to the other.
+  Session assistance has **Run now**, the pass interval and idle window. Mission orchestration has the
+  judgment threshold and the explicit opt-in for AI-written directions. Plan approval and
+  mission-specific permissions still apply. Mission agents never skip tool prompts; the agent
+  default for sessions you start cannot grant bypass to missions.
+- **Session reports** — whether sessions may report their status to HQ.
+- **Session scan** — the scan interval, history window, Fast / Slow depth and **Scan now**.
+- **Mission checks** — the existing **Forge connection** for reading PRs, checks and reviews.
+  Its token stays server-side. An unavailable reading is unknown, not failed.
+- **Calls** — speech services, local speech runtime, each General's voice, language, turn-taking,
+  interruption, model, thinking, captions and where the audio goes. See [Calling HQ](/guide/calls).
+- **Connectors** — the services [HQ reads from](/guide/hq#connectors), including Forgejo, GitHub,
+  Nextcloud, Telegram, Matrix and Email. Each keeps its address, write-only credentials, test,
+  read permission, recipient selection and messaging opt-in. Changing the address requires the
+  token again; changing the bot's identity revokes the messaging opt-in.
+
+Autonomy changes save with the revision you loaded. A concurrent change reloads the latest policy
+and asks you to review it; it never repeats the rejected edit. An unreadable policy disables that
+editor until a successful **Reload settings**. There is no fallback that combines the two policies.
+
+**Judge an objective met at or above** stays within 0.90–1.00. Confidence is the model's own opinion;
+a judgment can at most move a mission to review. You still close it.
 
 ### Checklists (removed)
 
-Checklists, the objective templates a new mission used to start from, were removed. A mission now
-gets its objectives from its instruction — see the
-[missions guide](/guide/missions#where-objectives-come-from). The old addresses,
-`/settings/ai-playbooks` and `/mission/checklists`, redirect to **Library → Playbooks**.
-
-### HQ calls · `ai-hq-calls`
-
-How [Calling HQ](/guide/calls) sounds and where its audio goes:
-
-- **Speech on this machine:** the status of `agent-sessions voice setup`, and **Use this machine**.
-- **Speech services:** speech-to-text and text-to-speech, each a URL, a model and an optional
-  access key. **Test both** checks them before you save.
-- **Each General's voice:** voice, style, speed and a voice per language, with **Preview**.
-- **Call language**, **Turn-taking**, **Interrupt HQ**, **Thinking on calls**, **Model on calls**, **Captions**, and **Where your call goes**.
-
-### HQ connectors · `ai-hq-connectors`
-
-The services [HQ reads from](/guide/hq#connectors). **Add a connector** lists the ones this
-BattleLab ships (Forgejo, for Gitea and Codeberg too; GitHub, whose address is fixed; and
-Nextcloud, which also asks for your account and an app password; and the messengers Telegram,
-Matrix and [Email](/guide/hq#email), which also asks for a **From address** and the **Addresses
-HQ may write to**, typed one by one). A messenger has **Recipients HQ may message** (picked from what the bot lists, then
-**Save recipients**) and **Let HQ propose messages**, which turns on only after a passing test and
-a save, and turns itself off if the connector later signs in as another bot. Each connector has its **Address**, a
-write-only **Access token**, **Save and test**, and **Let HQ read through this connector**, which
-turns on only after a passing test and says where what HQ reads is sent. A changed address asks for
-the token again. **Remove** deletes the connector and its token.
+The old `/settings/ai-playbooks` and `/mission/checklists` addresses redirect to
+**Library → Playbooks**. See [missions](/guide/missions#where-objectives-come-from).
 
 ### Prompts · `ai-prompts`
 

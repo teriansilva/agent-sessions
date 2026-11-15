@@ -1,3 +1,4 @@
+import { openMissionsView } from "./hq-navigation";
 /** #935 — the mission route owns the shell.
  *
  *  Real-browser tests because every claim here is a GEOMETRY claim, and the defect they guard was
@@ -634,7 +635,7 @@ test("navigating to the mission route does not remount the shell (#935)", async 
   // CLIENT-SIDE navigation, via the control an operator actually uses. `page.goto` is a full
   // document load and would tear the DOM down whatever the code did — it could never distinguish
   // a remount from a reload, so it would have "failed" against a correct implementation.
-  await page.getByRole("link", { name: "Missions", exact: true }).click();
+  await openMissionsView(page);
   await page.getByTestId("mission-console").waitFor();
   await expect(page.locator("#mission-rail-slot")).toBeAttached();
 

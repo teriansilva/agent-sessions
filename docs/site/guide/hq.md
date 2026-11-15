@@ -3,8 +3,9 @@
 **Ask is now HQ** (#1525): the same sidebar and conversations under a new name, now with a face.
 
 **HQ** answers questions about your work from the transcripts and missions this install can already
-see. It is a **sidebar**: the speech-bubble icon beside the notification bell (labelled **HQ**)
-opens it from any page, and it slides in from the right. The [Dashboard](/guide/dashboard)'s
+see. The **HQ** section opens Conversations; its menu also opens **Missions** and **Dispatches**.
+The speech-bubble icon beside the notification bell (labelled **HQ**) opens the conversation sidebar
+from any page. The [Dashboard](/guide/dashboard)'s
 **primary HQ contact** card opens the same sidebar. **Enter** sends; **Shift+Enter** starts a new
 line. Who answers is your [HQ contact](#hq-contacts).
 
@@ -132,7 +133,7 @@ one row: HQ, the switcher, **🗑**, **+** and **✕**. The portrait loops only 
 mode, while the sidebar is open and the tab is visible; it pauses on its frame while the tab is
 hidden or after ten minutes without input. It is still in **Reduced** and **Off** (no video is
 loaded at all), and so is a loop that fails to load. Motion is set in
-[Settings → Appearance](/guide/settings) and follows the device until you choose.
+[Settings → Appearance → Interface](/guide/settings) and follows the device until you choose.
 
 On a wide screen it sits beside the page, so you can keep working while it answers. **Escape**
 closes it, and so does the icon that opened it. On a phone or a window 800px wide or less it covers
@@ -274,7 +275,7 @@ nothing.
 
 Your **HQ contact** is the General who answers in HQ: the portrait in the header and on the
 Dashboard, the name on each answer, and the person who answers. Pick one in
-[Settings](/guide/settings) → Appearance → Interface → **Select your primary HQ contact**, a
+[Settings](/guide/settings) → AI → HQ → **Contact**, a
 gallery of cards: **Random** first, then the thirteen contacts, then **Off**. Arrow keys move
 through the gallery and select; it is one Tab stop. The choice is saved on the server, so it
 follows you to every device.
@@ -323,7 +324,7 @@ Codeberg, which speak the same API) and **GitHub**, and there is a storage conne
 pull requests, read an issue or PR with its recent comments (a very long thread is read without
 its comments, and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
 
-Set one up in **Settings → AI → HQ connectors**. You use your own account: create a personal
+Set one up in **Settings → AI → HQ → Connectors**. You use your own account: create a personal
 access token in Forgejo under *Settings → Applications* with `read:user`, `read:issue` and `read:repository`
 (the test reads the token's own account, which needs `read:user`), then:
 

@@ -579,7 +579,7 @@ test("the route carries no scan chrome — that lives in Settings now (#929)", a
   renderPulse();
   // The route's heading — by role, since the new-mission page's own copy also says "Mission
   // control" (#948).
-  await screen.findByRole("heading", { level: 1, name: /MISSION CONTROL/i });
+  await screen.findByRole("heading", { level: 1, name: /^HQ$/i });
   expect(screen.queryByRole("button", { name: /scan now/i })).toBeNull();
   for (const d of ["FAST", "MED", "SLOW"]) {
     expect(screen.queryByRole("button", { name: d })).toBeNull();

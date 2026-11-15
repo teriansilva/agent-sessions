@@ -40,13 +40,13 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks; Missions has no menu", async ({
+test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks; HQ has its own menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
   await expect(
     page.locator('.hud-topbar [data-testid="section-menu-mission"]'),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
   const menu = await libraryMenu(page);
   await expect(menu.locator("a[data-subsection]")).toHaveText([
     "Prompt Templates",
@@ -123,7 +123,7 @@ test("both old checklist addresses land on Playbooks (#1653), and Settings lists
   // Settings' own navigation has rendered (it links its sections) and no longer links the old tab.
   await page.goto(settingsPath());
   const nav = page.getByRole("navigation", { name: "Settings" }).first();
-  await expect(nav.locator(`a[href="${settingsPath("ai-mission-control")}"]`)).toHaveCount(1);
+  await expect(nav.locator(`a[href="${settingsPath("ai-hq")}"]`)).toHaveCount(1);
   await expect(nav.locator('a[href="/settings/ai-playbooks"]')).toHaveCount(0);
   await expect(nav.getByRole("link", { name: "Checklists", exact: true })).toHaveCount(0);
 });

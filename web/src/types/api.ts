@@ -1697,6 +1697,9 @@ export interface AppConfig {
   mission_probes?: MissionProbeSchema;
 }
 
+export type AutomationScope = "session" | "mission";
+export type AutomationPolicy = NonNullable<AppConfig["automation"]>[AutomationScope];
+
 export interface MissionProbeSchema {
   kinds: string[];
   /** Probes that may never gate alone — "the agent believes it wrote tests" is not evidence. */

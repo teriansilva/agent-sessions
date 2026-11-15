@@ -119,7 +119,7 @@ test("not set up: the card offers Set up calls; unavailable says why and starts 
   await page.goto("/dashboard");
   const setup = page.getByTestId("hq-primary-call");
   await expect(setup).toHaveText(/Set up calls/);
-  await expect(setup).toHaveAttribute("href", /\/settings\/ai-hq-calls$/);
+  await expect(setup).toHaveAttribute("href", /\/settings\/ai-hq#hq-calls$/);
 
   srv.caps = {
     ...AVAILABLE,

@@ -3,7 +3,7 @@
  *  contact* and *Open HQ →*. Activating it opens the HQ panel exactly as the corner icon does.
  *
  *  With Off, the same place holds a placeholder: a neutral silhouette (no face, no generated image),
- *  "No HQ contact", and two actions, *Open HQ →* and *Select contact* (Settings → Interface → the
+ *  "No HQ contact", and two actions, *Open HQ →* and *Select contact* (Settings → AI → HQ → the
  *  gallery). Two actions make that card a container, not a button.
  *
  *  Calling HQ (#1397): a Call control sits under the card (Set up calls until calls are set up).
@@ -19,7 +19,7 @@ import { HqPortrait } from "./HqPortrait";
 import { useHqContact } from "./useHqContact";
 import s from "./PrimaryContact.module.css";
 
-/** Where *Select contact* lands: the gallery on Settings → Interface. */
+/** Where *Select contact* lands: the gallery on Settings → AI → HQ. */
 export const HQ_GALLERY_ANCHOR = "hq-contact";
 
 export function PrimaryContact({ className = "" }: { className?: string }) {
@@ -63,7 +63,7 @@ export function PrimaryContact({ className = "" }: { className?: string }) {
             </button>
             <Link
               className={s.ghost}
-              to={settingsPath("appearance", HQ_GALLERY_ANCHOR)}
+              to={settingsPath("ai-hq", HQ_GALLERY_ANCHOR)}
               data-testid="hq-select-contact"
             >
               Select contact

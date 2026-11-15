@@ -555,10 +555,16 @@ test("⋯ holds every row action: a popover on desktop, a bottom sheet titled 'O
     expect(m.width).toBeGreaterThanOrEqual(vp.width - 2);
   } else {
     await expect(page.getByText("Objective actions", { exact: true })).toBeHidden();
-    // Anchored to its trigger: under it, or flipped above it, right-aligned to it.
+    // Anchored under/above its trigger, or clamped on screen when neither side has room.
+    // The shared HQ view links reduce the room below this row at the short desktop viewport.
     const under = Math.abs(m.y - (t.y + t.height)) <= 8;
     const above = Math.abs(m.y + m.height - t.y) <= 8;
-    expect(under || above).toBe(true);
+    const neitherFits = t.y < m.height + 12 && vp.height - (t.y + t.height) < m.height + 12;
+    const clamped = neitherFits && Math.abs(m.y + m.height - (vp.height - 8)) <= 2;
+    expect(under || above || clamped).toBe(true);
+    // Placement uses integer offsetHeight; the measured box may include a fractional pixel.
+    expect(m.y).toBeGreaterThanOrEqual(7);
+    expect(m.y + m.height).toBeLessThanOrEqual(vp.height - 7);
     expect(Math.abs(m.x + m.width - (t.x + t.width))).toBeLessThanOrEqual(2);
   }
 

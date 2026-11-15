@@ -362,7 +362,6 @@ SHAPES = {
         "section",
         "session_assistance",
         "mission_orchestration",
-        "unattended_permission_bypass_granted",
     },
     "ai_review": {"section", "enabled", "endpoint_configured"},
     "pulse": {

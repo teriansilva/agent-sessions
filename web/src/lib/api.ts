@@ -84,6 +84,8 @@ import type {
   AiActivity,
   AnalyticsState,
   AppConfig,
+  AutomationScope,
+  AutomationPolicy,
   AutoSortReport,
   DirectionPreview,
   DraftAttachment,
@@ -1463,6 +1465,12 @@ export const api = {
    *  422" tells them nothing. The AI endpoint form renders it verbatim. */
   setPrefs: (partial: Record<string, unknown>) =>
     mutateJson<Record<string, unknown>>("POST", "/api/prefs", partial),
+  /** A grant is saved only against its own accepted revision (#2037). Never fall back to the
+   * legacy orchestrator write: it cannot express two different scope policies. */
+  setAutomationPolicy: (scope: AutomationScope, revision: string, policy: Record<string, unknown>) =>
+    mutateJson<{ version: 1; scope: AutomationScope; policy: AutomationPolicy }>(
+      "PATCH", `/api/automation/${scope}`, { revision, policy },
+    ),
   /** The operator's display name (#1942): what share-link visitors see instead of "Operator".
    *  `""` clears it. A refusal carries the server's reason (the cleaning rules). */
   setOperatorName: async (name: string) => {

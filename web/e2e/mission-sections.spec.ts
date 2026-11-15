@@ -1,3 +1,4 @@
+import { openMissionsView } from "./hq-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import {
   MISSION,
@@ -147,7 +148,7 @@ test("section buttons share the brand row and keep their own declared typography
     expect(cb.height, `chevron height at ${width}`).toBe(44);
     expect(Math.abs(cb.y + cb.height / 2 - (bb.y + bb.height / 2)), `chevron row at ${width}`).toBeLessThan(2);
     await chevron.click({ trial: true });
-    for (const name of ["Dashboard", "Sessions", "Missions", "Library"]) {
+    for (const name of ["Dashboard", "Sessions", "HQ", "Library"]) {
       const link = nav.getByRole("link", { name, exact: true });
       const b = (await link.boundingBox())!;
       expect(
@@ -229,7 +230,7 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
     page
       .locator(".hud-topbar")
       .getByRole("button", { name: "Sessions menu" }),
-    barLink(page, "Missions"),
+    barLink(page, "HQ"),
   ];
   for (const control of controls) {
     const result = await control.evaluate((el) => {
@@ -290,10 +291,10 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
   await expect(
     barLink(page, "Sessions"),
   ).toHaveAttribute("aria-current", "page");
-  await barLink(page, "Missions").click();
+  await openMissionsView(page);
   await expect(
-    barLink(page, "Missions"),
-  ).toHaveAttribute("aria-current", "page");
+    barLink(page, "HQ"),
+  ).toHaveAttribute("aria-current", "true");
 });
 
 test("ambient and press feedback reach ordinary controls and respect reduced motion (#946)", async ({
@@ -315,7 +316,7 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   await page.clock.fastForward(301);
   await expect(toggle).not.toHaveClass(/glitching/);
 
-  const missions = barLink(page, "Missions");
+  const missions = barLink(page, "HQ");
   // The next ambient selection must skip a disabled ordinary button in the real DOM. With
   // `Math.random` pinned to 0 it takes the first candidate after the toggle — the first section in
   // the row, which is Ask since #1069.
@@ -421,8 +422,8 @@ test("sections restore mission search in both navigation directions", async ({
     barLink(page, "Sessions"),
   ).toBeVisible();
   await expect(
-    barLink(page, "Missions"),
-  ).toHaveAttribute("aria-current", "page");
+    barLink(page, "HQ"),
+  ).toHaveAttribute("aria-current", "true");
   await openMissionRail(page);
   await page.getByRole("searchbox", { name: "Search missions" }).fill("layout");
   await expect(page.getByTestId("rail-mission")).toHaveCount(1);
@@ -455,7 +456,7 @@ test("sections restore mission search in both navigation directions", async ({
       includeHidden: true,
     }),
   ).toHaveValue("session query");
-  await barLink(page, "Missions").click();
+  await openMissionsView(page);
   await page.goBack();
   await expect(
     barLink(page, "Sessions"),

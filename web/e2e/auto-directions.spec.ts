@@ -108,7 +108,7 @@ test.describe("the settings toggle", () => {
     await expect(page.getByTestId("auto-ai-threshold")).toHaveCount(0);
   });
 
-  test("on YOLO it is enabled, and turning it on POSTs the pref", async ({ page }) => {
+  test("on YOLO it is enabled, and turning it on saves the mission policy", async ({ page }) => {
     const saves = await missionControlSettings(page, {
       autonomy: "yolo",
       auto_ai_directions: false,
@@ -143,8 +143,8 @@ test.describe("the YOLO paragraph tells the truth about what is typed", () => {
     page,
   }) => {
     await missionControlSettings(page, { autonomy: "yolo", auto_ai_directions: false });
-    const copy = page.getByTestId("orchestrator-yolo-copy");
-    await expect(copy).toContainText(/only ever types text/i);
+    const copy = page.getByRole("region", { name: "Mission orchestration", exact: true }).getByTestId("orchestrator-yolo-copy");
+    await expect(copy).toContainText(/HQ types text you wrote/i);
     await expect(copy).not.toContainText(/One exception/i);
   });
 
@@ -154,7 +154,7 @@ test.describe("the YOLO paragraph tells the truth about what is typed", () => {
       auto_ai_directions: true,
       ai_direction_confidence_min: 0.95,
     });
-    const copy = page.getByTestId("orchestrator-yolo-copy");
+    const copy = page.getByRole("region", { name: "Mission orchestration", exact: true }).getByTestId("orchestrator-yolo-copy");
     await expect(copy).toContainText(/One exception, which you turned on/i);
     await expect(copy).toContainText("0.95");
     await expect(copy).toContainText(/nobody reading it first/i);

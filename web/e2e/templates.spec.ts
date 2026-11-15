@@ -287,11 +287,12 @@ test("mobile: one column, and every action is a real touch target", async ({ pag
   const list = page.getByRole("list", { name: "Templates" });
   const cards = list.getByRole("listitem");
   await expect(cards).toHaveCount(2);
+  // Measure both cards in one frame and let their entrance animation settle.
   // One column: the second card starts below the first, at the same x.
-  const a = (await cards.nth(0).boundingBox())!;
-  const b = (await cards.nth(1).boundingBox())!;
-  expect(b.y).toBeGreaterThan(a.y + a.height - 1);
-  expect(Math.abs(b.x - a.x)).toBeLessThanOrEqual(1);
+  await expect.poll(() => cards.evaluateAll((els) => {
+    const [a, b] = els.map((el) => el.getBoundingClientRect());
+    return b.y > a.y + a.height - 1 && Math.abs(b.x - a.x) <= 1;
+  })).toBe(true);
 
   for (const name of [/edit pr review checklist/i, /duplicate pr review checklist/i, /delete pr review checklist/i]) {
     const box = (await page.getByRole("link", { name }).or(page.getByRole("button", { name })).first().boundingBox())!;

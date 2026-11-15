@@ -348,7 +348,7 @@ export async function missionConsole(
     const orch = { ...ORCH, ...opts.orchestrator };
     // After `commonMocks`, so this wins: Playwright matches the newest route first.
     await page.route("**/api/config", (r) =>
-      r.fulfill({ json: { ...CONFIG, orchestrator: orch } }),
+      r.fulfill({ json: { ...CONFIG, automation: { version: 1, session: { ...ORCH, revision: "session-1" }, mission: orch } } }),
     );
   }
   const server: ConsoleServer = {
@@ -536,34 +536,32 @@ export const THREAD = [
   }),
 ];
 
-/** Settings → AI → Mission control, with the orchestrator block above.
+/** Settings → AI → HQ → Mission orchestration, with the orchestrator block above.
  *
  *  `over` puts the panel in any orchestrator state WITHOUT mutating the shared `ORCH` fixture —
  *  module state outlives a test inside a worker, so a mutated fixture would leak into the next
- *  spec. Returns the `orchestrator` block of every `POST /api/prefs` the page makes, so a test can
+ *  spec. Returns the policy patch of every `PATCH /api/automation/mission` the page makes, so a test can
  *  assert what a control actually saved rather than what it appears to show (#983 P4). */
 export async function missionControlSettings(
   page: Page,
   over: Record<string, unknown> = {},
 ) {
   const saves: Record<string, unknown>[] = [];
-  const orch = { ...ORCH, ...over };
+  const orch = { ...ORCH, ...over, revision: "mission-1" };
   await commonMocks(page);
   // Registered AFTER `commonMocks`, so these win — Playwright matches the newest route first.
   await page.route("**/api/config", (r) =>
-    r.fulfill({ json: { ...CONFIG, orchestrator: orch } }),
+    r.fulfill({ json: { ...CONFIG, automation: { version: 1, session: { ...ORCH, revision: "session-1" }, mission: orch } } }),
   );
-  await page.route("**/api/prefs", (r) => {
-    const body = r.request().postDataJSON() as {
-      orchestrator?: Record<string, unknown>;
-    } | null;
-    const patch = body?.orchestrator ?? {};
+  await page.route("**/api/automation/mission", (r) => {
+    const body = r.request().postDataJSON() as { policy: Record<string, unknown> };
+    const patch = body.policy;
     saves.push(patch);
     // ECHO THE MERGED BLOCK, as the real route does (`out["orchestrator"] = public_orchestrator()`).
     // Answering `{}` leaves the panel's CONTROLLED inputs reverting to their previous value, so a
     // checkbox reads as "the click did nothing" — a mock artefact that looks exactly like a bug.
-    Object.assign(orch, patch);
-    return r.fulfill({ json: { orchestrator: { ...orch } } });
+    Object.assign(orch, patch, { revision: `mission-${saves.length + 1}` });
+    return r.fulfill({ json: { version: 1, scope: "mission", policy: { ...orch } } });
   });
   await page.route("**/api/pulse/orchestrator", (r) =>
     r.fulfill({

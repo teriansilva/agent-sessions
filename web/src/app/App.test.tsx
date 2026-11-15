@@ -181,7 +181,7 @@ test("the command topbar names every work section, Library last, the map under S
       ]),
   ).toEqual([
     ["Dashboard", "/dashboard"],
-    ["Missions", "/mission"],
+    ["HQ", "/hq"],
     ["Sessions", NEW_SESSION_PATH],
     ["Library", "/templates"],
   ]);

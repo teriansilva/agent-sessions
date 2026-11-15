@@ -52,7 +52,7 @@ for (const theme of ["dark", "light"] as const) {
     const thinking = page.getByLabel("Thinking for this decision");
     await expect(toggle).toBeChecked();
     await expect(model).toHaveValue("");
-    await expect(page.getByRole("option", { name: "deepseek-v4.1-flash" })).toBeAttached();
+    await expect(model.getByRole("option", { name: "deepseek-v4.1-flash" })).toBeAttached();
     if (PHONE(page)) {
       for (const el of [model, thinking]) {
         expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);

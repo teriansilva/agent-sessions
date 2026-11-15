@@ -175,24 +175,15 @@ test("layout snapshot (per-project: desktop + mobile viewports)", async ({
   });
 });
 
-test("Missions carries a BETA tag inside its own tile at every width, and keeps its name (#1085)", async ({
-  page,
-}) => {
+test("HQ keeps its accessible name and opens the Missions menu at every width", async ({ page }) => {
   await page.goto(NEW_SESSION_PATH);
   for (const width of [320, 412, 800, 801, 1440]) {
     await page.setViewportSize({ width, height: 740 });
-    const link = page
-      .locator(".hud-topbar")
-      .getByRole("navigation", { name: "Main sections" })
-      .getByRole("link", { name: "Missions", exact: true });
-    await expect(link).toHaveAttribute("title", "Missions (beta)");
-    const tag = link.locator(".section-nav-beta");
-    await expect(tag, `tag at ${width}`).toBeVisible();
-    const t = (await tag.boundingBox())!;
-    const l = (await link.boundingBox())!;
-    expect(t.x, `tag inside at ${width}`).toBeGreaterThanOrEqual(l.x);
-    expect(t.x + t.width, `tag inside at ${width}`).toBeLessThanOrEqual(l.x + l.width + 0.5);
-    expect(t.y).toBeGreaterThanOrEqual(l.y);
-    expect(t.y + t.height).toBeLessThanOrEqual(l.y + l.height + 0.5);
+    const bar = page.locator(".hud-topbar");
+    const link = bar.getByRole("link", { name: "HQ", exact: true });
+    await expect(link).toHaveAttribute("href", "/hq");
+    await bar.getByRole("button", { name: "HQ menu" }).click();
+    await expect(page.getByRole("menu", { name: "HQ menu" }).getByRole("menuitem", { name: "Missions", exact: true })).toHaveAttribute("href", "/mission");
+    await page.keyboard.press("Escape");
   }
 });

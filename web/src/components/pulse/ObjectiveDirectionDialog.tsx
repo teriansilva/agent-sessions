@@ -182,7 +182,7 @@ export function ObjectiveDirectionDialog({
             />
             <span className={d.choiceText}>
               No direction
-              <small>mission control sends your default nudge</small>
+              <small>HQ sends your default nudge</small>
             </span>
           </label>
         </div>

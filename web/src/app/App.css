@@ -959,9 +959,10 @@
   .hud-topbar.hud-topbar {
     padding-inline: 4px;
   }
-  /* Three classes: this block sits above the ≤440px one in the file, and must still win at 320. */
+  /* #2037: HQ adds a third chevron; seven 27px tiles leave Library clear at 320px.
+     Three classes keep this narrower band above the ≤440px rule. */
   .hud-topbar.hud-topbar.hud-topbar {
-    --tb-tile: 30px;
+    --tb-tile: 27px;
     --tb-chev: 16px;
     --tb-gap: 2px;
   }
@@ -987,7 +988,7 @@
   }
   /* Two classes: outranks the ≤800px sizes above, and the ≤380px block outranks this. */
   .hud-topbar.hud-topbar {
-    --tb-tile: 32px;
+    --tb-tile: 31px;
     --tb-chev: 18px;
   }
   .section-nav a {
@@ -996,7 +997,8 @@
 }
 
 /* THE RELAYED ROW (#1658). Streamed through the Home Free relay, the connection's plate joins the
-   corner, and on a sidebar route (the hamburger present) that one tile ran the row 20px over at
+   corner. #2037 adds HQ’s chevron; the eight shared tiles each give another 3px back.
+   Previously, on a sidebar route (the hamburger present) that one tile ran the row 20px over at
    320, 2px at 344 and 10px at 390 (measured). Only while that plate is in the bar, the shared tiles
    give width back — 3px each up to 440 (eight tiles, 24px), 4px each at ≤380 where the row was
    already tightest (3px left it 1.5px short at 320) — and the plain bar keeps the sizes above. Width
@@ -1004,12 +1006,12 @@
    three-class ≤380px rule, so each band's value wins in its own band. */
 @media (max-width: 440px) {
   .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
-    --tb-tile: 29px;
+    --tb-tile: 26px;
   }
 }
 @media (max-width: 380px) {
   .hud-topbar.hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
-    --tb-tile: 26px;
+    --tb-tile: 23px;
   }
 }
 /* The same plate also ran Library's chevron under it just past two band edges (measured on a sidebar
@@ -1017,8 +1019,12 @@
    801–826px, the first desktop widths (24px at 801). The phone band gets 34px tiles; the desktop
    band takes 4px off each section tab's side padding (four tabs, 32px). */
 @media (min-width: 441px) and (max-width: 480px) {
+  /* HQ’s third chevron needs 14px back at the band’s first pixel (#2037). */
+  .hud-topbar {
+    --tb-tile: 36px;
+  }
   .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
-    --tb-tile: 34px;
+    --tb-tile: 31px;
   }
 }
 @media (min-width: 801px) and (max-width: 880px) {

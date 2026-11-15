@@ -15,6 +15,30 @@
   gap: var(--sp-3);
   margin: var(--sp-1) 0 var(--sp-4);
 }
+
+/* HQ's existing settings panels, with independent session/mission grants (#2037). */
+.hqGroups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  max-width: var(--settings-col);
+  margin-bottom: var(--sp-4);
+}
+.hqPolicies {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+  max-width: var(--settings-col);
+}
+.policyFields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+@media (max-width: 800px) {
+  .hqPolicies { grid-template-columns: minmax(0, 1fr); }
+}
 .head h1 {
   margin: 0;
   font: 600 var(--fs-title) / 1.2 var(--font-display);

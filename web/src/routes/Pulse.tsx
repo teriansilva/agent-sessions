@@ -1,6 +1,7 @@
 import { RotateCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfig } from "../app/config";
+import { HqViews } from "../components/hq/HqViews";
 import { MissionConsole } from "../components/pulse/MissionConsole";
 import { OrchestratorHealth } from "../components/pulse/OrchestratorHealth";
 import { api } from "../lib/api";
@@ -132,9 +133,10 @@ export default function Pulse() {
         <div className={styles.headLeft}>
           {/* The feature's own name (#895). The route became `/mission` in #948; `/pulse` still
               redirects there, so old bookmarks and notification links keep working. */}
-          <h1 className={styles.h1}>MISSION CONTROL</h1>
+          <h1 className={styles.h1}>HQ</h1>
         </div>
       </header>
+      <HqViews />
 
       {error && (
         <div className={styles.err} role="alert" data-testid="pulse-error">

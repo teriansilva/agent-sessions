@@ -101,7 +101,7 @@ const WIDTHS = [
   { width: 390, touch: true },
   { width: 320, touch: true },
 ] as const;
-const LABELS = ["Dashboard", "Missions", "Sessions", "Library"];
+const LABELS = ["Dashboard", "HQ", "Sessions", "Library"];
 
 test.describe("the top bar (#1589)", () => {
 
@@ -131,11 +131,11 @@ test.describe("the top bar (#1589)", () => {
         const lb = (await label.boundingBox())!;
         if (width > 960) {
           await expect(ix).toBeVisible();
-          expect(lb.width, `${name} label shown at ${width}`).toBeGreaterThan(20);
+          expect(lb.width, `${name} label shown at ${width}`).toBeGreaterThan(name === "HQ" ? 10 : 20);
         } else if (width > 800) {
           // The compact-desktop band (801–960px, #1589): plates and labels, no numerals.
           await expect(ix).toBeHidden();
-          expect(lb.width, `${name} label shown at ${width}`).toBeGreaterThan(20);
+          expect(lb.width, `${name} label shown at ${width}`).toBeGreaterThan(name === "HQ" ? 10 : 20);
         } else {
           // CLIPPED, not removed (shell-sections invariant), and the icon is the face.
           expect(lb.width, `${name} label clipped at ${width}`).toBeLessThanOrEqual(1);
@@ -156,7 +156,7 @@ test.describe("the top bar (#1589)", () => {
         expect(corners, `${name} corners at ${width}`).toEqual([true, true]);
       }
 
-      for (const name of ["Sessions", "Library"]) {
+      for (const name of ["HQ", "Sessions", "Library"]) {
         const chevron = nav.getByRole("button", { name: `${name} menu` });
         const group = chevron.locator("xpath=ancestor::*[contains(@class,'section-nav-split')][1]");
         await expect(group).toHaveClass(/nj-plate/);
@@ -168,7 +168,7 @@ test.describe("the top bar (#1589)", () => {
         if (touch) expect(cb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
         // A REAL PRESS at each of the chevron's painted corners opens its menu (Hermes 6779): the
         // plate paints the chamfer, so the corner is still the chevron's.
-        const panel = page.getByTestId(`section-menu-${name.toLowerCase()}-panel`);
+        const panel = page.getByTestId(`section-menu-${name === "HQ" ? "mission" : name.toLowerCase()}-panel`);
         for (const [x, y] of [
           [cb.x + cb.width - 2, cb.y + 2],
           [cb.x + cb.width - 2, cb.y + cb.height - 2],
@@ -201,16 +201,6 @@ test.describe("the top bar (#1589)", () => {
         }
       }
 
-      if (width <= 800) {
-        // BETA is a tag UNDER the icon, never a superscript over it.
-        const missions = nav.getByRole("link", { name: "Missions", exact: true });
-        const icon = (await missions.locator("svg").first().boundingBox())!;
-        // The narrow-width tag is the letter β (#1589 decision), decoration: the name stays Missions.
-        await expect(missions.locator(".section-nav-beta")).toHaveAttribute("aria-hidden", "true");
-        await expect(missions.locator(".section-nav-beta")).toHaveText("Betaβ");
-        const tag = (await missions.locator(".section-nav-beta").boundingBox())!;
-        expect(tag.y, "BETA below the icon").toBeGreaterThanOrEqual(icon.y + icon.height - 1);
-      }
 
       if (touch) {
         for (const id of ["ask-toggle"]) {
@@ -470,7 +460,8 @@ test.describe("the phone row: one tile, one footer line", () => {
         expect(t.h).toBeCloseTo(tiles[0].h, 0);
       }
       const chevrons = await boxes(".section-nav-chevron");
-      expect(chevrons).toHaveLength(2);
+      expect(chevrons).toHaveLength(3);
+      expect(chevrons[2].w).toBeCloseTo(chevrons[0].w, 0);
       expect(chevrons[1].w).toBeCloseTo(chevrons[0].w, 0);
 
       // The operator's initials fill its plate: one box, not a square inside a frame.

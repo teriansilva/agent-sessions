@@ -31,7 +31,7 @@ import type {
   PulseCard,
 } from "../../types/api";
 
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ActionRow } from "./ActionRow";
 import type { DraftEdit } from "./draftDirection";
@@ -1143,7 +1143,8 @@ export function MissionConsole({
    *  render, the documented way to adjust state to a changed input, and remembered per link
    *  value so it lands once. The URL then settles back on `/mission`, which keeps a single owner
    *  for selection — this console — rather than a query string that can disagree with it. */
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const deepLink = searchParams.get("m");
   /** "Plan a mission here" from the New project wizard (#1187) names the project to start in, in
    *  router state. Read once; the form only uses it as its initial choice. */
@@ -1162,15 +1163,10 @@ export function MissionConsole({
   }
   useEffect(() => {
     if (deepLink === null) return;
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete("m");
-        return next;
-      },
-      { replace: true },
-    );
-  }, [deepLink, setSearchParams]);
+    const next = new URLSearchParams(location.search);
+    next.delete("m");
+    navigate({ pathname: location.pathname, search: next.toString(), hash: location.hash }, { replace: true });
+  }, [deepLink, navigate, location.pathname, location.search, location.hash]);
 
   /** The shell's sidebar slot (#935).
    *

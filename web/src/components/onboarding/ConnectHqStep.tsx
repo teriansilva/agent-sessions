@@ -2,7 +2,7 @@
  *  Settings' own card opened inline to set one up.
  *
  *  **Nothing here is a second implementation.** The tiles read `/api/connectors` exactly as
- *  Settings → AI → HQ connectors does, a tile's state is `statusLine` of its instance (the same
+ *  Settings → AI → HQ → Connectors does, a tile's state is `statusLine` of its instance (the same
  *  words and LED tone the Settings card shows), and Set up / Manage / Fix it open the very
  *  `ConnectorCard` Settings renders. Every save, test and switch goes through that card's routes,
  *  so the wizard adds no endpoint and no authority. */
@@ -140,7 +140,7 @@ export function ConnectHqStep({ hintClass }: { hintClass?: string }) {
               </span>
               {count > 1 && (
                 <span className={styles.meta} data-testid="connect-hq-more">
-                  {count} set up · this shows one; all of them are in Settings → AI → HQ connectors
+                  {count} set up · this shows one; all of them are in Settings → AI → HQ → Connectors
                 </span>
               )}
               <button
@@ -156,7 +156,7 @@ export function ConnectHqStep({ hintClass }: { hintClass?: string }) {
         })}
       </ul>
       <p className={hintClass}>
-        Not now? They wait under <b>Settings → AI → HQ connectors</b>, where every connector
+        Not now? They wait under <b>Settings → AI → HQ → Connectors</b>, where every connector
         can be set up, tested or removed later.
       </p>
     </div>

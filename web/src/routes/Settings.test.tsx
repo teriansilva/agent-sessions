@@ -28,6 +28,9 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     api: {
+      voiceCapabilities: vi.fn().mockRejectedValue(new Error("Calls unavailable in this fixture")),
+      voiceLocal: vi.fn().mockRejectedValue(new Error("Local calls unavailable in this fixture")),
+      voiceSettings: vi.fn().mockRejectedValue(new Error("Calls unavailable in this fixture")),
       version: vi.fn(),
       setTheme: vi.fn(),
       setAccent: vi.fn(),
@@ -423,10 +426,16 @@ test.each([
   await flushFetches();
 });
 
+test.each(["constructor", "__proto__", "toString"])("an unknown section %s is not mistaken for an HQ alias", async (section) => {
+  renderSettings("dark", "#ffb000", `/settings/${section}`);
+  await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance"));
+  await flushFetches();
+});
+
 test("the page names its group and section in a crumb, not a second heading", async () => {
   renderSettings("dark", "#ffb000", "/settings/ai-mission-control");
   expect(screen.getByText(/Settings \/\/ AI \/\//)).toHaveTextContent(
-    "Mission control",
+    "HQ",
   );
   await flushFetches();
 });
@@ -442,7 +451,7 @@ test.each([
   ["ai-endpoint", ["Connection", "Model"]],
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
-  ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
+  ["ai-hq", ["Question routing", "Session assistance", "Mission orchestration", "Session reports", "Session scan", "Forge connection", "HQ connectors"]],
   ["ai-hq-connectors", ["HQ connectors"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],
@@ -470,7 +479,7 @@ test("the registry and the pages agree: every section id renders something", () 
   // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397),
   // then HQ connectors (#1825), then HQ itself — whether sessions can report to it (#1882).
   // Profile (#1931): the operator's avatar. Artifacts under System (#1932).
-  expect(SETTINGS_SECTIONS).toHaveLength(26);
+  expect(SETTINGS_SECTIONS).toHaveLength(23);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

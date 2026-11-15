@@ -1262,7 +1262,7 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
     if not cfg.get("enabled") or cfg.get("autonomy") not in ("suggest", "yolo"):
         return (
             "session assistance is off or observe-only, so HQ cannot send a message — the "
-            "operator can turn it on (Suggest) under Settings → Automation",
+            "operator can turn it on (Suggest) under Settings → AI → HQ → Autonomy",
             "scope_disabled",
             {},
         )
@@ -1609,7 +1609,7 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
     if why:
         raise _ToolRefused(
             f"refused: {why}, so Ask cannot propose a session — the operator can turn it on "
-            "(Suggest) under Settings → Automation",
+            "(Suggest) under Settings → AI → HQ → Autonomy",
             "scope_disabled",
         )
     ok, why = await asyncio.to_thread(automation_runner.engine_state, agent["id"])

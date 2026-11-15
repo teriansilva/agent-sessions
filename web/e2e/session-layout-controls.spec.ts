@@ -108,14 +108,14 @@ for (const theme of ["dark", "light"]) {
  });
 }
 
-test("Missions comes before Sessions at desktop and mobile widths", async ({ page }) => {
+test("HQ comes before Sessions at desktop and mobile widths", async ({ page }) => {
   await mockStructuredGuidance(page, "codex-api", "steer");
   await page.goto(`/s/codex-api/${ID}`);
   const nav = page.getByTestId("section-nav");
   const order = async () => {
     await expect.poll(() => nav.locator(".section-nav-label").allTextContents())
-      .toEqual(["Dashboard", "Missions", "Sessions", "Library"]);
-    const m = (await nav.getByRole("link", { name: "Missions", exact: true }).boundingBox())!;
+      .toEqual(["Dashboard", "HQ", "Sessions", "Library"]);
+    const m = (await nav.getByRole("link", { name: "HQ", exact: true }).boundingBox())!;
     const s = (await nav.getByRole("link", { name: "Sessions", exact: true }).boundingBox())!;
     expect(m.x + m.width).toBeLessThanOrEqual(s.x);
   };

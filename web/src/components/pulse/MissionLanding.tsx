@@ -95,7 +95,7 @@ export function MissionLanding({
           What should this mission achieve?
         </h2>
         <p className={styles.landingSub}>
-          Mission control plans the work, dispatches an agent and drives it to a pull request.
+          HQ plans the work, dispatches an agent and drives it to a pull request.
         </p>
         {composer}
         <p className={styles.landingNote}>

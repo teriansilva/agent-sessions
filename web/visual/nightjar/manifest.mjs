@@ -147,6 +147,23 @@ const MEMORY_GRAPH = {
 /** @type {SweepCapture[]} */
 /** On a phone the mission rail is the shell's drawer: open it first. */
 const MISSION_DRAWER = [{ role: "button", name: "Open mission list" }];
+/** Independent, readable HQ policy scopes (#2037). Invented revisions; no live settings. */
+const HQ_POLICY = {
+  enabled: true, autonomy: "suggest", configured: true, confidence_min: 0.75,
+  allowed_verbs: ["continue"], auto_verbs_ceiling: ["continue"], interval_minutes: 10,
+  max_actions_per_pass: 4, proposal_ttl_minutes: 30, stale_hours: 24,
+  nudge_template: "Continue.", default_nudge_template: "Continue.", notify: "escalations",
+};
+const HQ_AUTOMATION = {
+  version: 1, legacy_compatible: false,
+  session: { ...HQ_POLICY, revision: "session-fixture" },
+  mission: {
+    ...HQ_POLICY, revision: "mission-fixture", autonomy: "off", auto_ai_directions: false,
+    ai_direction_confidence_min: 0.9, ai_direction_confidence_floor: 0.9,
+    ai_direction_confidence_max: 1, judge_confidence_min: 0.9,
+    judge_confidence_floor: 0.9, judge_confidence_max: 1,
+  },
+};
 /** A mission-list answer (#1573's rail captures): the rows, their count, no store error. */
 const RAIL_LIST = (rows) => ({
   missions: rows,
@@ -550,6 +567,7 @@ export const SWEEP = [
   { id: "route:dashboard", path: "/dashboard" },
   // HQ's page (#1776): the list beside the thread, and a link that names no conversation.
   { id: "route:hq", path: "/hq", present: "[data-testid='hq-page']" },
+  { id: "headers:hq-views", path: "/hq", open: [{ role: "button", name: "HQ menu" }], expect: "menu" },
   { id: "route:hq-missing", path: "/hq/c/not-a-conversation", present: "[data-testid='hq-missing']" },
   // ---- PR3 dashboard ----
   // Phase 5's dashboard states: every first read in flight (Acquiring), two reads that failed
@@ -1016,7 +1034,14 @@ export const SWEEP = [
     api: { "/api/ai-review/endpoint/test": { status: 502, json: { detail: "The endpoint refused the key (HTTP 401)." } } },
     present: "input[type='password']",
   },
-  { id: "route:settings-mission-control", path: "/settings/ai-mission-control" },
+  { id: "route:settings-mission-control", path: "/settings/ai-mission-control", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
+  { id: "route:settings-hq", path: "/settings/ai-hq", present: "nav[aria-label='HQ settings groups']" },
+  { id: "route:settings-hq-autonomy", path: "/settings/ai-hq#orch-h", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
+  {
+    id: "route:settings-hq-unavailable", path: "/settings/ai-hq#orch-h",
+    mock: { config: { automation: { ...HQ_AUTOMATION, mission: { ...HQ_AUTOMATION.mission, revision: "invalid" } } } },
+    present: "section[aria-labelledby='mission-orch-h'] [role='alert']",
+  },
   // Prompts: the catalog with an edited row open, a guarded row and a default one…
   {
     id: "route:settings-prompts",
@@ -1082,11 +1107,11 @@ export const SWEEP = [
     path: "/settings/agents/setup/new",
     api: { "/api/plugins": SB.PLUGINS },
   },
-  // The gallery lives on Appearance (Settings A's page): the shot is scrolled to it (`present`), not a
+  // The gallery lives under HQ: the shot is scrolled to it (`present`), not a
   // section crop — a phone's crop is taller than the screen and stitches the sticky top bar in.
   {
     id: "route:settings-hq-gallery",
-    path: "/settings/appearance",
+    path: "/settings/ai-hq#hq-contact",
     present: "[data-testid='hq-gallery']",
   },
   {

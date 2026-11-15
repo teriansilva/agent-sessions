@@ -86,7 +86,12 @@ describe("activeSection", () => {
     ["/library/mission-plans", "mission-plans"],
     ["/library/mission-plans/plan-3fa9c1d2", "mission-plans"],
     ["/library/mission-plansx", null],
-    ["/mission", null],
+    ["/mission", "missions"],
+    ["/pulse", "missions"],
+    ["/hq", "hq"],
+    ["/hq/c/ask_abc", "hq"],
+    ["/hq/d/d_abc", "dispatches"],
+    ["/mission/msn_" + "a".repeat(32), "missions"],
     ["/overviewer", null],
     // #1201: Automations owns its subtree (one automation's runs and editor live under it).
     ["/mission/automations", "automations"],
@@ -121,18 +126,14 @@ describe("SectionNav", () => {
       </MemoryRouter>,
     );
     const top = SECTIONS.map((s) => s.label);
-    expect(top).toEqual(["Dashboard", "Missions", "Sessions", "Library"]);
+    expect(top).toEqual(["Dashboard", "HQ", "Sessions", "Library"]);
     const nav = screen.getByTestId("section-nav");
     expect(
       within(nav)
         .getAllByRole("link")
         .map((a) => a.querySelector(".section-nav-label")?.textContent),
     ).toEqual(top);
-    // Missions carries a BETA tag (#1085) — for the eye only: its accessible name is still just
-    // "Missions", and the tooltip says it in words.
-    const missions = within(nav).getByRole("link", { name: "Missions" });
-    expect(missions.querySelector(".section-nav-beta")).toHaveAttribute("aria-hidden", "true");
-    expect(missions).toHaveAttribute("title", "Missions (beta)");
+    expect(within(nav).getByRole("link", { name: "HQ" })).toHaveAttribute("href", "/hq");
     expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(within(nav).getByRole("link", { name: "Dashboard" })).toHaveAttribute(
       "aria-current",
@@ -140,7 +141,15 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Missions and Dashboard have no menu", async () => {
+  test("HQ exposes Conversations, Missions and Dispatches with Missions current", async () => {
+    render(<MemoryRouter><SectionNav active="mission" activeSub="missions" sessionsPath="/new" onNavigate={() => {}} /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "HQ menu" }));
+    const menu = await screen.findByRole("menu", { name: "HQ menu" });
+    expect(within(menu).getAllByRole("menuitem").map((a) => a.getAttribute("href"))).toEqual(["/hq", "/mission", "/hq/d"]);
+    expect(within(menu).getByRole("menuitem", { name: "Missions" })).toHaveAttribute("aria-current", "page");
+  });
+
+  test("Library holds Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Dashboard has no menu", async () => {
     render(
       <MemoryRouter>
         <SectionNav
@@ -153,7 +162,7 @@ describe("SectionNav", () => {
     );
     const bar = screen.getByTestId("section-nav");
     expect(within(bar).queryByRole("button", { name: "Dashboard menu" })).toBeNull();
-    expect(within(bar).queryByRole("button", { name: "Missions menu" })).toBeNull();
+    expect(within(bar).getByRole("button", { name: "HQ menu" })).toBeInTheDocument();
     const library = within(bar).getByRole("link", { name: "Library" });
     expect(library).toHaveAttribute("href", "/templates");
     // On a child that is not the section's own destination, the parent is current-in-set.

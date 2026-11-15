@@ -69,7 +69,7 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/missions.webp"),
     title: "Missions (beta)",
-    body: "Give an objective. Mission control proposes a plan — a project, an agent and the objectives that define done — runs it when you say go, settles each objective on evidence and asks when it is unsure. Beta: still settling, expect changes.",
+    body: "Open HQ → Missions and give an objective. HQ proposes a plan — a project, an agent and the objectives that define done — runs it when you say go, settles each objective on evidence and asks when it is unsure. Beta: still settling, expect changes.",
   },
   {
     img: publicAsset("onboarding/library.webp"),

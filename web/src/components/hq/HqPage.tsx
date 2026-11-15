@@ -50,6 +50,7 @@ import {
 import { HQ_FOCUS_COMPOSER_EVENT } from "../ask/askPanel";
 import { DISPATCH_POLL_MS, nextDispatchRead } from "./dispatchReads";
 import { DispatchesView } from "./DispatchesView";
+import { HqViews } from "./HqViews";
 import { hqTarget } from "./hqRoute";
 import s from "./HqPage.module.css";
 
@@ -190,7 +191,9 @@ export default function HqPage() {
   const back = isMobile ? () => navigate(HQ_PATH) : undefined;
 
   return (
-    <div className={s.page} ref={pageRef} data-testid="hq-page">
+    <div className={s.frame} ref={pageRef} data-testid="hq-page">
+      <HqViews />
+      <div className={s.page}>
       {showList ? (
         <nav className={s.list} aria-label="HQ conversations" data-testid="hq-list">
           <div className={s.listHead}>
@@ -333,6 +336,7 @@ export default function HqPage() {
           onConversationChange={onChange}
           onBack={back}
         />
+      </div>
       </div>
     </div>
   );

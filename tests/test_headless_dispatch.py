@@ -72,6 +72,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", sockdir)
     monkeypatch.setattr(ptybridge, "_DIR_READY_FOR", None, raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+    # The two absence cases use the real start-evidence adapter. Its directory must
+    # be ours too: unrelated live host entries can otherwise make absence unknown.
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_SESSIONS_DIR", str(sessions))
     handoff.reset_for_test() if hasattr(handoff, "reset_for_test") else None
     yield tmp_path
     import shutil

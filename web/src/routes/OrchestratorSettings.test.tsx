@@ -10,15 +10,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
-import { api } from "../lib/api";
-import type { AppConfig, OrchestratorConfig } from "../types/api";
+import { ConfigCtx, ConfigRefreshCtx, ConfigReloadCtx } from "../app/config";
+import { api, ApiError } from "../lib/api";
+import type { AppConfig, AutomationScope, OrchestratorConfig } from "../types/api";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 
 vi.mock("../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { setPrefs: vi.fn() } };
+  return { ...actual, api: { setAutomationPolicy: vi.fn() } };
 });
 
 vi.mock("../components/pulse/PushDevices", () => ({
@@ -47,30 +47,35 @@ function block(over: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
 function renderPanel(
   b = block(),
   refresh: () => void = () => {},
-  missionBypass?: boolean,
+  scope: AutomationScope = "session",
+  reload: () => Promise<boolean> = async () => true,
 ) {
   const config = {
     csrf: "t",
     new_session_engines: [],
     terminal_backend: "ws",
-    orchestrator: b,
-    ...(missionBypass === undefined ? {} : { mission_bypass: missionBypass }),
+    automation: { version: 1, session: { ...b, revision: "session-1" }, mission: { ...b, revision: "mission-1" } },
   } as unknown as AppConfig;
   return render(
     <MemoryRouter>
+      <ConfigReloadCtx.Provider value={reload}>
       <ConfigRefreshCtx.Provider value={refresh}>
         <ConfigCtx.Provider value={config}>
-          <OrchestratorSettings />
+          <OrchestratorSettings scope={scope} />
         </ConfigCtx.Provider>
       </ConfigRefreshCtx.Provider>
+      </ConfigReloadCtx.Provider>
     </MemoryRouter>,
   );
 }
 
+function accepted(scope: AutomationScope = "session", changes: Partial<OrchestratorConfig> = {}, revision = `${scope}-2`) {
+  return { version: 1 as const, scope, policy: { ...block(changes), revision } };
+}
+
 beforeEach(() => {
-  vi.mocked(api.setPrefs)
-    .mockReset()
-    .mockResolvedValue({ orchestrator: block({ stale_hours: 6 }) });
+  vi.mocked(api.setAutomationPolicy).mockReset().mockImplementation(async (scope, _revision, changes) =>
+    accepted(scope, changes));
 });
 
 test("the window shows the stored value and saves the chosen one as a number", async () => {
@@ -80,9 +85,7 @@ test("the window shows the stored value and saves the chosen one as a number", a
 
   await userEvent.selectOptions(select, "6");
   // A number, not the option's string value — the server rejects a string outright.
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    orchestrator: { stale_hours: 6 },
-  });
+  expect(api.setAutomationPolicy).toHaveBeenCalledWith("session", "session-1", { stale_hours: 6 });
 });
 
 test("it refreshes the shared config so a remount does not show the pre-save value", async () => {
@@ -102,7 +105,7 @@ test("a stored value with no matching preset still round-trips", async () => {
 test("the copy says the session stays visible, because that is what makes this safe", () => {
   renderPanel();
   expect(
-    screen.getByText(/stays on mission control and in the sidebar/i),
+    screen.getByText(/stays on HQ and in the sidebar/i),
   ).toBeVisible();
 });
 
@@ -119,13 +122,11 @@ test("dragging the confidence slider saves ONCE, on release, with the final valu
   fireEvent.change(slider, { target: { value: "0.7" } });
   fireEvent.change(slider, { target: { value: "0.65" } });
   fireEvent.change(slider, { target: { value: "0.6" } });
-  expect(api.setPrefs).not.toHaveBeenCalled(); // nothing yet — the drag is local
+  expect(api.setAutomationPolicy).not.toHaveBeenCalled(); // nothing yet — the drag is local
 
   fireEvent.pointerUp(slider);
-  expect(api.setPrefs).toHaveBeenCalledTimes(1);
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    orchestrator: { confidence_min: 0.6 },
-  });
+  expect(api.setAutomationPolicy).toHaveBeenCalledTimes(1);
+  expect(api.setAutomationPolicy).toHaveBeenCalledWith("session", "session-1", { confidence_min: 0.6 });
 });
 
 test("the displayed value follows the drag without waiting for the server", async () => {
@@ -138,7 +139,7 @@ test("the displayed value follows the drag without waiting for the server", asyn
 test("a release that changed nothing costs no request", async () => {
   renderPanel(block({ confidence_min: 0.75 }));
   fireEvent.pointerUp(screen.getByLabelText(/act above confidence/i));
-  expect(api.setPrefs).not.toHaveBeenCalled();
+  expect(api.setAutomationPolicy).not.toHaveBeenCalled();
 });
 
 /** The "Act above confidence" readout — scoped to its own row, because the judgment threshold
@@ -148,70 +149,52 @@ function actValue(text: string) {
   return within(row).getByText(text);
 }
 
-test("a stale save response cannot overwrite a newer one", async () => {
-  // The defect behind "the slider says 0.70 but the server holds 0.85": responses do not arrive
-  // in send order, so applying whichever lands LAST is not applying the last WRITE.
-  let releaseFirst: (v: unknown) => void = () => {};
-  vi.mocked(api.setPrefs)
-    .mockReset()
-    .mockImplementationOnce(
-      () =>
-        new Promise((res) => {
-          releaseFirst = res;
-        }), // slow: the OLDER save
-    )
-    .mockResolvedValueOnce({ orchestrator: block({ confidence_min: 0.9 }) });
-
-  renderPanel(block({ confidence_min: 0.75 }));
+test("one write is in flight per scope and the next edit uses the accepted revision", async () => {
+  let release!: (value: ReturnType<typeof accepted>) => void;
+  vi.mocked(api.setAutomationPolicy).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  renderPanel();
   const slider = screen.getByLabelText(/act above confidence/i);
-
   fireEvent.change(slider, { target: { value: "0.6" } });
-  fireEvent.pointerUp(slider); // save #1 — in flight
-  fireEvent.change(slider, { target: { value: "0.9" } });
-  fireEvent.pointerUp(slider); // save #2 — resolves immediately
-
-  await waitFor(() => expect(actValue("0.90")).toBeInTheDocument());
-  // …now the older response finally lands, carrying the older value.
-  releaseFirst({ orchestrator: block({ confidence_min: 0.6 }) });
-  await new Promise((r) => setTimeout(r, 0));
-  expect(actValue("0.90")).toBeInTheDocument();
+  fireEvent.pointerUp(slider);
+  expect(slider).toBeDisabled();
+  // A blur from the same interaction cannot enqueue a second write with a stale revision.
+  fireEvent.blur(slider);
+  expect(api.setAutomationPolicy).toHaveBeenCalledTimes(1);
+  await act(async () => release(accepted("session", { confidence_min: 0.6 }, "accepted-7")));
+  expect(slider).toBeEnabled();
+  expect(actValue("0.60")).toBeInTheDocument();
+  await userEvent.selectOptions(screen.getByLabelText(/notify me about/i), "all");
+  expect(api.setAutomationPolicy).toHaveBeenLastCalledWith("session", "accepted-7", { notify: "all" });
 });
 
-test("a stale FAILURE cannot paint an error over a newer success", async () => {
-  // The fence originally guarded only successful responses. Start save A, let newer save B
-  // succeed, then reject A: A painted "Couldn't save" over B's good state — the same false
-  // error this change exists to remove (#776 review).
-  let rejectFirst: (e: unknown) => void = () => {};
-  vi.mocked(api.setPrefs)
-    .mockReset()
-    .mockImplementationOnce(
-      () =>
-        new Promise((_res, rej) => {
-          rejectFirst = rej;
-        }), // the OLDER save, still pending
-    )
-    .mockResolvedValueOnce({ orchestrator: block({ confidence_min: 0.9 }) });
-
-  renderPanel(block({ confidence_min: 0.75 }));
-  const slider = screen.getByLabelText(/act above confidence/i);
-
-  fireEvent.change(slider, { target: { value: "0.6" } });
-  fireEvent.pointerUp(slider); // save A — in flight
-  fireEvent.change(slider, { target: { value: "0.9" } });
-  fireEvent.pointerUp(slider); // save B — succeeds
-
-  await waitFor(() => expect(actValue("0.90")).toBeInTheDocument());
-
-  rejectFirst(new Error("network died"));
-  await new Promise((r) => setTimeout(r, 0));
-
-  expect(screen.queryByText(/couldn’t save/i)).toBeNull();
-  expect(actValue("0.90")).toBeInTheDocument();
+test("a conflict reloads without replay and a failed reload keeps the editor disabled", async () => {
+  const reload = vi.fn().mockResolvedValue(false);
+  vi.mocked(api.setAutomationPolicy).mockRejectedValue(new ApiError(409, "changed"));
+  renderPanel(block(), () => {}, "session", reload);
+  await userEvent.selectOptions(screen.getByLabelText("Autonomy"), "yolo");
+  expect(await screen.findByRole("alert")).toHaveTextContent(/could not read the latest values/);
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(api.setAutomationPolicy).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText("Autonomy")).toBeDisabled();
+  expect(screen.getByLabelText("Autonomy")).toHaveValue("suggest");
 });
 
-test("a genuine failure on the NEWEST save still reports itself", async () => {
-  // The fence must not swallow real errors — it only ignores responses that are out of date.
-  vi.mocked(api.setPrefs).mockReset().mockRejectedValue(new Error("nope"));
+test("an unavailable policy remains disabled until reload succeeds", async () => {
+  const reload = vi.fn().mockResolvedValue(false);
+  vi.mocked(api.setAutomationPolicy).mockRejectedValue(new ApiError(503, "unreadable"));
+  renderPanel(block(), () => {}, "session", reload);
+  await userEvent.selectOptions(screen.getByLabelText("Autonomy"), "yolo");
+  expect(await screen.findByRole("alert")).toHaveTextContent(/could not read or update/);
+  await userEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  expect(screen.getByLabelText("Autonomy")).toBeDisabled();
+  reload.mockResolvedValue(true);
+  await userEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  expect(screen.getByLabelText("Autonomy")).toBeEnabled();
+  expect(api.setAutomationPolicy).toHaveBeenCalledTimes(1);
+});
+
+test("a failed save reports itself", async () => {
+  vi.mocked(api.setAutomationPolicy).mockReset().mockRejectedValue(new Error("nope"));
   renderPanel(block({ confidence_min: 0.75 }));
   const slider = screen.getByLabelText(/act above confidence/i);
   fireEvent.change(slider, { target: { value: "0.6" } });
@@ -246,15 +229,14 @@ test("the saved-toast timer does not outlive the panel (#922)", async () => {
 });
 
 test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", async () => {
-  // The sibling of PulseSettings' deferred-save regression. `saveGen` does not cover this:
-  // it orders responses against each OTHER, and an unmount never bumps a generation.
+  // A completed server write may refresh shared config, but must not create a local timer after unmount.
   vi.useFakeTimers();
   try {
     let release!: (v: unknown) => void;
-    vi.mocked(api.setPrefs).mockReturnValue(
+    vi.mocked(api.setAutomationPolicy).mockReturnValue(
       new Promise((r) => {
         release = r;
-      }) as ReturnType<typeof api.setPrefs>,
+      }) as ReturnType<typeof api.setAutomationPolicy>,
     );
 
     const { unmount } = renderPanel(block({ stale_hours: 24 }));
@@ -268,7 +250,7 @@ test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", 
 
     unmount();
     await act(async () => {
-      release({ orchestrator: block({ stale_hours: 6 }) });
+      release(accepted("session", { stale_hours: 6 }));
       await Promise.resolve();
     });
 
@@ -281,35 +263,38 @@ test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", 
 });
 
 test("the judgment threshold saves ONCE, on release, and cannot go under its floor (#1088)", async () => {
-  vi.mocked(api.setPrefs)
+  vi.mocked(api.setAutomationPolicy)
     .mockReset()
-    .mockResolvedValue({ orchestrator: block({ judge_confidence_min: 0.95 }) });
-  renderPanel(block({ judge_confidence_min: 0.9, judge_confidence_floor: 0.9, judge_confidence_max: 1 }));
+    .mockResolvedValue(accepted("mission", { judge_confidence_min: 0.95 }));
+  renderPanel(block({ judge_confidence_min: 0.9, judge_confidence_floor: 0.9, judge_confidence_max: 1 }), () => {}, "mission");
   const slider = screen.getByTestId("judge-threshold") as HTMLInputElement;
   expect(slider.min).toBe("0.9");
   expect(slider.max).toBe("1");
   for (const v of ["0.91", "0.93", "0.95"]) fireEvent.change(slider, { target: { value: v } });
-  expect(api.setPrefs).not.toHaveBeenCalled();
+  expect(api.setAutomationPolicy).not.toHaveBeenCalled();
   fireEvent.pointerUp(slider);
-  await waitFor(() => expect(api.setPrefs).toHaveBeenCalledTimes(1));
-  expect(api.setPrefs).toHaveBeenCalledWith({ orchestrator: { judge_confidence_min: 0.95 } });
+  await waitFor(() => expect(api.setAutomationPolicy).toHaveBeenCalledTimes(1));
+  expect(api.setAutomationPolicy).toHaveBeenCalledWith("mission", "mission-1", { judge_confidence_min: 0.95 });
   const field = screen.getByTestId("orchestrator-judge");
   expect(field).toHaveTextContent(/0\.90 is the floor and cannot be lowered/);
   expect(field).toHaveTextContent(/at most move a mission to review/);
 });
 
-// #1215: the bypass grant mission launches take is stored with the agent defaults, and stated here
-// because this is where missions are configured.
-test("it states whether missions run with permission bypass, and where to change it", () => {
-  renderPanel(block(), () => {}, true);
+// #1991: neither policy nor the agent defaults can grant tool bypass to mission agents.
+test("mission settings state the invariant without a link suggesting a bypass grant", () => {
+  renderPanel(block(), () => {}, "mission");
   const line = screen.getByTestId("orchestrator-mission-bypass");
-  expect(line).toHaveTextContent(/Missions run with permission bypass: on/);
-  expect(within(line).getByRole("link", { name: /Agents › Defaults/ })).toBeInTheDocument();
+  expect(line).toHaveTextContent(/Mission agents never skip tool prompts/);
+  expect(line).toHaveTextContent(/does not grant permission bypass to missions/);
+  expect(within(line).queryByRole("link")).toBeNull();
+  expect(screen.queryByLabelText(/idle for/i)).toBeNull();
+  expect(screen.queryByLabelText(/check every/i)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
 });
 
-test("with the grant off it says agents ask before using tools", () => {
-  renderPanel(block(), () => {}, false);
-  const line = screen.getByTestId("orchestrator-mission-bypass");
-  expect(line).toHaveTextContent(/Missions run with permission bypass: off/);
-  expect(line).toHaveTextContent(/ask before using tools/);
+test("session assistance contains no mission-only controls", () => {
+  renderPanel();
+  expect(screen.queryByTestId("orchestrator-mission-bypass")).toBeNull();
+  expect(screen.queryByTestId("auto-ai-toggle")).toBeNull();
+  expect(screen.queryByTestId("judge-threshold")).toBeNull();
 });

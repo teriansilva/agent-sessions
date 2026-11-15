@@ -1,3 +1,4 @@
+import { openMissionsView } from "./hq-navigation";
 /** Ask as a right-hand sidebar (#1294) — before that a page under Dashboard (#1058, #1171).
  *
  *  The operator asked for Ask one tap away on every route: an icon beside the notification bell
@@ -315,10 +316,7 @@ test("the shell's mobile line decides the form: modal at <=800px, beside the pag
   panel = await openAsk(page);
   await expect(panel).not.toHaveAttribute("aria-modal");
   await expect(page.getByRole("button", { name: "Dismiss HQ" })).toHaveCount(0);
-  await page
-    .getByRole("navigation", { name: "Main sections" })
-    .getByRole("link", { name: "Missions", exact: true })
-    .click();
+  await openMissionsView(page);
   await expect(page).toHaveURL(/\/mission$/);
   await expect(panel).toHaveAttribute("data-open", "true");
   // Escape inside it closes it and gives focus back to the icon.

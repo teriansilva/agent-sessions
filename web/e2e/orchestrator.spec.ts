@@ -50,6 +50,7 @@ test.beforeEach(async ({ page }) => {
           scan_depth: "fast",
           configured: true,
         },
+        automation: { version: 1, session: { ...ORCH_CONFIG, revision: "session-1" }, mission: { ...ORCH_CONFIG, revision: "mission-1" } },
         orchestrator: ORCH_CONFIG,
       },
     }),
@@ -134,10 +135,10 @@ test("the autonomy copy says what YOLO can type, not just the tier — in Settin
   // #983 changed WHICH operator text that is (an objective's direction, or the default nudge),
   // so the copy now names authorship rather than the `continue` verb.
   await page.goto(settingsPath("ai-mission-control"));
-  const ceiling = page.getByText(/only ever types text/i);
+  const ceiling = page.getByRole("region", { name: "Mission orchestration", exact: true }).getByTestId("orchestrator-yolo-copy");
   await expect(ceiling).toBeVisible();
   await expect(ceiling).toContainText("you wrote");
-  await expect(ceiling).toContainText("The AI decides when, never what.");
+  await expect(ceiling).toContainText("The AI decides when to send it.");
   await expect(ceiling).toContainText(/always waits for your approval/i);
 
   // And it is genuinely gone from the route — a second copy drifting out of sync with the

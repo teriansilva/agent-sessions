@@ -167,7 +167,7 @@ export function DirectionField({
         aria-live="polite"
       >
         {preview.status === "empty"
-          ? "No direction: mission control sends your default nudge."
+          ? "No direction: HQ sends your default nudge."
           : preview.status === "error"
             ? preview.error
             : preview.status === "ok"

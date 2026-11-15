@@ -1,6 +1,5 @@
 import { useState, type CSSProperties } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { HqContactGallery } from "../components/hq/HqContactGallery";
 import { OpeningLinksSetting } from "../components/links/OpeningLinksSetting";
 import { onRadioGroupKeyDown, rovingTabIndex } from "../lib/radioArrows";
 import {
@@ -287,7 +286,6 @@ export function AppearanceInterface() {
         </span>
       </div>
 
-      <HqContactGallery subheadClass={styles.subhead} hintClass={styles.hint} />
 
       <OpeningLinksSetting />
 

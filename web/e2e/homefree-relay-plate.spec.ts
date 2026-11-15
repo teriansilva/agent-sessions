@@ -258,7 +258,7 @@ test.describe("the relayed phone bar fits on a sidebar route", () => {
       for (const b of m.boxes) expect(b.height, b.name).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(m.boxes[m.boxes.length - 1].right).toBeLessThanOrEqual(m.vw);
       expect(m.scroll).toBeLessThanOrEqual(0);
-      expect(m.tile).toBe(width <= 380 ? "26px" : width <= 440 ? "29px" : "34px");
+      expect(m.tile).toBe(width <= 380 ? "23px" : width <= 440 ? "26px" : "31px");
     });
   }
 });
@@ -290,6 +290,6 @@ test("the plain app has no plate and keeps today's tile size", async ({ page }, 
   await expect(page.getByTestId("relay-plate")).toHaveCount(0);
   if (info.project.name === "mobile") {
     const m = await barControls(page);
-    expect(m.tile).toBe("32px");
+    expect(m.tile).toBe("31px");
   }
 });

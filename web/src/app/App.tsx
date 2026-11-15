@@ -868,6 +868,7 @@ function Layout() {
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
+                  <Route path={`${MISSION_PATH}/:missionId`} element={<MissionIdRedirect />} />
                   <Route
                     path={LEGACY_CHECKLISTS_PATH}
                     element={<Navigate to={PLAYBOOKS_PATH} replace />}
@@ -1005,6 +1006,18 @@ function Layout() {
 function LegacyMissionRedirect() {
   const { search, hash } = useLocation();
   return <Navigate to={{ pathname: MISSION_PATH, search, hash }} replace />;
+}
+
+/** Path-shaped mission links share the existing console's query selector and validation. */
+function MissionIdRedirect() {
+  const { pathname, search, hash } = useLocation();
+  const query = new URLSearchParams(search);
+  try {
+    query.set("m", decodeURIComponent(pathname.slice(MISSION_PATH.length + 1)));
+  } catch {
+    query.set("m", "invalid");
+  }
+  return <Navigate to={{ pathname: MISSION_PATH, search: `?${query}`, hash }} replace />;
 }
 
 export default function App() {

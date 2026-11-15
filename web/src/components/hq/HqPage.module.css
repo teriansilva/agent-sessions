@@ -6,9 +6,45 @@
   display: grid;
   /* The list grows with a wide screen (#1873), so its titles read; the thread takes the rest. */
   grid-template-columns: clamp(300px, 20vw, 420px) minmax(0, 1fr);
-  height: 100%;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.views {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.view {
+  composes: ghost tight from "../ui/actionButton.module.css";
+}
+.view[aria-current="page"] {
+  color: var(--hud-text);
+  --nj-edge: var(--hud);
+}
+
+/* Three view links stay on one row even on a 320px phone. Their height stays 44px. */
+@media (max-width: 800px) {
+  .views {
+    gap: var(--sp-1);
+    padding-inline: 0;
+  }
+  .view {
+    flex: 1 0 auto;
+    padding-inline: var(--sp-1);
+    font-size: var(--fs-micro);
+    letter-spacing: 0.06em;
+  }
 }
 
 /* --- the list ----------------------------------------------------------------------------- */

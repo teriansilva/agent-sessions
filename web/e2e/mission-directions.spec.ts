@@ -259,15 +259,15 @@ test("D6: the YOLO copy says only text you wrote is typed, and the nudge field i
   page,
 }) => {
   await missionControlSettings(page);
-  const copy = page.getByTestId("orchestrator-yolo-copy");
+  const copy = page.getByRole("region", { name: "Mission orchestration", exact: true }).getByTestId("orchestrator-yolo-copy");
   await expect(copy).toHaveText(
-    "Even on YOLO, mission control only ever types text you wrote: an objective’s direction, filled with facts it checked itself, or your default nudge below. The AI decides when, never what. Picking an option waits for your approval too, unless a mission lets mission control answer its sessions’ menus (set per mission, in its Follow-through). Answering a question or starting a new session always waits for your approval.",
+    "Even on YOLO, HQ types text you wrote: an objective’s direction, filled with facts it checked itself, or your default nudge below. The AI decides when to send it. Picking an option waits for your approval, unless a mission lets HQ answer its sessions’ menus (set per mission, in Follow-through). Answering a question or starting a new session always waits for your approval.",
   );
   await expect(copy).not.toContainText(/AI-written|AI-drafted/);
   const nudge = page.getByLabel("Default nudge · sent when an objective has no direction");
   await expect(nudge).toBeVisible();
   await expect(nudge).toHaveValue(NUDGE_TEMPLATE);
-  await expect(page.getByText(/Written by you, never by the\s+AI/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Mission orchestration", exact: true }).getByText(/Written by you, never by the\s+AI/)).toBeVisible();
   await expect(page.getByText("Nudge text", { exact: true })).toHaveCount(0);
 });
 

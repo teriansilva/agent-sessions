@@ -10,7 +10,7 @@
  *  bar and the drawer render from the same array, so the next section is one entry rather than
  *  three edits that can disagree.
  *
- *  Dashboard leads, followed by Missions, Sessions and Library (#1478).
+ *  Dashboard leads, followed by HQ, Sessions and Library (#2037). Missions is a view of HQ.
  *
  *  **The map is a view OF sessions (#1069)**: it lives in `children` of Sessions, which the bar
  *  paints as a sub-menu behind a chevron. The Sessions label itself still goes to the last session
@@ -39,6 +39,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { MISSION_ID_RE } from "../../lib/missionLink";
 import {
   ARTIFACTS_PATH,
   AUTOMATIONS_PATH,
@@ -51,6 +52,8 @@ import {
   PLAYBOOKS_PATH,
   GALLERY_PATH,
   GALLERY_SKILLS_PATH,
+  HQ_PATH,
+  HQ_DISPATCHES_PATH,
   SKILLS_PATH,
   SPECIALISTS_PATH,
   SESSIONS_PATH,
@@ -64,6 +67,9 @@ export type SectionId = "ask" | "sessions" | "mission" | "library";
  *  templates, variables, memory, artifacts, automations, skills and playbooks (#1294, #1932). Skills and
  *  Playbooks each hold their own Browse gallery view (#1440). */
 export type SubsectionId =
+  | "hq"
+  | "missions"
+  | "dispatches"
   | "sessions"
   | "map"
   | "templates"
@@ -96,11 +102,22 @@ export interface Section {
   beta?: boolean;
 }
 
+/** Shared by shell navigation and the page's HQ view switcher. */
+export const HQ_VIEWS: Subsection[] = [
+  { id: "hq", label: "Conversations", Icon: Crosshair, to: HQ_PATH },
+  { id: "missions", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
+  { id: "dispatches", label: "Dispatches", Icon: FileText, to: HQ_DISPATCHES_PATH },
+];
+
 export const SECTIONS: Section[] = [
   // The dashboard (#1123). The id stays `ask` so nothing keyed on it churns; Ask itself is no
   // longer a destination but the right-hand sidebar the corner icon opens (#1294).
   { id: "ask", label: "Dashboard", Icon: LayoutDashboard, to: DASHBOARD_PATH },
-  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH, beta: true },
+  // Keep the historical section id for retained shell state. HQ groups its existing views.
+  {
+    id: "mission", label: "HQ", Icon: Crosshair, to: HQ_PATH,
+    children: HQ_VIEWS,
+  },
   {
     id: "sessions",
     label: "Sessions",
@@ -145,11 +162,10 @@ export const SECTIONS: Section[] = [
 export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
   if (sub === "sessions" || sub === "map") return "sessions";
+  if (sub === "hq" || sub === "missions" || sub === "dispatches") return "mission";
   if (sub !== null) return "library";
   // `/` redirects to the dashboard since #1525: it lights Dashboard for the render before it lands.
   if (pathname === DASHBOARD_PATH || pathname === "/") return "ask";
-  if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
-    return "mission";
   return null;
 }
 
@@ -179,5 +195,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "skills";
   if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "playbooks";
   if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
+  if (pathname === HQ_DISPATCHES_PATH || pathname.startsWith(`${HQ_DISPATCHES_PATH}/`)) return "dispatches";
+  if (pathname === HQ_PATH || pathname.startsWith(`${HQ_PATH}/`)) return "hq";
+  if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH || (pathname.startsWith(`${MISSION_PATH}/`) && MISSION_ID_RE.test(pathname.slice(MISSION_PATH.length + 1)))) return "missions";
   return null;
 }

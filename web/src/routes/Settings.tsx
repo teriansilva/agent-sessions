@@ -1,3 +1,4 @@
+import { HqSettings } from "./HqSettings";
 import { ResourceLimits } from "../components/settings/ResourceLimits";
 import encodeQR from "@paulmillr/qr";
 import {
@@ -51,15 +52,8 @@ import { AppearanceTerminal } from "./AppearanceTerminal";
 import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
-import { ConnectorsSettings } from "./ConnectorsSettings";
-import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
-import { HqCallsSettings } from "./HqCallsSettings";
-import { HqReportsSettings } from "./HqReportsSettings";
-import { HqRouteSettings } from "./HqRouteSettings";
-import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
-import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
 import { RenameProjectModal } from "./RenameProjectModal";
@@ -1970,7 +1964,8 @@ export function Settings() {
 
   const legacy = legacySettingsTarget(tab, location.hash);
   if (legacy) {
-    return <Navigate to={legacy} replace state={location.state} />;
+    const [pathname, targetHash = ""] = legacy.split("#");
+    return <Navigate to={{ pathname, search: location.search, hash: targetHash ? `#${targetHash}` : "" }} replace state={location.state} />;
   }
   if (agent === undefined && tab === "agents-defaults") {
     // Canonical form is /settings/agents/defaults.
@@ -2168,24 +2163,7 @@ export function Settings() {
         {section === "ai-endpoint" && <AiEndpointSetup />}
         {section === "ai-session-review" && <AiReviewSettings />}
         {section === "ai-auto-sort" && <AutoSortSettings />}
-        {section === "ai-mission-control" && (
-          <>
-            <OrchestratorSettings />
-            <PulseSettings />
-            {/* Where mission objectives are checked (#891) — the other outbound connection a
-                mission's follow-through needs. */}
-            <ForgeSettings />
-          </>
-        )}
-        {/* Every system prompt, in one catalog (#824). */}
-        {section === "ai-hq" && (
-          <>
-            <HqRouteSettings />
-            <HqReportsSettings />
-          </>
-        )}
-        {section === "ai-hq-calls" && <HqCallsSettings />}
-        {section === "ai-hq-connectors" && <ConnectorsSettings />}
+        {section === "ai-hq" && <HqSettings />}
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}
 

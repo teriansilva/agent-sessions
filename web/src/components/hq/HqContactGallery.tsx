@@ -1,4 +1,4 @@
-/** Settings → Interface → "Select your primary HQ contact" (#1525): Random first (the default),
+/** Settings → AI → HQ → "Select your primary HQ contact" (#1525): Random first (the default),
  *  then every contact in `contacts.ts`, then Off. A radio group of cards (arrow keys move and select,
  *  one Tab stop); the selected card plays its loop, the others show posters. Saved to the
  *  `hq_contact` pref, so the choice follows the operator to every device. */

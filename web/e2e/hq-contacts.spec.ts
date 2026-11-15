@@ -161,7 +161,7 @@ test("switching contacts relabels new answers only (#1525)", async ({ page }) =>
   );
 
   // Switch in Settings; the conversation is kept (server-side), one pick away in HQ's switcher.
-  await page.goto(settingsPath("appearance"));
+  await page.goto(settingsPath("ai-hq"));
   const target = page.getByRole("radio").and(page.locator('[data-key="europe-woman"]'));
   await target.click();
   await expect(target).toHaveAttribute("aria-checked", "true");
@@ -186,7 +186,7 @@ test("the gallery is operable by keyboard and by mouse, and Select contact lands
   await expect(placeholder).toContainText("No HQ contact");
   await expect(placeholder.locator("video, img")).toHaveCount(0);
   await placeholder.getByRole("link", { name: "Select contact" }).click();
-  await expect(page).toHaveURL(/\/settings\/appearance#hq-contact$/);
+  await expect(page).toHaveURL(/\/settings\/ai-hq#hq-contact$/);
   const group = page.getByRole("radiogroup", { name: "Select your primary HQ contact" });
   await expect(group).toBeInViewport();
   // The checked card (Off) has focus: the arrow keys move AND select.
@@ -230,7 +230,7 @@ test("Random shows the day's contact under a fixed clock (#1525)", async ({ page
   await page.goto(DASHBOARD_PATH);
   const pick = contactForDay(fixed);
   await expect(page.getByTestId("hq-primary-contact")).toHaveAttribute("data-contact", pick.id);
-  await page.goto(settingsPath("appearance"));
+  await page.goto(settingsPath("ai-hq"));
   await expect(page.getByTestId("hq-random-pick")).toHaveText(`Today: ${pick.name}`);
 });
 

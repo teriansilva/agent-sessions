@@ -202,13 +202,10 @@ def _policy(scope: str) -> dict:
 
 
 def _automation() -> dict:
-    from . import prefs
-
     return _clean(
         {
             "session_assistance": _policy("session"),
             "mission_orchestration": _policy("mission"),
-            "unattended_permission_bypass_granted": _bool(prefs.unattended_bypass_granted()),
         }
     )
 

@@ -52,7 +52,7 @@ export function DraftDirection({
         </span>
       </div>
       <p className={d.why} data-testid="draft-lead">
-        This objective has no direction, so mission control drafted one from the session. It is
+        This objective has no direction, so HQ drafted one from the session. It is
         typed exactly as shown, so read it first.
       </p>
       <div>

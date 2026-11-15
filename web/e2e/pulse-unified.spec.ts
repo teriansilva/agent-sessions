@@ -136,6 +136,7 @@ test.beforeEach(async ({ page }) => {
           scan_depth: "slow",
           configured: true,
         },
+        automation: { version: 1, session: { ...ORCH_CONFIG, revision: "session-1" }, mission: { ...ORCH_CONFIG, revision: "mission-1" } },
         orchestrator: ORCH_CONFIG,
       },
     }),

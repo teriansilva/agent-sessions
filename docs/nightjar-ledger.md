@@ -35,7 +35,7 @@ the same list.
 
 | Path | Kind | Phase | Status | Captures | Motion |
 |---|---|---|---|---|---|
-| `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu headers:topbar headers:topbar-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
+| `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu headers:topbar headers:topbar-menu headers:hq-views | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
 | `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour headers:topbar | none: the brand kit's logo (#1590) is a still image |
 | `components/call/call.module.css` | css | 4 | done | popup:hq-call | the call panel fades in (Full), none in Reduced/Off; LEDs carry the call state (steady outside Full); no other motion |
 | `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
@@ -63,7 +63,8 @@ the same list.
 | `components/share/share.module.css` | css | 10 | done | popup:share-export popup:share-import | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a sheet; no motion of its own |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
-| `components/hq/HqPage.module.css` | css | 4 | done | route:hq route:hq-missing | none of its own: the conversation on screen is the HUD rail (no movement); the thread's motion is AskConsole's |
+| `components/hq/HqPage.module.css` | css | 4 | done | route:hq route:hq-missing route:mission | none of its own: the conversation and shared HQ view links are static; the thread's motion is AskConsole's |
+| `web/src/routes/HqSettings.tsx` | page | 11 | done | route:settings-hq route:settings-hq-autonomy route:settings-hq-unavailable | none of its own: existing settings panels, static group links and independent policy editors |
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
 | `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

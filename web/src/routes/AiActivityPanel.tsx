@@ -12,7 +12,7 @@ import styles from "./Settings.module.css";
 const KINDS: { kind: string; label: string }[] = [
   // The KIND is the server-owned task id and stays `pulse-scan`; only the label an
   // operator reads is renamed (#935).
-  { kind: "pulse-scan", label: "Mission control scan" },
+  { kind: "pulse-scan", label: "HQ session scan" },
   { kind: "ai-review", label: "AI review" },
   { kind: "auto-sort", label: "Auto-sort" },
   { kind: "orchestrator", label: "Orchestrator pass" },

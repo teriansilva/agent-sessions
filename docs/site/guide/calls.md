@@ -11,7 +11,7 @@ not a phone line, and no audio is stored anywhere.
 ## Set it up
 
 Calls need two speech services: speech-to-text, which hears you, and text-to-speech, which speaks
-HQ's answers. You configure them in **Settings → AI → HQ calls**. You have three options.
+HQ's answers. You configure them in **Settings → AI → HQ → Calls**. You have three options.
 
 ### On this machine — free, offline after one download
 
@@ -81,7 +81,7 @@ enter that server's key again or remove it.
 - **Trail off and HQ waits.** If you stop in the middle of a thought, HQ gives you about three
   seconds before it answers on Natural and Patient; a finished sentence is answered after the
   setting's pause. Quick answers at once either way.
-- **Captions are off unless you turn them on** (Settings → AI → HQ calls → Conversation, or the
+- **Captions are off unless you turn them on** (Settings → AI → HQ → Calls → Conversation, or the
   call panel). A call then shows only the cards that need your decision.
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
   The call bar follows you across the app.
@@ -101,7 +101,7 @@ enter that server's key again or remove it.
   may not hear you until you come back.
 - **A slow speech server pauses rather than stutters.** If text-to-speech can't keep up, HQ waits
   a moment and then speaks the next stretch in one piece.
-- **Thinking on calls** and **Model on calls** (Settings → AI → HQ calls → Conversation) are
+- **Thinking on calls** and **Model on calls** (Settings → AI → HQ → Calls → Conversation) are
   separate from what you set for HQ in **Settings → AI**, which applies to what you type. On a
   call HQ does not think before it answers unless you choose a level here, because you are
   waiting on the line; **Same as typed HQ turns** follows your AI setting. **Model on calls**
@@ -141,7 +141,7 @@ as another language is ignored, even on an English call.
 ## Voices and languages
 
 Each General has their own voice, speaking style and speed. Defaults match their personality, and
-you can change any of them in **Settings → AI → HQ calls → Each General's voice**.
+you can change any of them in **Settings → AI → HQ → Calls → Each General's voice**.
 
 By default each General speaks with a voice of their own whenever your speech server has it:
 

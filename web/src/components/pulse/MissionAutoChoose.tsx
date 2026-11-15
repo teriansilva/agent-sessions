@@ -1,7 +1,7 @@
-/** "Let mission control answer menus on its own", per mission (#1060 Phase 4).
+/** "Let HQ answer menus on its own", per mission (#1060 Phase 4).
  *
  *  The operator's opt-in to the one autonomous `choose`: when a session this mission holds stops at
- *  the engine's own option menu, mission control may pick an option itself. What it may NOT do is
+ *  the engine's own option menu, HQ may pick an option itself. What it may NOT do is
  *  said beside the switch, because that is what the operator is agreeing to: never a permission
  *  prompt, only a menu read off the screen, only at 0.90 confidence or above, only at the yolo tier.
  *
@@ -83,7 +83,7 @@ export function MissionAutoChoose({
         <span>Answer the sessions’ menus on their own</span>
       </label>
       <p className={styles.autoChooseHint}>
-        When a session in this mission stops at an option menu, mission control
+        When a session in this mission stops at an option menu, HQ
         may pick an option itself — only from a menu it read off the screen,
         never a permission prompt, and only when it is at least 0.90 sure. Each
         answer is recorded in the thread.
@@ -95,7 +95,7 @@ export function MissionAutoChoose({
         >
           {on
             ? "Paused: autonomy is not set to yolo, so every menu waits for your tap."
-            : "Needs autonomy set to yolo in Settings → AI → Mission control."}
+            : "Needs autonomy set to yolo in Settings → AI → HQ → Autonomy."}
         </p>
       ) : null}
       {error ? (

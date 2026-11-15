@@ -33,13 +33,8 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-endpoint", label: "Endpoint & model", group: "ai" },
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
-  { id: "ai-mission-control", label: "Mission control", group: "ai" },
-  // HQ itself (#1882): whether sessions can report to it.
+  // One HQ home (#2037): its conversations, missions, calls and connected services.
   { id: "ai-hq", label: "HQ", group: "ai" },
-  // Calling HQ (#1397): speech endpoints, voices and how a call feels.
-  { id: "ai-hq-calls", label: "HQ calls", group: "ai" },
-  // What HQ reads from (#1746 P1b): add, test and switch on a connector to another service.
-  { id: "ai-hq-connectors", label: "HQ connectors", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },
   { id: "ai-activity", label: "Activity", group: "ai" },
   // AGENTS (#853 P4, #1128): the roster keeps the `/settings/agents` URL it had as "Agents &
@@ -92,9 +87,19 @@ const SECTION_PATHS: Partial<Record<SettingsSectionId, string>> = {
 
 /** The URL of a section, or of the Settings root (`/settings`) when none is given. `hash` may be
  *  passed with or without its leading `#`. */
-export function settingsPath(id?: SettingsSectionId, hash?: string): string {
+const HQ_LEGACY_ANCHORS = {
+  "ai-mission-control": "orch-h",
+  "ai-hq-calls": "hq-calls",
+  "ai-hq-connectors": "hq-connectors",
+} as const;
+type LegacyHqSection = keyof typeof HQ_LEGACY_ANCHORS;
+
+export function settingsPath(id?: SettingsSectionId | LegacyHqSection, hash?: string): string {
+  if (id && Object.hasOwn(HQ_LEGACY_ANCHORS, id)) {
+    return settingsPath("ai-hq", hash || HQ_LEGACY_ANCHORS[id as LegacyHqSection]);
+  }
   const base = id
-    ? (SECTION_PATHS[id] ?? `${SETTINGS_PATH}/${id}`)
+    ? (SECTION_PATHS[id as SettingsSectionId] ?? `${SETTINGS_PATH}/${id}`)
     : SETTINGS_PATH;
   if (!hash) return base;
   return `${base}${hash.startsWith("#") ? hash : `#${hash}`}`;
@@ -125,6 +130,12 @@ export function legacySettingsTarget(
   id: string | undefined,
   hash: string,
 ): string | null {
+  if (id && Object.hasOwn(HQ_LEGACY_ANCHORS, id)) {
+    return settingsPath(id as LegacyHqSection, hash);
+  }
+  if (id === "appearance" && (hash === "#hq-contact" || hash === "#hq-contact-h")) {
+    return settingsPath("ai-hq", hash);
+  }
   if (id !== "ai-review") return null;
   return hash.startsWith(PROMPT_HASH_PREFIX)
     ? settingsPath("ai-prompts", hash)
