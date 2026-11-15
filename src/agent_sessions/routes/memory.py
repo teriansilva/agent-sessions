@@ -1,7 +1,7 @@
-"""Shared project memory — the Memory page's routes (#1441 P2).
+"""Shared HQ/project memory — operator routes and search settings (#1441, #2036).
 
 Reads need a login; every mutation also needs the CSRF token and the app's Origin. A scope is only
-ever selected by its typed project id from the path, validated before any path is built. Every
+ever selected by its typed notebook id from the path, validated before any path is built. Every
 response is no-store: notes are agent-written text and may be private. Blocking store work runs
 off the event loop.
 """
@@ -9,21 +9,32 @@ off the event loop.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import memory, secretfence, template_secrets
+from .. import (
+    memory,
+    memory_embeddings,
+    memory_index,
+    memory_service,
+    memory_settings,
+    secretfence,
+    template_secrets,
+)
 from .templates import _err, _json_object
 from .upload import NO_STORE
 
 
-async def _run(fn: Callable, *args):
+async def _run(fn: Callable, *args, **kwargs):
     try:
-        return await asyncio.to_thread(fn, *args)
+        return await asyncio.to_thread(fn, *args, **kwargs)
     except memory.MemoryStoreError as exc:
         raise _err(exc.status, str(exc)) from None
+    except sqlite3.DatabaseError:
+        raise _err(503, "the memory store is unavailable; try again after repair") from None
     except template_secrets.RedactionUnavailable as exc:
         raise _err(503, f"secret check unavailable — nothing was taken in ({exc})") from None
     except secretfence.SecretFenceBusy:
@@ -47,9 +58,88 @@ def _qid(raw: str) -> int:
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+    @app.get("/api/memory-search/status")
+    async def memory_search_status(_user: str = Depends(logged_in)) -> JSONResponse:
+        return _ok(await _run(memory_index.status))
+
+    @app.get("/api/memory-search/settings")
+    async def memory_search_settings(_user: str = Depends(logged_in)) -> JSONResponse:
+        return _ok(await _run(memory_settings.public))
+
+    @app.patch("/api/memory-search/settings")
+    async def memory_search_configure(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return _ok(await _run(memory_settings.save, await _json_object(request)))
+
+    @app.post("/api/memory-search/test")
+    async def memory_search_test(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        support = await _run(memory_index.vector_support)
+        if not support["available"]:
+            return _ok(
+                {
+                    "ok": False,
+                    "code": support["reason"],
+                    "detail": "Semantic search is unavailable on this host. "
+                    "Keyword search remains available.",
+                }
+            )
+        cfg = await _run(memory_settings.draft, await _json_object(request))
+        try:
+            vectors = await _run(
+                memory_embeddings.embed, cfg, ["BattleLab memory connection test."]
+            )
+        except memory_embeddings.EmbeddingError as exc:
+            return _ok(
+                {
+                    "ok": False,
+                    "code": exc.code,
+                    "detail": "Could not verify embeddings. Check the endpoint, model and key.",
+                }
+            )
+        return _ok(
+            {
+                "ok": True,
+                "dimensions": len(vectors[0]),
+                "detail": "Draft connection verified. Save to use it.",
+            }
+        )
+
+    @app.post("/api/memory-search")
+    async def memory_search(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _json_object(request)
+        if (
+            set(body) - {"query", "scopes", "limit"}
+            or not isinstance(body.get("scopes", []), list)
+            or len(body.get("scopes", [])) > 100
+        ):
+            raise _err(422, "send a query and optional notebook scopes")
+        return _ok(
+            await _run(
+                memory_service.search,
+                memory_service.operator(),
+                body.get("query"),
+                scopes=body.get("scopes"),
+                limit=body.get("limit", 8),
+            )
+        )
+
     @app.get("/api/memory")
     async def memory_overview(_user: str = Depends(logged_in)) -> JSONResponse:
-        return _ok({"projects": await _run(memory.overview)})
+        return _ok({"projects": await _run(memory.overview, include_hq=True)})
+
+    @app.put("/api/memory/_hq/capture")
+    async def memory_capture(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _json_object(request)
+        if set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+            raise _err(422, "send enabled: true or false")
+        return _ok(await _run(memory_service.set_capture, body["enabled"]))
 
     @app.get("/api/memory/{pid}")
     async def memory_view(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:
@@ -102,14 +192,34 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        await _run(memory.update_note, pid, slug, await _json_object(request))
+        body = await _json_object(request)
+        revision = body.pop("revision", None)
+        if revision is not None and (type(revision) is not int or revision < 0):
+            raise _err(422, "invalid note revision")
+        await _run(memory.update_note, pid, slug, body, expected_revision=revision)
         return _ok({"slug": slug})
+
+    @app.get("/api/memory/{pid}/notes/{slug}")
+    async def memory_read_note(
+        pid: str, slug: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        return _ok(await _run(memory_service.read, memory_service.operator(), pid, slug))
 
     @app.delete("/api/memory/{pid}/notes/{slug}")
     async def memory_delete_note(
-        pid: str, slug: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+        pid: str,
+        slug: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
     ) -> Response:
-        await _run(memory.delete_note, pid, slug)
+        raw = await request.body()
+        body = await _json_object(request) if raw else {}
+        if set(body) - {"revision"} or (
+            "revision" in body and (type(body["revision"]) is not int or body["revision"] < 0)
+        ):
+            raise _err(422, "invalid note revision")
+        await _run(memory.delete_note, pid, slug, expected_revision=body.get("revision"))
         return Response(status_code=204, headers=NO_STORE)
 
     @app.post("/api/memory/{pid}/clear")

@@ -503,6 +503,14 @@ def test_a_launch_without_memory_strips_the_apps_own_copies(monkeypatch, tmp_pat
 # routes. Memory is never a system prompt, never evidence and never sent to a
 # model: no prompt, review, mission-judge or checklist module may import it.
 ALLOWED_IMPORTERS = {
+    "ask_memory.py",  # bounded HQ retrieval and explicitly requested HQ-only writes
+    "memory_capture.py",  # optional, committed operator turns only
+    "memory_broker.py",  # launch-bound principal, never caller-selected scopes
+    "memory_client.py",  # shared broker client for MCP and helper
+    "memory_service.py",  # #2036 common scoped notebook admission/read/search
+    "memory_settings.py",  # origin-bound encrypted embeddings connection
+    "memory_embeddings.py",  # withhold text at the single non-chat transport
+    "memory_index.py",  # one derived hybrid index, current-note revalidation at every read
     # The memory tool (#1506): the per-launch wiring at the seams, and the MCP server the agent CLI
     # starts. Neither is a prompt, evidence or model input: the server serves the agent's own view.
     "agent_tools.py",
@@ -818,7 +826,11 @@ def test_a_failed_memory_removal_fails_the_project_deletion(on, workspace, monke
     monkeypatch.setattr(shutil, "rmtree", real)
     projects.delete(on)  # the retry finishes it
     assert on not in projects.load()
-    assert not [p for p in memory.root().iterdir() if p.name.startswith(".") and p.name != ".locks"]
+    assert not [
+        p
+        for p in memory.root().iterdir()
+        if p.name.startswith(".") and p.name not in {".locks", ".channels", ".search"}
+    ]
 
 
 def test_a_pass_looks_at_a_bounded_number_of_files_per_inbox(on, workspace):

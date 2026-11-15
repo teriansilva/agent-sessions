@@ -143,7 +143,9 @@ the same list.
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
 | `routes/HqCallsSettings.module.css` | css | 11 | done | route:settings-hq-calls | none (layout); the Seg marker and switch knob are the primitives' own |
 | `routes/ConnectorsSettings.module.css` | css | 11 | done | route:settings-hq-connectors | the card LED is `.hud-led` (up/idle/draft/down by connector state) |
-| `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
+| `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase route:memory-hq popup:memory-hq-clear | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
+| `web/src/routes/MemorySearchSettings.tsx` | page | 11 | done | route:settings-memory-search | none of its own; existing field edges and button states use their primitives |
+| HQ notebook and source inspector (#2036) | page | 10 | done | route:memory-hq popup:memory-hq-clear | existing switch knob and inspector transitions; Reduced/Off use the shared rules |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
 | `routes/NewSessionLanding.module.css` | css | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |

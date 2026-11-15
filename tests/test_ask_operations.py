@@ -95,7 +95,14 @@ def _resolves(app, method: str, path: str) -> bool:
 
 def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatch):
     monkeypatch.setattr(ask_operations, "_folder_patch", lambda pid, facts, **kw: {})
-    facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1, "revision": 2}
+    facts = {
+        "runtime": "terminal",
+        "name": "p",
+        "sessions": 1,
+        "matched": 1,
+        "revision": 2,
+        "version": 1,
+    }
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
     fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
     fields.update(instruction="apply for the job")  # a draft mission (#1950)
@@ -109,7 +116,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     monkeypatch.setattr(ask_secrets, "_current", lambda target, facts: 1.0)
     # A library save (#1611) builds its body from its bound draft, injected at the tap.
     fields["_content"] = {
-        "files": {"playbook.toml": ""},
+        "files": {"playbook.toml": "", "note.md": "A corrected fact."},
         "revision": "r",
         "origin": None,
         "new_id": "copy",
@@ -128,6 +135,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "secret": "0" * 32,
             "attachment": "0" * 32,
             "mission": "m1",
+            "memory": "research-protocol",
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

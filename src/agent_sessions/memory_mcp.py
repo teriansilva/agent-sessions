@@ -4,8 +4,10 @@ An agent CLI starts this as its own child, from a per-launch config entry (`agen
 agent can read the project's notes and leave new ones without anyone pasting a paragraph into an
 instruction file. It reads its two paths from its OWN environment — the same two the launch
 already hands the agent (`memory.ENV_READ`, `memory.ENV_INBOX`) — and refuses to start without
-them. No new path, no network, no listening socket, no dependency: newline-delimited JSON-RPC 2.0
-on stdin/stdout, as the MCP stdio transport specifies.
+them. It speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. New releases route read/search
+through the private Memory broker and the shared keyword/vector index (#2036); the capability is
+read from a private file derived from the existing inbox path, never passed in argv. File indexes
+and inbox writes remain compatibility projections/producers of the same authoritative store.
 
 **Confinement, for every tool.** The read view (``notes/``) and this launch's inbox are opened as
 directory descriptors (``O_DIRECTORY | O_NOFOLLOW``) on every call and must still be the very
@@ -128,7 +130,7 @@ TOOLS = [
     {
         "name": "memory_search",
         "description": (
-            "Search this project's shared memory: a case-insensitive match of the query's words "
+            "Search this project's shared keyword/vector index for relevant notes "
             f"over note titles and bodies; the best {SEARCH_RESULTS} notes with their slugs and a "
             f"one-line excerpt. {_HINT}"
         ),
@@ -297,8 +299,13 @@ class Server:
         inbox: str,
         mine_notes: str | None = None,
         mine_inbox: str | None = None,
+        *,
+        shared: bool = False,
     ) -> None:
         self.notes, self.inbox = notes, inbox
+        self.shared = shared
+        # `main` always selects the shared service. This old descriptor-bound reader remains a
+        # compatibility test seam; it is never a fallback when the broker is unavailable.
         self.notes_id = _pin(notes)
         self.inbox_id = _pin(inbox)
         self.books: dict[str, tuple[str, tuple | None, str, tuple | None]] = {
@@ -394,6 +401,9 @@ class Server:
         args = dict(args) if isinstance(args, dict) else args
         book = self._book(args)
         slug = _slug(args)
+        if self.shared:
+            note = self._shared("read", slug=slug, notebook=book)
+            return framed(clean(f"# {note['name']}\n\n{note['body']}"))
         dfd = self._notes(book)
         try:
             data = read_file(dfd, f"{slug}.md", NOTE_MAX_BYTES)
@@ -405,6 +415,19 @@ class Server:
 
     def memory_search(self, args: dict) -> str:
         query = _string(args, "query", QUERY_MAX)
+        if self.shared:
+            result = self._shared("search", query=query)
+            lines = []
+            for hit in result["hits"]:
+                mine = (
+                    "[mine] "
+                    if hit["scope"] != os.path.basename(os.path.dirname(self.notes))
+                    else ""
+                )
+                lines.append(f"- {mine}{hit['slug']} — {hit['name']}\n  {hit['excerpt']}")
+            return framed(
+                clean("\n".join(lines) or "No note matches.") + f"\n(search: {result['state']})"
+            )
         terms = list(dict.fromkeys(t for t in one_line(query, QUERY_MAX).lower().split()))
         terms = [t for t in terms if len(t) >= 2][:QUERY_TERMS_MAX]
         if not terms:
@@ -424,6 +447,17 @@ class Server:
             eligible += found_e
             searched += found_s
         return self._search_result(hits, eligible, searched)
+
+    def _shared(self, op: str, **args) -> dict:
+        from . import memory_client
+
+        # Keep the original descriptor/inode checks even though the broker checks its own pins.
+        for book in self.books:
+            os.close(self._notes(book))
+        try:
+            return memory_client.request(self.inbox, op, **args)
+        except memory_client.Unavailable as exc:
+            raise ToolError(str(exc)) from None
 
     def _search_one(self, dfd: int, terms: list[str], hits: list, label: str):
         try:
@@ -820,7 +854,11 @@ def main() -> int:
         )
         return 2
     try:
-        serve(sys.stdin.buffer, sys.stdout.buffer, Server(notes, inbox, mine_notes, mine_inbox))
+        serve(
+            sys.stdin.buffer,
+            sys.stdout.buffer,
+            Server(notes, inbox, mine_notes, mine_inbox, shared=True),
+        )
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     return 0

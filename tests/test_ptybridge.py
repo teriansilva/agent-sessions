@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -10,9 +12,9 @@ from agent_sessions import ptybridge
 
 
 @pytest.fixture(autouse=True)
-def _runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path / "pty"))
-    return tmp_path / "pty"
+def _runtime():
+    # conftest supplies a short private per-test runtime: long pytest names exceed AF_UNIX.
+    return Path(os.environ["AGENT_SESSIONS_RUNTIME_DIR"])
 
 
 def test_socket_path_is_stable_and_inside_runtime_dir(_runtime):
@@ -143,7 +145,12 @@ def test_the_secrets_broker_socket_is_not_a_session_and_is_not_probed(_runtime, 
     session, and every scan's probe made the broker log an unhandled ConnectionResetError."""
     alive = ptybridge.socket_path("claude", "alive")
     broker = ptybridge.runtime_dir() / "secrets-6e30fe614b.sock"
-    servers = [_bind_listening_sock(alive), _bind_listening_sock(broker)]
+    memory_broker = ptybridge.runtime_dir() / "memory-6e30fe614b00.sock"
+    servers = [
+        _bind_listening_sock(alive),
+        _bind_listening_sock(broker),
+        _bind_listening_sock(memory_broker),
+    ]
     probed = []
     real_probe = ptybridge.probe_master
 

@@ -21,6 +21,8 @@ from test_ask_orchestrator import Script, ai, answer, app, call, calls, found  #
 #: Everything with an effect: each waits for the commit. Adding a tool means deciding which side
 #: it is on — never by default.
 GATED = {
+    "remember_hq_memory",
+    "propose_hq_memory_change",
     "ask_operator",
     "assemble",
     "assign",

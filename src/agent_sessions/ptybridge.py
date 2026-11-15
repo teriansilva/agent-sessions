@@ -51,8 +51,10 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 # environment names it, so it stays here) but is no dtach master: never probe it as a session.
 # Nor is the HQ report broker's (`hq_report_broker.socket_path`, #1882), nor the shelf broker's
 # (`shelf_broker.socket_path`, #1740), nor the artifacts broker's (`artifact_broker.socket_path`,
-# #1932).
-_BROKER_SOCKET = re.compile(r"(?:secrets|hq-report|shelf|artifacts)-[0-9a-f]{10}\.sock")
+# #1932), nor the shared Memory broker (#2036, a 12-digit root tag).
+_BROKER_SOCKET = re.compile(
+    r"(?:(?:secrets|hq-report|shelf|artifacts)-[0-9a-f]{10}|memory-[0-9a-f]{12})\.sock"
+)
 
 
 class PtyBridgeError(RuntimeError):

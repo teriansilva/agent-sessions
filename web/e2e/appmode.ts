@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
@@ -33,13 +33,21 @@ const REPO_ROOT = resolve(process.cwd(), "..");
 /** Is the Python half of the stack reachable from here?
  *
  *  `web-ci` is deliberately Node-only — its own header says it never touches the gated Python
- *  workflow — so `uv` is absent there and these specs must SKIP rather than fail. They get their
- *  own workflow (`appmode-e2e.yml`) which provisions both halves, and they run locally wherever
- *  the toolchain exists. A spec that cannot run says so; it does not pretend to pass.
+ *  workflow. A shared runner can still have `uv` on PATH, so also require a provisioned project
+ *  venv. Otherwise the first relay boot would download packages inside its readiness budget.
+ *  These specs get their own workflow (`appmode-e2e.yml`) which runs `uv sync --extra dev` first;
+ *  prepare the same environment locally. Inspect installed metadata without importing the app:
+ *  an application import failure must still fail the real transport test, never skip it.
  */
 export const PY_STACK_AVAILABLE = (() => {
   try {
     execFileSync("uv", ["--version"], { stdio: "pipe" });
+    const python = join(REPO_ROOT, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+    if (!existsSync(python)) return false;
+    execFileSync(python, ["-I", "-c", [
+      "from importlib.metadata import distribution",
+      "for name in ('agent-sessions', 'fastapi', 'uvicorn', 'cryptography', 'httpx', 'websockets'): distribution(name)",
+    ].join("\n")], { cwd: REPO_ROOT, stdio: "pipe", timeout: 10_000 });
     return true;
   } catch {
     return false;

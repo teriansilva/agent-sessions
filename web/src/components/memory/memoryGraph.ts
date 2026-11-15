@@ -3,7 +3,7 @@
  *
  *  Only WRITE edges are drawn for sessions: BattleLab can see who left a note (its inbox), but a
  *  plain file says nothing about who read it, so a "read" edge would be invented. */
-import type { MemoryNote, MemorySession, NoteType } from "../../types/memory";
+import type { MemoryNote, MemorySession, MemorySource, NoteType } from "../../types/memory";
 
 export const TYPE_ORDER: readonly NoteType[] = ["decision", "finding", "pitfall", "reference"];
 export const TYPE_TAG: Readonly<Record<NoteType, string>> = {
@@ -16,6 +16,7 @@ export const TYPE_TAG: Readonly<Record<NoteType, string>> = {
 export interface GraphSession {
   id: string;
   session: MemorySession;
+  source?: MemorySource | null;
   notes: number;
 }
 export interface GraphNode {
@@ -43,13 +44,17 @@ export function sessionId(s: MemorySession): string {
   return s.key ? `s:${s.key}` : `s:unresolved:${s.engine || "unknown"}:${s.kind}`;
 }
 
+function writerId(note: MemoryNote): string {
+  return note.source ? `hq:${note.source.source}` : sessionId(note.session);
+}
+
 export function memoryGraph(notes: readonly MemoryNote[]): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const sessions = new Map<string, GraphSession>();
   for (const n of notes) {
-    const id = sessionId(n.session);
+    const id = writerId(n);
     const cur = sessions.get(id);
     if (cur) cur.notes += 1;
-    else sessions.set(id, { id, session: n.session, notes: 1 });
+    else sessions.set(id, { id, session: n.session, source: n.source, notes: 1 });
   }
   const nodes: GraphNode[] = [...sessions.values()].map((session, i) => ({
     id: session.id,
@@ -68,7 +73,7 @@ export function memoryGraph(notes: readonly MemoryNote[]): { nodes: GraphNode[];
   const known = new Set(notes.map(n => n.slug));
   const edges: GraphEdge[] = [];
   for (const n of notes) {
-    edges.push({ id: `w:${n.slug}`, source: sessionId(n.session), target: `n:${n.slug}`, kind: "wrote" });
+    edges.push({ id: `w:${n.slug}`, source: writerId(n), target: `n:${n.slug}`, kind: "wrote" });
     for (const to of n.links) {
       if (known.has(to) && to !== n.slug) {
         edges.push({ id: `l:${n.slug}>${to}`, source: `n:${n.slug}`, target: `n:${to}`, kind: "links" });

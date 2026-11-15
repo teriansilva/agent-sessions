@@ -129,6 +129,11 @@ LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
 #: What each HQ tool is doing, as a fixed phrase (#1702): keyed by the tool's NAME only — never
 #: its arguments or result. Every HQ tool but `end_call` has one (a test ratchets it).
 TOOL_ACTIVITY = {
+    "list_memory_notebooks": "looking through your notebooks",
+    "search_memory": "searching your saved notes",
+    "read_memory": "reading that saved note",
+    "remember_hq_memory": "saving that fact in memory",
+    "propose_hq_memory_change": "preparing a memory card for you",
     "find_sessions": "looking through your sessions",
     "artifacts_find": "looking through your artifacts",
     "list_sessions": "looking through your sessions",

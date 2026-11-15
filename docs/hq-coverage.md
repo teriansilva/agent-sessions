@@ -194,6 +194,9 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off; the projects a secret is bound to; its access log | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`); PUT /api/variables/{vid}/projects; GET /api/variables/{vid}/access-log | #1786 W (P4a: `list_secrets`, `secret.create` with the value typed on the card, `secret.access_on` / `access_off`, never voice- or auto-confirmed; P4b: `secret.store_attachment`, the custody-transfer move of a Secret-shared chat attachment) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
+| Memory: bounded on-demand notebook discovery, indexed search and current note read | shared Memory service | **have** (#2036: current-turn refs; no startup preload) |
+| HQ memory: explicit remember and confirmable correction / forget | common admission; existing cards | **have** (#2036; HQ scope only, no operational authority) |
+| Memory capture and embedding connection, test and key | /api/memory/_hq/capture; /api/memory-search/settings and …/test | **never** (operator changes consent and outbound destination) |
 | Memory: on/off, edit / delete note, clear all, quarantine rewrite / delete, import preview and import, ingest | PUT/PATCH/DELETE/POST /api/memory/{pid}/* | P3 W (clear is destructive) |
 | Playbooks: list, detail, authoring schema | GET /api/playbooks, /api/playbooks/{pid}, …/authoring/schema | have (`list_playbooks`, `playbook_detail`, `playbook_schema`, #1611) |
 | Playbooks: projects using one, verify a deployment | GET /api/playbooks/{pid}/projects, /api/projects/{p}/playbook/verify | P4 R |
@@ -391,6 +394,13 @@ POST   /api/maintenance/compact                                                 
 GET    /api/maintenance/prune                                                     P6
 POST   /api/maintenance/prune                                                     P6
 GET    /api/memory                                                                P3
+POST   /api/memory-search                                                        have  # search_memory, shared scoped service (#2036)
+GET    /api/memory-search/status                                                 n/a   # safe search health counts
+GET    /api/memory-search/settings                                               never  # connection metadata, operator settings
+PATCH  /api/memory-search/settings                                               never  # outbound destination and encrypted key
+POST   /api/memory-search/test                                                   never  # operator-triggered draft destination test
+PUT    /api/memory/_hq/capture                                                    never  # explicit capture consent
+GET    /api/memory/{pid}/notes/{slug}                                             have  # current-turn read_memory references
 GET    /api/memory/{pid}                                                          P3
 POST   /api/memory/{pid}/clear                                                    P3
 PUT    /api/memory/{pid}/enabled                                                  P3

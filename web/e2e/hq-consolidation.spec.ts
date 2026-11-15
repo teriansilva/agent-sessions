@@ -39,6 +39,12 @@ async function fixture(page: Page) {
   } }));
   await page.route("**/api/connectors", (r) => r.fulfill({ json: { catalog: [], instances: [] } }));
   await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: ["model-a"] } }));
+  await page.route("**/api/memory-search/**", (r) => {
+    expect(r.request().method()).toBe("GET");
+    return r.fulfill({ json: r.request().url().endsWith("/settings")
+      ? { base_url: "", model: "", api_key_set: false, needs_reentry: false, configured: false }
+      : { state: "keyword-only", notes: 0, purge_pending: false } });
+  });
   await page.route("**/api/prefs", (r) => {
     const patch = r.request().postDataJSON();
     legacy.push(patch);
@@ -189,7 +195,8 @@ test("every settings group is reachable and moved controls keep their existing s
   await page.goto("/settings/ai-hq");
   const groups = page.getByRole("navigation", { name: "HQ settings groups" });
   for (const [name, id] of [
-    ["Contact", "hq-contact"], ["HQ models", "hq-models-h"], ["Question routing", "hq-route-h"], ["Autonomy", "orch-h"],
+    ["Contact", "hq-contact"], ["HQ models", "hq-models-h"], ["Question routing", "hq-route-h"],
+    ["Memory search", "memory-search-h"], ["Autonomy", "orch-h"],
     ["Reports", "hq-reports-h"], ["Session scan", "pulse-h"], ["Mission checks", "hq-forge"],
     ["Calls", "hq-calls"], ["Connectors", "hq-connectors"],
   ]) {
@@ -207,7 +214,7 @@ test("every settings group is reachable and moved controls keep their existing s
   await page.getByLabel("Scan depth").selectOption("slow");
   await expect.poll(() => (f.preferences.pulse as { scan_depth: string }).scan_depth).toBe("slow");
   await page.getByTestId("forge-base-url").fill("https://forge.example");
-  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await page.locator("#hq-forge").getByRole("button", { name: "Save connection", exact: true }).click();
   await expect.poll(() => (f.preferences.forge as { base_url: string })?.base_url).toBe("https://forge.example");
   await page.getByRole("combobox", { name: "Speed for General Jessica Hale" }).selectOption("1.05");
   await expect.poll(() => f.calls.saves.length).toBe(1);

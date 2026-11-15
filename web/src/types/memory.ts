@@ -1,6 +1,15 @@
 /** Shared project memory (#1441) — the shapes `/api/memory` returns. */
 
 export type NoteType = "decision" | "finding" | "pitfall" | "reference";
+export const HQ_MEMORY_SCOPE = "_hq";
+export interface MemorySource { kind: string; source: string; quote: string }
+export interface MemoryCapture { enabled: boolean; revision: number; generation: number }
+export interface MemorySearchSettings { base_url: string; model: string; api_key_set: boolean; needs_reentry: boolean; configured: boolean; dimensions: number; vectors?: { available: boolean; reason: string } }
+export interface MemorySearchResult {
+  hits: { scope: string; slug: string; name: string; excerpt: string; href: string; source: MemorySource | null }[];
+  state: string;
+  complete: boolean;
+}
 
 /** Who wrote something — a label, not authority (any same-user process can write any inbox). */
 export interface MemorySession {
@@ -22,6 +31,8 @@ export interface MemoryNote {
   created: number;
   updated: number;
   session: MemorySession;
+  revision?: number;
+  source?: MemorySource | null;
   /** Slugs of other notes this one links to with `[[slug]]`. */
   links: string[];
 }
@@ -53,6 +64,7 @@ export interface MemoryNotebook {
 }
 
 export interface MemoryView {
+  capture?: MemoryCapture;
   project: { id: string; name: string; color: string };
   /** The specialist whose notebook this is, or null for the project's own. */
   specialist: string | null;
@@ -81,7 +93,7 @@ export interface MemoryProject {
   last_write: number | null;
 }
 
-export type NoteEdit = Partial<Pick<MemoryNote, "name" | "description" | "type" | "body">>;
+export type NoteEdit = Partial<Pick<MemoryNote, "name" | "description" | "type" | "body" | "revision">>;
 
 /** An agent's own memory store found for a project's folders (#1471) — read only. */
 export interface ImportSource {

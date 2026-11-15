@@ -262,6 +262,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
     project operations. Every proposal only stages a card — nothing here launches, dispatches,
     sends or changes anything; a new tool or kind has to say so here."""
     assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
+        "list_memory_notebooks": "read",
+        "search_memory": "read",
+        "read_memory": "read",
+        "remember_hq_memory": "memory",
+        "propose_hq_memory_change": "proposal",
         "find_sessions": "read",
         # #1932: the artifacts the agents published, with provenance and links — read-only.
         "artifacts_find": "read",

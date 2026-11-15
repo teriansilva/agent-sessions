@@ -672,11 +672,12 @@ const deleteJson = <T>(path: string): Promise<T> =>
 /** DELETE a CSRF-guarded resource that answers 204 (no body). Like `mutateJson`, a failure
  *  carries the server's `detail` and the whole parsed body as `record` — a template DELETE
  *  409s with the `current` record, which the gallery folds back in (#905). */
-async function deleteVoid(path: string): Promise<void> {
+async function deleteVoid(path: string, body?: unknown): Promise<void> {
   const r = await apiFetch(path, {
     method: "DELETE",
     credentials: "same-origin",
-    headers: { "X-CSRF-Token": csrfToken },
+    headers: { "X-CSRF-Token": csrfToken, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
@@ -1590,7 +1591,13 @@ export const api = {
     mutateJson<{ enabled: boolean }>("PUT", `/api/memory/${enc(pid)}/enabled`, { enabled }),
   editMemoryNote: (pid: string, slug: string, edit: NoteEdit) =>
     mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/notes/${enc(slug)}`, edit),
-  deleteMemoryNote: (pid: string, slug: string) => deleteVoid(`/api/memory/${enc(pid)}/notes/${enc(slug)}`),
+  deleteMemoryNote: (pid: string, slug: string, revision?: number) => deleteVoid(`/api/memory/${enc(pid)}/notes/${enc(slug)}`, revision === undefined ? undefined : { revision }),
+  setMemoryCapture: (enabled: boolean) => mutateJson<import("../types/memory").MemoryCapture>("PUT", "/api/memory/_hq/capture", { enabled }),
+  searchMemory: (query: string, scopes?: string[]) => mutateJson<import("../types/memory").MemorySearchResult>("POST", "/api/memory-search", { query, scopes, limit: 10 }),
+  memorySearchSettings: () => getJsonWithDetail<import("../types/memory").MemorySearchSettings>("/api/memory-search/settings"),
+  setMemorySearchSettings: (body: { base_url: string; model: string; api_key?: string | null }) => mutateJson<import("../types/memory").MemorySearchSettings>("PATCH", "/api/memory-search/settings", body),
+  testMemorySearch: (body: { base_url: string; model: string; api_key?: string | null }) => mutateJson<{ ok: boolean; dimensions?: number; detail: string; code?: string }>("POST", "/api/memory-search/test", body),
+  memorySearchStatus: () => getJsonWithDetail<{ state: string; notes: number; purge_pending?: boolean; purge_overdue?: boolean }>("/api/memory-search/status"),
   clearMemory: (pid: string) => postVoid(`/api/memory/${enc(pid)}/clear`),
   releaseQuarantined: (pid: string, id: number, text: string) =>
     mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/quarantine/${id}`, { text }),

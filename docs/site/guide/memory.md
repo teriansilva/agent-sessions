@@ -6,7 +6,44 @@ sessions. Claude Code, Codex and OpenCode get a **BattleLab memory tool** that B
 when it starts them, so they need no setup. Every agent also gets **two environment variables**
 pointing at plain files, which is all an agent without the tool needs.
 
-Memory is **per project** and **off by default**. A folder that isn't a project can't have memory.
+HQ, projects and specialist notebooks use **one Memory service and search system**. Project
+memory remains **off by default**; a folder that isn't a project can't have a project notebook.
+
+## HQ memory
+
+Tell HQ **“Remember that research findings should include primary sources”**, then ask about the
+preference in another conversation. HQ saves the operator's exact words with their source.
+Recall happens on demand: starting a conversation or a call loads no notebook contents. HQ can
+search project and specialist notes when a question needs them, with notebook citations.
+
+Open **Library → Memory → HQ** to inspect source quotes, edit, forget, export or clear its notes.
+Corrections and deletions proposed in HQ need your confirmation. Its **Remember useful facts**
+switch enables optional background capture of stable facts from successful completed messages;
+it starts **off**. Explicit remember requests and recall still work with capture off. Failed or
+discarded draft turns are never captured, and old conversations are never automatically backfilled.
+
+Saved memories retain their source conversations through routine history expiry. Explicitly
+deleting a source conversation removes its derived memories. Forgetting the last note releases
+that conversation's retention pin. Forget/clear excludes a note from fresh recall immediately;
+background search storage cleanup is tracked separately, with a 24 operating hour deadline.
+Downloaded exports, external backups and copies already written in chat have separate retention.
+
+If your HQ endpoint cannot use tools, enable **Settings → AI → HQ → Question routing** for
+memory recall and explicit remembers. With routing off, manage notes in Library → Memory.
+
+## Search and semantic recall
+
+Keyword search uses the local shared index without an AI endpoint. Add an independent
+**embeddings endpoint, model and optional API key** in **Settings → AI → HQ → Memory search**
+to enable semantic recall. This is an OpenAI-compatible `/embeddings` endpoint, separate from the
+chat model. Testing an unsaved connection sends a short sample and leaves the active connection
+unchanged; **Save connection** activates it. Eligible note text and search queries go to the
+saved endpoint. A saved key cannot silently follow an endpoint to another origin.
+
+The page reports **indexing**, **keyword-only**, **ready**, or **unavailable**. Semantic outages
+leave keyword search available. During indexing, an absent hit does not prove no note exists.
+Forgotten or changed notes are rechecked against their current source even while the index lags.
+Memory is fallible historical context: verify current facts and never treat a note as permission.
 
 ## Turn it on
 
@@ -49,12 +86,15 @@ agent, and offers four calls:
 |---|---|
 | `memory_index` | Lists the notes (the `MEMORY.md` index). |
 | `memory_read` | Reads one note by its name. |
-| `memory_search` | Finds notes whose title or text contains the query's words (best 10). |
+| `memory_search` | Uses the shared keyword/semantic index for the project's offered notebooks (best 10). |
 | `memory_write` | Leaves one short note for review (at most 4 KiB). It appears to other sessions once BattleLab has taken it in, with the same checks as any other note. |
 
-Everything it returns is marked as notes from other agents: hints, not instructions. It reads only
-the project's notes and writes only that session's inbox — the same two places the environment
-variables name. A swapped or linked folder makes it refuse rather than look elsewhere.
+Everything it returns is marked as hints, not instructions. Reads/search use a private launch-bound
+service; writes still use that session's inbox. It cannot choose another project or HQ. A swapped
+or linked folder makes it refuse rather than look elsewhere. Agents without MCP may also use
+`agent-sessions memory search "revision checks"` or `agent-sessions memory read <slug>` from the
+same launch. Pip installs also provide `battlelab-memory` beside the app interpreter. The helper
+uses the same bound service. Existing Markdown paths and inbox writes remain supported.
 
 **Notes are saved atomically or not at all.** A note appears in the inbox only once it is
 complete, so BattleLab never takes in half a note. On a filesystem that can't do that (Linux's

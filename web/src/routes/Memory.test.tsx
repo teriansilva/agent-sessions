@@ -19,6 +19,7 @@ vi.mock("../lib/api", async importOriginal => {
       memoryProjects: vi.fn(),
       memory: vi.fn(),
       ingestMemory: vi.fn(),
+      searchMemory: vi.fn(),
       setMemoryEnabled: vi.fn(),
       clearMemory: vi.fn(),
       editMemoryNote: vi.fn(),
@@ -113,6 +114,69 @@ function renderAt(path: string, config: AppConfig | null = null) {
   );
   return router;
 }
+
+describe("Memory page — an unchanged search converges after refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    onTestFinished(() => vi.useRealTimers());
+    vi.mocked(api.memoryProjects).mockResolvedValue({ projects: [two.projects[0]] } as never);
+  });
+
+  async function search() {
+    renderAt("/library/memory?project=p-a", { csrf: "x" } as unknown as AppConfig);
+    await userEvent.click(await screen.findByRole("button", { name: "List" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Search notes" }), "walnut");
+    await act(() => vi.advanceTimersByTimeAsync(350));
+  }
+
+  async function refresh() {
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await act(() => vi.advanceTimersByTimeAsync(350));
+  }
+
+  test("a matching note from another session appears without editing the query", async () => {
+    const first = note("first", "walnut first");
+    const second = note("second", "walnut second");
+    let current = viewOf("p-a", "alpha", [first]);
+    let hits = [{ slug: first.slug }];
+    vi.mocked(api.memory).mockResolvedValue(current as never);
+    vi.mocked(api.ingestMemory).mockImplementation(async () => ({ view: { ...current } }) as never);
+    vi.mocked(api.searchMemory).mockImplementation(async () => ({ state: "keyword-only", hits }) as never);
+    await search();
+    expect(screen.getByRole("button", { name: /walnut first/ })).toBeInTheDocument();
+    current = viewOf("p-a", "alpha", [first, second]);
+    hits = [{ slug: first.slug }, { slug: second.slug }];
+    await refresh();
+    expect(screen.getByRole("button", { name: /walnut second/ })).toBeInTheDocument();
+  });
+
+  test("an initially incomplete index catches up while notebook contents stay the same", async () => {
+    const current = viewOf("p-a", "alpha", [note("first", "walnut indexed")]);
+    vi.mocked(api.memory).mockResolvedValue(current as never);
+    vi.mocked(api.ingestMemory).mockImplementation(async () => ({ view: { ...current } }) as never);
+    vi.mocked(api.searchMemory).mockResolvedValueOnce({ state: "indexing", hits: [] } as never);
+    vi.mocked(api.searchMemory).mockResolvedValue({ state: "ready", hits: [{ slug: "first" }] } as never);
+    await search();
+    expect(screen.getByText(/Search indexing/)).toBeInTheDocument();
+    await refresh();
+    expect(screen.getByRole("button", { name: /walnut indexed/ })).toBeInTheDocument();
+    expect(screen.getByText(/Keyword and semantic search/)).toBeInTheDocument();
+  });
+
+  test("a transient search failure recovers on the visible notebook refresh", async () => {
+    const current = viewOf("p-a", "alpha", [note("first", "walnut recovered")]);
+    vi.mocked(api.memory).mockResolvedValue(current as never);
+    vi.mocked(api.ingestMemory).mockImplementation(async () => ({ view: { ...current } }) as never);
+    vi.mocked(api.searchMemory).mockRejectedValueOnce(new Error("Search temporarily unavailable"));
+    vi.mocked(api.searchMemory).mockResolvedValue({ state: "ready", hits: [{ slug: "first" }] } as never);
+    await search();
+    expect(screen.getByText("Search temporarily unavailable")).toBeInTheDocument();
+    await refresh();
+    expect(screen.getByRole("button", { name: /walnut recovered/ })).toBeInTheDocument();
+    expect(screen.queryByText("Search temporarily unavailable")).toBeNull();
+  });
+});
 
 describe("Memory page — one project never shows another's data (#1453 review)", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -282,6 +346,36 @@ describe("Memory page — destructive actions and filters (#1453 review 2)", () 
     await act(() => vi.advanceTimersByTimeAsync(30_000));
     expect(await screen.findByRole("button", { name: /a decision/ })).toBeInTheDocument();
     expect((screen.getByLabelText("Filter by agent") as HTMLSelectElement).value).toBe("");
+  });
+
+  test("a background refresh cannot bless an editor's stale loaded revision", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    onTestFinished(() => { vi.useRealTimers(); });
+    vi.mocked(api.ingestMemory).mockResolvedValue({});
+    vi.mocked(api.memoryProjects).mockResolvedValue({ projects: [two.projects[0]] } as never);
+    const loaded = { ...note("one", "research"), revision: 1 };
+    vi.mocked(api.memory).mockResolvedValue(viewOf("p-a", "alpha", [loaded] as never) as never);
+    vi.mocked(api.editMemoryNote).mockRejectedValue(new Error("Note changed; reload it."));
+    renderAt("/library/memory?project=p-a&note=one", { csrf: "x" } as unknown as AppConfig);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const body = screen.getByRole("textbox", { name: "Body" });
+    await userEvent.clear(body);
+    await userEvent.type(body, "My correction.");
+    vi.mocked(api.memory).mockResolvedValue(viewOf("p-a", "alpha", [{ ...loaded, revision: 2, body: "New server text." }] as never) as never);
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.editMemoryNote).toHaveBeenCalledWith("p-a", "one", { body: "My correction.", revision: 1 }));
+    expect(body).toHaveValue("My correction.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Note changed");
+  });
+
+  test("a citation to another note in the same notebook opens that note", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue({ projects: [two.projects[0]] } as never);
+    vi.mocked(api.memory).mockResolvedValue(viewOf("p-a", "alpha", [note("one", "first"), note("two", "second")] as never) as never);
+    const router = renderAt("/library/memory?project=p-a&note=one");
+    expect(await screen.findByRole("complementary", { name: "Note: first" })).toBeInTheDocument();
+    await act(() => router.navigate("/library/memory?project=p-a&note=two"));
+    expect(await screen.findByRole("complementary", { name: "Note: second" })).toBeInTheDocument();
   });
 
   test("a Save in flight locks the form, so no later edit is silently discarded", async () => {

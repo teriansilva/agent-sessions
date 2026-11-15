@@ -1,0 +1,393 @@
+{
+  "corpus_notes": 50,
+  "fixture_sha256": "ca87ad01d47381ae58073a67deb7e08a8e1788c436a1b764f0d8facc4d264708",
+  "model": "Qdrant/all-MiniLM-L6-v2-onnx",
+  "dimensions": 384,
+  "model_revision": "d13954661f83248295ba75c1ed411eef3b7b936e",
+  "fastembed": "0.9.1",
+  "native": "0.41.0",
+  "keyword": {
+    "recall_at_10": 0.55,
+    "p95_ms": 12.027862016111612,
+    "queries": 100,
+    "failures": [
+      {
+        "case": 0,
+        "kind": "paraphrase",
+        "query": "Where should citations for my investigations come from?"
+      },
+      {
+        "case": 1,
+        "kind": "paraphrase",
+        "query": "What proves a rollout actually reached the running service?"
+      },
+      {
+        "case": 2,
+        "kind": "paraphrase",
+        "query": "How do we rehearse bringing back stored records safely?"
+      },
+      {
+        "case": 3,
+        "kind": "paraphrase",
+        "query": "When may a proposed code change be merged?"
+      },
+      {
+        "case": 4,
+        "kind": "paraphrase",
+        "query": "How large should tappable buttons be on a handset?"
+      },
+      {
+        "case": 5,
+        "kind": "paraphrase",
+        "query": "Where should authentication passwords be kept?"
+      },
+      {
+        "case": 6,
+        "kind": "paraphrase",
+        "query": "How should an answer compare facts across two workspaces?"
+      },
+      {
+        "case": 7,
+        "kind": "paraphrase",
+        "query": "Does saying hello bring all saved knowledge into the prompt?"
+      },
+      {
+        "case": 8,
+        "kind": "paraphrase",
+        "query": "Which appearance variants need readable graphs?"
+      },
+      {
+        "case": 9,
+        "kind": "paraphrase",
+        "query": "How do we avoid replacing someone else's newer changes?"
+      },
+      {
+        "case": 11,
+        "kind": "paraphrase",
+        "query": "Can two processes send input to the same running assistant at once?"
+      },
+      {
+        "case": 12,
+        "kind": "paraphrase",
+        "query": "Does putting a conversation away erase its history?"
+      },
+      {
+        "case": 13,
+        "kind": "paraphrase",
+        "query": "Why might a freshly deployed website still show the previous interface?"
+      },
+      {
+        "case": 15,
+        "kind": "paraphrase",
+        "query": "Can an old access token follow a connection URL to a different server?"
+      },
+      {
+        "case": 16,
+        "kind": "paraphrase",
+        "query": "How do we prevent a hostname from changing to a forbidden IP during a request?"
+      },
+      {
+        "case": 17,
+        "kind": "paraphrase",
+        "query": "May a vector provider forward our note content elsewhere?"
+      },
+      {
+        "case": 18,
+        "kind": "paraphrase",
+        "query": "What happens to remembered facts when their original chat is removed?"
+      },
+      {
+        "case": 19,
+        "kind": "paraphrase",
+        "query": "Will the assistant silently learn preferences on a fresh installation?"
+      },
+      {
+        "case": 20,
+        "kind": "paraphrase",
+        "query": "Can I deliberately save a preference without enabling background learning?"
+      },
+      {
+        "case": 21,
+        "kind": "paraphrase",
+        "query": "Can a recalled instruction authorize an operational action?"
+      },
+      {
+        "case": 22,
+        "kind": "paraphrase",
+        "query": "Does a memory saying the task is done finish the objective?"
+      },
+      {
+        "case": 23,
+        "kind": "paraphrase",
+        "query": "Can saved notes still be found while the semantic provider is down?"
+      },
+      {
+        "case": 24,
+        "kind": "paraphrase",
+        "query": "Which records survive throwing away and regenerating the retrieval database?"
+      },
+      {
+        "case": 25,
+        "kind": "paraphrase",
+        "query": "Which saved knowledge is visible to an ordinary launched agent?"
+      },
+      {
+        "case": 26,
+        "kind": "paraphrase",
+        "query": "Where does an expert keep knowledge separate from the whole team?"
+      },
+      {
+        "case": 27,
+        "kind": "paraphrase",
+        "query": "What is the deadline for removing forgotten text from search storage?"
+      },
+      {
+        "case": 28,
+        "kind": "paraphrase",
+        "query": "Can a pending purge still expose a deleted fact to a fresh question?"
+      },
+      {
+        "case": 29,
+        "kind": "paraphrase",
+        "query": "How long can a failed cleanup wait before another attempt?"
+      },
+      {
+        "case": 30,
+        "kind": "paraphrase",
+        "query": "Where must model-level instructions be defined?"
+      },
+      {
+        "case": 31,
+        "kind": "paraphrase",
+        "query": "Which network path is allowed to send conversation data to an AI?"
+      },
+      {
+        "case": 33,
+        "kind": "paraphrase",
+        "query": "Are old knowledge files exempt from content checks?"
+      },
+      {
+        "case": 34,
+        "kind": "paraphrase",
+        "query": "What does the interface show for a note that contains sensitive information?"
+      },
+      {
+        "case": 35,
+        "kind": "paraphrase",
+        "query": "Does an abandoned spoken preview change persistent knowledge?"
+      },
+      {
+        "case": 36,
+        "kind": "paraphrase",
+        "query": "How can I inspect the exact words supporting a remembered preference?"
+      },
+      {
+        "case": 37,
+        "kind": "paraphrase",
+        "query": "Can a delayed initial save repopulate knowledge after I cleared it?"
+      },
+      {
+        "case": 39,
+        "kind": "paraphrase",
+        "query": "Does checking a new vector server immediately replace the working configuration?"
+      },
+      {
+        "case": 40,
+        "kind": "paraphrase",
+        "query": "Can an older Apple computer still retrieve remembered notes?"
+      },
+      {
+        "case": 41,
+        "kind": "paraphrase",
+        "query": "How many passages may one vector request send?"
+      },
+      {
+        "case": 42,
+        "kind": "paraphrase",
+        "query": "What bounds a provider sending an excessive vector payload?"
+      },
+      {
+        "case": 43,
+        "kind": "paraphrase",
+        "query": "Can the assistant reuse a note handle from an earlier question?"
+      },
+      {
+        "case": 44,
+        "kind": "paraphrase",
+        "query": "What prevents searching a large archive from filling the model prompt?"
+      },
+      {
+        "case": 45,
+        "kind": "paraphrase",
+        "query": "How do stored vectors react when I select a different encoder?"
+      },
+      {
+        "case": 46,
+        "kind": "paraphrase",
+        "query": "What happens if an encoder unexpectedly changes its output length?"
+      },
+      {
+        "case": 47,
+        "kind": "paraphrase",
+        "query": "Can background extraction relearn something I deliberately removed?"
+      },
+      {
+        "case": 48,
+        "kind": "paraphrase",
+        "query": "Does deleting a note also erase previously downloaded archives?"
+      }
+    ]
+  },
+  "hybrid_including_http_and_embedding": {
+    "recall_at_10": 0.93,
+    "p95_ms": 96.75219189375639,
+    "queries": 100,
+    "failures": [
+      {
+        "case": 17,
+        "kind": "paraphrase",
+        "query": "May a vector provider forward our note content elsewhere?"
+      },
+      {
+        "case": 22,
+        "kind": "paraphrase",
+        "query": "Does a memory saying the task is done finish the objective?"
+      },
+      {
+        "case": 25,
+        "kind": "paraphrase",
+        "query": "Which saved knowledge is visible to an ordinary launched agent?"
+      },
+      {
+        "case": 40,
+        "kind": "paraphrase",
+        "query": "Can an older Apple computer still retrieve remembered notes?"
+      },
+      {
+        "case": 41,
+        "kind": "paraphrase",
+        "query": "How many passages may one vector request send?"
+      },
+      {
+        "case": 43,
+        "kind": "paraphrase",
+        "query": "Can the assistant reuse a note handle from an earlier question?"
+      },
+      {
+        "case": 44,
+        "kind": "paraphrase",
+        "query": "What prevents searching a large archive from filling the model prompt?"
+      }
+    ]
+  },
+  "semantic_build_s": 3.4200047529302537,
+  "abstention": {
+    "model": "deepseek-v4.1-flash",
+    "fixture_sha256": "bcc8ec56ec639abe26487dda343085af87ce439e42c6314e678e8d92b83a6b6a",
+    "cases": [
+      {
+        "question": "What temperature should I bake a sourdough loaf at?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "runtime-ownership",
+          "mobile-targets",
+          "research-references",
+          "query-references",
+          "notebook-boundaries",
+          "prompt-sources",
+          "key-destinations",
+          "resource-bounds"
+        ],
+        "answer": "I found no supporting memory for a sourdough baking temperature. The supplied results are all HQ operational findings (runtime ownership, mobile targets, research references, query references, notebook boundaries, prompt sources, key destinations, resource bounds) and none mention bread, baking, or sourdough. Note the limitation: this appears to be a keyword-only/incomplete search of the HQ notebook, so it is not proof that no such memory exists elsewhere."
+      },
+      {
+        "question": "How many moons orbit Neptune?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "key-destinations",
+          "mission-evidence",
+          "mobile-targets",
+          "resource-bounds",
+          "context-budget",
+          "runtime-ownership",
+          "native-compatibility",
+          "outbound-transport"
+        ],
+        "answer": "I found no supporting memory for how many moons orbit Neptune. The supplied results contain only unrelated operational notes (e.g., API key origins, mission completion workflow, touch target sizes, embedding batch limits), none of which address Neptune's moons. This is a limitation of the bounded search results provided, not proof that no such memory exists."
+      },
+      {
+        "question": "What was our company revenue last quarter?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "context-budget",
+          "prompt-sources",
+          "archived-sessions",
+          "memory-loading",
+          "source-quotations",
+          "retry-limits",
+          "query-references",
+          "source-replay"
+        ],
+        "answer": "I found no supporting memory for the company's revenue last quarter. The supplied search results only contain HQ findings about memory tooling and session handling (e.g., context budget, prompt sources, archived sessions, memory loading, source quotations, retry limits, query references, source replay), none of which mention revenue or financial figures. This is a bounded search, so it is not proof that no such memory exists elsewhere."
+      },
+      {
+        "question": "Which database does the unmentioned Orchid project use?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "database-recovery",
+          "citation-isolation",
+          "notebook-boundaries",
+          "specialist-isolation",
+          "prompt-sources",
+          "research-references",
+          "archived-sessions",
+          "rebuild-authority"
+        ],
+        "answer": "I found no supporting memory that identifies which database the Orchid project uses. The supplied results are HQ notebook findings about database recovery exercises, citation isolation, notebook boundaries, specialist isolation, prompt sources, research references, archived sessions and rebuild authority; none mentions Orchid or its database. The search appears complete for the supplied results, but I cannot rule out that an Orchid-specific memory exists elsewhere."
+      },
+      {
+        "question": "What is the IP address of the unmentioned Orchid staging server?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "dns-pinning",
+          "prompt-sources",
+          "question-routing",
+          "release-verification",
+          "query-references",
+          "draft-testing",
+          "agent-credentials",
+          "key-destinations"
+        ],
+        "answer": "I found no supporting memory for the IP address of an Orchid staging server. The supplied results contain only general HQ findings (DNS pinning, prompt sources, question routing, release verification, query references, draft testing, agent credentials, key destinations), none of which mention Orchid, a staging server, or any IP address. Note the limitation: this is a bounded search and may be incomplete, so absence here is not proof that no such memory exists."
+      },
+      {
+        "question": "Which flight did I book for next Tuesday?",
+        "expected_support": false,
+        "search_state": "ready",
+        "neighbours": [
+          "pending-writes",
+          "outbound-transport",
+          "key-destinations",
+          "draft-testing",
+          "question-routing",
+          "import-safety",
+          "mission-evidence",
+          "dns-pinning"
+        ],
+        "answer": "I found no supporting memory about a flight booking for next Tuesday. The supplied results only contain unrelated HQ findings (e.g., pending writes, outbound transport, key destinations), none of which mention travel or bookings. This is a limitation of the search results provided, not proof that no such memory exists."
+      }
+    ],
+    "limits": "Unanswerable synthetic questions against the published semantic corpus. Actual neighbours and model answers are recorded for manual assessment; no universal abstention or injection-safety guarantee."
+  },
+  "limits": "Self-authored 50-note/100-query answerable fixture, not a production distribution. One known relevant note per query. Real local MiniLM embeddings through the HTTP adapter and shared service. Model is qualification-only; product neither bundles nor downloads it. No universal relevance threshold.",
+  "mode": "semantic",
+  "affinity_cpus": 2,
+  "peak_rss_kib": 434964,
+  "bytes_on_disk": 474007,
+  "python": "3.13.13"
+}

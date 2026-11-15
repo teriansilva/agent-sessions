@@ -144,6 +144,23 @@ const MEMORY_GRAPH = {
   "/api/memory/p-orbital/import": { sources: [], last: null, held: [] },
 };
 
+const HQ_MEMORY_VIEW = {
+  project: { id: "_hq", name: "HQ", color: "" }, specialist: null, notebooks: [], enabled: true,
+  capture: { enabled: false, revision: 0, generation: 0 },
+  notes: [{ slug: "primary-sources", name: "Include primary sources", description: "Research preference", type: "decision", body: "Please include primary sources with research findings.", size: 53, created: MEMORY_AT - 1200, updated: MEMORY_AT - 600, revision: 1, session: { key: "", engine: "", kind: "", resolved: false }, links: [], source: { kind: "explicit", source: "HQ conversation", quote: "Please include primary sources with research findings." } }],
+  pending: [], refused: [], quarantine: [], withheld: { notes: 0, reason: "" }, instructions: "",
+  limits: { note_bytes: 4096, notes: 1000, inbox_files: 20 },
+};
+const HQ_MEMORY_API = {
+  "/api/memory": { projects: [{ id: "_hq", name: "HQ", color: "", enabled: true, notes: 1, pending: 0, quarantined: 0, last_write: MEMORY_AT - 600 }, ...MEMORY_GRAPH["/api/memory"].projects] },
+  "/api/memory/_hq": HQ_MEMORY_VIEW,
+  "/api/memory/_hq/ingest": { view: HQ_MEMORY_VIEW },
+};
+const MEMORY_SETTINGS_API = {
+  "/api/memory-search/settings": { base_url: "https://embeddings.example/v1", model: "local-embedding", api_key_set: true, needs_reentry: false, configured: true, dimensions: 384 },
+  "/api/memory-search/status": { state: "keyword-only", notes: 384, purge_pending: false },
+};
+
 /** @type {SweepCapture[]} */
 /** On a phone the mission rail is the shell's drawer: open it first. */
 const MISSION_DRAWER = [{ role: "button", name: "Open mission list" }];
@@ -157,6 +174,7 @@ const HQ_POLICY = {
 const HQ_MODEL_CALLS = { stt: { base_url: "http://gpu-1.lan:8000/v1", model: "whisper-1", api_key_set: false }, tts: { base_url: "http://gpu-1.lan:8880/v1", model: "kokoro", api_key_set: true }, voices: { woman: "af_heart", man: "am_michael" }, turn_taking: "natural", hq_model: "", thinking: "off", interrupt: true, mic: "open", answers: "brief", captions: true, configured: true, contacts: {}, contact_defaults: {"asia-woman": {"group": "woman", "style": "calm", "speed": 1.0}, "asia-man": {"group": "man", "style": "serious", "speed": 0.95}, "europe-woman": {"group": "woman", "style": "narrator", "speed": 1.0}, "europe-man": {"group": "man", "style": "neutral", "speed": 1.0}, "russia-woman": {"group": "woman", "style": "serious", "speed": 1.0}, "russia-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "us-woman": {"group": "woman", "style": "energetic", "speed": 1.05}, "us-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "africa-woman": {"group": "woman", "style": "energetic", "speed": 1.0}, "africa-man": {"group": "man", "style": "calm", "speed": 0.95}, "southamerica-woman": {"group": "woman", "style": "dramatic", "speed": 1.05}, "southamerica-man": {"group": "man", "style": "calm", "speed": 1.0}, "romania-woman": {"group": "woman", "style": "dramatic", "speed": 1.0}}, language: "auto", tts_styles: ["calm", "dramatic"], tts_languages: ["en", "de", "fr"], tts_voices: ["af_heart", "am_michael"], preview_languages: ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "ja", "zh", "hi", "ko"], stt_detects_language: true, tts_accepts_language: true };
 
 const HQ_MODEL_API = {
+      ...MEMORY_SETTINGS_API,
       // The COMPLETE public settings shape (the profiles section reads every list): a partial
       // fixture captured a page that throws, not the page. `contact_defaults` is what the server
       // returns (hq_calls_settings.public: each General's own group, style and speed).
@@ -852,6 +870,9 @@ export const SWEEP = [
   { id: "route:playbooks", path: "/library/playbooks" },
   { id: "route:skills", path: "/library/skills" },
   { id: "route:memory", path: "/library/memory", mock: { memory: true }, present: "[role='group'][aria-label='Project orbital-api']" },
+  { id: "route:memory-hq", path: "/library/memory?project=_hq&note=primary-sources", api: HQ_MEMORY_API, present: "[aria-label='Note: Include primary sources']" },
+  { id: "popup:memory-hq-clear", path: "/library/memory?project=_hq", api: HQ_MEMORY_API, open: [{ role: "button", name: "Clear…" }], expect: "dialog" },
+  { id: "route:settings-memory-search", path: "/settings/ai-hq", api: HQ_MODEL_API, open: [{ css: "#memory-search-h" }], section: "memory-search-settings", fullPage: true },
   { id: "route:variables", path: "/library/variables", mock: { variables: true }, present: "article[aria-label='deploy_token']" },
   // ---- PR4b library A ---- (#1574 Phase 10: templates, variables, memory)
   // Suggestions on demand: the analysed result, its dossier cards and the withheld note.
@@ -1039,7 +1060,7 @@ export const SWEEP = [
     present: "input[type='password']",
   },
   { id: "route:settings-mission-control", path: "/settings/ai-mission-control", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
-  { id: "route:settings-hq", path: "/settings/ai-hq", present: "nav[aria-label='HQ settings groups']" },
+  { id: "route:settings-hq", path: "/settings/ai-hq", api: HQ_MODEL_API, present: "nav[aria-label='HQ settings groups']" },
   ...["defaults", "mixed", "catalog-unavailable", "save-failed", "mixed-route", "mixed-call", "mixed-mission"].map((state) => ({
     id: `route:settings-hq-models-${state}`, path: "/settings/ai-hq#hq-models-h",
     // A scrolling settings pane clips an over-tall element screenshot. Photograph real

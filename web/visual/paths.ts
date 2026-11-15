@@ -71,6 +71,22 @@ const SPA_MOUNTED = {
 export const VISUAL_PATHS: VisualPath[] = [
   {
     group: "authed",
+    path: "/library/memory?project=_hq",
+    name: "memory-hq",
+    description: "Shared Memory — HQ notebook, on-demand recall and optional capture",
+    requireAuth: "admin",
+    waitFor: { selector: '[role="switch"][aria-label="Remember useful facts"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/settings/ai-hq#memory-search-h",
+    name: "settings-memory-search",
+    description: "Shared Memory — independent embeddings connection and indexing health",
+    requireAuth: "admin",
+    waitFor: { selector: '[data-testid="memory-search-settings"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
     path: "/dashboard",
     name: "dashboard",
     description: "Dashboard — overview and quota retained, Recent work collapsed",

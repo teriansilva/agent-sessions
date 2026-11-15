@@ -27,12 +27,18 @@ dependencies = [
     "websockets==16.0",  # Home Free agent relay client (already pulled by uvicorn[standard])
     "segno==1.6.1",  # QR cross-device sign-in: server-side QR SVG, pure-Python zero-dep (#650)
     "anyio==4.13.0",  # the upload read timeout's cancel scope (#1769; already pulled by starlette)
+    # The compatibility build avoids the standard Linux x86 wheel's Haswell/AVX2 requirement.
+    # Intel macOS needs no native wheel: the shared SQLite keyword engine still works.
+    "lancedb-compat==0.41.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "lancedb==0.41.0; (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64')",
+    "pyarrow==26.0.1; (sys_platform == 'linux' and platform_machine in 'x86_64,aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64')",
 ]
 
 [project.scripts]
 agent-sessions = "agent_sessions.cli:main"
 # The secrets helper (#1786): agents without the MCP channel run it from their own shell.
 battlelab-secrets = "agent_sessions.secrets_mcp:cli"
+battlelab-memory = "agent_sessions.memory_client:cli"
 
 [project.optional-dependencies]
 # Calling HQ (#1397): the voice worker's conversation engine (VAD, Smart Turn end-of-turn,

@@ -9,13 +9,15 @@ import { HqCallsSettings } from "./HqCallsSettings";
 import { HqReportsSettings } from "./HqReportsSettings";
 import { HqRouteSettings } from "./HqRouteSettings";
 import { HqModelsSettings } from "./HqModelsSettings";
+import { MemorySearchSettings } from "./MemorySearchSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PulseSettings } from "./PulseSettings";
 import { settingsPath } from "./settingsTabs";
 import styles from "./Settings.module.css";
 
 const GROUPS = [
-  ["hq-contact", "Contact"], ["hq-models-h", "HQ models"], ["hq-route-h", "Question routing"], ["orch-h", "Autonomy"],
+  ["hq-contact", "Contact"], ["hq-models-h", "HQ models"], ["hq-route-h", "Question routing"],
+  ["memory-search-h", "Memory search"], ["orch-h", "Autonomy"],
   ["hq-reports-h", "Reports"], ["pulse-h", "Session scan"], ["hq-forge", "Mission checks"],
   ["hq-calls", "Calls"], ["hq-connectors", "Connectors"],
 ] as const;
@@ -41,6 +43,7 @@ export function HqSettings() {
       </section>
       <HqModelsSettings />
       <HqRouteSettings />
+      <MemorySearchSettings />
       <div id="orch-h" className={styles.hqPolicies}>
         <OrchestratorSettings scope="session" />
         <OrchestratorSettings scope="mission" />

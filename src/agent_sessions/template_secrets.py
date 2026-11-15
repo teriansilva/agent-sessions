@@ -572,13 +572,22 @@ def _stored_values() -> frozenset[str]:
             sig = ("absent", current_kid())
         # The connector tokens (#1750) are stored secrets too: their store is part of the key. So
         # are the secret files' blobs (#1786): the JSON names a revision, the blob holds the bytes.
-        from . import vault_files
+        from . import memory_settings, vault_files
 
-        sig = (sig, connector_store.signature(), vault_files.signature())
+        sig = (
+            sig,
+            connector_store.signature(),
+            vault_files.signature(),
+            memory_settings.signature(),
+        )
         with _lock:
             if _stored_cache is not None and _stored_cache[0] == sig:
                 return _stored_cache[1]
-        stored = [*template_vars.secret_values_checked(), *connector_store.token_values_checked()]
+        stored = [
+            *template_vars.secret_values_checked(),
+            *connector_store.token_values_checked(),
+            *memory_settings.secret_values_checked(),
+        ]
         values = frozenset(v for v in _with_fragments(stored) if len(v) >= SECRET_MIN)
     except Exception as e:  # noqa: BLE001 — any failure to establish the set
         # REFUSE, warm cache or cold (Hermes on #1105, round 2). The known set cannot vouch for a
@@ -604,13 +613,14 @@ def redaction_values_for_labels() -> list[str]:
     connector token and typed value whose plaintext is known — a secret file that cannot be read
     is skipped, because what it holds is unknowable and must not block the operator's repair (or
     an unrelated write). Uncached; never used for a send: the transport keeps `redaction_values`."""
-    from . import template_vars
+    from . import memory_settings, template_vars
     from .connectors import store as connector_store
 
     try:
         stored = [
             *template_vars.secret_values_checked(lenient_files=True),
             *connector_store.token_values_checked(),
+            *memory_settings.secret_values_checked(),
         ]
     except Exception as e:  # noqa: BLE001 — any failure to establish the set
         raise RedactionUnavailable(

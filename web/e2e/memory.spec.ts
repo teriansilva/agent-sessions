@@ -402,7 +402,7 @@ test("mobile: every control is a real touch target and nothing scrolls sideways"
       // The graph is lazy: measure its zoom controls once they exist, never a loading fallback.
       await expect(page.locator(".react-flow__controls-button").first()).toBeVisible();
     }
-    const small = await page.locator("main button:visible, main a:visible, main select:visible, main input:visible, nav[aria-label='Projects'] :is(button, select):visible").evaluateAll(els =>
+    const small = await page.locator("main button:visible, main a:visible, main select:visible, main input:visible, nav[aria-label='Notebooks'] :is(button, select):visible").evaluateAll(els =>
       els.map(el => ({ text: (el.textContent || el.getAttribute("aria-label") || "").trim(), h: el.getBoundingClientRect().height })).filter(r => r.h < 44),
     );
     expect(small, `controls under 44px on ${tab}`).toEqual([]);
@@ -539,7 +539,7 @@ test.describe("wide desktop layout", () => {
     const graph = page.getByTestId("memory-graph");
     await expect(graph.getByTestId("memory-node-typed-ids")).toBeVisible();
     const main = (await page.locator("main").last().boundingBox())!;
-    const rail = (await page.getByRole("navigation", { name: "Projects" }).boundingBox())!;
+    const rail = (await page.getByRole("navigation", { name: "Notebooks" }).boundingBox())!;
     const g = (await graph.boundingBox())!;
     const card = (await page.getByRole("region", { name: "Existing memory" }).boundingBox())!;
     const paragraph = (await page.getByRole("region", { name: "Agent access" }).boundingBox())!;
@@ -550,7 +550,7 @@ test.describe("wide desktop layout", () => {
     expect(card.x, "existing memory beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
     expect(paragraph.x, "agent access beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
     expect(sw.x, "the switch belongs to the project bar, over the graph").toBeGreaterThanOrEqual(main.x);
-    await expect(page.getByRole("navigation", { name: "Projects" }).getByRole("region")).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Notebooks" }).getByRole("region")).toHaveCount(0);
     // The graph's legend never covers its zoom controls.
     const legend = (await graph.getByText("Reads aren't drawn").locator("..").boundingBox())!;
     const controls = (await page.locator(".react-flow__controls").boundingBox())!;

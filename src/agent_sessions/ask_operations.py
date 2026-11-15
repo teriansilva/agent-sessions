@@ -834,11 +834,12 @@ def _ops() -> tuple[Operation, ...]:
 
 def _all_ops() -> tuple[Operation, ...]:
     from .ask_library import library_ops
+    from .ask_memory import operations as memory_ops
     from .ask_mission import mission_ops
     from .ask_secrets import secret_ops
     from .ask_team import team_ops
 
-    return (*_ops(), *library_ops(), *secret_ops(), *team_ops(), *mission_ops())
+    return (*_ops(), *library_ops(), *secret_ops(), *team_ops(), *mission_ops(), *memory_ops())
 
 
 CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
@@ -873,6 +874,10 @@ async def facts_for(
         from . import ask_mission
 
         return await ask_mission.facts(target, app, operator)
+    if op.group == "memory":
+        from . import ask_memory
+
+        return await ask_memory.facts(target, app, operator)
     if op.target == "project":
         return await _project_facts(app, operator, target)
     if op.id == "sessions.archive_older":
@@ -1138,6 +1143,7 @@ async def stage(
     operator: asgi_call.Operator,
     append_card: Callable,
     draft: dict | None = None,
+    expected: dict | None = None,
 ) -> dict:
     """Stage one operation: facts read as the operator, the draft (a library save, #1611) written
     through the store boundary, the card written FIRST, the entry SECOND (a card whose entry never
@@ -1160,6 +1166,8 @@ async def stage(
     facts = await facts_for(op, target, fields, app, operator, cid=cid)
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
+    if expected is not None and changed(expected, facts):
+        raise Refused("refused: that note changed after HQ read it; search again", "not_available")
     shown = facts.get("title") or facts.get("name") or title
     pid = uuid.uuid4().hex
     sha = ""
@@ -1279,6 +1287,11 @@ def content(pid: str) -> tuple[int, dict]:
     status, draft, op_id = bound_draft(pid)
     if status != 200:
         return status, draft
+    if op_id == "memory.edit":
+        return 200, {
+            "kind": "diff",
+            "diff": ask_library._diff(draft.get("before", {}), draft.get("files", {})),
+        }
     return 200, ask_library.content_view(op_id, draft)
 
 

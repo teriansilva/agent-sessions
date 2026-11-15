@@ -502,7 +502,9 @@ def credential_shaped(text: str) -> bool:
     if next(_cmd_flag_starts(text), None) is not None:
         return True
     for m in _WORD_RE.finditer(text):
-        if _is_cred_key(m.group(0)) and _SEP_RE.match(text, m.end()):
+        # Both predicates are pure. Check the cheap separator first: ordinary prose otherwise
+        # split/normalized every word as a possible credential key on every memory hydration.
+        if _SEP_RE.match(text, m.end()) and _is_cred_key(m.group(0)):
             return True
     return any(_looks_random(m.group(0)) for m in _RUN_RE.finditer(text))
 

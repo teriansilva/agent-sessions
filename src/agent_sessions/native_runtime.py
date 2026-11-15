@@ -633,6 +633,7 @@ def _launch_generation(
         record["request"]["cwd"],
         kind="api",
         specialist=specialist["id"] if specialist is not None else None,
+        worker_id=worker.worker_id,
     )
     # The memory tool (#1506), only beside the paths: the manifest's kind, which the worker
     # checks against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own

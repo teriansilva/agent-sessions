@@ -64,7 +64,7 @@ def test_registry_covers_every_system_prompt():
     # hq_notify (HQ's one line about a notification, guarded: the persona speaks first)
     # #1740 P2 mission_debrief (the finished mission's "what was done", from its records).
     # #2028 ask_route (HQ's question router on an endpoint without tools, guarded).
-    assert len(prompts.REGISTRY) == 44
+    assert len(prompts.REGISTRY) == 46
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -77,6 +77,8 @@ def test_registry_covers_every_system_prompt():
         # `ask_orchestrator` (#1443) reads agents' screens and transcripts through its tools on
         # every turn: session content is always in front of it.
         "ask_orchestrator",
+        "memory_capture",
+        "memory_answer",
         # `ask_route` (#2028) reads the conversation, whose earlier answers quote what searches
         # found in agents' sessions, and its direct answer goes straight to the Commander.
         "ask_route",
@@ -112,6 +114,8 @@ def test_registry_covers_every_system_prompt():
 # the hash in the same commit; one that changes by accident (a reflow, a "small" reword while
 # moving code) fails here instead of silently altering what every session is asked for.
 EXPECTED_DEFAULT_SHA = {
+    "memory_answer": "6be8ac0544f30fd2",  # #2036: guarded shared-memory prompt
+    "memory_capture": "87a073aee6c1d085",  # #2036: guarded shared-memory prompt
     # #1061 P2: a selection may carry `probe_args` — only `repo`/`branch`, only on a template marked
     # [may set: repo, branch], only a value that appears word for word in the instruction.
     # #1088: a declined checklist's notes are the outcomes the supervisor judges.
@@ -130,7 +134,7 @@ EXPECTED_DEFAULT_SHA = {
     "pulse_recap": "9be97db184a142c7",  # #1086
     # #1069: Ask covers missions too — both stages name the mission kind and its content.
     "ask_catalog": "4a0cadec55d2678b",
-    "ask_verify": "2ea52d623aa35336",
+    "ask_verify": "b5b6dc93e4f11a4b",
     "orchestrator_pass": "8d4e95045fb09670",  # #1086 P2: the deeper digest fields
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",
@@ -150,8 +154,8 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "4d89e14e5c00e99c",  # #1960; #1950: propose_mission
-    "ask_route": "a9d2edf93a7108c3",  # #2028: HQ's question router
+    "ask_orchestrator": "103da07c5acb60e1",  # #1960; #1950: propose_mission
+    "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
     "hq_persona_asia_man": "eba5c28d6ff47fe6",

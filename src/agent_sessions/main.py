@@ -44,6 +44,9 @@ from . import (
     hq_dispatch,
     hq_report_broker,
     memory,
+    memory_broker,
+    memory_capture,
+    memory_index,
     memory_loop,
     metadata,  # noqa: F401 — compatibility: tests patch main.metadata.set_alias
     mission_archive,
@@ -487,6 +490,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
         # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
         memory_task = asyncio.create_task(memory_loop.run())
+        memory_index_task = asyncio.create_task(memory_index.run())
+        memory_broker_task = asyncio.create_task(memory_broker.serve())
+        memory_capture_task = asyncio.create_task(memory_capture.run())
         # Specialist capacity (#1693): reconcile reservations at boot and every minute, releasing
         # only those whose session is proven dead. Env kill-switch AGENT_SESSIONS_SPECIALIST_LOOP=0.
         capacity_task = asyncio.create_task(specialist_capacity.run())
@@ -570,6 +576,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 notify_routes_task,
                 automation_task,
                 memory_task,
+                memory_index_task,
+                memory_broker_task,
+                memory_capture_task,
                 capacity_task,
                 ask_follow_task,
                 models_task,

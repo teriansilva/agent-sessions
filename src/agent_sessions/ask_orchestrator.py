@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from . import (
     ai_providers,
     ask_attachments,
+    ask_memory,
     ask_operations,
     ask_settings,
     ask_store,
@@ -194,6 +195,12 @@ class _Turn:
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
     sends: int = 0
+    memories: int = 0
+    memory_chars: int = 0
+    memory_refs: dict = field(default_factory=dict)
+    memory_books: dict = field(default_factory=dict)
+    memory_route: dict | None = None
+    memory_snapshot: dict | None = field(default_factory=ask_memory.snapshot)
     #: Who answers (#1525): a known HQ contact id, or ``off`` for plain HQ (no persona).
     contact: str = hq_contacts.OFF
     #: How the question arrived (#1397): ``None`` typed, ``"call"`` spoken on a call. A call turn
@@ -1695,7 +1702,14 @@ def _operator(turn: _Turn):
 
 
 async def _stage(
-    turn: _Turn, op, target: str, title: str, fields: dict, draft: dict | None = None
+    turn: _Turn,
+    op,
+    target: str,
+    title: str,
+    fields: dict,
+    draft: dict | None = None,
+    *,
+    expected: dict | None = None,
 ) -> tuple[dict, dict]:
     from . import ask_operations
 
@@ -1712,6 +1726,7 @@ async def _stage(
             operator=operator,
             append_card=_append,
             draft=draft,
+            expected=expected,
         )
     except ask_operations.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
@@ -2251,6 +2266,7 @@ _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool retu
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
+        *ask_memory.tools(Tool, _spec),
         Tool(
             "find_sessions",
             "read",
@@ -2975,6 +2991,7 @@ TOOLS: dict[str, Tool] = {
 
 #: Per-turn budgets by tool kind: ``kind: (turn counter, cap, noun, refusal code)``.
 _BUDGETS = {
+    "memory": ("memories", 3, "memory writes", "too_many_memories"),
     "proposal": ("proposals", MAX_PROPOSALS_PER_TURN, "proposals", "too_many_proposals"),
     "send": ("sends", MAX_SENDS_PER_TURN, "messages", "too_many_sends"),
 }
@@ -2995,6 +3012,7 @@ DRAFT_READ_TOOLS = frozenset(
         "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool",
+        "list_memory_notebooks", "search_memory", "read_memory",
     }
 )  # fmt: skip
 
@@ -3234,6 +3252,11 @@ async def _route(turn: _Turn, history: list[dict], switched: bool) -> str | None
     except Exception as e:  # noqa: BLE001 — every failure means "search", never a failed turn
         log.info("hq question router failed, searching instead: %s", type(e).__name__)
         return None
+    if isinstance(obj, dict) and isinstance(obj.get("memory"), dict):
+        action = obj["memory"].get("action")
+        if action in {"recall", "remember"}:
+            turn.memory_route = obj["memory"]
+            return None
     if not isinstance(obj, dict) or obj.get("search") is not False:
         return None
     answer = obj.get("answer")
@@ -3247,7 +3270,9 @@ async def _no_tools_turn(turn: _Turn, history: list[dict], switched: bool, cfg: 
     (#2028). The call-end judgement runs here as on the tool path — there is no `end_call` tool."""
     try:
         direct = await _route(turn, history, switched)
-        if direct is not None:
+        if turn.memory_route is not None:
+            records = await ask_memory.routed_turn(turn, history, switched)
+        elif direct is not None:
             records = [_assistant(turn, direct), _status(turn, "done")]
         else:
             records = await _fallback_find(turn, history)
@@ -4108,10 +4133,27 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
         if turn.draft is not None:
             # An answer the model finished early waits until the Commander has finished (#1845).
             await turn.draft.committed.wait()
+        from . import memory_capture
+
+        intent = await asyncio.to_thread(
+            memory_capture.intent, turn.question, expected=turn.memory_snapshot
+        )
+        if intent is not None:
+            for rec in records:
+                if rec.get("type") == "status" and rec.get("status") == "done":
+                    rec["memory_capture"] = intent
         try:
             await _append(turn.cid, *records)
         except ask_store.StoreRefused as e:
             await _append(turn.cid, _status(turn, "failed", str(e)))
+        else:
+            if intent is not None:
+                try:
+                    await asyncio.to_thread(
+                        memory_capture.enqueue_committed, turn.cid, turn.turn_id
+                    )
+                except Exception:  # noqa: BLE001 — the committed intent is the recovery source
+                    log.warning("HQ capture handoff deferred to reconciliation", exc_info=True)
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
         view = _view_of(stored, turn.turn_id) or {}
         view = (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view

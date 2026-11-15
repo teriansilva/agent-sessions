@@ -28,6 +28,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "prompt_guard"
 # Every system-message call site in the app, and the prompt each one must send. Pinned so a
 # copy-pasted id (the failure the structural check alone cannot see) fails here.
 EXPECTED_SITES = {
+    ("memory_capture.py", "memory_capture"),
+    ("ask_memory.py", "memory_answer"),
     ("probes.py", "chat_agent"),  # #1259 candidate endpoint verification; same sole transport
     ("autosort.py", "auto_sort"),
     ("template_suggest.py", "template_suggest"),
@@ -116,6 +118,7 @@ HTTP_MODULES = frozenset(
         "freshness_client",
         "gallery_client",
         "speech_endpoints",
+        "memory_embeddings",  # #2036 embeddings only; never a chat-completions transport
         "voice_setup",
         "connector_http",  # #1750 HQ connectors: the one connector transport
         "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
@@ -132,6 +135,7 @@ HTTP_MODULES = frozenset(
 # extensible at all.
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
+    ("memory_embeddings", "_request"): 1,  # pinned vetted origin, bounded non-chat vectors
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     ("feed_client", "_get"): 1,  # #1259 fixed public GitHub feed, anonymous bounded GET
     # #1730 the feeds' freshness statements: fixed pinned origin, anonymous bounded GET.

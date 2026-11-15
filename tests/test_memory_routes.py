@@ -75,6 +75,12 @@ def _qid(a):
 
 
 ROUTES = [
+    ("GET", "/api/memory-search/status"),
+    ("GET", "/api/memory-search/settings"),
+    ("PATCH", "/api/memory-search/settings"),
+    ("POST", "/api/memory-search/test"),
+    ("POST", "/api/memory-search"),
+    ("PUT", "/api/memory/_hq/capture"),
     ("GET", "/api/memory"),
     ("GET", "/api/memory/{a}"),
     ("POST", "/api/memory/{a}/ingest"),
@@ -86,6 +92,50 @@ ROUTES = [
     ("PATCH", "/api/memory/{a}/quarantine/{q}"),
     ("DELETE", "/api/memory/{a}/quarantine/{q}"),
 ]
+
+
+def test_hq_search_and_capture_routes_are_no_store_and_revision_checked(client, monkeypatch):
+    from agent_sessions import memory_embeddings, memory_index, memory_service, memory_settings
+
+    assert client.get("/api/memory/_hq").json()["capture"]["enabled"] is False
+    response = client.put("/api/memory/_hq/capture", json={"enabled": True})
+    assert response.status_code == 200 and response.json()["enabled"]
+    saved = memory_service.submit(
+        memory_service.operator(),
+        memory.HQ_SCOPE,
+        title="Sources",
+        body="Use primary sources.",
+        origin="one",
+    )
+    memory_index.sync()
+    response = client.post("/api/memory-search", json={"query": "sources", "scopes": ["_hq"]})
+    assert response.status_code == 200 and response.json()["hits"][0]["slug"] == saved["slug"]
+    assert response.headers["cache-control"].startswith("no-store")
+    note = client.get(f"/api/memory/_hq/notes/{saved['slug']}").json()
+    memory.update_note(memory.HQ_SCOPE, saved["slug"], {"body": "A newer finding."})
+    assert (
+        client.patch(
+            f"/api/memory/_hq/notes/{saved['slug']}",
+            json={"body": "Stale edit.", "revision": note["revision"]},
+        ).status_code
+        == 409
+    )
+    assert (
+        client.request(
+            "DELETE", f"/api/memory/_hq/notes/{saved['slug']}", json={"revision": note["revision"]}
+        ).status_code
+        == 409
+    )
+    before = memory_settings.stored()
+    monkeypatch.setattr(memory_index, "vector_support", lambda: {"available": True, "reason": ""})
+    monkeypatch.setattr(memory_embeddings, "embed", lambda cfg, texts: [[1.0, 0.25]])
+    response = client.post(
+        "/api/memory-search/test", json={"base_url": "http://127.0.0.1/v1", "model": "fixture"}
+    )
+    assert response.json()["ok"] and response.json()["dimensions"] == 2
+    assert memory_settings.stored() == before
+    for path in ("/api/memory-search/status", "/api/memory-search/settings"):
+        assert client.get(path).headers["cache-control"].startswith("no-store")
 
 
 def test_every_route_needs_a_login(auth_cfg, two):

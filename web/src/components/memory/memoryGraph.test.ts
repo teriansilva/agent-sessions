@@ -17,6 +17,14 @@ const note = (slug: string, over: Partial<MemoryNote> = {}): MemoryNote => ({
 });
 
 describe("memoryGraph", () => {
+  test("HQ notes group by their actual source without inventing an agent session", () => {
+    const notes = [note("a", { source: { kind: "explicit", source: "conversation-a", quote: "First fact." } }),
+      note("b", { source: { kind: "capture", source: "conversation-b", quote: "Other fact." } })];
+    const graph = memoryGraph(notes);
+    const sources = graph.nodes.filter(n => n.kind === "session");
+    expect(sources.map(n => n.session?.source?.source)).toEqual(["conversation-a", "conversation-b"]);
+    expect(graph.edges.map(e => e.source)).toEqual(["hq:conversation-a", "hq:conversation-b"]);
+  });
   test("one node per writer, one per note, a wrote edge each and only links to notes that exist", () => {
     const notes = [
       note("a", { links: ["b", "gone", "a"] }),

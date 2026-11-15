@@ -177,8 +177,8 @@ def test_the_server_refuses_to_start_without_both_paths(paths):
     assert _run({**base, **good}).returncode == 0  # stdin closed at once: a clean exit
 
 
-def test_a_real_process_answers_over_stdio(paths):
-    """The module runs as the CLIs start it: `python -I -m agent_sessions.memory_mcp`."""
+def test_a_real_process_answers_over_stdio_and_refuses_unbound_read_paths(paths):
+    """Real production entrypoint: arbitrary file paths alone never mint a broker principal."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         memory.ENV_READ: str(paths[0]),
@@ -204,7 +204,8 @@ def test_a_real_process_answers_over_stdio(paths):
     )
     replies = [json.loads(line) for line in done.stdout.splitlines()]
     assert [r["id"] for r in replies] == [1, 2]
-    assert "Run pytest via uv." in replies[1]["result"]["content"][0]["text"]
+    assert replies[1]["result"]["isError"] is True
+    assert "launch is unavailable" in replies[1]["result"]["content"][0]["text"]
 
 
 # ---- reads -------------------------------------------------------------------------------------

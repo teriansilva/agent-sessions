@@ -1,0 +1,29 @@
+{
+  "source_notebooks": 100,
+  "source_notes": 100000,
+  "seed_s": 6.648521190974861,
+  "initial_index_s": 466.3153836890124,
+  "initial_index_passes": 16,
+  "first_query_ms": 496.60388100892305,
+  "global_warm_p95_ms": 515.3803690336645,
+  "scoped_warm_p95_ms": 211.20675606653094,
+  "four_readers_p95_ms": 1790.465007070452,
+  "queries": 161,
+  "status": {
+    "state": "keyword-only",
+    "error": "",
+    "notes": 100000,
+    "source_backlog": false,
+    "pending_notebooks": 0,
+    "updated": 1794671805.7975354,
+    "purge_pending": false,
+    "purge_age_seconds": 0,
+    "purge_overdue": false
+  },
+  "limits": "Synthetic short notes; empty secret inventory; keyword retrieval including principal/scope checks, current project catalog and authoritative hydration. No model or embedding latency, no semantic-quality claim.",
+  "mode": "service",
+  "affinity_cpus": 2,
+  "peak_rss_kib": 594620,
+  "bytes_on_disk": 103051950,
+  "python": "3.13.13"
+}

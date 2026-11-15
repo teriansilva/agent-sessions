@@ -1,0 +1,11 @@
+{
+  "base_sha": "62490f57cae6da07b888cc0f2f365d95b958b086",
+  "operator_data": false,
+  "old_inbox_admission": "passed",
+  "stable_paths_and_slug": "passed",
+  "additive_upgrade": "passed",
+  "old_reader_after_upgrade": "passed",
+  "old_writer_recorded_by_transactional_trigger": "passed",
+  "old_delete_authority_and_purge": "passed",
+  "limits": "Isolated synthetic project store, not a production rollback; older releases cannot use HQ or new embedding-secret integration. Existing old MCP file readers require restart to use the shared broker."
+}

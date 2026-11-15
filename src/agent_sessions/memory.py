@@ -1,4 +1,4 @@
-"""Shared project memory (#1441): a notebook agents in one project read and add to.
+"""Shared memory (#1441, #2036): one store for HQ, projects and specialist notebooks.
 
 **The whole agent contract is two environment variables and plain files.** When memory is on for a
 project, every NEW agent process whose session resolves to it gets
@@ -44,7 +44,7 @@ launch (`tools.mcp`, #1506), the same launch also gets the memory TOOL (`memory_
   accepted note nor resurrects a deleted one. A clear first marks itself pending (no pass
   ingests while it is), then drains, then commits; an interrupted clear is finished by the next
   pass, never reported complete before it is.
-* Caps: an entry ≤ 4 KiB, a scope ≤ 200 notes, an inbox ≤ 20 pending files, quarantine ≤ 20 items
+* Caps: an entry ≤ 4 KiB, a scope ≤ 1000 notes, an inbox ≤ 20 pending files, quarantine ≤ 20 items
   or 64 KiB (oldest first); a pass looks at a bounded number of files per inbox. Inbox files are
   regular, single-link, our-uid files opened ``O_NOFOLLOW | O_NONBLOCK`` relative to directory
   descriptors; anything else is refused. A file is CLAIMED — renamed out of the inbox into the
@@ -95,6 +95,9 @@ ENV_SPECIALIST_INBOX = "BATTLELAB_MEMORY_SPECIALIST_INBOX"
 SPECIALIST_ENV_KEYS = (ENV_SPECIALIST_READ, ENV_SPECIALIST_INBOX)
 ALL_ENV_KEYS = ENV_KEYS + SPECIALIST_ENV_KEYS
 SPECIALIST_SEP = "~"
+# Reserved notebook identity, deliberately outside the project-id grammar. It uses the same
+# store/admission machinery; no project entity or agent launch can resolve to this notebook.
+HQ_SCOPE = "_hq"
 _SPECIALIST_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 
 ENTRY_MAX_BYTES = 4096
@@ -178,6 +181,8 @@ def specialist_scope(pid: object, specialist_id: object) -> str:
 
 def _scope_id(raw: object) -> str:
     """A scope id: a project id, or a specialist's notebook in one (`specialist_scope`)."""
+    if raw == HQ_SCOPE:
+        return HQ_SCOPE
     if isinstance(raw, str) and SPECIALIST_SEP in raw:
         pid, _, sid = raw.partition(SPECIALIST_SEP)
         return specialist_scope(pid, sid)
@@ -199,6 +204,8 @@ def project_of(scope: str) -> str:
 
 def _specialist_scopes(pid: str) -> list[str]:
     """Every specialist notebook of project ``pid`` on disk."""
+    if pid == HQ_SCOPE:
+        return []
     base = root()
     if not base.is_dir():
         return []
@@ -312,7 +319,51 @@ CREATE TABLE IF NOT EXISTS imports(
     source TEXT NOT NULL, file TEXT NOT NULL, slug TEXT NOT NULL, digest TEXT NOT NULL,
     base TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL,
     PRIMARY KEY(source, file));
+CREATE TABLE IF NOT EXISTS memory_changes(
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_revisions(slug TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_sources(
+    origin TEXT PRIMARY KEY, slug TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL,
+    quote TEXT NOT NULL, generation INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
+CREATE TRIGGER IF NOT EXISTS memory_note_insert AFTER INSERT ON notes BEGIN
+    UPDATE memory_sources SET deleted=1,source='',quote='' WHERE slug=NEW.slug;
+    INSERT INTO memory_revisions VALUES(NEW.slug, 1)
+      ON CONFLICT(slug) DO UPDATE SET revision=revision+1;
+    INSERT INTO memory_changes(slug, at) VALUES(NEW.slug, CAST(strftime('%s','now') AS REAL));
+END;
+CREATE TRIGGER IF NOT EXISTS memory_note_update AFTER UPDATE ON notes BEGIN
+    INSERT INTO memory_revisions VALUES(NEW.slug, 1)
+      ON CONFLICT(slug) DO UPDATE SET revision=revision+1;
+    INSERT INTO memory_changes(slug, at) VALUES(NEW.slug, CAST(strftime('%s','now') AS REAL));
+END;
+CREATE TRIGGER IF NOT EXISTS memory_note_delete AFTER DELETE ON notes BEGIN
+    INSERT INTO memory_revisions VALUES(OLD.slug, 1)
+      ON CONFLICT(slug) DO UPDATE SET revision=revision+1;
+    UPDATE memory_sources SET deleted=1,source='',quote='' WHERE slug=OLD.slug;
+    INSERT INTO memory_changes(slug, at) VALUES(OLD.slug, CAST(strftime('%s','now') AS REAL));
+END;
+CREATE INDEX IF NOT EXISTS memory_sources_slug ON memory_sources(slug);
+CREATE INDEX IF NOT EXISTS memory_sources_live_source ON memory_sources(source) WHERE deleted=0;
+CREATE TABLE IF NOT EXISTS memory_capture_jobs(
+    cid TEXT NOT NULL,tid TEXT NOT NULL,generation INTEGER NOT NULL,revision INTEGER NOT NULL,
+    digest TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'queued',candidates TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,retry REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY(cid,tid));
+CREATE TABLE IF NOT EXISTS memory_capture_cursors(cid TEXT PRIMARY KEY,position INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_blocked_sources(source TEXT PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS memory_changes_bound AFTER INSERT ON memory_changes BEGIN
+    DELETE FROM memory_changes WHERE seq < NEW.seq - 100000;
+END;
 """
+
+SOURCE_FORMAT = "2"  # additive; pre-#2036 sources have no marker and are format 1
+
+
+def _check_source_format(conn: sqlite3.Connection) -> None:
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
+        if _meta(conn, "memory_format", "1") not in {"1", SOURCE_FORMAT}:
+            raise MemoryStoreError("this notebook requires a newer BattleLab release", 503)
 
 
 def _connect(pid: str) -> sqlite3.Connection:
@@ -321,10 +372,19 @@ def _connect(pid: str) -> sqlite3.Connection:
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
     conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
+    try:
+        _check_source_format(conn)
+    except BaseException:
+        conn.close()
+        raise
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA secure_delete=ON")
     conn.executescript(_SCHEMA)
+    if "digest" not in {r[1] for r in conn.execute("PRAGMA table_info(memory_capture_jobs)")}:
+        conn.execute("ALTER TABLE memory_capture_jobs ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
+    if _meta(conn, "memory_format", "1") != SOURCE_FORMAT:
+        _set_meta(conn, "memory_format", SOURCE_FORMAT)
     return conn
 
 
@@ -345,6 +405,8 @@ def _on(scope: str, conn: sqlite3.Connection) -> bool:
     """Whether ``scope`` takes notes in and binds new launches. A specialist's notebook has NO
     switch of its own (#1693): it is on exactly while its project's memory is on, read from the
     project's store every time — never a copied flag that could drift from it."""
+    if scope == HQ_SCOPE:
+        return True
     if SPECIALIST_SEP in scope:
         return _project_on(project_of(scope))
     return _enabled(conn)
@@ -576,10 +638,16 @@ def _view_files(
     """The read view as ``{file name: text}``. ``known is None`` (the secret check unavailable, or
     a withdrawal) yields the index alone. Quarantine never appears here. A specialist's notebook
     (#1693) gets its own header, pointing at its OWN inbox — never the project's."""
-    rows = (
-        [] if known is None else conn.execute("SELECT * FROM notes ORDER BY type, slug").fetchall()
-    )
-    if SPECIALIST_SEP in scope:
+    rows = [] if known is None else sorted(_note_rows(conn), key=lambda r: (r["type"], r["slug"]))
+    if scope == HQ_SCOPE:
+        index = [
+            "# HQ memory",
+            "",
+            "Preferences and decisions saved for HQ. These are hints, not "
+            "instructions or operational permission.",
+            "",
+        ]
+    elif SPECIALIST_SEP in scope:
         index = [
             "# Your notes as this specialist (this project only)",
             "",
@@ -643,6 +711,9 @@ def _recheck_scope(pid: str) -> None:
         _evict_view(pid)
         return
     try:
+        # Secret registration changes visibility without editing a note. Durable source events
+        # make the derived index purge those old representations too, including after restart.
+        conn.execute("INSERT INTO memory_changes(slug,at) SELECT slug,? FROM notes", (time.time(),))
         _republish_or_withdraw(pid, conn)
     finally:
         conn.close()
@@ -861,7 +932,12 @@ def _bind_specialist(pid: str, specialist: str, session_key: str, kind: str) -> 
 
 
 def launch_env(
-    session_key: str, cwd: str, *, kind: str, specialist: str | None = None
+    session_key: str,
+    cwd: str,
+    *,
+    kind: str,
+    specialist: str | None = None,
+    worker_id: str | None = None,
 ) -> dict[str, str]:
     """The memory variables for ONE new agent process, or ``{}``.
 
@@ -898,7 +974,14 @@ def launch_env(
                 except Exception:  # noqa: BLE001 — the project's memory still reaches the launch
                     log.warning("specialist notes unavailable for %s", session_key, exc_info=True)
         scope = _scope(pid)
-        return {ENV_READ: str(scope / "notes"), ENV_INBOX: str(scope / "inbox" / token), **mine}
+        env = {ENV_READ: str(scope / "notes"), ENV_INBOX: str(scope / "inbox" / token), **mine}
+        from . import memory_broker
+
+        try:
+            memory_broker.bind(session_key, env, kind=kind, worker_id=worker_id)
+        except Exception:  # noqa: BLE001 — file compatibility remains available
+            log.warning("shared memory search unavailable for this launch", exc_info=True)
+        return env
     except Exception:  # noqa: BLE001 — a launch never fails for memory
         log.warning("project memory unavailable for %s", session_key, exc_info=True)
         return {}
@@ -961,7 +1044,9 @@ def clear(pid: str) -> None:
     pid = _scope_id(pid)
     with _scope_lock(pid):
         if not _exists(pid):
-            return
+            if pid != HQ_SCOPE:
+                return
+            _create_scope(pid)  # an empty HQ clear also invalidates a pending first write
         conn = _connect(pid)
         try:
             with _txn(conn):
@@ -979,6 +1064,7 @@ def _finish_clear(pid: str, conn: sqlite3.Connection) -> None:
     _drain_inboxes(pid)
     now = time.time()
     with _txn(conn):
+        conn.execute("UPDATE memory_capture_jobs SET state='invalid',candidates=''")
         # Nothing old comes back: every digest this scope ever took in — notes, every version,
         # quarantine items (also those the cap already evicted, whose only trace is a receipt) —
         # becomes a permanent tombstone.
@@ -997,7 +1083,7 @@ def _finish_clear(pid: str, conn: sqlite3.Connection) -> None:
         _set_meta(conn, "clearing", "0")
 
 
-def delete_note(pid: str, slug: str) -> None:
+def delete_note(pid: str, slug: str, *, expected_revision: int | None = None) -> None:
     """Delete one note. EVERY version that was ever taken in under its name gets a permanent
     `deleted` receipt — not only the current one — so no earlier file brings it back."""
     pid = _scope_id(pid)
@@ -1009,10 +1095,26 @@ def delete_note(pid: str, slug: str) -> None:
         conn = _connect(pid)
         try:
             with _txn(conn):
+                if expected_revision is not None:
+                    r = conn.execute(
+                        "SELECT revision FROM memory_revisions WHERE slug=?", (slug,)
+                    ).fetchone()
+                    if (r[0] if r is not None else 0) != expected_revision:
+                        raise MemoryStoreError("note changed; refresh before deleting", 409)
                 row = conn.execute("SELECT digest FROM notes WHERE slug=?", (slug,)).fetchone()
                 if row is None:
                     raise MemoryStoreError("not a note", 404)
                 now = time.time()
+                if pid == HQ_SCOPE:
+                    # Forgetting one fact blocks future admissions from its old operator turn,
+                    # including an extractor choosing a different quote/title on retry. Other
+                    # already-admitted notes remain; a new operator turn can explicitly reassert.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_blocked_sources"
+                        " SELECT source FROM memory_sources WHERE slug=? AND deleted=0"
+                        " AND origin LIKE 'hq:%'",
+                        (slug,),
+                    )
                 conn.execute(
                     "INSERT OR REPLACE INTO receipts(digest, outcome, at)"
                     " SELECT digest, 'deleted', ? FROM versions WHERE slug=?"
@@ -1504,12 +1606,46 @@ def _note_text(r) -> str:
     ids and links), name, description, type and body. The one input to every secret decision about
     a stored note, so no surface judges a narrower set of fields than another."""
     slug = r["slug"]
-    return "\n".join((slug, f"{slug}.md", r["name"], r["description"], r["type"], r["body"]))
+    fields = [slug, f"{slug}.md", r["name"], r["description"], r["type"], r["body"]]
+    if "source_text" in r.keys() and r["source_text"]:
+        fields.append(r["source_text"])
+    return "\n".join(fields)
+
+
+def _note_rows(conn: sqlite3.Connection, slug: str | None = None) -> list:
+    """One read for content, revision and all visible provenance, including secret admission."""
+    try:
+        return conn.execute(
+            "SELECT n.*,COALESCE(r.revision,0) AS revision,"
+            " COALESCE((SELECT group_concat(s.source || char(10) || s.quote,char(10))"
+            " FROM memory_sources s WHERE s.slug=n.slug AND s.deleted=0),'') AS source_text,"
+            " COALESCE((SELECT s.source FROM memory_sources s WHERE s.slug=n.slug"
+            " AND s.deleted=0 AND s.origin LIKE 'hq:%' LIMIT 1),'') AS hq_source"
+            " FROM notes n LEFT JOIN memory_revisions r ON r.slug=n.slug"
+            " WHERE (? IS NULL OR n.slug=?) ORDER BY n.updated DESC",
+            (slug, slug),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        # Read-only compatibility before the background writer's additive upgrade.
+        return conn.execute(
+            "SELECT *,0 AS revision,'' AS source_text,'' AS hq_source FROM notes"
+            " WHERE (? IS NULL OR slug=?) ORDER BY updated DESC",
+            (slug, slug),
+        ).fetchall()
 
 
 def _carries_secret(r, known: list[str]) -> bool:
     """Whether a stored note now holds a value stored as a secret, in any field it shows."""
     from . import template_secrets
+
+    if "hq_source" in r.keys() and r["hq_source"]:
+        from . import ask_store
+
+        cid = r["hq_source"].partition("/")[0]
+        if ask_store.valid_cid(cid) and not ask_store.exists(cid):
+            return True  # source deletion excludes all read projections, even after a crash
 
     text = _note_text(r)
     return bool(known) and template_secrets.redact_text(text, known) != text
@@ -1690,7 +1826,7 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
         now = time.time()
         # Judged first, written only if something moves: a pass with nothing to quarantine opens
         # no write transaction (#1501). Every writer of `notes` holds the scope lock, as we do.
-        rows = conn.execute("SELECT * FROM notes").fetchall()
+        rows = _note_rows(conn)
         carrying = [r for r in rows if _carries_secret(r, known)]
         if carrying:
             with _txn(conn):
@@ -1742,6 +1878,10 @@ _MASK_NAME = "████████ (withheld name)"
 def _project(pid: str):
     from . import projects
 
+    if pid == HQ_SCOPE:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=HQ_SCOPE, name="HQ", color="", archived=False, folders=[])
     entity = projects.load().get(pid)
     if entity is None:
         raise MemoryStoreError("unknown project", 404)
@@ -1855,12 +1995,15 @@ def _pending(pid: str) -> list[dict]:
     return out
 
 
-def overview() -> list[dict]:
+def overview(*, include_hq: bool = False) -> list[dict]:
     """Every live project with its memory state, for the page's project list."""
     from . import projects
 
     out = []
-    for entity in sorted(projects.load().values(), key=lambda p: p.name.lower()):
+    entities = sorted(projects.load().values(), key=lambda p: p.name.lower())
+    if include_hq:
+        entities.insert(0, _project(HQ_SCOPE))
+    for entity in entities:
         if entity.archived:
             continue
         row = {
@@ -1876,13 +2019,15 @@ def overview() -> list[dict]:
         if _exists(entity.id):
             conn = _connect(entity.id)
             try:
-                row["enabled"] = _enabled(conn)
+                row["enabled"] = _on(entity.id, conn)
                 row["notes"] = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
                 row["quarantined"] = conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
                 row["last_write"] = conn.execute("SELECT MAX(updated) FROM notes").fetchone()[0]
             finally:
                 conn.close()
             row["pending"] = len(_pending(entity.id))
+        if entity.id == HQ_SCOPE:
+            row["enabled"] = True
         out.append(row)
     return out
 
@@ -1899,7 +2044,7 @@ def view(pid: str) -> dict:
         "specialist": specialist,
         # The project's specialist notebooks, listed beside its own (project view only).
         "notebooks": [] if specialist else _notebooks(entity.id),
-        "enabled": False,
+        "enabled": pid == HQ_SCOPE,
         "notes": [],
         "pending": [],
         "refused": [],
@@ -1907,13 +2052,17 @@ def view(pid: str) -> dict:
         # Notes not shown because they hold a value now stored as a secret (or the secret check
         # could not run): the reason, and how many.
         "withheld": {"notes": 0, "reason": ""},
-        "instructions": INSTRUCTION_PARAGRAPH,
+        "instructions": "" if pid == HQ_SCOPE else INSTRUCTION_PARAGRAPH,
         "limits": {
             "note_bytes": ENTRY_MAX_BYTES,
             "notes": SCOPE_MAX_NOTES,
             "inbox_files": INBOX_MAX_PENDING,
         },
     }
+    if pid == HQ_SCOPE:
+        from . import memory_service
+
+        out["capture"] = memory_service.capture_settings()
     if not _exists(pid):
         return out
     return _view_built(pid, out, _inventory_snapshot())
@@ -1967,7 +2116,13 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
             r["token"]: (r["session_key"], r["kind"])
             for r in conn.execute("SELECT token, session_key, kind FROM launches")
         }
-        rows = conn.execute("SELECT * FROM notes ORDER BY updated DESC").fetchall()
+        rows = _note_rows(conn)
+        sources = {
+            r["slug"]: {k: r[k] for k in ("kind", "source", "quote")}
+            for r in conn.execute(
+                "SELECT slug,kind,source,quote FROM memory_sources WHERE deleted=0"
+            )
+        }
         slugs = {r["slug"] for r in rows if known is not None and not _carries_secret(r, known)}
         for r in rows:
             if r["slug"] not in slugs:
@@ -1988,6 +2143,8 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
                     "size": len(r["body"].encode()),
                     "created": r["created"],
                     "updated": r["updated"],
+                    "revision": r["revision"],
+                    "source": sources.get(r["slug"]),
                     "session": _session(*launches.get(r["token"], (None, None)), resolve),
                     "links": sorted({m for m in _LINK_RE.findall(r["body"]) if m in slugs}),
                 }
@@ -2041,7 +2198,7 @@ def _checked(text: str) -> None:
         raise MemoryStoreError(f"a note is at most {OPERATOR_MAX_BYTES // 1024} KiB", 422)
 
 
-def update_note(pid: str, slug: str, fields: dict) -> None:
+def update_note(pid: str, slug: str, fields: dict, *, expected_revision: int | None = None) -> None:
     """Edit a note's name, description, type or body. Its slug (file name) stays."""
     pid = _scope_id(pid)
     if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
@@ -2066,6 +2223,14 @@ def update_note(pid: str, slug: str, fields: dict) -> None:
             row = conn.execute("SELECT * FROM notes WHERE slug=?", (slug,)).fetchone()
             if row is None:
                 raise MemoryStoreError("not a note", 404)
+            if expected_revision is not None:
+                current = conn.execute(
+                    "SELECT revision FROM memory_revisions WHERE slug=?", (slug,)
+                ).fetchone()
+                if type(expected_revision) is not int or expected_revision != (
+                    current[0] if current else 0
+                ):
+                    raise MemoryStoreError("note changed; read it again", 409)
             new = dict(row)
             new.update(fields)
             new["name"] = _one_line(_CONTROL.sub("", new["name"]), 120) or slug

@@ -1,14 +1,14 @@
 """``agent-sessions`` console entrypoint.
 
-Subcommands today: ``serve`` (run the web server) and ``version``. The installer
-(issue #65) calls ``serve`` from the systemd unit; later phases add ``doctor`` /
-``discover-engines`` and ``reset-password`` as further subcommands here.
+Server, maintenance and launch-bound helper commands. The installer calls ``serve`` from the
+systemd unit; ``memory`` exposes shared retrieval through the stable installed executable.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 from . import __version__
 
@@ -32,6 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("version", help="Print the version and exit")
+    sub.add_parser("memory", help="Search/read this launch's shared memory (memory --help)")
 
     doc = sub.add_parser(
         "doctor",
@@ -155,6 +156,11 @@ def _voice(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["memory"]:
+        from .memory_client import cli
+
+        return cli(argv[1:])
     args = _build_parser().parse_args(argv)
 
     if args.cmd == "version":
@@ -180,7 +186,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "reset-password":
-        import sys
         from pathlib import Path
 
         from . import accounts, discover

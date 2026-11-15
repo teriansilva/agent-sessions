@@ -67,7 +67,7 @@ end-to-end-encrypted blind relay lets you give orders from a laptop or your phon
   away. It can also fetch, fast-forward pull, switch branches, stage, discard, commit and push —
   each one refusing rather than forcing when the tree has moved under you.
 - **The Library.** Prompt Templates (text, reference images and `{{field}}` slots filled at send
-  time), variables, project memory, automations, skills and **playbooks** — browse, duplicate and
+  time), variables, shared HQ/project memory, automations, skills and **playbooks** — browse, duplicate and
   author flows on a canvas or as a list, and pin projects to a playbook revision. See the
   [playbooks guide](https://docs.battlelabos.com/guide/playbooks).
 - **Tactical map + auto-sort.** A live flowchart of every session grouped into projects, with

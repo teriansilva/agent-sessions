@@ -35,7 +35,9 @@ conversation is now an append-only JSONL file on the server:
 conversations. A conversation's JSONL, proposal sidecar, follow sidecar and lock file go together.
 A conversation is PINNED — kept past both limits — while a turn is running in it or while its
 proposal sidecar holds a ``deciding`` / ``creating`` proposal (or cannot be read): retention never
-deletes a record recovery still needs to tell whether an effect happened.
+deletes a record recovery still needs to tell whether an effect happened. Admitted HQ memories
+also retain their source conversation through routine expiry. Explicit conversation deletion
+still removes its derived memories; forgetting the last note releases that retention pin.
 """
 
 from __future__ import annotations
@@ -458,6 +460,21 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         if status not in TURN_STATUSES:
             raise ValueError("unknown turn status")
         out["status"] = status
+        if "memory_capture" in rec:
+            intent = rec["memory_capture"]
+            if (
+                status != "done"
+                or not isinstance(intent, dict)
+                or set(intent) != {"generation", "revision", "digest"}
+                or any(
+                    type(intent[k]) is not int or not 0 <= intent[k] < 10**12
+                    for k in ("generation", "revision")
+                )
+                or not isinstance(intent["digest"], str)
+                or not _DIGEST_RE.fullmatch(intent["digest"])
+            ):
+                raise ValueError("malformed memory capture intent")
+            out["memory_capture"] = dict(intent)
         if rec.get("detail"):
             out["detail"] = text(rec.get("detail"), DETAIL_MAX)
         code = rec.get("code")
@@ -1058,7 +1075,15 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         raise ValueError("malformed operation id")
     if not (
         isinstance(target, str)
-        and (target == "" or _KEY_RE.match(target) or _PROJECT_ID_RE.match(target))
+        and (
+            target == ""
+            or _KEY_RE.match(target)
+            or _PROJECT_ID_RE.match(target)
+            or (
+                op in {"memory.edit", "memory.delete"}
+                and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", target)
+            )
+        )
     ):
         raise ValueError("malformed operation target")
     if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
@@ -1412,6 +1437,9 @@ def delete(cid: str) -> None:
     for p in (_proposals_path(cid), _follows_path(cid)):
         p.unlink(missing_ok=True)
     _path(cid).unlink(missing_ok=True)
+    from . import memory_capture
+
+    memory_capture.invalidate_source(cid)
     for p in (
         _lock_path(cid),
         _decide_lock_path(cid),
@@ -1480,6 +1508,9 @@ def delete_conversation(cid: str) -> None:
             except OSError:
                 log.warning("ask conversation delete not yet durable; its sidecars stay for now")
                 return
+            from . import memory_capture
+
+            memory_capture.invalidate_source(cid)
             for p in (
                 _proposals_path(cid),
                 _follows_path(cid),
@@ -1505,13 +1536,15 @@ def delete_conversation(cid: str) -> None:
 
 def sweep(now: float | None = None) -> list[str]:
     """Apply retention. Returns the ids removed."""
+    from . import memory_capture
+
     now = time.time() if now is None else now
     cutoff = now - RETENTION_DAYS * 86400
     removed: list[str] = []
     for n, (cid, _p, mtime) in enumerate(_conversation_files()):
         if mtime >= cutoff and n < MAX_CONVERSATIONS:
             continue
-        if _pinned_by_proposals(cid):
+        if _pinned_by_proposals(cid) or memory_capture.retains_source(cid):
             continue
         with turn_lock(cid) as free:
             if not free:
@@ -1523,7 +1556,11 @@ def sweep(now: float | None = None) -> list[str]:
             # finished before this deletes, never left behind after it. Lock order: turn →
             # proposals → follows.
             with proposals_lock(cid), follows_lock(cid):
-                if not _still_expired(cid, cutoff) or _pinned_by_proposals(cid):
+                if (
+                    not _still_expired(cid, cutoff)
+                    or _pinned_by_proposals(cid)
+                    or memory_capture.retains_source(cid)
+                ):
                     continue
                 delete(cid)
         removed.append(cid)

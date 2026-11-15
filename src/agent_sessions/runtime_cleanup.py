@@ -154,6 +154,9 @@ async def cleanup_runtime(
     from . import secrets_broker
 
     await asyncio.to_thread(secrets_broker.revoke_launch, phys_key)
+    from . import memory_broker
+
+    await asyncio.to_thread(memory_broker.revoke_launch, phys_key)
     # Its HQ report (#1882) ends with the runtime, and so does the capability that filed it.
     from . import agent_reports, hq_report_broker
 

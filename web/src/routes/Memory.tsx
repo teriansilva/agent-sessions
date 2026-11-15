@@ -7,6 +7,8 @@ import { relTime, sessionPathFromKey } from "../lib/format";
 import { useIsMobile } from "../lib/useIsMobile";
 import { useConfig } from "../app/config";
 import type { MemoryNote, MemoryProject, MemorySession, MemoryView, NoteEdit, NoteType } from "../types/memory";
+import { HQ_MEMORY_SCOPE } from "../types/memory";
+import { ASK_CID_RE, hqConversationPath } from "../lib/routes";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { AgentAccessCard } from "../components/memory/AgentAccessCard";
 import { ImportCard } from "../components/memory/ImportCard";
@@ -28,7 +30,7 @@ type Confirm = { pid: string; returnTo: HTMLElement } & (
   | { kind: "delete"; note: MemoryNote }
   | { kind: "drop"; id: number; filename: string }
 );
-type Draft = { slug: string; name: string; description: string; type: NoteType; body: string };
+type Draft = { slug: string; name: string; description: string; type: NoteType; body: string; revision?: number };
 
 /** Notes are at most a few KiB, so "0.0 MB" says nothing: bytes, then KiB. */
 const noteSize = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`);
@@ -60,8 +62,10 @@ export default function Memory() {
   const [status, setStatusFor] = useState<{ pid: string | null; text: string }>({ pid: null, text: "" });
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<Mode>(mobile ? "list" : "graph");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(params.get("note"));
   const [query, setQuery] = useState("");
+  const [searchResult, setSearchResult] = useState<{ pid: string; query: string; slugs: string[]; state: string } | null>(null);
+  const [searchError, setSearchError] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   // The draft a Save in flight submitted: its editor is locked until the Save settles; any other
   // editor stays usable.
@@ -77,6 +81,7 @@ export default function Memory() {
 
   const pid = params.get("project") ?? projects?.find(p => p.enabled)?.id ?? projects?.[0]?.id ?? null;
   const view = pid ? views[pid] ?? null : null;
+  const hq = pid === HQ_MEMORY_SCOPE;
   // A message belongs to the project it is about; it is shown only while that project is selected.
   const setStatus = (text: string, about: string | null = pid) => setStatusFor({ pid: about, text });
   const statusText = status.pid === null || status.pid === pid ? status.text : "";
@@ -84,9 +89,14 @@ export default function Memory() {
   const shown: Mode = !mobile && mode === "trays" ? "graph" : mode;
   // A different project starts clean: reset during render (not in an effect) when the id changes.
   const [shownPid, setShownPid] = useState(pid);
+  const noteParam = params.get("note");
+  const [shownNote, setShownNote] = useState(noteParam);
+  if (noteParam !== shownNote) {
+    setShownNote(noteParam); setSelected(noteParam); setDraft(null);
+  }
   if (pid !== shownPid) {
     setShownPid(pid);
-    setSelected(null); setDraft(null); setRelease(null); setConfirm(null); setTyped(""); setEngineFilter("");
+    setSelected(params.get("note")); setDraft(null); setRelease(null); setConfirm(null); setTyped(""); setEngineFilter("");
   }
 
   const loadProjects = useCallback(async () => {
@@ -113,6 +123,19 @@ export default function Memory() {
   // An open page keeps taking in what agents leave: the same pass every REFRESH_MS while it is
   // visible (the server's own loop runs on the same period).
   const ready = useConfig() !== null;
+  // Every accepted notebook refresh also revalidates an unchanged query: new notes, index
+  // catch-up and a recovered search service must converge without an operator editing it.
+  useEffect(() => {
+    if (!ready || !pid || !query.trim()) return;
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      setSearchError("");
+      api.searchMemory(query, [pid]).then(result => {
+        if (!stale) setSearchResult({ pid, query, slugs: result.hits.map(h => h.slug), state: result.state });
+      }).catch(e => { if (!stale) { setSearchResult(null); setSearchError(message(e)); } });
+    }, 300);
+    return () => { stale = true; window.clearTimeout(timer); };
+  }, [ready, pid, query, view]);
   useEffect(() => {
     if (!pid || !ready) return;
     let stale = false;
@@ -142,12 +165,13 @@ export default function Memory() {
   // A filter for an agent this project has no notes from is no filter: the select could not show it.
   const agent = engines.includes(engineFilter) ? engineFilter : "";
   const visible = useMemo(() => {
-    const q = query.toLowerCase();
-    return notes.filter(n =>
+    const found = searchResult?.pid === pid && searchResult.query === query ? searchResult.slugs : [];
+    const rows = notes.filter(n =>
       (!typeFilter || n.type === typeFilter)
       && (!agent || n.session.engine === agent)
-      && `${n.name} ${n.description} ${n.body} ${n.type}`.toLowerCase().includes(q));
-  }, [notes, query, typeFilter, agent]);
+      && (!query.trim() || found.includes(n.slug)));
+    return query.trim() ? rows.sort((a, b) => found.indexOf(a.slug) - found.indexOf(b.slug)) : rows;
+  }, [notes, query, typeFilter, agent, searchResult, pid]);
   const current = notes.find(n => n.slug === selected) ?? null;
   const project = projects?.find(p => p.id === pid) ?? null;
   const trays = (view?.pending.length ?? 0) + (view?.refused.length ?? 0) + (view?.quarantine.length ?? 0);
@@ -158,6 +182,12 @@ export default function Memory() {
     await api.setMemoryEnabled(id, !view.enabled);
     await refresh(id);
     setStatus(view.enabled ? "Memory is off. New sessions won't get it; running ones keep their paths." : "Memory is on. Sessions already running join after a restart.", id);
+  });
+  const toggleCapture = () => perform(async () => {
+    if (!view) return;
+    await api.setMemoryCapture(!view.capture?.enabled);
+    await refresh(HQ_MEMORY_SCOPE);
+    setStatus(view.capture?.enabled ? "Automatic capture is off. Existing notes can still be recalled." : "HQ can remember useful facts from your completed messages.", HQ_MEMORY_SCOPE);
   });
   const copy = async () => {
     if (!view) return;
@@ -173,7 +203,7 @@ export default function Memory() {
     const edit: NoteEdit = {};
     for (const k of ["name", "description", "type", "body"] as const) if (original?.[k] !== draft[k]) (edit as Record<string, string>)[k] = draft[k];
     try {
-      if (Object.keys(edit).length) await api.editMemoryNote(id, submitted.slug, edit);
+      if (Object.keys(edit).length) await api.editMemoryNote(id, submitted.slug, { ...edit, revision: submitted.revision });
     } finally {
       if (live.current) setSaving(null);
     }
@@ -185,7 +215,7 @@ export default function Memory() {
     if (!confirm || confirm.pid !== pid) return; // never act on a project other than the dialog's
     const id = confirm.pid;
     if (confirm.kind === "clear") { await api.clearMemory(id); setSelected(null); setStatus("Memory cleared.", id); }
-    if (confirm.kind === "delete") { await api.deleteMemoryNote(id, confirm.note.slug); setSelected(null); setStatus(`Deleted “${confirm.note.name}”.`, id); }
+    if (confirm.kind === "delete") { await api.deleteMemoryNote(id, confirm.note.slug, confirm.note.revision); setSelected(null); setStatus(`Deleted “${confirm.note.name}”.`, id); }
     if (confirm.kind === "drop") { await api.dropQuarantined(id, confirm.id); setStatus(`Dropped ${confirm.filename}.`, id); }
     setConfirm(null); setTyped(""); await refresh(id);
   });
@@ -202,7 +232,7 @@ export default function Memory() {
   // The selected project's bar: what it is, whether it's on, and what can be done to it — over the
   // graph, so the switch and Clear are next to the notes they act on, not in the project rail.
   const projectBar = view && project && (
-    <div className={styles.projectBar} aria-label={`Project ${project.name}`} role="group">
+    <div className={styles.projectBar} aria-label={`${hq ? "Notebook" : "Project"} ${project.name}`} role="group">
       <div className={styles.projectMain}>
         <div className={styles.projectTitle}>
           {!mobile && <>
@@ -210,12 +240,13 @@ export default function Memory() {
             <h2>{project.name}</h2>
             <span className={styles.meta}>{notes.length} / {view.limits.notes} notes</span>
           </>}
-          <button type="button" role="switch" aria-checked={view.enabled} aria-label={`Shared memory for ${project.name}`} className={styles.switch} disabled={busy} onClick={toggle}>
+          <button type="button" role="switch" aria-checked={hq ? !!view.capture?.enabled : view.enabled} aria-label={hq ? "Remember useful facts" : `Shared memory for ${project.name}`} className={styles.switch} disabled={busy} onClick={hq ? toggleCapture : toggle}>
             <span className={styles.knob} aria-hidden="true" />
-            <span className={styles.switchLabel}>{view.enabled ? "ON" : "OFF"}</span>
+            <span className={styles.switchLabel}>{hq ? `Remember useful facts · ${view.capture?.enabled ? "ON" : "OFF"}` : view.enabled ? "ON" : "OFF"}</span>
           </button>
         </div>
-        <span className={styles.hint}>{view.enabled ? "Sessions already running join after a restart." : "Off by default. Turning it on reaches new sessions only."}</span>
+        <span className={styles.hint}>{hq ? "Explicit “remember this” requests still work when this is off. HQ recalls project notes only when needed." : view.enabled ? "Sessions already running join after a restart." : "Off by default. Turning it on reaches new sessions only."}</span>
+        {hq && <span className={styles.hint}>Saved memories keep their source conversations through routine expiry. Deleting a source conversation removes its derived memories.</span>}
       </div>
       <div className={styles.barActions}>
         {!mobile && <div className={styles.seg} role="group" aria-label="View">
@@ -224,9 +255,12 @@ export default function Memory() {
         </div>}
         {/* Share bundles (#1714 P4): Import… into this project, Export… from it; the Markdown .zip
             stays, as a link inside Export…. */}
-        <ShareActions kind="memory" memory={{ id: view.project.id, name: view.project.name, enabled: view.enabled }} onImported={() => void refresh(view.project.id)}>
+        {hq ? <>
+          <a className={buttons.ghost} href={api.memoryExportUrl(HQ_MEMORY_SCOPE)} download><Download size={14} aria-hidden="true" /> Export</a>
+          <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => setConfirm({ kind: "clear", pid: HQ_MEMORY_SCOPE, returnTo: e.currentTarget })}>Clear…</button>
+        </> : <ShareActions kind="memory" memory={{ id: view.project.id, name: view.project.name, enabled: view.enabled }} onImported={() => void refresh(view.project.id)}>
           <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
-        </ShareActions>
+        </ShareActions>}
       </div>
     </div>
   );
@@ -277,18 +311,19 @@ export default function Memory() {
 
   // Existing memory (#1471): one card per project — `key` drops everything it held when the
   // project changes, so a late answer for one project never shows under another.
-  const importCard = view && pid && !view.specialist && (
+  const importCard = view && pid && !hq && !view.specialist && (
     <ImportCard key={pid} pid={pid} projectName={view.project.name} disabled={busy} onImported={refresh} />
   );
 
   // Agent access (#1506 P2): which agents get the memory tool and which need the paragraph, from
   // the roster; the paragraph behind a disclosure. Same place as the old instructions card.
-  const access = view && <AgentAccessCard enabled={view.enabled} paragraph={view.instructions} onCopy={copy} />;
+  const access = view && !hq && <AgentAccessCard enabled={view.enabled} paragraph={view.instructions} onCopy={copy} />;
 
-  const emptyText = query || typeFilter || agent ? "No notes match." : "No notes yet. Agents add them by writing into their inbox.";
+  const emptyText = query.trim() && (searchResult?.pid !== pid || searchResult.query !== query) ? (searchError || "Searching memory…") : query || typeFilter || agent ? "No notes match." : hq ? "No HQ notes yet. Ask HQ to remember something, or enable optional capture." : "No notes yet. Agents add them by writing into their inbox.";
   const list = (
     <section className={styles.list} aria-label="Notes">
       <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Search notes" placeholder="Search notes" value={query} onChange={e => setQuery(e.target.value)} /></label>
+      {query.trim() && searchResult?.pid === pid && searchResult.query === query && <p className={styles.small} role="status">{searchResult.state === "ready" ? "Keyword and semantic search · up to 10 notes" : searchResult.state === "keyword-only" ? "Keyword search · semantic search unavailable" : `Search ${searchResult.state} · results may be incomplete`}</p>}
       <div className={styles.filters}>
         <select aria-label="Filter by type" value={typeFilter} onChange={e => setTypeFilter(e.target.value as NoteType | "")}>
           <option value="">All types</option>
@@ -304,7 +339,7 @@ export default function Memory() {
           <span className={styles.tag} data-type={n.type}>{TYPE_TAG[n.type]}</span>
           <span className={styles.rowText}>
             <span className={styles.rowName}>{n.name}</span>
-            <span className={styles.meta}>{n.session.kind === "share" ? "imported from a file" : <>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind === "import" ? "imported" : `${n.session.kind || "agent"}${n.session.resolved ? "" : " · unresolved"}`}</>} · {relTime(n.updated)}</span>
+            <span className={styles.meta}>{n.source ? "HQ conversation" : n.session.kind === "share" ? "imported from a file" : <>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind === "import" ? "imported" : `${n.session.kind || "agent"}${n.session.resolved ? "" : " · unresolved"}`}</>} · {relTime(n.updated)}</span>
           </span>
         </button>
       ))}
@@ -366,18 +401,23 @@ export default function Memory() {
           <div className={styles.inspectorHead}><span className={styles.tag} data-type={current.type}>{current.type.toUpperCase()}</span><code className={styles.meta}>notes/{current.slug}.md</code></div>
           <h2 className={styles.noteTitle}>{current.name}</h2>
           <dl className={styles.kv}>
-            <dt>Written by</dt><dd><Writer session={current.session} /></dd>
+            <dt>{current.source ? "Added from" : "Written by"}</dt><dd>{current.source ? current.source.kind === "capture" ? "HQ · automatic capture" : current.source.kind === "explicit" ? "HQ · explicit request" : "HQ · operator message" : hq ? "Operator · source unavailable" : <Writer session={current.session} />}</dd>
             <dt>When</dt><dd>{new Date(current.updated * 1000).toLocaleString()}</dd>
             <dt>Size</dt><dd>{noteSize(current.size)} / {noteSize(view?.limits.note_bytes ?? 4096)}</dd>
           </dl>
           <pre className={styles.body}>{current.body}</pre>
+          {current.source && <>
+            <h3 className={styles.eyebrow}>Original source quote</h3>
+            <blockquote className={styles.body}>{current.source.quote}</blockquote>
+            {ASK_CID_RE.test(current.source.source.split("/")[0]) ? <Link className={styles.notebookLink} to={hqConversationPath(current.source.source.split("/")[0])}>Open HQ conversation</Link> : <p className={styles.small}>{current.source.source}</p>}
+          </>}
           <h3 className={styles.eyebrow}>Links to</h3>
           {current.links.length ? current.links.map(s => <button key={s} type="button" className={styles.linkButton} onClick={() => setSelected(s)}>→ {notes.find(n => n.slug === s)?.name ?? s}</button>) : <p className={styles.small}>none</p>}
           <h3 className={styles.eyebrow}>Linked from</h3>
           {linkedFrom(notes, current.slug).map(n => <button key={n.slug} type="button" className={styles.linkButton} onClick={() => setSelected(n.slug)}>← {n.name}</button>)}
           {linkedFrom(notes, current.slug).length === 0 && <p className={styles.small}>none</p>}
           <div className={styles.actions}>
-            <button type="button" className={buttons.ghost} onClick={() => setDraft({ slug: current.slug, name: current.name, description: current.description, type: current.type, body: current.body })}>Edit</button>
+            <button type="button" className={buttons.ghost} onClick={() => setDraft({ slug: current.slug, name: current.name, description: current.description, type: current.type, body: current.body, revision: current.revision })}>Edit</button>
             <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "delete", pid, note: current, returnTo: e.currentTarget })}>Delete</button>
           </div>
         </>
@@ -418,15 +458,15 @@ export default function Memory() {
       {projects?.length === 0 && <p className={styles.empty}>No projects yet. Memory belongs to a project — create one from New session or Settings → Projects, then turn its memory on here.</p>}
       {projects && projects.length > 0 && (
         <div className={styles.layout} data-mobile={mobile}>
-          <nav className={styles.rail} aria-label="Projects">
+          <nav className={styles.rail} aria-label="Notebooks">
             {mobile ? (
-              <label className={styles.field}><span>Project</span>
+              <label className={styles.field}><span>Notebook</span>
                 <select value={pid ?? ""} disabled={busy} onChange={e => setParams({ project: e.target.value })}>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.enabled ? ` · ${p.notes}` : " · off"}</option>)}
                 </select>
               </label>
             ) : <>
-              <h2 className={styles.eyebrow}>Projects</h2>
+              <h2 className={styles.eyebrow}>Notebooks</h2>
               {projects.map(p => (
               <button key={p.id} type="button" className={styles.project} aria-pressed={p.id === (pid?.split("~")[0] ?? pid)} disabled={busy} onClick={() => setParams({ project: p.id })}>
                 <span className={styles.swatch} style={{ background: p.color || "var(--engine-slate)" }} aria-hidden="true" />
@@ -509,7 +549,7 @@ export default function Memory() {
             <p>Deletes all {view.notes.length} notes, drops {view.pending.length} pending inbox files and {view.quarantine.length} quarantined items. Running sessions keep their paths; nothing old comes back. This can't be undone — <a href={api.memoryExportUrl(confirm.pid)} download>export first</a> if you want a copy.</p>
             <label className={styles.field}><span>Type <b>{clearName}</b> to confirm</span><input value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></label>
           </>}
-          {confirm.kind === "delete" && <p>The note is removed from memory. A retry of the same file never brings it back.</p>}
+          {confirm.kind === "delete" && <p>The note is removed from memory. A retry of the same source never brings it back. Chat copies and external backups have separate retention.</p>}
           {confirm.kind === "drop" && <p>The held-back file is discarded and never taken in.</p>}
           {errorView}
         </ConfirmDialog>
