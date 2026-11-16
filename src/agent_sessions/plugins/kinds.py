@@ -270,8 +270,11 @@ MENU_KINDS = frozenset({"none", "claude-numbered"})
 PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"})
 #: `unattended.start_evidence` — the artifact that answers "did an agent start" (#989/#1050).
 #: `copilot-sessions`: the pinned `<uuid>` directory + `workspace.yaml` under
-#: `~/.copilot/session-state/` (#1565).
-START_EVIDENCE_KINDS = frozenset({"none", "claude-sessions", "opencode-log", "copilot-sessions"})
+#: `~/.copilot/session-state/` (#1565). `opencode2-log`: opencode 2.x's own structured log, its
+#: `location services booted` line for the launch cwd (#2083).
+START_EVIDENCE_KINDS = frozenset(
+    {"none", "claude-sessions", "opencode-log", "opencode2-log", "copilot-sessions"}
+)
 #: `maintenance` — store maintenance a plugin admits (#993).
 MAINTENANCE_KINDS = frozenset({"sqlite-vacuum"})
 

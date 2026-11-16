@@ -220,7 +220,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `terminal.ready` | `bytes`, `claude-first-paint` |
 | `terminal.menu` | `claude-numbered`, `none` |
 | `terminal.permission` | `claude-permission`, `none`, `opencode-permission` |
-| `unattended.start_evidence` | `claude-sessions`, `copilot-sessions`, `none`, `opencode-log` |
+| `unattended.start_evidence` | `claude-sessions`, `copilot-sessions`, `none`, `opencode-log`, `opencode2-log` |
 | `maintenance` | `sqlite-vacuum` |
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |
 | `install.kind` → `authority` | `npm-prefix` → `registry.npmjs.org`; `tarball` → `github.com` |

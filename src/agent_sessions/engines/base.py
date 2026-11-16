@@ -139,6 +139,12 @@ def _opencode2_db(home: Path | None = None) -> str:
     return str(_store("opencode2-sqlite", "db", home))
 
 
+def _opencode2_log(home: Path | None = None) -> Path:
+    """opencode 2.x's OWN structured log (#2083): ``<root>/data/opencode/log/opencode.log``, under
+    the same forced data home as its database. The START artifact for an unattended launch."""
+    return _store("opencode2-sqlite", "log", home)
+
+
 def _opencode_log(home: Path | None = None) -> Path:
     """opencode's structured log — the START artifact for an unattended launch (#1050).
 

@@ -11,9 +11,12 @@
     },
     "capabilities": {
       "archive": true,
+      "handoff_target": true,
       "new": true,
+      "orchestrator_input": true,
       "raw_tty": true,
-      "resume": true
+      "resume": true,
+      "seed_start": true
     },
     "contract": 1,
     "display": {
@@ -86,6 +89,9 @@
     "transcript": {
       "kind": "opencode2-sqlite",
       "strict": true
+    },
+    "unattended": {
+      "start_evidence": "opencode2-log"
     },
     "usage": {
       "kind": "opencode2-store-query",

@@ -37,11 +37,16 @@ resume = { kind = "positional-dir", flag = "--session" }
 new = { kind = "positional-dir" }
 bypass = ["--auto"]
 
+# seed_start / orchestrator_input / handoff_target (#2083): each proven on the real 2.2.7 binary
+# through its consumer (`tests/test_opencode2.py`, gated by AGENT_SESSIONS_TEST_OPENCODE2_BIN).
 [capabilities]
 resume = true
 new = true
 archive = true
 raw_tty = true
+seed_start = true
+orchestrator_input = true
+handoff_target = true
 
 [transcript]
 kind = "opencode2-sqlite"
@@ -50,6 +55,11 @@ strict = true
 [usage]
 source = "tokens"
 kind = "opencode2-store-query"
+
+# Start evidence for an unattended launch (#2083): the server's `location services booted` record
+# for the launch cwd in 2.x's OWN log (`store.paths.log`), never the session store.
+[unattended]
+start_evidence = "opencode2-log"
 
 [instructions]
 files = ["AGENTS.md"]

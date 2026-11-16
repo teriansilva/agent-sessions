@@ -1047,8 +1047,12 @@ def _cross_check(m: Manifest) -> None:
         raise ManifestError("transcript.strict", "needs a transcript kind")
     if "sqlite-vacuum" in m.maintenance and (m.store is None or "db" not in m.store.paths):
         raise ManifestError("maintenance", "sqlite-vacuum needs store.paths.db")
-    if m.start_evidence == "opencode-log" and (m.store is None or "log" not in m.store.paths):
-        raise ManifestError("unattended.start_evidence", "opencode-log needs store.paths.log")
+    if m.start_evidence in ("opencode-log", "opencode2-log") and (
+        m.store is None or "log" not in m.store.paths
+    ):
+        raise ManifestError(
+            "unattended.start_evidence", f"{m.start_evidence} needs store.paths.log"
+        )
     if m.usage.source == "none" and "usage" in m.verify:
         raise ManifestError("verify", "cannot verify usage for a plugin that declares none")
     if m.install is not None and m.binary is not None and m.binary.env_var is None:

@@ -672,7 +672,9 @@ def test_the_MISSION_picker_drops_an_incapable_late_id_engine_and_the_HANDOFF_pi
 #: only worth anything if an engine cannot drift into being dispatchable. opencode earned its place
 #: in #1050: its store writes no session row for 45 s with nothing typed (#916's deadlock, measured
 #: for this engine), so it is gated on the `creating instance` line in its own structured log.
-_MEASURED_LATE_ID = {"opencode"}
+#: opencode2 earned it in #2083: no `session_v2` row before the first message either, so it is gated
+#: on its server's `location services booted` record in its OWN log, measured on 2.2.7.
+_MEASURED_LATE_ID = {"opencode", "opencode2"}
 
 
 def test_every_UNMEASURED_late_id_engine_is_still_refused_with_the_capability_reason():

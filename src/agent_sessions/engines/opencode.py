@@ -127,21 +127,52 @@ def _log_tail_since(path: Path, floor: float) -> list[str]:
 
     A MISSING log is not unreadable: opencode has simply never run on this host yet, so there is
     genuinely no instance line — the caller polls and the file appears on the first launch.
+
+    A log REPLACED or TRUNCATED while it is read (#2083) is unreadable too: the file opened is no
+    longer the one measured, or holds less than it did, so the window may not cover the floor.
+    Shared by opencode 1.x and 2.x (`engines.opencode2`), which keep the same append-only file.
     """
     try:
-        size = path.stat().st_size
+        st = path.stat()
     except FileNotFoundError:
         return []
     except OSError as e:
         raise _LogUnreadable(f"opencode's log could not be read ({type(e).__name__})") from None
+    size = st.st_size
 
     window = LOG_TAIL_BYTES
     while True:
         start = max(0, size - window)
         try:
             with path.open("rb") as fh:
+                now = os.fstat(fh.fileno())
+                if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino) or now.st_size < size:
+                    raise _LogUnreadable(
+                        "opencode's log was truncated or replaced while it was being read"
+                    )
                 fh.seek(start)
-                text = fh.read(window + 4096).decode("utf-8", errors="replace")
+                raw = fh.read(window + 4096)
+                # AFTER the read too (#2089 review): a rotation or truncation landing between the
+                # check above and the read would otherwise go unseen, and a replaced pathname would
+                # let the old, unlinked descriptor answer `found` for a log that is no longer the
+                # one being written. Append-only growth is allowed; shrinking, disappearing or
+                # pointing elsewhere is not.
+                after = os.fstat(fh.fileno())
+                if after.st_size < size:
+                    raise _LogUnreadable(
+                        "opencode's log was truncated or replaced while it was being read"
+                    )
+                try:
+                    named = path.stat()
+                except FileNotFoundError:
+                    raise _LogUnreadable(
+                        "opencode's log was truncated or replaced while it was being read"
+                    ) from None
+                if (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino):
+                    raise _LogUnreadable(
+                        "opencode's log was truncated or replaced while it was being read"
+                    )
+                text = raw.decode("utf-8", errors="replace")
         except OSError as e:
             raise _LogUnreadable(f"opencode's log could not be read ({type(e).__name__})") from None
         lines = text.split("\n")

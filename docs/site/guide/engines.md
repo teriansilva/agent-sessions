@@ -94,6 +94,20 @@ BattleLab snapshots the engine's store *before* launch, starts the session under
 `new-<uuid>` placeholder, then diffs the store afterwards and adopts whichever id appeared. A
 reconciling engine's row therefore carries a placeholder id for the first moments of its life.
 
+With nobody watching (missions and automations), "whichever id appeared" is not good enough, so a
+reconciling engine is started unattended only once it can show two things against the real CLI:
+that an agent started before the brief is typed (`unattended.start_evidence`), and which session
+received the brief (the brief's last line is a one-off `[mission attempt <nonce>]`, found again in
+the session's first message). Today that is **opencode** (its log's `creating instance` line) and
+**OpenCode 2** (its own log's `location services booted` line). Without permission bypass, both run
+under an agent BattleLab defines for that one launch: reads in the project go through, and every
+other tool call waits for you on the session's screen.
+
+| Engine | Unattended start | Seeded start / handoff target | Orchestrator input |
+|---|---|---|---|
+| **opencode** (`opencode`) | `opencode-log` | yes | yes |
+| **OpenCode 2** (`opencode2`) | `opencode2-log` | yes | yes |
+
 ## Choosing a model, and the instruction files an engine reads
 
 The new-session form offers a **Model** select for an engine whose manifest declares

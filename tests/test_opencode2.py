@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import dataclasses
 import json
 import os
@@ -199,6 +200,7 @@ APPLIES = {
     "plugins/process.py",
     "headless_dispatch.py",
     "agent_account_store.py",  # #1820: an account's status command
+    "engines/opencode2.py",  # #2083: the unattended preflight's probe (`engine_auth.run_probe`)
 }
 RESOLVERS = {"entrypoint_path", "launch_argv", "new_launch_argv", "unattended_launch"}
 
@@ -666,6 +668,260 @@ def test_the_real_binary_stays_in_its_tree_on_loopback_and_leaves_nothing_runnin
     stray = {k for k in changed if not k.startswith("home/o2/")}
     assert stray == set(), stray
     assert (r / "data/opencode/opencode.db").exists()
+
+
+# --- the real binary through each unattended consumer (gated, #2083) --------------------------
+#
+# Each capability the manifest declares for 2.x (`seed_start`, `orchestrator_input`,
+# `handoff_target`, `unattended.start_evidence`) is proven here against the real 2.2.7 binary
+# THROUGH THE CODE THAT USES IT — `headless_dispatch.dispatch` (start evidence, preflight, guarded
+# launch, seed delivery, nonce binding), `session_input.send_input` (the orchestrator's write), and
+# the handoff's own launch (`handoff.commit` + `webterm.run` with its seed) — with isolation
+# re-asserted on every run. The free default model answers with no credentials.
+
+
+def _env_of(pid: int) -> bytes:
+    try:
+        return Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return b""
+
+
+def _ours(root: Path) -> set[int]:
+    """Every live process carrying THIS test's forced data home: the dtach master and the 2.x tree
+    under it, and nothing anybody else started (the selector is a path only this test made)."""
+    marker = f"XDG_DATA_HOME={root / 'data'}".encode() + b"\0"
+    return {int(d) for d in os.listdir("/proc") if d.isdigit() and marker in _env_of(int(d))}
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+    except OSError:
+        return ""
+
+
+class _Watch:
+    """Samples the test's own 2.x processes while a consumer runs: cmdlines and listeners."""
+
+    def __init__(self, root: Path):
+        self.root, self.cmdlines, self.listeners, self.seen = root, set(), set(), set()
+
+    def sample(self) -> None:
+        pids = _ours(self.root)
+        self.seen |= pids
+        self.cmdlines |= {_cmdline(p) for p in pids}
+        self.listeners |= _listeners(pids)
+
+    async def every(self, stop: asyncio.Event, period: float = 0.25) -> None:
+        while not stop.is_set():
+            await asyncio.to_thread(self.sample)
+            await asyncio.sleep(period)
+
+
+def _reap(pids: set[int]) -> set[int]:
+    """Kill, by exact pid, whatever of this test's own tree is still alive; return those pids."""
+    import signal
+
+    alive = {p for p in pids if Path(f"/proc/{p}").exists()}
+    for p in alive:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(p, signal.SIGKILL)
+    return alive
+
+
+def _first_user_texts(sid: str) -> list[str]:
+    turns = transcript.strict_adapter_for(ENGINE)(sid, Path.home())
+    return [t.text for t in turns if t.role == "user" and t.kind == "text"]
+
+
+async def _until(pred, timeout: float, period: float = 0.5):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        got = await asyncio.to_thread(pred)
+        if got:
+            return got
+        await asyncio.sleep(period)
+    return None
+
+
+@pytest.fixture
+def real2(tmp_path, monkeypatch):
+    """The real binary under a scratch HOME with a scratch 1.x store beside it; yields the 2.x
+    root, the cwd, and the isolation checks to make afterwards."""
+    if not REAL:
+        pytest.skip("set AGENT_SESSIONS_TEST_OPENCODE2_BIN to a 2.x binary")
+    home = tmp_path / "home"
+    one_x = home / ".local/share/opencode"
+    one_x.mkdir(parents=True)
+    one_db = one_x / "opencode.db"
+    c = sqlite3.connect(one_db)
+    c.execute("CREATE TABLE session (id text)")
+    c.commit()
+    c.close()
+    root = home / "o2"
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE2_DIR", str(root))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE2_BIN", REAL)
+    monkeypatch.setenv("AGENT_SESSIONS_SESSION_SCOPES", "0")  # no systemd scope in a test
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+    before = {"1x": one_db.read_bytes(), "home": _snapshot(home), "work": _snapshot(work)}
+    watch = _Watch(root)
+    yield SimpleNamespace(root=root, work=work, watch=watch)
+    survivors = _reap(_ours(root) | watch.seen)
+    print("REAL-CONSUMER", sorted(watch.cmdlines), sorted(watch.listeners))
+    assert survivors == set(), survivors
+    assert watch.listeners, "the private server was never seen listening"
+    loopback = {"tcp:0100007F", "tcp6:00000000000000000000000001000000"}
+    assert all(x.rsplit(":", 1)[0] in loopback for x in watch.listeners), watch.listeners
+    assert not any("serve --service" in c for c in watch.cmdlines), watch.cmdlines
+    assert one_db.read_bytes() == before["1x"]
+    changed = {k for k, v in _snapshot(home).items() if before["home"].get(k) != v}
+    assert {k for k in changed if not k.startswith("o2/")} == set(), changed
+    assert _snapshot(work) == before["work"]
+
+
+@pytest.mark.skipif(not REAL, reason="set AGENT_SESSIONS_TEST_OPENCODE2_BIN to a 2.x binary")
+def test_the_real_binary_is_dispatched_bound_by_nonce_and_takes_orchestrator_input(real2):
+    """`seed_start` + `unattended.start_evidence` + `orchestrator_input`, through their consumers.
+
+    A GUARDED dispatch (no bypass): preflight, start evidence from 2.x's own log, the brief typed
+    through the readiness gate, the session bound by its nonce — then the orchestrator's own write
+    lands as a second user turn. The session runs under BattleLab's per-launch agent."""
+    from agent_sessions import headless_dispatch, runtime_cleanup, session_input, session_stream
+
+    brief = "Do not use any tools.\nReply with just the word OK."
+
+    async def go():
+        reg = session_stream.SessionRegistry()
+        stop = asyncio.Event()
+        sampler = asyncio.ensure_future(real2.watch.every(stop))
+        out = None
+        try:
+            out = await headless_dispatch.dispatch(
+                engine=ENGINE, cwd=str(real2.work), brief=brief, registry=reg, bypass=False
+            )
+            assert out.ok and out.bound, (out.reason, out.events)
+            assert out.events[-3:] == ["started", "briefed", "bound"], out.events
+            assert out.bound_proof == base.PROOF_NONCE
+            sid = out.bound_key.split(":", 1)[1]
+            from agent_sessions import launch_binding
+
+            assert _first_user_texts(sid)[0] == launch_binding.envelope(brief, out.nonce)
+            con = sqlite3.connect(f"file:{base._opencode2_db()}?mode=ro", uri=True)
+            (agent,) = con.execute("SELECT agent FROM session_v2 WHERE id = ?", (sid,)).fetchone()
+            con.close()
+            assert agent.startswith("battlelab-mission-"), agent
+
+            # The orchestrator's write, once the agent has answered and the screen is quiet.
+            def replied():
+                turns = transcript.strict_adapter_for(ENGINE)(sid, Path.home())
+                return any(t.role == "assistant" and t.kind == "text" for t in turns)
+
+            assert await _until(replied, 120), "the agent never answered the brief"
+            nudge = "Now reply with just the word TWO."
+            outcome = await asyncio.to_thread(
+                session_input.send_input, out.key, session_input.bracketed_paste(nudge)
+            )
+            assert outcome.state == "delivered", outcome
+            got = await _until(lambda: len(_first_user_texts(sid)) >= 2, 60)
+            assert got and _first_user_texts(sid)[1] == nudge
+        finally:
+            stop.set()
+            await sampler
+            real2.watch.sample()
+            if out is not None and out.launched:
+                await runtime_cleanup.cleanup_runtime(ENGINE, out.native, physical_key=out.key)
+            await reg.stop_all()
+
+    asyncio.run(go())
+
+
+@pytest.mark.skipif(not REAL, reason="set AGENT_SESSIONS_TEST_OPENCODE2_BIN to a 2.x binary")
+def test_a_handoff_into_the_real_binary_opens_with_its_seed(real2):
+    """`handoff_target`, through the handoff's own pieces: the route's capability gate,
+    `handoff.commit` minting the placeholder, and the terminal launch (`webterm.run`) redeeming
+    the seed into the fresh 2.x TUI, which stores it as the new session's first user turn."""
+    from agent_sessions import handoff, ptybridge, runtime_cleanup, sessionlock, webterm
+
+    p = prov()
+    assert handoff.handoff_target_state(p, present=True) == (True, None)
+    seed = "Handoff from a claude session.\n\nDo not use any tools. Reply with just the word OK."
+    h = handoff.create_handle(
+        "claude:0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b", ENGINE, "quick", seed, cwd=str(real2.work)
+    )
+    committed = handoff.commit(h)
+    key, native = committed["id"], committed["native"]
+    assert native.startswith("new-")
+    snapshot = p.snapshot_session_ids(str(real2.work))
+    assert snapshot == set()
+
+    def new_session():
+        found = p.reconcile_new_session(str(real2.work), snapshot)
+        return found if isinstance(found, str) and _first_user_texts(found) else None
+
+    async def go():
+        lock = sessionlock.acquire(key)
+        assert lock is not None
+        done = asyncio.Event()
+
+        class WS:
+            async def receive(self):
+                await done.wait()
+                return {"type": "websocket.disconnect"}
+
+            async def send_bytes(self, b):
+                pass
+
+            async def send_text(self, t):
+                pass
+
+            async def close(self, code=None):
+                pass
+
+        argv = ptybridge.launch_argv(
+            engine=ENGINE,
+            session_id=native,
+            launch_argv=p.new_launch_argv(native, cwd=str(real2.work), bypass=True),
+        )
+        stop = asyncio.Event()
+        sampler = asyncio.ensure_future(real2.watch.every(stop))
+        found = {}
+
+        async def watcher():
+            found["sid"] = await _until(new_session, 120)
+            done.set()
+
+        w = asyncio.ensure_future(watcher())
+        try:
+            await webterm.run(
+                WS(),
+                argv,
+                cwd=str(real2.work),
+                buf_key=key,
+                seed_key=key,
+                lock=lock,
+                cols=120,
+                rows=40,
+                launch_provider=p,
+            )
+            await w
+            sid = found.get("sid")
+            assert sid, "the handoff target never stored its seed"
+            assert _first_user_texts(sid)[0] == seed
+            assert handoff.claim_seed(key) is None  # redeemed exactly once
+        finally:
+            done.set()
+            stop.set()
+            await sampler
+            real2.watch.sample()
+            with contextlib.suppress(Exception):
+                lock.transfer()
+            await runtime_cleanup.cleanup_runtime(ENGINE, native, physical_key=key)
+
+    asyncio.run(go())
 
 
 def test_every_probe_profile_leaves_the_probe_unable_to_act():

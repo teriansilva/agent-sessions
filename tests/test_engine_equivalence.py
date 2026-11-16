@@ -122,9 +122,9 @@ GOLDEN = {
         "--yolo",
     ],
     ("opencode", "caps"): (True, True, True, True, True),
-    # opencode 2.x (#1986): `--standalone` on every launch, `--auto` only when bypassing; P1 has
-    # no orchestrator input or seed start (P2).
-    ("opencode2", "caps"): (True, False, True, False, True),
+    # opencode 2.x (#1986): `--standalone` on every launch, `--auto` only when bypassing; seed
+    # start and orchestrator input proven on the real binary in #2083.
+    ("opencode2", "caps"): (True, True, True, True, True),
     ("opencode2", "new", False): ["{bin}", "--standalone", "{cwd}"],
     ("opencode2", "new", True): ["{bin}", "--standalone", "{cwd}", "--auto"],
     ("opencode2", "resume", False): ["{bin}", "--standalone", "{cwd}", "--session", "ses_AbC123"],
