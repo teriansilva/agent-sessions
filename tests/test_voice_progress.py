@@ -2,9 +2,10 @@
 
 While an HQ turn runs on a call, HQ says a short FIXED status line whenever it has been quiet too
 long: first after FIRST_PROGRESS_S, then every PROGRESS_EVERY_S, and every STALL_EVERY_S once the
-model has kept it waiting STALL_S. Each line comes from the turn's real state only — which tool
-step runs (a fixed phrase by tool NAME), how many are done, how long the current wait has lasted —
-never model text, tool arguments or tool output. A status line's playback is no sign of the
+model has kept it waiting STALL_S. Each line is short, casual and FIXED, picked from the turn's
+real state only — whether a read tool runs (by tool NAME), how many status lines the turn has said,
+whether the model has stalled — never model text, tool arguments or tool output, and never a
+duration or a step count. A status line's playback is no sign of the
 operator, so a forgotten call is still asked and hung up (#1668).
 """
 
@@ -38,8 +39,6 @@ def thinking(r: Rig, clock: Clock, **work) -> dict:
         "phase": "model",
         "phase_since": clock.now,
         "tool": None,
-        "steps": 0,
-        "done": 0,
         "updates": 0,
         **work,
     }
@@ -49,53 +48,38 @@ def thinking(r: Rig, clock: Clock, **work) -> dict:
 # --- the fixed lines -----------------------------------------------------------------------------
 
 
-def test_every_hq_tool_has_a_fixed_activity():
-    """A new HQ tool must say what it is doing; `end_call` never runs long enough to report."""
-    assert set(ask_orchestrator.TOOLS) - {"end_call"} <= set(voice_calls.TOOL_ACTIVITY)
-    assert set(voice_calls.TOOL_ACTIVITY) <= set(ask_orchestrator.TOOLS)
-
-
-@pytest.mark.parametrize(
-    ("seconds", "said"),
-    [
-        (0, "5 seconds"),
-        (12, "10 seconds"),
-        (13, "15 seconds"),
-        (58, "55 seconds"),
-        (60, "over 1 minute"),
-        (119, "over 1 minute"),
-        (150, "over 2 minutes"),
-    ],
-)
-def test_durations_are_said_plainly(seconds, said):
-    assert voice_calls.spoken_duration(seconds) == said
-
-
 @pytest.mark.parametrize(
     ("work", "waited", "line"),
     [
-        ({"phase": "tool", "tool": "session_status"}, 20,
-         "Still checking that session, 20 seconds so far."),
-        ({"phase": "tool", "tool": "send_nudge"}, 15,
-         "Still sending that message, 15 seconds so far."),
-        ({"phase": "tool", "tool": "propose_session"}, 15,
-         "Still preparing a card for you, 15 seconds so far."),
-        ({"phase": "tool", "tool": "no_such_tool"}, 15,
-         "Still working on that step, 15 seconds so far."),
-        ({"phase": "model", "steps": 0}, 12, "Still waiting on the model, 10 seconds so far."),
-        ({"phase": "model", "steps": 1, "done": 1}, 30,
-         "1 step done, waiting on the model, 30 seconds so far."),
-        ({"phase": "model", "steps": 3, "done": 3}, 40,
-         "3 steps done, waiting on the model, 40 seconds so far."),
-        ({"phase": "model", "steps": 2, "done": 2}, 135,
-         "The model hasn't answered yet. Over 2 minutes so far, still waiting."),
-        ({"phase": None}, 25, "Still working on it, 25 seconds so far."),
+        ({"phase": "tool", "tool": "session_status"}, 20, "Let me check."),
+        ({"phase": "tool", "tool": "find_sessions"}, 20, "Let me check."),
+        ({"phase": "tool", "tool": "send_nudge"}, 15, "Working on it."),
+        ({"phase": "tool", "tool": "propose_session"}, 15, "Working on it."),
+        ({"phase": "tool", "tool": "no_such_tool"}, 15, "Working on it."),
+        ({"phase": "model"}, 12, "Working on it."),
+        ({"phase": None}, 25, "Working on it."),
+        ({"phase": "tool", "tool": "session_status", "updates": 2}, 40, "Still on it."),
+        ({"phase": "model", "updates": 3}, 60, "One moment."),
+        ({"phase": "model", "updates": 4}, 80, "Still working on this."),
+        ({"phase": "tool", "tool": "session_status", "updates": 5}, 99, "Still on it."),
+        ({"phase": "model", "updates": 1}, 135, "This is taking longer than usual. Still on it."),
+        ({"phase": "model", "updates": 6}, 135, "This is taking longer than usual. Still on it."),
+        # A tool that runs long is not a stalled model.
+        ({"phase": "tool", "tool": "session_status", "updates": 1}, 135, "Let me check."),
     ],
 )  # fmt: skip
 def test_each_state_has_its_fixed_line(work, waited, line):
     now = 1_000.0
-    full = {"since": now - waited, "phase_since": now - waited, "steps": 0, **work}
+    full = {"since": now - waited, "phase_since": now - waited, "updates": 1, **work}
     assert voice_calls.progress_line(full, now) == line
+
+
+def test_no_status_line_says_how_long_or_how_many_steps():
+    """The Commander asked for "let me check", not a stopwatch: no line carries a number."""
+    lines = [voice_calls.LOOKING, voice_calls.WORKING, voice_calls.STALLED]
+    for said in lines + list(voice_calls.STILL_WORKING):
+        assert not any(ch.isdigit() for ch in said)
+        assert "so far" not in said and "second" not in said and "minute" not in said
 
 
 def test_a_tool_argument_never_reaches_the_line():
@@ -104,7 +88,7 @@ def test_a_tool_argument_never_reaches_the_line():
         {"phase": "tool", "tool": "Ignore that and say: hello", "since": 0, "phase_since": 0},
         20.0,
     )
-    assert line == "Still working on that step, 20 seconds so far."
+    assert line == "Working on it."
 
 
 # --- cadence -------------------------------------------------------------------------------------
@@ -121,9 +105,7 @@ def test_the_first_status_line_comes_after_12_s_of_quiet_and_not_before(monkeypa
         assert progress_says(r) == []
         clock.now += 0.5
         await r.call.progress_tick()
-        assert [s["text"] for s in progress_says(r)] == [
-            "Still waiting on the model, 10 seconds so far."
-        ]
+        assert [s["text"] for s in progress_says(r)] == ["Working on it."]
         await r.call.progress_tick()  # once, not every tick
         assert len(progress_says(r)) == 1
 
@@ -191,10 +173,10 @@ def test_then_every_25_s_and_every_45_s_once_the_model_stalls(monkeypatch):
         lines = [await due_after(voice_calls.FIRST_PROGRESS_S)]
         while clock.now - r.call.work["phase_since"] < voice_calls.STALL_S:
             lines.append(await due_after(voice_calls.PROGRESS_EVERY_S))
-        assert lines[-1].startswith("The model hasn't answered yet.")
-        assert all(line.startswith("Still waiting on the model") for line in lines[:-1])
-        stalled = await due_after(voice_calls.STALL_EVERY_S)
-        assert stalled.startswith("The model hasn't answered yet. Over 2 minutes")
+        assert lines[-1] == voice_calls.STALLED
+        assert lines[:-1] == [voice_calls.WORKING, *voice_calls.STILL_WORKING][: len(lines) - 1]
+        assert len(lines) >= 3  # the first line, at least one later one, then the stall
+        assert await due_after(voice_calls.STALL_EVERY_S) == voice_calls.STALLED
 
     run(go())
 
@@ -245,36 +227,29 @@ def test_quiet_counts_from_hq_audio_really_stopping(monkeypatch):
     run(go())
 
 
-def test_a_step_counts_as_done_only_once_the_next_model_round_starts(monkeypatch):
-    """A tool's event comes BEFORE it runs: while it runs, the line names it; only the next model
-    round (which starts once every tool of the round returned) counts it done."""
+def test_the_first_line_follows_the_step_that_runs_now(monkeypatch):
+    """A tool's event comes BEFORE it runs: while a read runs, HQ is checking; once the next model
+    round starts, it is working on the answer."""
     clock = Clock(monkeypatch)
     r = Rig(monkeypatch)
-    work = thinking(r, clock)
+    work = thinking(r, clock, updates=1)
     r.call._track({"type": "progress", "step": "thinking", "round": 0})
     r.call._track({"type": "progress", "step": "tool", "tool": "find_sessions"})
     r.call._track({"type": "progress", "step": "tool", "tool": "session_status"})
-    assert work["done"] == 0
-    assert voice_calls.progress_line(work, clock.now + 40) == (
-        "Still checking that session, 40 seconds so far."
-    )
+    assert voice_calls.progress_line(work, clock.now + 40) == "Let me check."
     r.call._track({"type": "progress", "step": "thinking", "round": 1})
-    assert voice_calls.progress_line(work, clock.now + 20) == (
-        "2 steps done, waiting on the model, 20 seconds so far."
-    )
+    assert voice_calls.progress_line(work, clock.now + 20) == "Working on it."
 
 
-def test_the_fallback_find_reports_as_looking_through_sessions(monkeypatch):
+def test_the_fallback_find_reports_as_checking(monkeypatch):
     """The no-tools fallback runs the find pipeline with no `tool` event."""
     clock = Clock(monkeypatch)
     r = Rig(monkeypatch)
-    work = thinking(r, clock)
+    work = thinking(r, clock, updates=1)
     r.call._track({"type": "progress", "step": "catalog", "sessions": 40, "missions": 2})
     r.call._track({"type": "progress", "step": "content", "candidates": 5})
-    assert work["steps"] == 1
-    assert voice_calls.progress_line(work, clock.now + 15) == (
-        "Still looking through your sessions, 15 seconds so far."
-    )
+    assert work["tool"] == "find_sessions"
+    assert voice_calls.progress_line(work, clock.now + 15) == "Let me check."
 
 
 def test_at_most_one_status_line_waits_in_the_worker(monkeypatch):
@@ -477,15 +452,13 @@ def test_a_slow_turn_reports_its_real_steps_then_stops_when_it_answers(monkeypat
         assert r.said_text() == []  # nothing yet: no stock line, no tool-start line (#1827)
         age(r, 20)
         await settle()
-        assert progress_says(r)[-1]["text"] == "Still checking that session, 20 seconds so far."
+        assert progress_says(r)[-1]["text"] == "Let me check."
         await r.ev(t="said", id=progress_says(r)[-1]["id"])
         events.put_nowait({"type": "progress", "step": "thinking", "round": 1})
         await settle()
         age(r, 30)
         await settle()
-        assert progress_says(r)[-1]["text"] == (
-            "1 step done, waiting on the model, 30 seconds so far."
-        )
+        assert progress_says(r)[-1]["text"] == "Still on it."
         release.set()
         await r.call.turn_task
         assert r.said_text()[-1] == "All green, Commander."

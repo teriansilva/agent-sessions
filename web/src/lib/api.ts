@@ -33,6 +33,7 @@ import type {
   ShareList,
   ShareMode,
 } from "./shareFormat";
+import type { CreatedInvite, FederationPairing, FederationState } from "./federation";
 import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -1065,6 +1066,34 @@ export const api = {
   revokeShare: (shareId: string) =>
     mutateJson<{ revoked: boolean }>("DELETE", `/api/shares/${encodeURIComponent(shareId)}`),
   revokeAllShares: () => mutateJson<{ revoked: number }>("POST", "/api/shares/revoke-all"),
+  // Federation (#1246 P2): pairing this instance with another BattleLab. A refused write carries
+  // `{detail, code}`: the detail is the message, the code (`not_owner`, …) is on `record`.
+  // `createFederationInvite` is the ONLY answer that carries the invite string; it is shown once.
+  federation: () => getJsonWithDetail<FederationState>("/api/federation"),
+  createFederationInvite: () => mutateJson<CreatedInvite>("POST", "/api/federation/invites"),
+  withdrawFederationInvite: (inviteId: string) =>
+    mutateJson<FederationState>("DELETE", `/api/federation/invites/${encodeURIComponent(inviteId)}`),
+  acceptFederationInvite: (invite: string) =>
+    mutateJson<FederationPairing>("POST", "/api/federation/pairings", { invite }),
+  confirmFederationPairing: (pairingId: string) =>
+    mutateJson<FederationPairing>(
+      "POST",
+      `/api/federation/pairings/${encodeURIComponent(pairingId)}/confirm`,
+    ),
+  denyFederationPairing: (pairingId: string) =>
+    mutateJson<FederationPairing>(
+      "POST",
+      `/api/federation/pairings/${encodeURIComponent(pairingId)}/deny`,
+    ),
+  renameFederationPeer: (peerId: string, name: string) =>
+    mutateJson<FederationState>("PATCH", `/api/federation/peers/${encodeURIComponent(peerId)}`, {
+      name,
+    }),
+  revokeFederationPeer: (peerId: string) =>
+    mutateJson<FederationState>(
+      "POST",
+      `/api/federation/peers/${encodeURIComponent(peerId)}/revoke`,
+    ),
   // Reply links (#1956): one finished reply, sealed. `createReplyShare` is the only answer that
   // carries the key, so the link is shown once.
   replyShares: (session?: string) =>

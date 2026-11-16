@@ -97,6 +97,49 @@ export const RESOURCES = {
 };
 
 /** Two live links (Settings → Sharing). Ids are fixtures, never a link token. */
+/** Settings → Peers (#2052): this instance, a connected peer, an offline one and a revoked one. */
+export const FEDERATION = {
+  owner: true,
+  self: { peer_id: "k3wq7n2bxd5mr4tzh6pac2vyj7uef3so", name: "studio", reachable_by: ["direct"] },
+  peers: [
+    {
+      peer_id: "m5tr2kxwq7ahd3ny6bpev4czj2osu7fl",
+      name: "gpu-box",
+      state: "trusted",
+      connected: true,
+      refused: false,
+      reachable_by: ["direct"],
+      created_at: NOW - 9 * 86400,
+      last_seen_at: NOW - 20,
+      revision: 1,
+    },
+    {
+      peer_id: "b7nd4qzse2vkx6mhp3ytw5caj4ruo2gf",
+      name: "laptop",
+      state: "trusted",
+      connected: false,
+      refused: false,
+      reachable_by: ["direct"],
+      created_at: NOW - 30 * 86400,
+      last_seen_at: NOW - 2 * 3600,
+      revision: 2,
+    },
+    {
+      peer_id: "t2hy6wfnc5qdk7ezr3mbx4sav6pju2lo",
+      name: "old-desktop",
+      state: "revoked",
+      connected: false,
+      refused: false,
+      reachable_by: ["direct"],
+      created_at: NOW - 90 * 86400,
+      last_seen_at: NOW - 3 * 86400,
+      revision: 3,
+    },
+  ],
+  invites: [],
+  pairings: [],
+};
+
 export const SHARES = {
   available: true,
   reason: null,

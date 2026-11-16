@@ -96,6 +96,7 @@ import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 import { engineLabel, useEngineRoster } from "../app/engineRoster";
 import { SharingSettings } from "../components/shares/SharingSettings";
+import { PeersSettings } from "../components/federation/PeersSettings";
 import { ArtifactsSettings } from "../components/artifacts/ArtifactsSettings";
 import { BrandLockup } from "../components/brand/Brand";
 
@@ -2172,6 +2173,7 @@ export function Settings() {
         {section === "agents-defaults" && <AgentDefaultsPage />}
         {section === "security" && <SecurityPanel />}
         {section === "sharing" && <SharingSettings />}
+        {section === "peers" && <PeersSettings />}
         {section === "artifacts" && <ArtifactsSettings />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}

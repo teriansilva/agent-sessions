@@ -480,8 +480,8 @@ test("the registry and the pages agree: every section id renders something", () 
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
   // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397),
   // then HQ connectors (#1825), then HQ itself — whether sessions can report to it (#1882).
-  // Profile (#1931): the operator's avatar. Artifacts under System (#1932).
-  expect(SETTINGS_SECTIONS).toHaveLength(23);
+  // Profile (#1931): the operator's avatar. Artifacts under System (#1932). Peers (#2052).
+  expect(SETTINGS_SECTIONS).toHaveLength(24);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

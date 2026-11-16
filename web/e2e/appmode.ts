@@ -116,7 +116,7 @@ function waitForLine(child: ChildProcess, re: RegExp, what: string, ms = 45_000)
  *  fence could kill the groups already started or remove the temp home. The waiters reject on it
  *  too; this is the belt, covering the window before any waiter has subscribed.
  */
-function guardSpawn(child: ChildProcess, key: string): void {
+export function guardSpawn(child: ChildProcess, key: string): void {
   child.on("error", (e) => {
     process.stderr.write(`[${key}] spawn error: ${String(e)}\n`);
   });
@@ -129,7 +129,7 @@ function guardSpawn(child: ChildProcess, key: string): void {
  *  captured output is the whole diagnosis, so it goes in the error, and an exited child fails
  *  immediately rather than burning the full budget first.
  */
-async function waitForHttp(
+export async function waitForHttp(
   url: string,
   child: ChildProcess,
   logs: Record<string, string>,
@@ -171,7 +171,7 @@ async function waitForHttp(
  *
  *  `41900 + pid % 300` collides: the shared runner hosts several jobs at once, and two of them
  *  picking the same number is a failure that looks exactly like "the app did not start". */
-function freePort(): Promise<number> {
+export function freePort(): Promise<number> {
   return new Promise((res, rej) => {
     const srv = createServer();
     srv.on("error", rej);

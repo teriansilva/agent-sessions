@@ -126,58 +126,14 @@ NEEDS_YOU_ASK = re.compile(
     r"\b(what|who|anything)\b.*\bneeds?\b.*\b(me|you|my attention|attention)\b"
 )
 LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
-#: What each HQ tool is doing, as a fixed phrase (#1702): keyed by the tool's NAME only — never
-#: its arguments or result. Every HQ tool but `end_call` has one (a test ratchets it).
-TOOL_ACTIVITY = {
-    "list_memory_notebooks": "looking through your notebooks",
-    "search_memory": "searching your saved notes",
-    "read_memory": "reading that saved note",
-    "remember_hq_memory": "saving that fact in memory",
-    "propose_hq_memory_change": "preparing a memory card for you",
-    "find_sessions": "looking through your sessions",
-    "artifacts_find": "looking through your artifacts",
-    "list_sessions": "looking through your sessions",
-    "session_status": "checking that session",
-    "session_brief": "checking that session",
-    "session_report": "checking that session",
-    "list_missions": "checking your missions",
-    "mission_status": "checking that mission",
-    "fleet_status": "checking the fleet",
-    "agent_usage": "checking your usage",
-    "list_projects": "reading your projects",
-    "list_agents": "reading your agents",
-    "list_specialists": "reading your specialists",
-    "read_plan": "reading that mission's team",
-    "read_pool": "reading who could do that step",
-    "assemble": "preparing a card for you",
-    "assign": "preparing a card for you",
-    "set_override": "preparing a card for you",
-    "clear_override": "preparing a card for you",
-    "list_folders": "reading your folders",
-    "list_playbooks": "reading your playbooks",
-    "playbook_detail": "reading that playbook",
-    "playbook_schema": "reading the playbook format",
-    "list_skills": "reading your skills",
-    "skill_detail": "reading that skill",
-    "list_automations": "reading your automations",
-    "automation_detail": "reading that automation",
-    "list_secrets": "reading your secrets",
-    "read_settings": "reading your settings",
-    "list_connectors": "checking your connected services",
-    "connector_search": "searching your connected service",
-    "connector_read": "reading that item",
-    "connector_list": "reading that folder",
-    "list_recipients": "checking who I may message",
-    "propose_message": "writing that message for you to send",
-    "ask_operator": "preparing a question for you",
-    "send_nudge": "sending that message",
-    "propose_session": "preparing a card for you",
-    "propose_session_change": "preparing a card for you",
-    "propose_project_change": "preparing a card for you",
-    "propose_mission": "preparing a card for you",
-    "propose_library": "preparing a card for you",
-    "propose_secret": "preparing a card for you",
-}
+#: What HQ says while a turn is still running (#1702): short, casual and FIXED. No durations and no
+#: step counts: the Commander asked for "let me check", not a stopwatch. The first line depends
+#: only on whether the running step is one of HQ's read tools (by its pinned kind, never its
+#: arguments or result); later lines take turns; the stall line is its own.
+LOOKING = "Let me check."
+WORKING = "Working on it."
+STILL_WORKING = ("Still on it.", "One moment.", "Still working on this.")
+STALLED = "This is taking longer than usual. Still on it."
 #: While an HQ turn runs on a call, HQ never goes quiet for long (#1702): a fixed status line once
 #: HQ has been quiet this long within the turn (counted from the later of the turn's start and
 #: when its last line had time to play). A turn that answers sooner says only its answer (#1827)…
@@ -193,39 +149,18 @@ PROGRESS_TICK_S = 1.0
 FIND_STEPS = frozenset({"catalog", "content"})
 
 
-def spoken_duration(seconds: float) -> str:
-    """An elapsed time as said on a call: "15 seconds" (to the nearest 5) under a minute, then
-    "over 2 minutes"."""
-    if seconds < 60:
-        return f"{max(5, min(55, int(5 * round(seconds / 5))))} seconds"
-    minutes = int(seconds // 60)
-    return f"over {minutes} minute{'s' if minutes != 1 else ''}"
-
-
 def progress_line(work: dict, now: float) -> str:
     """The fixed status line for an HQ turn still in flight (#1702), from its real state only:
-    which tool step runs (a fixed phrase by tool NAME), how many steps have returned, and how long
-    the current wait (this tool, or this model request) has lasted. Never model text, tool
-    arguments or tool output."""
+    whether a read tool runs (by tool NAME), how many status lines this turn has said, and whether
+    the model has stalled. Never model text, tool arguments or tool output, and never a duration."""
     phase = work.get("phase")
-    waited = now - work.get("phase_since", now)
-    if phase == "tool":
-        activity = TOOL_ACTIVITY.get(str(work.get("tool") or ""), "working on that step")
-        return f"Still {activity}, {spoken_duration(waited)} so far."
-    if phase == "model":
-        if waited >= STALL_S:
-            return (
-                "The model hasn't answered yet. "
-                f"{spoken_duration(waited).capitalize()} so far, still waiting."
-            )
-        steps = int(work.get("done") or 0)
-        if steps:
-            return (
-                f"{steps} step{'s' if steps != 1 else ''} done, "
-                f"waiting on the model, {spoken_duration(waited)} so far."
-            )
-        return f"Still waiting on the model, {spoken_duration(waited)} so far."
-    return f"Still working on it, {spoken_duration(now - work.get('since', now))} so far."
+    if phase == "model" and now - work.get("phase_since", now) >= STALL_S:
+        return STALLED
+    said = int(work.get("updates") or 1)  # this line included (`progress_tick` counts first)
+    if said > 1:
+        return STILL_WORKING[(said - 2) % len(STILL_WORKING)]
+    tool = ask_orchestrator.TOOLS.get(str(work.get("tool") or ""))
+    return LOOKING if phase == "tool" and tool is not None and tool.kind == "read" else WORKING
 
 
 #: How long ending a call waits on each socket send before giving up on it.
@@ -422,8 +357,8 @@ class Call:
     _to_client: Callable[[dict | bytes], Awaitable[None]] | None = None
     _to_worker: Callable[[dict | bytes], Awaitable[None]] | None = None
     #: The HQ turn in flight on this call (#1702): ``{"since", "phase", "phase_since", "tool",
-    #: "steps" (started), "done" (returned), "updates", "stalled", "unsaid" (the status line whose
-    #: audio has not gone out yet)}`` from its own progress events; None between turns.
+    #: "updates" (status lines said), "stalled", "unsaid" (the status line whose audio has not gone
+    #: out yet)}`` from its own progress events; None between turns.
     work: dict | None = None
     #: When HQ's last line will have had time to play (sent + `speech_seconds`): the quiet the
     #: progress lines are counted from.
@@ -1063,8 +998,7 @@ class Call:
         else:
             await self.set_state("thinking")
         now = time.monotonic()
-        self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "steps": 0,
-                     "done": 0, "updates": 0}  # fmt: skip
+        self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
         progress = asyncio.create_task(self._report_progress(d))
         try:
             view = await self._run_turn(
@@ -1608,16 +1542,12 @@ class Call:
         step = ev.get("step")
         now = time.monotonic()
         if step == "thinking":
-            # A model round starts only once the previous round's tools have all returned: every
-            # step started so far is DONE (a tool's own event comes before it runs).
-            work.update(phase="model", phase_since=now, tool=None, done=work["steps"])
+            work.update(phase="model", phase_since=now, tool=None)
         elif step == "tool":
             work.update(phase="tool", phase_since=now, tool=str(ev.get("tool") or ""))
-            work["steps"] += 1
         elif step in FIND_STEPS and work["phase"] != "tool":
             # The no-tools fallback runs the find pipeline without a `tool` event.
             work.update(phase="tool", phase_since=now, tool="find_sessions")
-            work["steps"] += 1
 
     async def progress_tick(self) -> None:
         """Say where the running turn is, if HQ has been quiet long enough (#1702): FIRST_PROGRESS_S

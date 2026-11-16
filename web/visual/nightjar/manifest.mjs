@@ -1190,6 +1190,15 @@ export const SWEEP = [
     api: { "/api/shares": SB.SHARES },
     open: [{ role: "button", name: "Revoke all" }],
   },
+  // Peers (#2052): the page at rest, and the revoke confirmation (focus on Cancel).
+  { id: "route:settings-peers", path: "/settings/peers", api: { "/api/federation": SB.FEDERATION } },
+  {
+    id: "popup:peers-revoke",
+    path: "/settings/peers",
+    api: { "/api/federation": SB.FEDERATION },
+    open: [{ role: "button", name: "Revoke gpu-box" }],
+    expect: "alertdialog",
+  },
   {
     id: "route:settings-updates",
     path: "/settings/updates",

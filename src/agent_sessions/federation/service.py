@@ -465,6 +465,7 @@ class Federation:
     # ── operator actions ──────────────────────────────────────────────
     def snapshot(self) -> dict:
         self._sweep()
+        owner = self.owner
         peers = []
         for peer in self.store.list_peers():
             live = self._channels.get(peer.peer_id)
@@ -473,7 +474,9 @@ class Federation:
                     "peer_id": peer.peer_id,
                     "name": peer.name,
                     "state": peer.state,
-                    "connected": bool(live and not live.closed),
+                    # Channels live in the owner process. Any other process cannot know, and
+                    # says so with null rather than claiming "offline".
+                    "connected": bool(live and not live.closed) if owner else None,
                     "refused": peer.peer_id in self._refused,
                     "reachable_by": sorted({e["t"] for e in peer.endpoints}),
                     "created_at": peer.created_at,
@@ -482,7 +485,7 @@ class Federation:
                 }
             )
         return {
-            "owner": self.owner,
+            "owner": owner,
             "self": {
                 "peer_id": self.peer_id,
                 "name": self.name,

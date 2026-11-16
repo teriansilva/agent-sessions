@@ -482,6 +482,33 @@ def test_only_one_process_per_store_serves_federation_and_the_rest_fail_closed(t
     run(go())
 
 
+def test_a_process_that_is_not_the_owner_reports_connected_as_unknown(tmp_path, monkeypatch):
+    """Channels live in the owner process. A twin over the same store lists the peer but cannot
+    know whether it is connected: ``connected`` is ``None`` there, never ``False``."""
+    monkeypatch.setattr(service, "DIAL_TICK_S", 0.05)
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        await _trusted_pair(net, a, b)
+        a.start()
+        b.start()
+        await until(lambda: peers_of(a)[b.peer_id]["connected"] is True)
+        twin = _Node("alpha", tmp_path, addresses=a.addresses, name="alpha", static=a._static)
+        snap = twin.snapshot()
+        assert snap["owner"] is False
+        assert [(p["peer_id"], p["state"], p["connected"]) for p in snap["peers"]] == [
+            (b.peer_id, "trusted", None)
+        ]
+        # the owner still knows
+        assert a.snapshot()["owner"] is True
+        assert peers_of(a)[b.peer_id]["connected"] is True
+        await twin.stop()
+        await _stop(a, b)
+
+    run(go())
+
+
 @pytest.mark.parametrize("stalled", [False, True])
 def test_a_revoke_written_by_another_process_ends_the_owners_channel(
     tmp_path, monkeypatch, stalled
