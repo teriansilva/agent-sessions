@@ -50,6 +50,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .. import net_vetting
+from ..homefree import peerpipe
 from . import channel as ch
 from . import endpoints as ep
 from . import grants, identity, remote, store, verbs
@@ -278,6 +279,99 @@ async def dial_direct(endpoint: dict) -> ch.FrameTransport:
     return _ClientTransport(conn)
 
 
+def relay_socket_path() -> Path:
+    """The local socket of this instance's Home Free agent (``homefree/peerpipe.py``): beside
+    the agent's identity, where the installer keeps it. Override:
+    ``AGENT_SESSIONS_HOMEFREE_PEER_SOCKET``."""
+    override = os.environ.get("AGENT_SESSIONS_HOMEFREE_PEER_SOCKET")
+    if override:
+        return Path(override)
+    home = os.environ.get("AGENT_SESSIONS_HOME") or str(
+        Path.home() / ".local" / "share" / "agent-sessions"
+    )
+    return Path(home) / "homefree" / peerpipe.SOCKET_NAME
+
+
+async def _agent_request(request: dict, path: Path | None = None):
+    """Ask the local Home Free agent. Returns ``(answer, reader, writer)``; raises
+    :class:`DialError` when there is no agent to ask."""
+    try:
+        async with asyncio.timeout(peerpipe.PAIR_TIMEOUT_S + 5):
+            reader, writer = await asyncio.open_unix_connection(str(path or relay_socket_path()))
+            peerpipe.write_frame(writer, json.dumps(request, separators=(",", ":")).encode())
+            await writer.drain()
+            raw = await peerpipe.read_frame(reader, peerpipe.REQUEST_MAX)
+    except (OSError, TimeoutError, ValueError) as exc:
+        raise DialError("no_relay", type(exc).__name__) from exc
+    try:
+        answer = json.loads(raw) if raw else None
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        writer.close()
+        raise DialError("no_relay", "the Home Free agent did not answer")
+    return answer, reader, writer
+
+
+async def relay_info(path: Path | None = None) -> dict | None:
+    """This instance's own relay endpoint, or ``None`` when Home Free is not running here (or
+    its agent predates federation)."""
+    try:
+        answer, _reader, writer = await _agent_request({"op": "info"}, path)
+    except DialError:
+        return None
+    writer.close()
+    found = ep.clean([{"t": "relay", "url": answer.get("relay_url"), "name": answer.get("name")}])
+    return found[0] if answer.get("ok") is True and found else None
+
+
+class _AgentTransport:
+    """A peer call placed by the local Home Free agent, as a :class:`channel.FrameTransport`.
+    The agent is a blind pipe: what travels here is already Noise ciphertext."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._reader, self._writer = reader, writer
+
+    async def send(self, data: bytes) -> None:
+        try:
+            peerpipe.write_frame(self._writer, data)
+            await self._writer.drain()
+        except (ConnectionError, OSError) as exc:
+            raise ch.ChannelClosed() from exc
+
+    async def recv(self) -> bytes:
+        try:
+            frame = await peerpipe.read_frame(self._reader, ch.WIRE_MAX)
+        except ValueError as exc:
+            raise ch.ChannelClosed() from exc
+        if frame is None:
+            raise ch.ChannelClosed()
+        return frame
+
+    async def close(self) -> None:
+        self._writer.close()
+        with contextlib.suppress(Exception):
+            await self._writer.wait_closed()
+
+
+async def dial_relay(
+    endpoint: dict, own: dict | None, path: Path | None = None
+) -> ch.FrameTransport:
+    """Reach a peer by its console name through the relay. Only on THIS instance's own relay:
+    the agent dials nothing but the relay it is configured for, so an endpoint naming another
+    relay is not reachable from here."""
+    if own is None:
+        raise DialError("no_relay", "Home Free is not set up on this instance")
+    if endpoint["url"] != own["url"]:
+        raise DialError("other_relay", "the peer is on a different relay")
+    answer, reader, writer = await _agent_request({"op": "call", "target": endpoint["name"]}, path)
+    if answer.get("ok") is not True:
+        writer.close()
+        code = answer.get("code")
+        raise DialError(code if isinstance(code, str) and len(code) <= 32 else "unreachable")
+    return _AgentTransport(reader, writer)
+
+
 Dial = Callable[[dict], Awaitable[ch.FrameTransport]]
 
 
@@ -310,7 +404,12 @@ class Federation:
         self.error = ""
         self.addresses = ep.clean(addresses) if addresses is not None else ep.from_origin(origin)
         self._name = name
-        self._dial: Dial = dial or dial_direct
+        #: This instance's own relay endpoint, refreshed from the local Home Free agent. ``None``
+        #: without Home Free. ``addresses`` stays what the operator's origin (or a test) gave.
+        self.relay_address: dict | None = None
+        #: The local Home Free agent's socket. ``None`` follows the environment.
+        self.relay_socket: Path | None = None
+        self._custom_dial = dial
         self._invites: dict[str, Invite] = {}
         self._pairings: dict[str, Pairing] = {}
         self._channels: dict[str, ch.Channel] = {}
@@ -336,6 +435,23 @@ class Federation:
         self._refreshing: set[str] = set()
         self._refresh_again: set[str] = set()
         self._refreshed_at: dict[str, float] = {}
+
+    # ── addresses and dialing ─────────────────────────────────────────
+    def reachable(self) -> list[dict]:
+        """Every way another instance can reach this one, direct first."""
+        extra = [self.relay_address] if self.relay_address else []
+        return ep.clean([*self.addresses, *extra])
+
+    async def refresh_relay_address(self) -> None:
+        if self._custom_dial is None:
+            self.relay_address = await relay_info(self.relay_socket)
+
+    async def _dial(self, endpoint: dict) -> ch.FrameTransport:
+        if self._custom_dial is not None:
+            return await self._custom_dial(endpoint)
+        if endpoint.get("t") == "relay":
+            return await dial_relay(endpoint, self.relay_address, self.relay_socket)
+        return await dial_direct(endpoint)
 
     # ── identity ──────────────────────────────────────────────────────
     def _key(self) -> X25519PrivateKey:
@@ -500,7 +616,7 @@ class Federation:
             "self": {
                 "peer_id": self.peer_id,
                 "name": self.name,
-                "reachable_by": sorted({e["t"] for e in self.addresses}),
+                "reachable_by": sorted({e["t"] for e in self.reachable()}),
             },
             "peers": peers,
             "invites": [
@@ -512,7 +628,7 @@ class Federation:
     def create_invite(self) -> dict:
         self._require_owner()
         self._sweep()
-        if not self.addresses:
+        if not self.reachable():
             raise FederationError(
                 "no_address",
                 "this instance has no address another instance can reach",
@@ -536,7 +652,7 @@ class Federation:
                 invite_id=invite.id,
                 public_key=self.public_key,
                 secret=invite.secret,
-                addresses=self.addresses,
+                addresses=self.reachable(),
             ),
         }
 
@@ -783,7 +899,7 @@ class Federation:
     # ── pairing ───────────────────────────────────────────────────────
     async def _accept(self, pairing: Pairing, invite_id: str, secret: bytes) -> None:
         last = "unreachable"
-        for endpoint in list(pairing.remote_endpoints):
+        for endpoint in ep.ordered(pairing.remote_endpoints):
             if not pairing.open:
                 return  # denied or expired while dialing
             transport = None
@@ -821,6 +937,8 @@ class Federation:
         detail = {
             "refused": "the other instance refused this invite (used, expired or wrong)",
             "refused_destination": "the invite points at an address this instance will not dial",
+            "no_relay": "the invite needs the relay, and Home Free is not set up on this instance",
+            "other_relay": "the other instance is on a different relay",
         }.get(last, "the other instance could not be reached")
         self._end_pairing(pairing, "failed", detail)
 
@@ -841,7 +959,7 @@ class Federation:
         runner = asyncio.create_task(channel.run())
         try:
             with contextlib.suppress(ch.CallError):
-                await channel.call("pair.hello", {"name": self.name, "endpoints": self.addresses})
+                await channel.call("pair.hello", {"name": self.name, "endpoints": self.reachable()})
             await channel.wait_closed()
         finally:
             channel.close()
@@ -885,7 +1003,7 @@ class Federation:
 
     async def _keepalive(self, peer_id: str, channel: ch.Channel) -> None:
         try:
-            hello = await channel.call("peer.hello", {"endpoints": self.addresses})
+            hello = await channel.call("peer.hello", {"endpoints": self.reachable()})
             await self._peer_said_hello(peer_id, hello)
             while True:
                 await asyncio.sleep(PING_EVERY_S)
@@ -1001,6 +1119,7 @@ class Federation:
         while not self._stopped:
             try:
                 if self._hold_owner_lock():
+                    await self.refresh_relay_address()
                     await self._dial_round()
             except Exception:
                 log.exception("federation dialer round failed")
@@ -1036,7 +1155,7 @@ class Federation:
 
     async def _dial_peer(self, peer: store.Peer) -> None:
         try:
-            for endpoint in peer.endpoints:
+            for endpoint in ep.ordered(peer.endpoints):
                 transport = None
                 try:
                     transport = await self._dial(endpoint)

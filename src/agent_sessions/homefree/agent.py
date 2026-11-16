@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .appproxy import AppProxyTarget
 from .handshake import Responder, derive_psk
 from .mux import Mux, StreamReset
+from .peerpipe import PeerPipe
 
 log = logging.getLogger("battlelab.homefree.agent")
 
@@ -68,6 +69,17 @@ class HomeFreeAgent:
         self._identity = load_or_create_identity(config.identity_path)
         self._psk = derive_psk(config.access_key)
         self._sessions: set[asyncio.Task] = set()
+        # Federation over the relay (#1246 P3): a blind pipe between the relay and this box's
+        # own app. It shares the relay identity (to sign a peer call) and nothing else: not the
+        # access key, not the Home Free handshake, not the app proxy.
+        self.peer = PeerPipe(
+            relay_url=config.relay_url,
+            console_name=config.console_name,
+            identity=self._identity,
+            identity_path=config.identity_path,
+            app_host=config.app_host,
+            app_port=config.app_port,
+        )
 
     def _control_url(self) -> str:
         return f"{self.config.relay_url}?role=agent"
@@ -78,20 +90,30 @@ class HomeFreeAgent:
     async def run_once(self) -> None:
         """Connect, register, and serve sessions until the control WS closes."""
         async with websockets.connect(self._control_url(), max_size=_MAX_FRAME) as ws:
-            await self._register(ws)
-            async for message in ws:
-                if isinstance(message, bytes):
-                    continue
-                try:
-                    data = json.loads(message)
-                except (ValueError, TypeError):
-                    continue
-                if data.get("t") == "session_start":
-                    task = asyncio.create_task(self._handle_session(data))
-                    self._sessions.add(task)
-                    task.add_done_callback(self._on_session_done)
-                elif data.get("t") == "ping":
-                    await ws.send(json.dumps({"t": "pong"}))
+            try:
+                await self._register(ws)
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        continue
+                    try:
+                        data = json.loads(message)
+                    except (ValueError, TypeError):
+                        continue
+                    if data.get("t") == "session_start":
+                        task = asyncio.create_task(self._handle_session(data))
+                        self._sessions.add(task)
+                        task.add_done_callback(self._on_session_done)
+                    elif data.get("t") == "peer_start":
+                        # Another instance is calling this one (#1246 P3). Never the viewer path:
+                        # no access key, no Home Free handshake, no app proxy.
+                        task = asyncio.create_task(self.peer.handle_peer_start(data))
+                        self._sessions.add(task)
+                        task.add_done_callback(self._on_session_done)
+                    elif data.get("t") == "ping":
+                        await ws.send(json.dumps({"t": "pong"}))
+            finally:
+                # Peer legs belong to this registration (#1246 P3); they end with it.
+                await self.peer.close_legs()
 
     def _on_session_done(self, task: asyncio.Task) -> None:
         # Observe the task result so a session failure can never surface as an

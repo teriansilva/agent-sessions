@@ -32,6 +32,7 @@ WS_MODULES = {
     "homefree/appproxy": "Home Free's proxy to this box's OWN app on loopback",
     "routes/voice": "the call worker's unix socket on this host",
     "federation/service": "the peer dialer: vetted address, no redirect, Noise inside (#1246)",
+    "homefree/peerpipe": "the agent's blind pipe for peer calls: its own relay, its own app",
 }
 
 #: (module, function) → how many places name a connect function there.
@@ -43,6 +44,10 @@ WS_CONNECT_SITES = {
     # The subclass that refuses redirects, and the one call that uses it.
     ("federation/service", "<module>"): 1,
     ("federation/service", "dial_direct"): 1,
+    # The agent's blind pipe (#1246 P3): the session leg and this box's own /ws/fed when called,
+    # and one `role=peer` leg to its own configured relay when the app asks it to call.
+    ("homefree/peerpipe", "handle_peer_start"): 2,
+    ("homefree/peerpipe", "_call"): 1,
 }
 
 

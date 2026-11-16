@@ -80,6 +80,10 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
 
 async def _run_forever(config: AgentConfig) -> None:
     agent = HomeFreeAgent(config)
+    # The local socket the app uses to place peer calls (#1246 P3) lives as long as the agent,
+    # across relay reconnects. If it cannot be served, only the relay transport is off.
+    peer_socket = asyncio.create_task(agent.peer.serve())
+    peer_socket.add_done_callback(lambda t: t.cancelled() or t.exception())
     backoff = 1.0
     while True:
         try:

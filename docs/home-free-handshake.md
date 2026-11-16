@@ -96,3 +96,9 @@ session (still enforcing CSRF + Origin), which the browser tunnel's cookie jar c
 **disclosed at install time** (the credentials banner). Because there is no recovery-shell
 fallback, stream mode refuses non-loopback binds instead of exposing an app whose access key is
 the only gate. The access key grants full control of the box, exactly as the installer warns.
+
+## Not used by the peer leg
+
+A relay session opened by another instance (`peer_start`, #1246) does **not** run this handshake
+and does not use the access key. The agent pipes that leg unmodified to the app's `/ws/fed`,
+where the two app processes run their own handshake (`docs/invariants/federation.md`).
