@@ -91,12 +91,14 @@ from .auth import (
     session_uid,
 )
 from .devicelink import DeviceLinkStore
+from .federation.service import Federation
 from .routes import ai_review as ai_review_routes
 from .routes import artifacts as artifacts_routes
 from .routes import ask as ask_routes
 from .routes import auth as auth_routes
 from .routes import automations as automations_routes
 from .routes import chat as chat_routes
+from .routes import federation as federation_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
@@ -507,9 +509,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Env kill-switch AGENT_SESSIONS_MODELS_LOOP=0 (lists are then read on demand).
         native_models.start()
         models_task = asyncio.create_task(models_loop.run())
+        # Federation (#1246): the dialer that keeps one channel per paired instance. It idles
+        # (and creates nothing on disk) on an install that never paired.
+        # Env kill-switch AGENT_SESSIONS_FEDERATION_LOOP=0 (inbound channels still work).
+        if os.environ.get("AGENT_SESSIONS_FEDERATION_LOOP", "1") != "0":
+            _app.state.federation.start()
         try:
             yield
         finally:
+            with contextlib.suppress(Exception):
+                await _app.state.federation.stop()
             # Automations stop FIRING first, then drain the runs already started (their outcome is
             # recorded honestly, `interrupted` when it cannot be known), while their paths are up.
             with contextlib.suppress(Exception):
@@ -829,6 +838,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     )
     # The specialist pool (#1693, #1613 P3): same auth surface; grades derived at read.
     specialists_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Federation (#1246): the operator's pairing API, and `WS /ws/fed`, which authenticates
+    # another instance by the Noise handshake inside it and takes no cookie at all.
+    app.state.federation = Federation(origin=cfg.origin)
+    federation_routes.register(
+        app, federation=app.state.federation, logged_in=_logged_in, csrf_guard=_csrf_guard
+    )
     mission_plans_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     mission_steps_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry

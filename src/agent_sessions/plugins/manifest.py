@@ -596,6 +596,8 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
     )
     if identity.id in kinds.ROUTE_RESERVED_IDS:
         raise ManifestError("identity.id", "is reserved for an Agents settings route")
+    if identity.id in kinds.NAMESPACE_RESERVED_IDS:
+        raise ManifestError("identity.id", "is reserved for sessions shared by another instance")
     r.done()
 
     # `runtime` (#853 §7) is read FIRST: it decides which blocks are required and which are

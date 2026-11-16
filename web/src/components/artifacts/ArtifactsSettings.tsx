@@ -87,9 +87,9 @@ export function ArtifactsSettings() {
           <div className={styles.setLbl}>
             <b id="artifacts-switch-label">Let agents publish artifacts</b>
             <span>
-              Off by default. Turning it on offers the tool nowhere yet: you
-              choose per session, project or mission. Turning it off hides the
-              tool from the next launch; published artifacts stay.
+              On by default: every session gets the tool as Private unless
+              it, its mission or its project says otherwise. Turning it off
+              hides the tool from the next launch; published artifacts stay.
             </span>
           </div>
           <Switch

@@ -62,6 +62,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_SPECIALISTS_DB": ".config/agent-sessions/specialists.db",  # #1693
     "AGENT_SESSIONS_MISSION_PLANS_DB": ".config/agent-sessions/mission-plans.db",  # #1924
     "AGENT_SESSIONS_SHARES_DB": ".config/agent-sessions/shares.db",  # #1404 public links
+    "AGENT_SESSIONS_FEDERATION_DIR": ".config/agent-sessions/federation",  # #1246 peers
     "AGENT_SESSIONS_ARTIFACTS_DB": ".config/agent-sessions/artifact_store.db",  # #1932 artifacts
     "AGENT_SESSIONS_ARTIFACTS_DIR": ".local/share/agent-sessions/artifacts",  # #1932 their bytes
     "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
@@ -669,6 +670,15 @@ def _isolate_mission_plans_db(tmp_path, monkeypatch) -> None:
     mission_plan_library.reset_schema_cache_for_test()
     yield
     mission_plan_library.reset_schema_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_federation(tmp_path, monkeypatch) -> None:
+    """Point the federation directory (#1246: identity key, peer store, owner lock) at a per-test
+    tmp path, so one test's app never holds the owner lock the next test's app needs."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_FEDERATION_DIR", str(tmp_path / ".config" / "agent-sessions" / "federation")
+    )
 
 
 @pytest.fixture(autouse=True)

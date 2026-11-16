@@ -55,6 +55,10 @@ log = logging.getLogger(__name__)
 KINDS: tuple[str, ...] = ("file", "site")
 MODES: tuple[str, ...] = ("off", "private", "public")
 SCOPES: tuple[str, ...] = ("session", "project", "mission")
+#: What a session gets when nothing is set for it, its mission or its project (the operator's
+#: call, 2026-11-12: on in every session). PRIVATE: the agent publishes, only the operator sees and
+#: shares; an agent sharing publicly itself still needs an explicit PUBLIC.
+DEFAULT_MODE = "private"
 VISIBILITIES: tuple[str, ...] = ("private", "public")
 
 TITLE_MAX = mission_shelf.TITLE_MAX
@@ -411,7 +415,7 @@ def validate_id(value: object) -> str:
 
 
 def enabled() -> bool:
-    """Settings → Artifacts: the global switch, OFF unless explicitly turned on."""
+    """Settings → Artifacts: the global switch, ON unless explicitly turned off."""
     return prefs.get_artifacts_enabled()
 
 
@@ -454,20 +458,22 @@ class Effective:
     """What one session's NEXT launch gets: the mode and where it came from."""
 
     mode: str  # off | private | public
-    source: str  # global | session | mission | project | default
+    source: str  # global | session | mission | project | default | unreadable
 
 
 def effective_mode(
     session_keys: list[str], *, cwd: str | None, mission_id: str | None = None
 ) -> Effective:
     """The most specific setting wins: the session's own, then its mission's, then its project's
-    (by the project owning ``cwd``), else off. With the global switch off, always off. Never
-    raises: an unreadable store or projects index is off (fail closed)."""
+    (by the project owning ``cwd``), else `DEFAULT_MODE` (private). With the global switch off,
+    always off. Never raises. FAIL CLOSED: an unreadable store, missions store or projects index is
+    off (source ``unreadable``): with a default of ON, a scope that cannot be read might be the one
+    that says OFF, so it is never read as "nothing set" (Hermes on #1964)."""
     try:
         if not enabled():
             return Effective("off", "global")
         if _absent():
-            return Effective("off", "default")  # nothing was ever turned on
+            return Effective(DEFAULT_MODE, "default")  # nothing set anywhere yet
         keys = [k for k in dict.fromkeys(session_keys) if isinstance(k, str) and k]
         with _con() as con:
 
@@ -487,38 +493,43 @@ def effective_mode(
                 from . import missions
 
                 for k in keys:
-                    with contextlib.suppress(Exception):
-                        mid = missions.session_mission(k)
+                    mid = missions.session_mission(
+                        k
+                    )  # unreadable: raises → off, never "no mission"
                     if mid:
                         break
             if mid:
                 m = mode_of("mission", mid)
                 if m is not None:
                     return Effective(m, "mission")
-            pid = project_of(cwd)
+            pid = project_of(cwd, strict=True)  # unreadable: raises → off
             if pid:
                 m = mode_of("project", pid)
                 if m is not None:
                     return Effective(m, "project")
-        return Effective("off", "default")
+        return Effective(DEFAULT_MODE, "default")
     except Exception:  # noqa: BLE001 — activation that cannot be read activates nothing
         log.warning("artifacts: activation unreadable; treating as off", exc_info=True)
-        return Effective("off", "default")
+        return Effective("off", "unreadable")
 
 
-def project_of(cwd: str | None) -> str | None:
+def project_of(cwd: str | None, *, strict: bool = False) -> str | None:
+    """The id of the project owning ``cwd``, or None. ``strict``: an unreadable projects index
+    RAISES instead of answering "no project" (activation must fail closed on it)."""
     if not cwd:
         return None
     from . import projects
 
     try:
-        index = projects.load()
+        index = projects.load(strict=strict)
         written = os.path.normpath(os.path.expanduser(cwd))
         # As written first (the form the projects index stores), then resolved.
         p = projects.owning_project(written, index) or projects.owning_project(
             os.path.realpath(written), index
         )
-    except Exception:  # noqa: BLE001 — unreadable index: no project
+    except Exception:  # noqa: BLE001 — unreadable index: no project (or raise, when strict)
+        if strict:
+            raise
         return None
     if p is None or getattr(p, "archived", False):
         return None

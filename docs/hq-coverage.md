@@ -178,6 +178,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Host and resources (read); resource limits (edit) | GET /api/system, /api/system/resources; POST /api/system/resources | P6 R/W |
 | The session limit: the count and what runs (#1819) | GET /api/sessions/capacity | P6 R |
 | Maintenance: scrollback size and clear; prune (preview, prune); compact (measure, compact) | GET/POST /api/scrollback*, /api/maintenance/prune, /api/maintenance/compact | P6 R/W (destructive) |
+| Peers (#1246): this instance's id, paired instances and whether each is connected; revoke a peer | GET /api/federation, POST /api/federation/peers/{peer_id}/revoke | P6 R/W (revoking narrows) |
+| Peers (#1246): make or withdraw an invite, accept one, confirm or deny the short code, rename a peer | POST /api/federation/invites, DELETE …/invites/{invite_id}, POST /api/federation/pairings, POST …/pairings/{pairing_id}/confirm, …/deny, PATCH /api/federation/peers/{peer_id} | **never** (pairing decides which other instance this one trusts; the confirmation is the Commander's own comparison of two screens) |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
 #### Library
@@ -265,6 +267,7 @@ Each row is a credential, a grant of more permission or autonomy, or a tap that 
 | Running fetched code / vendor login | plugin review/install/verify/sign-in | supply-chain and credential surface |
 | Outsiders driving agents | public share in "can send messages" mode | external control of an agent |
 | Consent | analytics consent | consent is the operator's own act |
+| Trusting another instance | federation invites, accepting one, confirming or denying a pairing, renaming a peer (#1246) | a paired instance can later be granted access to sessions; who is trusted, and under which name it is shown, is the Commander's decision |
 
 
 ## Route map
@@ -692,6 +695,15 @@ GET    /r/{share_id}                                                            
 GET    /{spa_path:path}                                                           n/a  # SPA shell
 WS     /ws/term/{sid}                                                             P7  # terminal input; text nudges: have (send_nudge)
 WS     /ws/plugins/signin/{operation_id}                                          never  # interactive vendor login
+GET    /api/federation                                                            P6  # peers and their state (#1246)
+POST   /api/federation/invites                                                    never  # trusting another instance
+DELETE /api/federation/invites/{invite_id}                                        never  # part of the pairing the Commander runs
+POST   /api/federation/pairings                                                   never  # trusting another instance
+POST   /api/federation/pairings/{pairing_id}/confirm                              never  # the Commander compares the short code
+POST   /api/federation/pairings/{pairing_id}/deny                                 never  # part of the pairing the Commander runs
+PATCH  /api/federation/peers/{peer_id}                                            never  # the name a trusted instance is shown under
+POST   /api/federation/peers/{peer_id}/revoke                                     P6  # narrows: ends trust in a peer
+WS     /ws/fed                                                                    n/a  # another instance's channel; Noise-authenticated, never a browser's
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)
 POST   /api/voice/settings                                                        never  # same: credentials and destinations
 POST   /api/voice/test                                                            never  # tests a draft speech endpoint with a token

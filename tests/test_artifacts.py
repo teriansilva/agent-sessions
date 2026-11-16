@@ -244,8 +244,11 @@ def test_the_store_and_its_bytes_are_private(origin, proj):
 # ---- activation ----------------------------------------------------------------------------------
 
 
-def test_activation_is_off_by_default_and_the_most_specific_setting_wins(proj, tmp_path):
-    assert artifact_store.effective_mode([SESSION], cwd=str(proj)).mode == "off"
+def test_activation_is_private_by_default_and_the_most_specific_setting_wins(proj, tmp_path):
+    """On by default in every session (the operator, 2026-11-12): nothing set → private."""
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+        "private", "default"
+    )
     p = projects.create("Proj", folders=[str(proj)])
     artifact_store.set_activation("project", p.id, "private")
     assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
@@ -293,10 +296,12 @@ def _token(env: dict) -> str:
 
 def test_only_an_activated_session_with_a_tool_channel_gets_a_capability(broker, proj):
     cwd = str(proj)
+    # A session set to OFF gets nothing; with nothing set, it is on (private) by default.
+    artifact_store.set_activation("session", SESSION, "off")
     assert (
         artifact_broker.launch_env(SESSION, SESSION, cwd, engine="claude", manifest=MANIFEST) == {}
     )
-    artifact_store.set_activation("session", SESSION, "private")
+    artifact_store.set_activation("session", SESSION, None)
     no_channel = types.SimpleNamespace(tools_mcp=None)
     assert artifact_broker.launch_env(SESSION, SESSION, cwd, engine="x", manifest=no_channel) == {}
     env = artifact_broker.launch_env(SESSION, SESSION, cwd, engine="claude", manifest=MANIFEST)
@@ -1192,3 +1197,177 @@ def test_the_agent_shares_only_when_its_session_is_public(broker, proj):
         )
     finally:
         artifact_store.PUBLIC_AVAILABLE = True
+
+
+def test_artifacts_are_on_by_default_everywhere(broker, proj, tmp_path, monkeypatch):
+    """The operator's call (2026-11-12): the switch is on unless explicitly turned off, and every
+    session gets the tool as PRIVATE unless it, its mission or its project says otherwise. An
+    agent sharing publicly itself still needs an explicit PUBLIC."""
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "fresh-prefs.json"))
+    assert prefs.get_artifacts_enabled() is True  # a fresh install, nothing stored
+    assert not artifact_store.db_path().exists()
+    env = artifact_broker.launch_env(
+        SESSION, SESSION, str(proj), engine="claude", manifest=MANIFEST
+    )
+    assert set(env) == artifact_broker.ENV_KEYS
+    (proj / "f.txt").write_text("x")
+    out = artifact_broker.handle(
+        _token(env), "publish", {"path": str(proj / "f.txt"), "title": "F", "why": "w"}
+    )
+    assert out["ok"] is True and out["artifact"]["visibility"] == "private"
+    aid = out["artifact"]["id"]
+    assert artifact_broker.handle(_token(env), "share", {"artifact_id": aid}) == {
+        "ok": False,
+        "error": "not_public",
+    }
+    prefs.set_artifacts_enabled(False)
+    assert prefs.get_artifacts_enabled() is False  # an explicit off stays off
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)).mode == "off"
+
+
+@pytest.mark.parametrize("broken", ["missions", "store"])
+def test_an_unreadable_scope_is_off_never_the_private_default(proj, monkeypatch, broken):
+    """With activation ON by default, a scope that cannot be read might be the one that says OFF:
+    an unreadable missions store or artifact store fails CLOSED (Hermes on #1964), and the source
+    says why. The projects index is pinned against real damaged files below."""
+    artifact_store.set_activation("session", OTHER, "private")  # the store exists
+    if broken == "missions":
+        monkeypatch.setattr(
+            missions, "session_mission", lambda *a, **k: (_ for _ in ()).throw(OSError("x"))
+        )
+    else:
+        monkeypatch.setattr(
+            artifact_store,
+            "_con",
+            lambda: (_ for _ in ()).throw(artifact_store.ArtifactsUnavailable("x")),
+        )
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+        "off", "unreadable"
+    )
+
+
+def test_a_hand_edited_non_bool_switch_reads_off(tmp_path, monkeypatch):
+    import json as _json
+
+    p = tmp_path / "p.json"
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(p))
+    for value, on in ((None, True), (True, True), (False, False), ("false", False), (0, False)):
+        p.write_text(_json.dumps({} if value is None else {"artifacts_enabled": value}))
+        assert prefs.get_artifacts_enabled() is on, value
+
+
+@pytest.mark.parametrize("damage", ["invalid-json", "unreadable", "wrong-shape", "bad-utf8"])
+def test_a_damaged_projects_index_file_is_off_never_the_private_default(proj, tmp_path, damage):
+    """Against the REAL loader and a real file (Hermes on #1964, review 8005): `projects.load` is
+    fail-soft by contract, so a corrupt index used to read as "no project" = the private default.
+    Activation reads it strictly: damaged → off (source `unreadable`). A MISSING index is no
+    project, and still private."""
+    import os as _os
+
+    idx = projects._default_path()
+    artifact_store.set_activation("session", OTHER, "private")  # the store exists
+    assert not idx.exists()
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+        "private", "default"
+    )
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    if damage == "invalid-json":
+        idx.write_text("{not json")
+    elif damage == "wrong-shape":
+        idx.write_text('["a", "list"]')
+    elif damage == "bad-utf8":
+        idx.write_bytes(b'{"projects": {"p": {"name": "' + bytes([0xFF, 0xFE]) + b'"}}}')
+    else:
+        if _os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 file")
+        idx.write_text('{"projects": {}}')
+        idx.chmod(0)
+    try:
+        assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+            "off", "unreadable"
+        )
+    finally:
+        idx.chmod(0o600)
+
+
+def test_a_coerced_project_field_still_resolves_the_project_setting(proj):
+    """`_from_raw` coerces a hand-edited non-folder field (e.g. `created_at`); the project and
+    its folders still resolve, so ITS setting is read — never a silent fall to the default."""
+    import json as _json
+
+    p = projects.create("Proj", folders=[str(proj)])
+    artifact_store.set_activation("project", p.id, "off")
+    idx = projects._default_path()
+    doc = _json.loads(idx.read_text())
+    doc["projects"][p.id]["created_at"] = "abc"
+    idx.write_text(_json.dumps(doc))
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+        "off", "project"
+    )
+
+
+def test_a_corrupt_prefs_document_reads_the_switch_off(tmp_path, monkeypatch):
+    p = tmp_path / "prefs.json"
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(p))
+    assert prefs.get_artifacts_enabled() is True  # missing: never set → on
+    p.write_text("")
+    assert prefs.get_artifacts_enabled() is True  # empty: never set → on
+    p.write_text("{corrupt")
+    assert prefs.get_artifacts_enabled() is False
+    p.write_text('["not", "an", "object"]')
+    assert prefs.get_artifacts_enabled() is False
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        ("row-null", None),
+        ("row-list", ["x"]),
+        ("folders-int", {"folders": [123]}),
+        ("folders-str", {"folders": "/a"}),
+        ("folder-relative", {"folders": ["relative/path"]}),
+        ("archived-str", {"archived": "false"}),
+    ],
+    ids=lambda d: d[0],
+)
+def test_a_damaged_project_row_never_drops_that_projects_off(broker, proj, damage):
+    """Hermes on #1964 (review 8208): strict reads used to drop a malformed ROW or folder silently,
+    losing the project — and its stored OFF — so the launch fell to the private default and was
+    granted the tool. Start from a project set to OFF, damage only its row in the real file:
+    activation is off (source `unreadable`) and the broker mints nothing."""
+    import json as _json
+
+    p = projects.create("Proj", folders=[str(proj)])
+    artifact_store.set_activation("project", p.id, "off")
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)).source == "project"
+    idx = projects._default_path()
+    doc = _json.loads(idx.read_text())
+    _, change = damage
+    if isinstance(change, dict):
+        doc["projects"][p.id].update(change)
+    else:
+        doc["projects"][p.id] = change
+    idx.write_text(_json.dumps(doc))
+    assert artifact_store.effective_mode([SESSION], cwd=str(proj)) == artifact_store.Effective(
+        "off", "unreadable"
+    )
+    assert (
+        artifact_broker.launch_env(SESSION, SESSION, str(proj), engine="claude", manifest=MANIFEST)
+        == {}
+    )
+    # The ordinary fail-soft listing is unchanged: the rest of the app still reads the index.
+    assert isinstance(projects.load(), dict)
+
+
+def test_a_folderless_or_archived_project_is_well_formed(proj, tmp_path):
+    """Shapes the write path does produce stay readable in strict mode."""
+    import json as _json
+
+    p = projects.create("Proj", folders=[str(proj)])
+    q = projects.create("Empty")
+    idx = projects._default_path()
+    doc = _json.loads(idx.read_text())
+    doc["projects"][q.id].pop("folders", None)
+    doc["projects"][p.id]["archived"] = False
+    idx.write_text(_json.dumps(doc))
+    assert set(projects.load(strict=True)) == {p.id, q.id}

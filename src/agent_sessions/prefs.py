@@ -644,10 +644,35 @@ def set_hq_models(patch: object, path: Path | None = None) -> dict:
 
 
 def get_artifacts_enabled(path: Path | None = None) -> bool:
-    """Settings → Artifacts (#1932): OFF unless explicitly turned on. It governs whether NEW
-    launches whose session, mission or project has artifacts turned on get the
-    `battlelab_artifacts` tool; a running agent keeps what it was started with."""
-    return _load(path or _default_path()).get("artifacts_enabled") is True
+    """Settings → Artifacts (#1932): ON unless explicitly turned off (the operator's call,
+    2026-11-12). It governs whether NEW launches get the `battlelab_artifacts` tool (as Private
+    unless the session, its mission or its project says otherwise); a running agent keeps what it
+    was started with."""
+    # Absent (never set) → on. Only a real `true` keeps it on once set: a hand-edited non-bool
+    # (`"false"`, `0`) reads as off, never on (the API only ever writes a bool). A prefs document
+    # that EXISTS but cannot be parsed reads off too: `_load`'s `{}` for it would otherwise look
+    # like "never set" = on (Hermes on #1964, note 5).
+    p = path or _default_path()
+    doc = _load(p)
+    if not doc and _present_but_unparseable(p):
+        return False
+    return doc.get("artifacts_enabled", True) is True
+
+
+def _present_but_unparseable(p: Path) -> bool:
+    """Does the prefs document exist with content that is not a JSON object?"""
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeDecodeError):
+        return True
+    if not text.strip():
+        return False
+    try:
+        return not isinstance(json.loads(text), dict)
+    except ValueError:
+        return True
 
 
 def set_artifacts_enabled(value: bool, path: Path | None = None) -> bool:

@@ -207,6 +207,7 @@ _NOT_MANIFEST_VALUES = {
     "FORBIDDEN_ENTRYPOINTS",
     "RESERVED_IDS",
     "ROUTE_RESERVED_IDS",
+    "NAMESPACE_RESERVED_IDS",  # key namespaces that are not engines (#1246)
     "AGENT_ONLY_CAPABILITIES",
     "_CLI_PROBE_KINDS",
     "PTY_ONLY_BLOCKS",  # a guard list: which blocks a chat manifest may not declare

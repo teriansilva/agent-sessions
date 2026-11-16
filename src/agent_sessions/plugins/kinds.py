@@ -545,6 +545,12 @@ RESERVED_IDS = frozenset(
 # Route segments in Settings → Agents, which can never be plugin identities.
 ROUTE_RESERVED_IDS = frozenset({"defaults"})
 
+# Key namespaces that are not engines and can never become one. A session another BattleLab
+# instance shares with this one is addressed `peer:<peer_id>/<engine>:<native_id>` (#1246), and
+# `engines.parse_key` must keep refusing that prefix whatever plugins are installed. Kept apart
+# from `RESERVED_IDS`, which is pinned to equal the in-tree roster.
+NAMESPACE_RESERVED_IDS = frozenset({"peer"})
+
 
 def is_cli_probe(kind: str) -> bool:
     return kind in _CLI_PROBE_KINDS

@@ -119,8 +119,10 @@ export function sourceWords(source: string): string {
       return "from the project default";
     case "global":
       return "Artifacts are off in Settings";
+    case "unreadable":
+      return "BattleLab could not read the artifact settings, so it is off";
     default:
-      return "nothing is set, so it is off";
+      return "nothing is set, so it is on (Private) by default";
   }
 }
 

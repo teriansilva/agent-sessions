@@ -338,26 +338,61 @@ def _safe_folder(folder: str) -> str:
     return f
 
 
-def load(path: Path | None = None) -> dict[str, Project]:
-    """Read the store; missing/corrupt files yield ``{}`` (fail-soft, like metadata)."""
+class ProjectsUnreadable(Exception):
+    """The projects index exists but cannot be read or parsed (`load(strict=True)` only)."""
+
+
+def load(path: Path | None = None, *, strict: bool = False) -> dict[str, Project]:
+    """Read the store; missing/corrupt files yield ``{}`` (fail-soft, like metadata).
+
+    ``strict`` (#1932, artifact activation): a MISSING index is still ``{}`` — genuinely no
+    projects — but one that exists and cannot be read, parsed or has the wrong shape raises
+    `ProjectsUnreadable` instead of reading as empty. A caller whose fallback GRANTS something
+    (artifacts default to on) must tell "no project" from "the index is broken"."""
     path = path or _default_path()
     if not path.exists():
         return {}
     try:
         with path.open() as fh:
             raw = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        if strict:
+            raise ProjectsUnreadable(str(e)) from None
         return {}
     if not isinstance(raw, dict):
+        if strict:
+            raise ProjectsUnreadable("the projects index is not an object")
         return {}
     projects = raw.get("projects")
+    if projects is None and strict and not raw:
+        return {}  # an empty document is a store with no projects yet
     if not isinstance(projects, dict):
+        if strict:
+            raise ProjectsUnreadable("the projects index has no projects table")
         return {}
     out: dict[str, Project] = {}
     for pid, val in projects.items():
+        if strict:
+            _check_ownership(pid, val)
         if isinstance(pid, str) and isinstance(val, dict):
             out[pid] = _from_raw(pid, val)
     return out
+
+
+def _check_ownership(pid: object, val: object) -> None:
+    """Strict reads (#1932): everything that decides WHICH project owns a folder must be what the
+    write path stores, or the read raises `ProjectsUnreadable` — never a silently dropped row or
+    folder (which would lose that project's settings). Cosmetic fields (name, colour, created_at)
+    stay fail-soft."""
+    if not isinstance(pid, str) or not pid or not isinstance(val, dict):
+        raise ProjectsUnreadable("a project entry is not an object")
+    folders = val.get("folders", [])
+    if not isinstance(folders, list) or not all(
+        isinstance(f, str) and _safe_folder(f) for f in folders
+    ):
+        raise ProjectsUnreadable(f"project {pid!r} has an unreadable folder list")
+    if "archived" in val and not isinstance(val["archived"], bool):
+        raise ProjectsUnreadable(f"project {pid!r} has an unreadable archived flag")
 
 
 def _read_locked(fh) -> dict:
