@@ -57,6 +57,9 @@ class Claim:
     owner: str | None
     #: The skill bundle's absolute path, or None for a specialist without skills.
     bundle: str | None
+    #: The reservation's ``rev`` as this attempt took (or renewed) it: its equipment is issued at
+    #: exactly this ``rev`` (#1951), so a slot changed since issues nothing.
+    rev: int | None = None
 
 
 def parse(raw_id: object, raw_version: object) -> tuple[str, int] | None:
@@ -155,17 +158,21 @@ def for_generation(session_key: str, binding: dict, slot: object = None) -> Clai
     if isinstance(slot, dict) and isinstance(slot.get("owner"), str):
         rid = slot.get("reservation_id")
         try:
-            renewed = isinstance(rid, str) and store.renew(rid, owner=slot["owner"])
+            rev = store.renew_rev(rid, owner=slot["owner"]) if isinstance(rid, str) else None
         except store.StoreError as exc:
             raise Refused(str(exc)) from None
-        if renewed:
-            claim = Claim(rid, session_key, binding["id"], binding["version"], slot["owner"], None)
+        if rev is not None:
+            # The renew revoked the earlier generations' equipment in its transaction; the copies
+            # BattleLab made for them go now, not at the broker's next pass (#1951).
+            _drop_superseded_copies(rid)
+            sid, n, owner = binding["id"], binding["version"], slot["owner"]
+            claim = Claim(rid, session_key, sid, n, owner, None, rev)
             try:
                 bundle = _bundle(rid, v["skills"])
             except BaseException:
                 abandon(claim)
                 raise
-            return Claim(rid, session_key, binding["id"], binding["version"], slot["owner"], bundle)
+            return Claim(rid, session_key, sid, n, owner, bundle, rev)
     return _take(binding["id"], binding["version"], session_key, v)
 
 
@@ -193,6 +200,12 @@ def for_relaunch(session_keys: list[str], *, launch_key: str) -> Claim | None:
     return _take(last["specialist_id"], last["version"], launch_key, v)
 
 
+def _drop_superseded_copies(reservation_id: str) -> None:
+    from . import grants
+
+    grants.after_release(reservation_id)  # idempotent, never raises
+
+
 def _take(sid: str, n: int, session_key: str, v: dict) -> Claim:
     try:
         r = store.reserve(sid, n, session_key, max_instances=specialist_capacity.max_instances())
@@ -201,13 +214,17 @@ def _take(sid: str, n: int, session_key: str, v: dict) -> Claim:
     except store.StoreError as exc:
         raise Refused(str(exc)) from None
     owner = r.get("owner") if r["created"] else None
-    claim = Claim(r["reservation_id"], r["session_key"], sid, n, owner, None)
+    if not r["created"]:
+        # A re-take revoked the earlier attempt's equipment in its transaction: its copies go now
+        # (that attempt may still run and could read a copy's path without asking the broker).
+        _drop_superseded_copies(r["reservation_id"])
+    claim = Claim(r["reservation_id"], r["session_key"], sid, n, owner, None, r["rev"])
     try:
         bundle = _bundle(claim.reservation_id, v["skills"])
     except BaseException:
         abandon(claim)
         raise
-    return Claim(claim.reservation_id, claim.session_key, sid, n, owner, bundle)
+    return Claim(claim.reservation_id, claim.session_key, sid, n, owner, bundle, r["rev"])
 
 
 def _bundle(rid: str, skills: list[dict]) -> str | None:

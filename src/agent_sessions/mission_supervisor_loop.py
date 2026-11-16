@@ -675,6 +675,16 @@ async def run(registry=None) -> None:
     if os.getenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "1") == "0":
         log.info("mission supervisor loop: disabled by env")
         return
+    # BOOT: the equipment sweep first (#1951 D-P6-3): nothing is nudged, resumed or relaunched
+    # until it COMPLETED. Waited for attempt after attempt, never a spin; the app serves meanwhile.
+    from . import grants
+
+    await grants.wait_until_swept()
+    # …and the dispatch recovery boot deferred for it, now that it completed.
+    from . import mission_dispatch_recover
+
+    with contextlib.suppress(Exception):
+        await mission_dispatch_recover.recover_deferred()
     # BOOT: a record whose write failed just before a restart is restored now, not a sweep later.
     await _reconcile_delivered()
     global _wake, _wake_loop

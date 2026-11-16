@@ -19,7 +19,9 @@ that hold them.
 * **Every settlement applies to the state it observed** (a compare-and-set on the row's ``rev``,
   bumped by EVERY change — re-take, activate, live, hold, release; never a clock, which can
   repeat): a newer answer or launch about the same attempt always wins over an older one.
-* A release takes the reservation's skill bundle with it (`release`), and every pass sweeps
+* A release takes the reservation's skill bundle with it (`release`), and its equipment (#1951:
+  the grant sets are revoked in the release's own transaction, then their copies deleted, see
+  `grants`), and every pass sweeps
   orphan bundles — each only when older than the grace by its own times AND a fresh lookup finds
   no active reservation for it (a launch may publish its bundle at any moment).
 * **Capacity is enforced where a specialist launch reserves**; a later relaunch of the same
@@ -125,12 +127,15 @@ async def liveness(session_key: str) -> tuple[str, str]:
 
 
 def _drop_bundle(reservation_id: str) -> None:
-    from . import skill_bundles
+    from . import grants, skill_bundles
 
     try:
         skill_bundles.remove(reservation_id)
     except Exception:  # noqa: BLE001 — the slot is free either way; the sweep retries the bundle
         log.warning("specialist bundle %s could not be removed", reservation_id, exc_info=True)
+    # Its equipment was revoked in the release's own transaction (#1951): the copies BattleLab
+    # materialized for it go now. Never raises; the broker's pass finishes what a failure left.
+    grants.after_release(reservation_id)
 
 
 def release(reservation_id: str, *, owner: str) -> bool:

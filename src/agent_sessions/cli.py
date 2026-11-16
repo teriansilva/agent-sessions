@@ -93,7 +93,33 @@ def _build_parser() -> argparse.ArgumentParser:
     for q in (mst, mrb):
         q.add_argument("--db", default=None, help="missions.db (default: the app's store path)")
     mrb.add_argument("--to", type=int, required=True, help="the schema the previous build reads")
+
+    # …and for the specialists store (#1951 slice B added its grant ledger at schema 3).
+    ss = sub.add_parser("specialists-schema", help="Roll back the specialists store schema")
+    ssub = ss.add_subparsers(dest="specialists_cmd")
+    srb = ssub.add_parser(
+        "rollback",
+        help="Stamp the store down for the previous build (stop the app first); deletes nothing",
+    )
+    srb.add_argument("--to", type=int, required=True, help="the schema the previous build reads")
     return p
+
+
+def _specialists_schema(args) -> int:
+    from . import specialists_store
+
+    if args.specialists_cmd != "rollback":
+        print("usage: agent-sessions specialists-schema rollback --to N")
+        return 1
+    try:
+        out = specialists_store.rollback_schema(args.to)
+    except specialists_store.StoreError as e:
+        print(f"error: {e}")
+        return 2
+    print(f"specialists store {specialists_store.db_path()}: schema {out['from']} → {out['to']}")
+    print("Nothing was deleted. Start the previous build now (this one must not be running).")
+    print("Opening the store with this build again re-upgrades it.")
+    return 0
 
 
 def _missions_schema(args) -> int:
@@ -236,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "missions-schema":
         return _missions_schema(args)
+    if args.cmd == "specialists-schema":
+        return _specialists_schema(args)
 
     if args.cmd == "autoupdate":
         from . import update

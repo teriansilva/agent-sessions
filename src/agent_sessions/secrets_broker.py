@@ -39,8 +39,16 @@ newest ``AUDIT_PER_SECRET`` refusals per secret.
 
 **Copies live on RAM-backed storage only**: ``$XDG_RUNTIME_DIR/agent-sessions/secrets/<launch>/``,
 directories 0700 and files 0600; the root must be tmpfs or ramfs (``statfs``), or nothing is
-materialized. This is not a sandbox: an agent runs as the operator's user and could read the key
-and the store directly; the broker scopes, audits and revokes what BattleLab hands out.
+materialized.
+
+**A launch with a grant ledger is narrower still** (#1951 slice B): an API session started from a
+specialist is issued a GRANT SET under its reservation (`grants.issue`), and its capability names
+that set (``caps.grant_set``). Every call then also asks the set, fresh: a revoked set refuses at
+once (``grant_revoked``) and its copies go, and a secret the set did not issue is never offered
+(``not_granted``), whatever the project offers now.
+
+This is not a sandbox: an agent runs as the operator's user and could read the key and the store
+directly; the broker scopes, audits and revokes what BattleLab hands out.
 """
 
 from __future__ import annotations
@@ -109,6 +117,10 @@ REFUSALS = frozenset(
         "storage_unavailable",
         "bad_request",
         "launch_unconfirmed",
+        # #1951 slice B: a launch with a grant ledger asked for what its set does not hold, or
+        # its set was revoked (its reservation settled, an archive, the boot sweep).
+        "not_granted",
+        "grant_revoked",
     }
 )
 _CAPABILITY_LABEL = "secrets-capability"
@@ -218,6 +230,11 @@ def _connect() -> sqlite3.Connection:
         os.chmod(path, 0o600)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # #1951 slice B: the grant set a capability was minted under. Added in place (the store has
+    # no version of its own); an older build reads the table without it.
+    if "grant_set" not in {r[1] for r in conn.execute("PRAGMA table_info(caps)")}:
+        with contextlib.suppress(sqlite3.OperationalError):  # a peer added it first
+            conn.execute("ALTER TABLE caps ADD COLUMN grant_set TEXT")
     return conn
 
 
@@ -342,10 +359,13 @@ def launch_env(
     engine: str,
     kind: str,
     worker_id: str | None = None,
+    grant_set: str | None = None,
 ) -> dict[str, str]:
     """The secrets variables for ONE new agent process, or ``{}``. Never raises: a launch never
     fails for secrets. Nothing is offered outside a project, while the broker is not serving, or
-    without a private RAM-backed launch directory (the token file and every copy live there)."""
+    without a private RAM-backed launch directory (the token file and every copy live there).
+    ``grant_set`` (#1951): the set this launch was issued; the capability then offers only what
+    the set holds, and nothing once it is revoked."""
     try:
         if not _server_running:
             return {}
@@ -370,7 +390,7 @@ def launch_env(
             with _txn(conn):
                 conn.execute(
                     "INSERT INTO caps(id, digest, session_key, phys_key, engine, project_id, kind,"
-                    " worker_id, cwd, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    " worker_id, cwd, created_at, grant_set) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         cap_id,
                         template_secrets.keyed_digest(_CAPABILITY_LABEL, token),
@@ -382,6 +402,7 @@ def launch_env(
                         worker_id,
                         cwd,
                         time.time(),
+                        grant_set,
                     ),
                 )
             try:
@@ -829,6 +850,14 @@ def _handle(conn: sqlite3.Connection, token: str, op: str, name: str | None) -> 
         if now_pid != cap["project_id"]:
             raise Refused("project_changed")
         offered, refused = _offered(cap["project_id"])
+        granted = _granted(cap)
+        if granted is _UNREADABLE:
+            raise Refused("store_unavailable")  # not permission, and not proof of revocation
+        if granted is _REVOKED:
+            _revoke(conn, cap)
+            raise Refused("grant_revoked")
+        if granted is not None:
+            offered, refused = _narrow(offered, refused, granted)
         if op == "list":
             try:
                 secrets_now = template_secrets.redaction_values_for_labels()
@@ -845,6 +874,106 @@ def _handle(conn: sqlite3.Connection, token: str, op: str, name: str | None) -> 
             _log_refusal(conn, cap, name, code)
             raise Refused(code)
         return _grant(conn, cap, name, rec)
+
+
+class _Verdict:
+    """A `_granted` answer that is not a set of items."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"<grant {self.name}>"
+
+
+#: The cap's grant set is PROVED revoked: marked revoked, or its row is gone.
+_REVOKED = _Verdict("revoked")
+#: The ledger could not be read now: refuse this call (``store_unavailable``), revoke nothing.
+_UNREADABLE = _Verdict("unreadable")
+
+
+def item_identity(name: str, holder: dict) -> tuple[str, str, str, str]:
+    """What one offered secret IS, as a grant row records it: ``(name, kind, id, scope)`` of the
+    record that holds its value (the GLOBAL record when the project binds it by reference). The
+    one definition `mission_approval.equipment_of` issues from and `_handle` serves against, so a
+    name rebound to another record or scope after issue is a different item (D-P6-5)."""
+    from . import template_vars as store
+
+    scope = "global" if store._is_global(holder) else "project"
+    return (name, holder["kind"], holder["id"], scope)
+
+
+def _granted(cap: sqlite3.Row) -> frozenset[tuple[str, str, str, str]] | _Verdict | None:
+    """What ``cap``'s grant set holds, as `item_identity` tuples; `_REVOKED` when the set is
+    proved revoked (marked, or its row gone); `_UNREADABLE` when the ledger can't be read now (fail
+    closed for this call only: a transient error never ends a capability); None for a launch with
+    no grant ledger. Asked on every call."""
+    set_id = cap["grant_set"] if "grant_set" in cap.keys() else None
+    if not set_id:
+        return None
+    from . import specialists_store
+
+    try:
+        g = specialists_store.grant_set(set_id)
+    except Exception:  # noqa: BLE001 — an unreadable ledger is neither permission nor revocation
+        log.warning("secrets broker: grant set %s could not be read", set_id, exc_info=True)
+        return _UNREADABLE
+    if g is None or g["revoked_at"] is not None:
+        return _REVOKED
+    if g["project_id"] != cap["project_id"]:
+        return frozenset()  # issued for another project than this capability's: nothing served
+    return frozenset(
+        (i["name"], i["kind"], i["id"], i["scope"]) for i in g["items"] if i["kind"] != "memory"
+    )
+
+
+def _narrow(
+    offered: dict[str, dict], refused: dict[str, str], granted: frozenset
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """The project's offer cut to what the set issued: a name is served only while the record
+    holding it is the one issued (same kind, id and scope); anything else is ``not_granted``."""
+    keep = {n: r for n, r in offered.items() if item_identity(n, r) in granted}
+    return keep, {**refused, **{n: "not_granted" for n in offered if n not in keep}}
+
+
+def revoke_grant_set(set_id: str) -> int:
+    """`revoke_grant_sets` for one set."""
+    return revoke_grant_sets([set_id])
+
+
+#: Set ids per query in `revoke_grant_sets` (well under SQLite's bound-parameter limit).
+_SET_IDS_PER_QUERY = 500
+
+
+def revoke_grant_sets(set_ids: list[str]) -> int:
+    """Grant sets were revoked (#1951): every capability minted under them goes now, with every
+    copy BattleLab materialized for it (and nothing else). One fence and one connection for the
+    lot, and only capabilities still unrevoked are touched, so the cost follows what is left to
+    revoke, not how many sets a reservation ever had. Idempotent; the periodic pass finishes any a
+    failure left. Blocking. Returns how many capabilities it revoked."""
+    ids = sorted({i for i in set_ids if isinstance(i, str) and i})
+    if not ids:
+        return 0
+    n = 0
+    try:
+        with access_fence():
+            conn = _connect()
+            try:
+                for at in range(0, len(ids), _SET_IDS_PER_QUERY):
+                    chunk = ids[at : at + _SET_IDS_PER_QUERY]
+                    marks = ", ".join("?" for _ in chunk)
+                    for cap in conn.execute(
+                        "SELECT * FROM caps WHERE revoked_at IS NULL"  # noqa: S608 — placeholders
+                        f" AND grant_set IN ({marks})",
+                        tuple(chunk),
+                    ).fetchall():
+                        _revoke(conn, cap)
+                        n += 1
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001 — the pass retries; the ledger already refuses the launch
+        log.warning("secrets broker: revoking %d grant sets failed", len(ids), exc_info=True)
+    return n
 
 
 def _log_refusal(conn: sqlite3.Connection, cap: sqlite3.Row, name: str, code: str) -> None:
@@ -1031,6 +1160,11 @@ def _reconcile_cap(
     conn: sqlite3.Connection, cap: sqlite3.Row, offers: dict, *, startup: bool, state: str | None
 ) -> None:
     copies = conn.execute("SELECT * FROM copies WHERE cap_id = ?", (cap["id"],)).fetchall()
+    granted = _granted(cap)
+    if granted is _REVOKED:
+        # Its grant set was revoked (#1951): the capability and its copies go, live or not.
+        _revoke(conn, cap)
+        return
     if state is not None:
         if state == DEAD and (
             startup
@@ -1049,6 +1183,10 @@ def _reconcile_cap(
         except Refused:
             offers[cap["project_id"]] = {}
     offered = offers[cap["project_id"]]
+    # A copy of a name rebound since issue is not current (its marker names the holding record),
+    # so the revision check below removes it. An unreadable ledger (`_UNREADABLE`) decides nothing
+    # about the grant: never a revocation, and never a reason to skip the death, project and
+    # revision cleanup above and below.
     try:
         same_project = _project_for(cap["session_key"], cap["cwd"]) == cap["project_id"]
     except Exception:  # noqa: BLE001 — unknowable: treat as moved

@@ -66,6 +66,11 @@ async def contain_native(engine: str, native: str) -> None:
             "the API session's worker could not be confirmed stopped "
             f"(containment: {result.get('containment', 'unknown')}); nothing was archived"
         )
+    # Its equipment grants end with the worker too (#1951 slice B): marked revoked, then the
+    # copies made for them deleted. Usually already done by the stop's own slot release.
+    from . import grants
+
+    await asyncio.to_thread(grants.revoke_session, [f"{engine}:{native}"])
     # Its mission shelf capability ends with the worker it was minted for (#1900).
     from . import shelf_broker
 
@@ -149,6 +154,12 @@ async def cleanup_runtime(
         scrollback.clear_scrollback([phys_key])
     with contextlib.suppress(Exception):
         owner.clear_owner(engine, phys_native)
+    # Its equipment grants (#1951 slice B) are revoked, then the copies made for them, before its
+    # capabilities and brokers below, so the broker refuses the session from here on. Never
+    # raises.
+    from . import grants
+
+    await asyncio.to_thread(grants.revoke_session, [f"{engine}:{native}", phys_key])
     # The secrets this launch was given (#1786): its capability and every private copy go now.
     # Off the event loop: it waits on the broker's fence (independent review of #1796).
     from . import secrets_broker

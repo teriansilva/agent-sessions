@@ -294,6 +294,11 @@ class Scheduler:
         if not loop_enabled():
             log.info("automations: loop disabled (AGENT_SESSIONS_AUTOMATION_LOOP=0)")
             return
+        # The equipment boot sweep COMPLETES before anything fires (#1951 D-P6-3): waited for,
+        # attempt after attempt, never a spin.
+        from . import grants
+
+        await grants.wait_until_swept()
         try:
             while not self._stopping:
                 try:

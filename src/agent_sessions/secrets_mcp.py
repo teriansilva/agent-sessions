@@ -48,6 +48,9 @@ MEANING = {
     "bad_request": "that request is not valid",
     "unavailable": "the BattleLab secrets service is not reachable; try again later",
     "launch_unconfirmed": "BattleLab could not confirm this session is running; try again",
+    # #1951: a session started from a specialist gets only what its grant set issued.
+    "not_granted": "that secret was not granted to this session; ask the operator",
+    "grant_revoked": "this session's access was revoked; start the session again for new access",
 }
 INSTRUCTIONS = (
     "BattleLab secrets: credentials, keys, certificates and secret files the operator gave this "

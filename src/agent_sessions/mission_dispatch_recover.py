@@ -65,6 +65,18 @@ log = logging.getLogger(__name__)
 
 #: How far back recovery pages for a structured brief (50 turns a page).
 MAX_HISTORY_PAGES = 40
+#: Boot recovery gave up waiting for the sweep; `recover_deferred` runs it once it completed.
+_recovery_deferred = False
+
+
+async def recover_deferred() -> int:
+    """Run the boot recovery that `recover_once` deferred for an incomplete equipment sweep, once
+    (the supervisor calls this after the sweep completed). No-op otherwise."""
+    global _recovery_deferred
+    if not _recovery_deferred:
+        return 0
+    _recovery_deferred = False
+    return await recover_once()
 
 
 def _is_api_key(key: str) -> bool:
@@ -238,9 +250,14 @@ async def rebind_api_members() -> int:
     (`mission_structured.send` refuses an automatic send to a worker that is not live). Anything
     not proved, or that cannot be read, is skipped and looked at next time.
 
+    The equipment boot sweep runs first (#1951 D-P6-3, `grants.ensure_swept`).
+
     Runs at boot after `recover_once` and on the supervisor's reconciling sweep."""
-    from . import mission_fence, shelf_broker
+    from . import grants, mission_fence, shelf_broker
     from . import structured_runtime as runtime
+
+    if not await grants.ensure_swept(wait_for_running=False):
+        return 0  # an unsettled pre-boot grant (or a pass running): the next pass looks again
 
     try:
         rows = await missions.run_admitted(missions.active_membership_rows)
@@ -301,6 +318,17 @@ async def recover_once(*, path=None) -> int:
     up. A mission it cannot resolve stays `dispatching` and is looked at again next time, which is
     the honest answer for a dispatch whose fate is genuinely unknown.
     """
+    # The equipment boot sweep first (#1951 D-P6-3): no session is adopted or settled live
+    # while a grant whose liveness is unknown is still open.
+    from . import grants
+
+    if not await grants.ensure_swept(wait_for_running=False):
+        # Deferred, not dropped, and not waited for here (boot housekeeping runs after this):
+        # the supervisor runs it once the sweep completes (`recover_deferred`).
+        global _recovery_deferred
+        _recovery_deferred = True
+        log.warning("dispatch recovery: deferred until the equipment boot sweep completes")
+        return 0
     try:
         rows = missions.unsettled_dispatches(path=path)
     except Exception:  # noqa: BLE001

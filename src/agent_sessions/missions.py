@@ -7436,6 +7436,72 @@ def ensure_session_ended_event(
             con.close()
 
 
+def ensure_lost_access_event(
+    mission_id: str,
+    *,
+    session_key: str,
+    grant_set: str,
+    text: str,
+    meta: dict,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """The thread's ONE `session` row saying a step session lost its equipment at a restart
+    (#1951 D-P6-3, `grants`), written at most once per grant set: the check and the insert are one
+    transaction keyed by ``meta.grant_set``, so a retry after a crash or a failed mark (or two
+    sweeps at once) finds the row and writes nothing. A missing mission raises `MissionNotFound`,
+    an archived one `MissionError` 410 (both final: nobody to tell), one mid-archive or
+    mid-unarchive `MissionError` 409 (transient: retried).
+
+    Returns True only when it wrote the row now."""
+    validate_id(mission_id)
+    if not isinstance(grant_set, str) or not grant_set:
+        raise MissionError("a lost-access event needs its grant set", status=500)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT archiving_at, archived_at, unarchiving_at FROM missions WHERE id=?",
+                (mission_id,),
+            ).fetchone()
+            if row is None:
+                raise MissionNotFound(mission_id)
+            # In-progress FIRST (`_fence_busy`'s order): an unarchive keeps `archived_at` set
+            # until it finishes, and a mission coming back must still get its decision.
+            archiving = row["archiving_at"] is not None and row["archived_at"] is None
+            if archiving or row["unarchiving_at"] is not None:
+                raise MissionError(f"mission {mission_id}: an archive change is in progress", 409)
+            if row["archived_at"] is not None:
+                raise MissionError(f"mission {mission_id} is archived", status=410)
+            if con.execute(
+                "SELECT 1 FROM mission_events WHERE mission_id=? AND kind='session'"
+                " AND json_extract(meta, '$.access')='revoked'"
+                " AND json_extract(meta, '$.grant_set')=?",
+                (mission_id, grant_set),
+            ).fetchone():
+                con.execute("ROLLBACK")
+                return False
+            _append_event(
+                con,
+                mission_id,
+                "session",
+                at=ts,
+                session_key=session_key,
+                text=text,
+                meta={**meta, "access": "revoked", "grant_set": grant_set},
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
 def delivered_event_action_ids(action_ids: list[str], *, path: Path | None = None) -> set[str]:
     """Which of `action_ids` already have a DELIVERED `action` event, in one bulk read (#983).
 

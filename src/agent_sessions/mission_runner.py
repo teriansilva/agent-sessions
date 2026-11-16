@@ -313,6 +313,13 @@ async def sweep(registry=None) -> int:
     running. Returns how many were started. Never raises an `Exception`."""
     if not enabled() or _closing:
         return 0
+    # The equipment boot sweep before any step is launched (#1951 D-P6-3): a property of each
+    # launching path, not of the order the supervisor happens to call them in. Not complete:
+    # nothing is offered this pass.
+    from . import grants
+
+    if not await grants.ensure_swept(wait_for_running=False):
+        return 0
     try:
         mids = await missions.run_admitted(missions.approved_missions)
     except Exception:  # noqa: BLE001 — retried by the next sweep

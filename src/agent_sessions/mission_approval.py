@@ -132,7 +132,6 @@ def equipment_of(pid: str) -> list[dict] | None:
     pin and what a grant could materialize can never disagree; plus the project's memory scope
     while its memory is on. Never a value, a revision or a marker (D-P6-5)."""
     from . import memory, secrets_broker
-    from . import template_vars as store
 
     try:
         offered, _refused = secrets_broker._offered(pid)
@@ -140,9 +139,10 @@ def equipment_of(pid: str) -> list[dict] | None:
         return None
     items = []
     for name, holder in offered.items():
-        # The holder is the GLOBAL record when the project binds it by `ref: global`.
-        scope = "global" if store._is_global(holder) else "project"
-        items.append({"kind": holder["kind"], "id": holder["id"], "name": name, "scope": scope})
+        # The holder is the GLOBAL record when the project binds it by `ref: global`; the broker
+        # serves a grant against this same identity (`item_identity`).
+        _name, kind, item_id, scope = secrets_broker.item_identity(name, holder)
+        items.append({"kind": kind, "id": item_id, "name": name, "scope": scope})
     try:
         if memory.valid_id(pid) and memory.enabled(pid):
             items.append(

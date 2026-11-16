@@ -25,6 +25,8 @@ const REASON: Record<string, string> = {
   launch_unconfirmed: "session not confirmed",
   project_changed: "session moved project",
   no_project: "not in a project",
+  not_granted: "not granted to the session",
+  grant_revoked: "session's access revoked",
 };
 
 function when(at: number): string {

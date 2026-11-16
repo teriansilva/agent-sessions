@@ -437,6 +437,17 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_grant_sweep():
+    """The equipment boot sweep runs once per PROCESS (#1951, `grants.ensure_swept`); each test is
+    its own boot, so its once-flag and lock never leak from one test's loop into the next."""
+    from agent_sessions import grants
+
+    grants.reset_for_test()
+    yield
+    grants.reset_for_test()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_opencode_db(tmp_path, monkeypatch) -> None:
     """Maintenance now measures this store too; no test may open the operator's database.
 
@@ -647,9 +658,25 @@ def _isolate_automations_db(tmp_path, monkeypatch) -> None:
     automations_store.reset_schema_cache_for_test()
 
 
+#: Suites whose every test ends with the grant audit (#1951 slice B): the mission, specialist and
+#: broker suites, where grants are issued and settled. The same `grants.audit()` the per-path
+#: tests assert, so the tripwire and the tests can never drift.
+GRANT_AUDIT_SUITES = (
+    "test_mission",
+    "test_specialist",
+    "test_grants",
+    "test_secrets_broker",
+    "test_native_runtime",
+    "test_runtime_cleanup",
+    "test_headless_dispatch",
+    "test_ask_specialist",
+)
+
+
 @pytest.fixture(autouse=True)
-def _isolate_specialists_db(tmp_path, monkeypatch) -> None:
-    """Point the specialist pool (#1693) at a per-test tmp file, like the stores above."""
+def _isolate_specialists_db(request, tmp_path, monkeypatch) -> None:
+    """Point the specialist pool (#1693) at a per-test tmp file, like the stores above. In the
+    suites above, every test then ends with the grant audit: no grant outlives its session."""
     from agent_sessions import specialists_store
 
     monkeypatch.setenv(
@@ -658,7 +685,18 @@ def _isolate_specialists_db(tmp_path, monkeypatch) -> None:
     )
     specialists_store.reset_schema_cache_for_test()
     yield
+    problems: list[str] = []
+    if request.module.__name__.rpartition(".")[2].startswith(GRANT_AUDIT_SUITES):
+        from agent_sessions import grants
+
+        try:
+            problems = grants.audit()
+        except specialists_store.StoreError:
+            # The test left its store unreadable on purpose (a newer schema, a corrupt file):
+            # there is no ledger to audit, and nothing could have been issued from it.
+            problems = []
     specialists_store.reset_schema_cache_for_test()
+    assert problems == [], f"grant audit (#1951): {problems}"
 
 
 @pytest.fixture(autouse=True)

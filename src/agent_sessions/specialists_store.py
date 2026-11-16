@@ -28,7 +28,9 @@ from . import model_grades
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+#: The schemas `rollback_schema` can take the store back to (each newer one is additive).
+ROLLBACK_TARGETS = (2,)
 BUSY_TIMEOUT_MS = 5000
 SPECIALISTS_MAX = 100
 VERSIONS_MAX = 500
@@ -60,6 +62,43 @@ CREATE TABLE specialist_reservations (
 );
 CREATE UNIQUE INDEX specialist_reservations_one_per_session
     ON specialist_reservations (session_key) WHERE state != 'released'
+"""
+
+#: v3 (#1951 slice B, D11/D15): the GRANT LEDGER. One ``specialist_grant_sets`` row per agent
+#: process (an API session's generation) issued equipment under a reservation, and one
+#: ``specialist_grants`` row per item it was issued: ``(kind, item_id, name, scope)``, never a
+#: value. A set is issued only after its reservation exists (``issued_rev`` is the reservation's
+#: ``rev`` it was issued at, so a set is never written for a reservation a sweep or a re-take
+#: changed since), and it is revoked as a whole: in the SAME transaction that releases its
+#: reservation, by a newer generation of the same slot, by the archive teardown, or by the boot
+#: sweep. ``announced_at``: the one decision a boot revocation of a possibly-live session raised.
+_GRANTS = """
+CREATE TABLE specialist_grant_sets (
+    set_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL REFERENCES specialist_reservations(reservation_id),
+    session_key TEXT NOT NULL,
+    project_id TEXT,
+    approval_id TEXT,
+    issued_rev INTEGER NOT NULL,
+    issued_at REAL NOT NULL,
+    revoked_at REAL,
+    revoked_reason TEXT NOT NULL DEFAULT '',
+    announced_at REAL
+);
+CREATE INDEX specialist_grant_sets_reservation ON specialist_grant_sets (reservation_id);
+CREATE INDEX specialist_grant_sets_session ON specialist_grant_sets (session_key);
+CREATE INDEX specialist_grant_sets_open ON specialist_grant_sets (issued_at)
+    WHERE revoked_at IS NULL;
+CREATE INDEX specialist_grant_sets_unannounced ON specialist_grant_sets (revoked_at)
+    WHERE revoked_reason = 'boot_unknown' AND announced_at IS NULL;
+CREATE TABLE specialist_grants (
+    set_id TEXT NOT NULL REFERENCES specialist_grant_sets(set_id),
+    kind TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    PRIMARY KEY (set_id, kind, item_id, name)
+)
 """
 
 _SCHEMA = """
@@ -162,14 +201,21 @@ def _ensure_schema(p: Path) -> None:
             if v > SCHEMA_VERSION:
                 raise StoreUnsupported(v)
             if v == 0:
-                for stmt in (_SCHEMA + ";" + _RESERVATIONS).split(";"):
+                for stmt in (_SCHEMA + ";" + _RESERVATIONS + ";" + _GRANTS).split(";"):
                     if stmt.strip():
                         con.execute(stmt)
                 created = True
-            elif v == 1:
-                for stmt in _RESERVATIONS.split(";"):  # v1 → v2: the capacity ledger
-                    if stmt.strip():
-                        con.execute(stmt)
+            else:
+                if v == 1:
+                    for stmt in _RESERVATIONS.split(";"):  # v1 → v2: the capacity ledger
+                        if stmt.strip():
+                            con.execute(stmt)
+                # v2 → v3: the grant ledger. Idempotent: a store rolled back to 2 by
+                # `rollback_schema` still holds the tables and converges here.
+                if not _has_table(con, "specialist_grant_sets"):
+                    for stmt in _GRANTS.split(";"):
+                        if stmt.strip():
+                            con.execute(stmt)
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             con.execute("COMMIT")
         except BaseException:
@@ -179,6 +225,44 @@ def _ensure_schema(p: Path) -> None:
             con.execute("PRAGMA journal_mode=WAL")  # outside the transaction; our own file only
     finally:
         con.close()
+
+
+def _has_table(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,))
+    return row.fetchone() is not None
+
+
+def rollback_schema(to: int) -> dict:
+    """Take the store back to schema ``to`` for the previous build, deleting nothing (#1951).
+
+    v3 only ADDS the grant ledger, which a v2 build never reads, so the way back is
+    ``user_version`` set to ``to`` in one transaction. Opening the store with this build again
+    re-runs the idempotent v2 → v3 step and converges, and the boot sweep then revokes every grant
+    set whose reservation the older build released meanwhile."""
+    if to not in ROLLBACK_TARGETS:
+        raise StoreError(f"cannot roll the specialists store back to schema {to}", status=422)
+    p = db_path()
+    if not p.exists():
+        raise StoreError("there is no specialists store to roll back", status=404)
+    with _schema_lock:
+        con = _raw_connect(p)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            version = _version(con)
+            if version > SCHEMA_VERSION:
+                con.execute("ROLLBACK")
+                raise StoreUnsupported(version)
+            if version <= to:
+                con.execute("ROLLBACK")
+                raise StoreError(
+                    f"the specialists store is at schema {version}; nothing to roll back", 409
+                )
+            con.execute(f"PRAGMA user_version={int(to)}")
+            con.execute("COMMIT")
+        finally:
+            con.close()
+        _schema_done.discard(str(p))
+    return {"from": version, "to": to}
 
 
 def _backup(p: Path, version: int) -> Path:
@@ -677,6 +761,9 @@ def reserve(
                 " WHERE reservation_id = ?",
                 (ts, secrets.token_hex(16), _process(), held["reservation_id"]),
             )
+            # The earlier attempt's equipment goes with its owner token (#1951): a re-take is a new
+            # launch, and it issues its own set once it gets here.
+            _revoke_sets_tx(con, held["reservation_id"], "superseded", ts)
             row = con.execute(
                 "SELECT * FROM specialist_reservations WHERE reservation_id = ?",
                 (held["reservation_id"],),
@@ -723,14 +810,20 @@ def reserve(
         return {**_reservation(row, owner=True), "created": True}
 
 
-def _cas(reservation_id: str, sets: str, where: str, args: tuple, ts: float) -> bool:
-    """One guarded change; every change bumps the row's ``rev`` (and its timestamp)."""
+def _cas(
+    reservation_id: str, sets: str, where: str, args: tuple, ts: float, *, revoke: str = ""
+) -> bool:
+    """One guarded change; every change bumps the row's ``rev`` (and its timestamp). ``revoke``:
+    the change releases the slot, so its equipment is revoked in the SAME transaction (#1951:
+    a grant never outlives the reservation that settles it), with that reason."""
     with _tx() as con:
         cur = con.execute(
             f"UPDATE specialist_reservations SET {sets}, rev = rev + 1, updated_at = ?"  # noqa: S608
             f" WHERE reservation_id = ? AND state != 'released' {where}",
             (ts, reservation_id, *args),
         )
+        if cur.rowcount == 1 and revoke:
+            _revoke_sets_tx(con, reservation_id, revoke, ts)
         return cur.rowcount == 1
 
 
@@ -743,12 +836,19 @@ def activate(reservation_id: str, *, owner: str, now: float | None = None) -> bo
 
 
 def renew(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
+    """`renew_rev`, as a yes or no."""
+    return renew_rev(reservation_id, owner=owner, now=now) is not None
+
+
+def renew_rev(reservation_id: str, *, owner: str, now: float | None = None) -> int | None:
     """The session that holds this slot starts ANOTHER agent process for itself (an API session's
     next generation, serialised by that session's own lock): back to ``starting`` with a fresh
     grace, under this process, its hold cleared — keeping its owner, unlike a re-take. The ``rev``
     bump fences any reconcile answer read before it (the gap between two generations reads
-    gone). False when the slot is no longer this owner's; a specialist archived since refuses it,
-    in the same transaction (no new agent process for it)."""
+    gone). Returns the slot's new ``rev`` (what this generation's equipment is issued at), or None
+    when the slot is no longer this owner's; a specialist archived since refuses it, in the same
+    transaction (no new agent process for it). Every earlier generation's equipment is revoked in
+    the same transaction."""
     ts = time.time() if now is None else now
     with _tx() as con:
         row = con.execute(
@@ -757,7 +857,7 @@ def renew(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
             (reservation_id, owner),
         ).fetchone()
         if row is None:
-            return False
+            return None
         if _get(con, row["specialist_id"])["archived"]:
             raise StoreError("this specialist is archived", status=409)
         cur = con.execute(
@@ -765,7 +865,15 @@ def renew(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
             " process = ?, rev = rev + 1, updated_at = ? WHERE reservation_id = ?",
             (_process(), ts, reservation_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount != 1:
+            return None
+        # A new generation is born only once its predecessors are proved gone: their equipment
+        # ends here, and this generation issues its own (#1951).
+        _revoke_sets_tx(con, reservation_id, "superseded", ts)
+        (rev,) = con.execute(
+            "SELECT rev FROM specialist_reservations WHERE reservation_id = ?", (reservation_id,)
+        ).fetchone()
+        return int(rev)
 
 
 def mark_live(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
@@ -784,7 +892,9 @@ def release(reservation_id: str, *, owner: str, now: float | None = None) -> boo
     if not isinstance(owner, str) or not owner:
         raise StoreError("a launch releases only with the token its reservation gave it", 422)
     ts = time.time() if now is None else now
-    return _cas(reservation_id, "state = 'released'", "AND owner = ?", (owner,), ts)
+    return _cas(
+        reservation_id, "state = 'released'", "AND owner = ?", (owner,), ts, revoke="released"
+    )
 
 
 def reclaim(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
@@ -792,7 +902,9 @@ def reclaim(reservation_id: str, *, seen_rev: int, now: float | None = None) -> 
     read it. A re-take, a launch's `activate`, or a newer reconcile answer (live, held) each move
     ``rev``, so an older DEAD answer can never release what they settled."""
     ts = time.time() if now is None else now
-    return _cas(reservation_id, "state = 'released'", "AND rev = ?", (seen_rev,), ts)
+    return _cas(
+        reservation_id, "state = 'released'", "AND rev = ?", (seen_rev,), ts, revoke="reclaimed"
+    )
 
 
 def release_held(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
@@ -801,7 +913,7 @@ def release_held(reservation_id: str, *, seen_rev: int, now: float | None = None
     ``rev``, so a running session is never the operator's to take."""
     ts = time.time() if now is None else now
     where = "AND held_reason != '' AND rev = ?"
-    return _cas(reservation_id, "state = 'released'", where, (seen_rev,), ts)
+    return _cas(reservation_id, "state = 'released'", where, (seen_rev,), ts, revoke="released")
 
 
 def hold(reservation_id: str, reason: str, *, seen_rev: int) -> bool:
@@ -864,3 +976,260 @@ def active_counts() -> tuple[dict[str, int], int]:
     for r in active():
         counts[r["specialist_id"]] = counts.get(r["specialist_id"], 0) + 1
     return counts, sum(counts.values())
+
+
+# ---- the grant ledger (#1951 slice B, D11/D15) --------------------------------------------------
+
+#: Bounds on one issued item's fields (they come from the variables store's own offer).
+_GRANT_FIELD_MAX = 200
+#: Items one set may carry (a project's equipment is bounded by `PROJECT_VARIABLES_MAX` + memory).
+GRANT_ITEMS_MAX = 256
+#: A test seam: called before each item row of a set is written (fault injection mid-set).
+_before_grant_item = None
+
+
+class GrantRefused(StoreError):
+    """No equipment was issued: the reservation is not the one this launch took (a re-take, a
+    sweep, a release since), so nothing was written."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=409)
+
+
+def _revoke_sets_tx(con: sqlite3.Connection, reservation_id: str, reason: str, ts: float) -> int:
+    """Inside the caller's transaction: every open grant set of ``reservation_id`` is revoked."""
+    cur = con.execute(
+        "UPDATE specialist_grant_sets SET revoked_at = ?, revoked_reason = ?"
+        " WHERE reservation_id = ? AND revoked_at IS NULL",
+        (ts, reason[:_GRANT_FIELD_MAX], reservation_id),
+    )
+    return cur.rowcount
+
+
+def _grant_item(raw: object) -> tuple[str, str, str, str]:
+    if not isinstance(raw, dict):
+        raise StoreError("a grant item must be an object", status=422)
+    out = []
+    for k in ("kind", "id", "name", "scope"):
+        v = raw.get(k)
+        if not isinstance(v, str) or not v or len(v) > _GRANT_FIELD_MAX:
+            raise StoreError(f"a grant item's {k} must be a short string", status=422)
+        out.append(v)
+    return out[0], out[1], out[2], out[3]
+
+
+def _grant_set_row(con: sqlite3.Connection, r: sqlite3.Row) -> dict:
+    items = con.execute(
+        "SELECT kind, item_id, name, scope FROM specialist_grants WHERE set_id = ?"
+        " ORDER BY kind, item_id, name",
+        (r["set_id"],),
+    ).fetchall()
+    return {
+        "set_id": r["set_id"],
+        "reservation_id": r["reservation_id"],
+        "session_key": r["session_key"],
+        "project_id": r["project_id"],
+        "approval_id": r["approval_id"],
+        "issued_rev": int(r["issued_rev"]),
+        "issued_at": float(r["issued_at"]),
+        "revoked_at": None if r["revoked_at"] is None else float(r["revoked_at"]),
+        "revoked_reason": r["revoked_reason"],
+        "announced_at": None if r["announced_at"] is None else float(r["announced_at"]),
+        "items": [
+            {"kind": i["kind"], "id": i["item_id"], "name": i["name"], "scope": i["scope"]}
+            for i in items
+        ],
+    }
+
+
+def issue_grants(
+    reservation_id: str,
+    *,
+    rev: int,
+    session_key: str,
+    project_id: str | None,
+    approval_id: str | None,
+    items: list[dict],
+    now: float | None = None,
+) -> str:
+    """Issue ONE grant set for one agent process, AFTER its reservation (#1951 §3, order at
+    launch step 4). One transaction: the reservation must still be the one this launch took —
+    active, ``starting``, for this session, at the ``rev`` its reserve / renew returned — or
+    `GrantRefused` and nothing is written. Every item lands or none does. Returns the set id."""
+    key = canonical_key(session_key)
+    parsed = sorted({_grant_item(i) for i in items})
+    if len(parsed) > GRANT_ITEMS_MAX:
+        raise StoreError("too many grant items", status=422)
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        row = con.execute(
+            "SELECT state, rev, session_key FROM specialist_reservations WHERE reservation_id = ?",
+            (reservation_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["state"] != "starting"
+            or int(row["rev"]) != int(rev)
+            or row["session_key"] != key
+        ):
+            raise GrantRefused(
+                "this launch's specialist slot changed while it was being started, so no "
+                "equipment was issued"
+            )
+        set_id = "g" + secrets.token_hex(12)
+        con.execute(
+            "INSERT INTO specialist_grant_sets (set_id, reservation_id, session_key, project_id,"
+            " approval_id, issued_rev, issued_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (set_id, reservation_id, key, project_id, approval_id, int(rev), ts),
+        )
+        for kind, item_id, name, scope in parsed:
+            if _before_grant_item is not None:
+                _before_grant_item(kind, item_id, name)
+            con.execute(
+                "INSERT INTO specialist_grants (set_id, kind, item_id, name, scope)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (set_id, kind, item_id, name, scope),
+            )
+        return set_id
+
+
+def grant_set(set_id: str) -> dict | None:
+    """One grant set with its items, or None."""
+    if not isinstance(set_id, str) or not set_id or not db_path().exists():
+        return None
+    with _read() as con:
+        r = con.execute(
+            "SELECT * FROM specialist_grant_sets WHERE set_id = ?", (set_id,)
+        ).fetchone()
+        return None if r is None else _grant_set_row(con, r)
+
+
+def grant_sets(
+    *,
+    open_only: bool = False,
+    session_keys: list[str] | None = None,
+    unannounced_reason: str | None = None,
+    reservation_id: str | None = None,
+) -> list[dict]:
+    """Grant sets, oldest first: every one, the open (unrevoked) ones, one session's, or those
+    revoked for ``unannounced_reason`` whose decision was not raised yet (`announced_at`), or one
+    reservation's."""
+    if not db_path().exists():
+        return []
+    where, args = [], []
+    if open_only:
+        where.append("revoked_at IS NULL")
+    if unannounced_reason is not None:
+        where.append("revoked_at IS NOT NULL AND revoked_reason = ? AND announced_at IS NULL")
+        args.append(unannounced_reason)
+    if reservation_id is not None:
+        where.append("reservation_id = ?")
+        args.append(reservation_id)
+    if session_keys is not None:
+        keys = []
+        for k in session_keys:
+            with contextlib.suppress(StoreError):
+                keys.append(canonical_key(k))
+        if not keys:
+            return []
+        where.append(f"session_key IN ({', '.join('?' for _ in keys)})")
+        args.extend(keys)
+    sql = "SELECT * FROM specialist_grant_sets"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    with _read() as con:
+        rows = con.execute(sql + " ORDER BY issued_at, rowid", tuple(args)).fetchall()
+        return [_grant_set_row(con, r) for r in rows]
+
+
+def revoked_set_ids(reservation_id: str) -> list[str]:
+    """The ids of one reservation's revoked sets (ids only: no items read)."""
+    if not db_path().exists():
+        return []
+    with _read() as con:
+        rows = con.execute(
+            "SELECT set_id FROM specialist_grant_sets"
+            " WHERE reservation_id = ? AND revoked_at IS NOT NULL",
+            (reservation_id,),
+        ).fetchall()
+        return [r["set_id"] for r in rows]
+
+
+def revoke_grant_set(set_id: str, reason: str, *, now: float | None = None) -> bool:
+    """Revoke one set (it was open). True when this call revoked it."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE specialist_grant_sets SET revoked_at = ?, revoked_reason = ?"
+            " WHERE set_id = ? AND revoked_at IS NULL",
+            (ts, reason[:_GRANT_FIELD_MAX], set_id),
+        )
+        return cur.rowcount == 1
+
+
+def revoke_session_grants(
+    session_keys: list[str], reason: str, *, now: float | None = None
+) -> list[str]:
+    """Revoke every open set of a session (its runtime is being torn down: archive). Returns the
+    ids revoked."""
+    keys = []
+    for k in session_keys:
+        with contextlib.suppress(StoreError):
+            keys.append(canonical_key(k))
+    if not keys or not db_path().exists():
+        return []
+    ts = time.time() if now is None else now
+    marks = ", ".join("?" for _ in keys)
+    with _tx() as con:
+        rows = con.execute(
+            "SELECT set_id FROM specialist_grant_sets"  # noqa: S608 — placeholders only
+            f" WHERE revoked_at IS NULL AND session_key IN ({marks})",
+            tuple(keys),
+        ).fetchall()
+        ids = [r["set_id"] for r in rows]
+        con.executemany(
+            "UPDATE specialist_grant_sets SET revoked_at = ?, revoked_reason = ?"
+            " WHERE set_id = ? AND revoked_at IS NULL",
+            [(ts, reason[:_GRANT_FIELD_MAX], i) for i in ids],
+        )
+        return ids
+
+
+def sweep_revoke(set_id: str, *, seen_rev: int, reason: str, now: float | None = None) -> bool:
+    """The boot sweep's settlement (#1951 D-P6-3), under reconcile's own compare-and-set: revoke
+    ``set_id`` only if its reservation is still at the ``rev`` the sweep read (or is released,
+    which is final). A re-take, a renew, a launch going live or a newer answer since each move
+    ``rev``, so an older answer never revokes what they settled. True when it revoked."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        s = con.execute(
+            "SELECT reservation_id FROM specialist_grant_sets"
+            " WHERE set_id = ? AND revoked_at IS NULL",
+            (set_id,),
+        ).fetchone()
+        if s is None:
+            return False
+        r = con.execute(
+            "SELECT state, rev FROM specialist_reservations WHERE reservation_id = ?",
+            (s["reservation_id"],),
+        ).fetchone()
+        if r is not None and r["state"] != "released" and int(r["rev"]) != int(seen_rev):
+            return False
+        cur = con.execute(
+            "UPDATE specialist_grant_sets SET revoked_at = ?, revoked_reason = ?"
+            " WHERE set_id = ? AND revoked_at IS NULL",
+            (ts, reason[:_GRANT_FIELD_MAX], set_id),
+        )
+        return cur.rowcount == 1
+
+
+def mark_grant_announced(set_id: str, *, now: float | None = None) -> bool:
+    """The one decision for a revoked set was raised: never again for it."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE specialist_grant_sets SET announced_at = ?"
+            " WHERE set_id = ? AND announced_at IS NULL",
+            (ts, set_id),
+        )
+        return cur.rowcount == 1

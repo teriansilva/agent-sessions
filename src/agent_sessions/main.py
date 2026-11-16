@@ -41,6 +41,7 @@ from . import (
     autosort_loop,
     engines,
     feed_alerts,
+    grants,
     hq_dispatch,
     hq_report_broker,
     memory,
@@ -347,6 +348,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # (the existing /api/sessions HTTP path keeps working as fallback).
         with contextlib.suppress(Exception):
             await registry.discover()
+        # The equipment boot sweep (#1951 D-P6-3): after discovery (liveness is judged against the
+        # re-adopted sessions) and BEFORE every recovery, relaunch and trigger below, each of
+        # which proceeds only once it COMPLETED (`grants.ensure_swept` / `wait_until_swept`), so
+        # the order holds whatever starts first. Never raises; unknown liveness is revoked.
+        with contextlib.suppress(Exception):
+            await grants.ensure_swept()
         # Resolve any in-place save a crash left half-done (#950), off the event loop. Every
         # resolution action checks what exists first, and none removes the last name of bytes
         # that were displaced; a store that cannot be opened is reported by the next save.
@@ -429,7 +436,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # running process makes; killed mid-launch it leaves a mission stuck there, possibly
             # beside a live unattended agent nobody owns. FIRST among the mission passes,
             # because it is the one that can still ADOPT a session — retention and the scrub below
-            # both act on closed missions, and this pass is what closes them.
+            # both act on closed missions, and this pass is what closes them. If the equipment
+            # boot sweep is not complete it is DEFERRED (#1951) and the supervisor runs it after
+            # the passes below; retention skips a mission with an operation stamp and the store
+            # refuses contention, so that order is safe, only later.
             with contextlib.suppress(Exception):
                 await mission_dispatch_recover.recover_once()
             # …and the API members of the missions still running (#1900): a worker the restart

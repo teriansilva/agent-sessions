@@ -116,6 +116,27 @@ def revoke_launch(phys_key: str) -> None:
         log.warning("memory capability revocation could not be persisted", exc_info=True)
 
 
+def _grant_holds(set_id: object, bindings: dict) -> bool:
+    """A generation started from a specialist reads memory only while its grant set is open AND
+    issued the memory of the project this capability is bound to (#1951): a set revoked by its
+    reservation's release, an archive or the boot sweep ends it, a set gone or issued for another
+    project's memory serves nothing, and an unreadable ledger refuses this call (not permission).
+    No set: no ledger, not asked."""
+    if not set_id:
+        return True
+    from . import specialists_store
+
+    try:
+        g = specialists_store.grant_set(set_id)
+    except Exception:  # noqa: BLE001 — unreadable is neither permission nor revocation
+        log.warning("memory broker: grant set %s could not be read", set_id, exc_info=True)
+        return False
+    if g is None or g["revoked_at"] is not None:
+        return False
+    project_scope = (bindings.get("scopes") or [None])[0]  # the project this capability reads
+    return any(i["kind"] == "memory" and i["id"] == project_scope for i in g["items"])
+
+
 def _live(cap, bindings: dict) -> bool:
     if cap["kind"] == "api":
         from . import native_state, secrets_broker
@@ -126,6 +147,7 @@ def _live(cap, bindings: dict) -> bool:
         env = config.get("memory_env", {})
         return (
             env.get(memory.ENV_INBOX) == bindings["paths"][1]
+            and _grant_holds(config.get("grant_set"), bindings)
             and secrets_broker._api_liveness(cap["worker_id"]) == secrets_broker.ALIVE
         )
     from . import ptybridge, reaper

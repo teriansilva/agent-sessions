@@ -560,6 +560,12 @@ def _launch_locked(
     except BaseException:
         if not held["spawning"]:
             specialist_launch.abandon(held["claim"])
+            if held.get("grant_set"):
+                # A re-take holds no owner token, so `abandon` frees nothing and its set would
+                # stay open until reconcile: this attempt's own set ends here (#1951).
+                from . import grants
+
+                grants.revoke_set(held["grant_set"], "released")
         raise
 
 
@@ -621,19 +627,44 @@ def _launch_generation(
     specialist = record["request"].get("specialist")
     if held["claim"] is None:
         held["claim"] = _specialist_claim(record, adapter)
+    from . import grants
+
     claim = held["claim"]
+    grant = None
     if claim is not None:
         record["specialist_slot"] = {"reservation_id": claim.reservation_id, "owner": claim.owner}
         config["skills_bundle"] = claim.bundle
+        # Its EQUIPMENT (#1951 slice B), issued only now, after the reservation and its skill
+        # bundle and before anything that hands equipment over: one grant set at the slot's
+        # `rev`, narrowed to its project (and to an approval's pin). A refusal refuses the launch
+        # before any spawn; a failure before the spawn releases the slot (`_launch_locked`), and
+        # revokes this set, which a re-take's slot release could not reach.
+        try:
+            grant = grants.issue(claim, record["session_key"], record["request"]["cwd"])
+        except grants.GrantRefused as exc:
+            raise NativeError(409, str(exc)) from None
+        held["grant_set"] = grant["set_id"]
+    # Recorded with the generation (#1951): the memory broker asks this set on every call too.
+    config["grant_set"] = grant["set_id"] if grant is not None else None
     # Shared project memory (#1441), bound per GENERATION: every resume or relaunch is a new
     # agent process and asks again, so a toggle reaches the next generation, never a live one.
-    # Bound last, once everything above that can refuse the launch has passed.
-    config["memory_env"] = memory.launch_env(
-        record["session_key"],
-        record["request"]["cwd"],
-        kind="api",
-        specialist=specialist["id"] if specialist is not None else None,
-        worker_id=worker.worker_id,
+    # Bound last, once everything above that can refuse the launch has passed. A generation
+    # with a grant set gets it only when the set issued the project's memory (#1951).
+    config["memory_env"] = (
+        memory.launch_env(
+            record["session_key"],
+            record["request"]["cwd"],
+            kind="api",
+            specialist=specialist["id"] if specialist is not None else None,
+            worker_id=worker.worker_id,
+        )
+        if grants.granted_memory(
+            grant,
+            grants.project_of(record["session_key"], record["request"]["cwd"])
+            if grant is not None
+            else None,
+        )
+        else {}
     )
     # The memory tool (#1506), only beside the paths: the manifest's kind, which the worker
     # checks against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own
@@ -648,6 +679,7 @@ def _launch_generation(
         engine=record["session_key"].partition(":")[0],
         kind="api",
         worker_id=worker.worker_id,
+        grant_set=grant["set_id"] if grant is not None else None,
     )
     # The artifacts capability (#1932), per GENERATION like memory: a toggle reaches the next
     # generation, never a live one. Only where the adapter's protocol carries an MCP server.
@@ -1858,12 +1890,17 @@ def _stop_generation_locked(session_id: str, record: dict, worker_id: str) -> st
 def _release_specialist_slot(record: dict) -> None:
     """The record's session runs nothing (the caller holds that proof, under its lock): the slot
     its generation created is released (#1693 S4b). A re-taken slot names no owner and is left to
-    reconcile, which settles it on its own proof."""
+    reconcile, which settles it on its own proof.
+
+    Its equipment ends here either way (#1951): the release revokes the sets of a slot it frees,
+    and a re-taken slot's sets, which that release can't reach, are revoked on this same proof
+    (`grants.revoke_session`; idempotent, never raises)."""
     slot = record.get("specialist_slot")
     if slot is not None:
-        from . import specialist_launch
+        from . import grants, specialist_launch
 
         specialist_launch.release_slot(slot)
+        grants.revoke_session([record["session_key"]], "stopped")
 
 
 def _fail_owned_generation(
