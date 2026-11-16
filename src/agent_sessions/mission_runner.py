@@ -131,10 +131,18 @@ def _notify(mission_id: str, title: str, step_id: str, extra: dict) -> None:
         log.warning("mission %s: refusal notification failed", mission_id, exc_info=True)
 
 
-def _has_run(mission_id: str, step_id: str) -> bool:
-    return any(
-        r["step_id"] == step_id and r["state"] != "refused" for r in missions.step_runs(mission_id)
+def _runs_of(mission_id: str, step_id: str) -> int:
+    return sum(
+        1
+        for r in missions.step_runs(mission_id)
+        if r["step_id"] == step_id and r["state"] != "refused"
     )
+
+
+def _has_run(mission_id: str, step_id: str, since_runs: int = 0) -> bool:
+    """Did the step start (a run that is not `refused`), beyond `since_runs` runs it had when the
+    refusal was recorded (a `bound_reached` step has runs by definition)?"""
+    return _runs_of(mission_id, step_id) > since_runs
 
 
 def _in_force(mission_id: str, approval_id: str | None) -> bool:
@@ -154,14 +162,15 @@ def _notify_unless_started(mission_id: str, title: str, step_id: str, extra: dic
     the row is raised, and it is retracted then, because a Start, a revoke or a re-approval
     retracts only what was there when it finished (independent review of #2019, Hermes 8155)."""
     approval_id = extra.get("approval_id")
+    had = int(extra.get("runs") or 0)
     try:
-        if _has_run(mission_id, step_id) or not _in_force(mission_id, approval_id):
+        if _has_run(mission_id, step_id, had) or not _in_force(mission_id, approval_id):
             return
     except Exception:  # noqa: BLE001 — unknown is not "answered": notify (more, never less)
         log.debug("mission %s: state unreadable before a notice", mission_id, exc_info=True)
     _notify(mission_id, title, step_id, extra)
     try:
-        if _has_run(mission_id, step_id):
+        if _has_run(mission_id, step_id, had):
             retract_sync(mission_id, step_id=step_id)
         elif not _in_force(mission_id, approval_id):
             retract_sync(mission_id)  # every notice of an approval no longer in force
@@ -214,6 +223,36 @@ def _switchable(reasons: list[dict]) -> str | None:
     return str(reasons[0].get("text") or "")
 
 
+def _record_bound(mission_id: str, step_id: str, e: missions.StepRefused) -> dict:
+    """Record a claim's `bound_reached` refusal (#1951 §4) as the ONE decision for this approval,
+    step and run count, like an admission refusal (`missions.record_refusal`), so it is notified
+    once and the board shows it (and stops offering the step). Blocking. Returns the notice's
+    `extra`: `{approval_id, change, new, reasons, runs}`, or `{}` when no approval is in force."""
+    approval = missions.approval(mission_id)
+    if approval is None or approval.get("revoked_at") is not None:
+        return {}
+    runs = _runs_of(mission_id, step_id)
+    reasons = [{"code": "bound_reached", "text": str(e), "step": step_id}]
+    change = mission_approval.change_digest(
+        approval, step_id, reasons, boundary="launch", episode=runs
+    )
+    new = missions.record_refusal(
+        mission_id,
+        approval_id=approval["id"],
+        step=step_id,
+        change_digest=change,
+        boundary="launch",
+        reasons=reasons,
+    )
+    return {
+        "approval_id": approval["id"],
+        "change": change,
+        "new": new,
+        "reasons": reasons,
+        "runs": runs,
+    }
+
+
 async def _offer(
     mission_id: str, title: str, step: dict, revision: int, registry
 ) -> tuple[str, str | None]:
@@ -224,6 +263,12 @@ async def _offer(
     for a launch refused or failed at its effects. A refusal is notified once, and only when
     nothing started: an alternate that ran in the pick's place leaves nothing to answer."""
     sid = step["id"]
+    # How many runs the step had when it was offered: a refusal is "answered" only by a run AFTER
+    # it, so a refused rework reopen (a step that ran before) is still notified.
+    try:
+        runs_before = await asyncio.to_thread(_runs_of, mission_id, sid)
+    except Exception:  # noqa: BLE001 — unreadable: "any run answers it", as before
+        runs_before = 0
     uses = [mission_steps.PRIMARY]
     last: missions.StepRefused | None = None
     first_admission: dict | None = None
@@ -253,7 +298,12 @@ async def _offer(
             await asyncio.to_thread(retract_sync, mission_id, step_id=sid)
             return "started", None
         return "refused", None  # refused or failed at its effects: the run says so
+    if first_admission is None and last is not None and last.code == "bound_reached":
+        # PAST THE APPROVED BOUND (#1951 §4): the same one-per-change decision and notice as a
+        # refusal at the admission, never a silent retry.
+        first_admission = await asyncio.to_thread(_record_bound, mission_id, sid, last) or None
     if first_admission is not None:
+        first_admission = {"runs": runs_before, **first_admission}
         # Off the loop: the push fanout blocks on each device (independent review of #2019).
         await asyncio.to_thread(_notify_unless_started, mission_id, title, sid, first_admission)
     if last is not None and last.code in _TRANSIENT:

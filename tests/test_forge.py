@@ -532,6 +532,21 @@ def test_one_reviewer_s_LATER_objection_beats_their_earlier_approval():
     assert _client(_json(rows2)).review("r", 7, "h").value is True
 
 
+def test_a_request_for_changes_names_its_reviews_and_head():
+    """Bounded rework (#1951 §4) identifies a request by these facts: which reviews requested
+    changes, at which head. Without `reviews` a rework edge on this probe never fires."""
+    rows = [
+        {"state": "REQUEST_CHANGES", "commit_id": "h", "user": {"login": "a"}, "id": 9},
+        {"state": "APPROVED", "commit_id": "h", "user": {"login": "b"}, "id": 4},
+        {"state": "REQUEST_CHANGES", "commit_id": "h", "user": {"login": "c"}, "id": 12},
+    ]
+    for rv in rows:
+        rv["official"] = True
+    f = _client(_json(rows)).review("r", 7, "h")
+    assert f.observed and f.value is False
+    assert f.extra == {"state": "REQUEST_CHANGES", "reviews": "12,9", "sha": "h"}
+
+
 def test_ANOTHER_reviewer_s_objection_is_not_overridden_by_an_approval():
     rows = [
         {"state": "REQUEST_CHANGES", "commit_id": "h", "user": {"login": "a"}, "id": 1},

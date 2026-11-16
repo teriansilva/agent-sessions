@@ -584,7 +584,7 @@ class ForgeClient:
         # DISMISSED and STALE reviews are dropped outright: a dismissed approval is an approval
         # the forge has explicitly withdrawn, and treating it as current is the same class of
         # error as accepting one from a superseded revision.
-        latest: dict[str, tuple[float, str]] = {}
+        latest: dict[str, tuple[float, str, str]] = {}
         for rv in rows:
             if not isinstance(rv, dict):
                 continue
@@ -615,12 +615,25 @@ class ForgeClient:
             when = float(rv.get("submitted_at_ts") or rv.get("id") or 0)
             prev = latest.get(who)
             if prev is None or when >= prev[0]:
-                latest[who] = (when, st)
-        states = {s for _, s in latest.values()}
+                latest[who] = (when, st, str(rv.get("id") or ""))
+        states = {s for _, s, _ in latest.values()}
         # ANY outstanding request for changes blocks, whatever else was said. An approval does not
         # override another reviewer's objection.
         if states & {"REQUEST_CHANGES", "CHANGES_REQUESTED"}:
-            return Fact.seen(False, "changes were requested", state="REQUEST_CHANGES")
+            # WHICH requests, at which head: the fact's own identity (#1951 §4), so bounded rework
+            # never counts one outstanding request again after the round it already consumed.
+            ids = sorted(
+                rid
+                for _, s, rid in latest.values()
+                if s in ("REQUEST_CHANGES", "CHANGES_REQUESTED") and rid
+            )
+            return Fact.seen(
+                False,
+                "changes were requested",
+                state="REQUEST_CHANGES",
+                reviews=",".join(ids)[:200],
+                sha=sha or None,
+            )
         if "APPROVED" in states:
             return Fact.seen(True, "approved at the current head", state="APPROVED")
         return Fact.seen(False, "no review at the current head yet")

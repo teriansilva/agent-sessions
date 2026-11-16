@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1558,7 +1558,8 @@ def _migrate_38_to_39(con) -> None:
 #: States: `claimed` → `running` → `done` | `failed` | `stopped`, plus `refused` (nothing was
 #: started) and `unknown` (a session may exist; never relaunched). `prior_state` is the mission
 #: state a launch that starts nothing returns it to. Cascades with the mission; no other table or
-#: column changes, so an older build ignores it (rollback: `user_version` only).
+#: column changes, so an older build ignores it (rollback: `user_version` only). `rework_ref` (v43,
+#: #1951 §4) names the rework reopen (`<edge_from>#<round>`) this run consumed, if any.
 STEP_RUNS_DDL: tuple[str, ...] = (
     "CREATE TABLE IF NOT EXISTS mission_step_runs ("
     "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
@@ -1573,7 +1574,7 @@ STEP_RUNS_DDL: tuple[str, ...] = (
     "use_reason TEXT, project_id TEXT, cwd TEXT NOT NULL, "
     "authority TEXT NOT NULL CHECK(authority IN ('operator','approval','consent')), "
     "approval_id TEXT, consent_id TEXT, prior_state TEXT NOT NULL, detail TEXT, "
-    "created_at REAL NOT NULL, updated_at REAL NOT NULL, ended_at REAL, "
+    "created_at REAL NOT NULL, updated_at REAL NOT NULL, ended_at REAL, rework_ref TEXT, "
     "PRIMARY KEY (mission_id, step_id, episode))",
     "CREATE INDEX IF NOT EXISTS mission_step_runs_open_cwd ON mission_step_runs(cwd) "
     "WHERE state IN ('claimed','running','unknown')",
@@ -1624,6 +1625,31 @@ STEP_HOLDS_DDL: tuple[str, ...] = (
 )
 _SCHEMA += ";\n".join(STEP_HOLDS_DDL) + ";\n"
 
+#: v43 (#1951 slice B, bounded rework, #1193's contracts): one row per CONSUMED rework round of an
+#: edge `edge_from → edge_to`. Its identity is durable and consumed once: `(mission, edge, round)`
+#: is the key, the source step's episode can consume at most one round, and the observation (the
+#: probe's fact identity) at most one. `reopened` reset the span's evidence for a new episode;
+#: `exhausted` (round `max_rounds + 1`) reopened nothing and owes ONE question (`question_at`, the
+#: question's event `question_seq`), announced once (`notice_at`) and retracted once it no longer
+#: holds (`notice_closed_at`). `granted_json` lists the steps a reopen lets run again: those of the
+#: approved span (`mission_approval._rework_span`, target through source) that had run before it.
+#: Each consumes it with its first run that names it (`mission_step_runs.rework_ref`, written by
+#: the claim). Cascades with the mission.
+REWORK_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_reworks ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "edge_from TEXT NOT NULL, edge_to TEXT NOT NULL, round INTEGER NOT NULL CHECK(round >= 1), "
+    "max_rounds INTEGER NOT NULL, source_episode INTEGER NOT NULL, "
+    "observation_id TEXT NOT NULL, revision INTEGER NOT NULL, "
+    "outcome TEXT NOT NULL CHECK(outcome IN ('reopened','exhausted')), "
+    "question_at REAL, question_seq INTEGER, notice_at REAL, notice_closed_at REAL, "
+    "granted_json TEXT, created_at REAL NOT NULL, "
+    "PRIMARY KEY (mission_id, edge_from, round), "
+    "UNIQUE (mission_id, edge_from, source_episode), "
+    "UNIQUE (mission_id, edge_from, observation_id))",
+)
+_SCHEMA += ";\n".join(REWORK_DDL) + ";\n"
+
 
 def _migrate_40_to_41(con) -> None:
     """Additive only (workflow §0): two tables, one index. Idempotent, and it converges a table an
@@ -1641,7 +1667,16 @@ def _migrate_41_to_42(con) -> None:
         con.execute(statement)
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40, 41})
+def _migrate_42_to_43(con) -> None:
+    """Additive only (workflow §0): one table and one step-run column. Idempotent."""
+    for statement in REWORK_DDL:
+        con.execute(statement)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(mission_step_runs)").fetchall()}
+    if "rework_ref" not in cols:
+        con.execute("ALTER TABLE mission_step_runs ADD COLUMN rework_ref TEXT")
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40, 41, 42})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1651,11 +1686,13 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
     column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
     approval (to 38), v40 the step runs (to 39), v41 the mission budget (to 40), v42 the step
-    holds (to 41); an older build never reads any of them. (A v41 build starts no step by itself,
-    so the holds it does not read hold nothing it would start. A plan revision carrying a team,
-    #1950, reads fine on an older build. Applying another procedure there rebuilds every step
-    with `assignment: null`, so that one write drops the team: earlier revisions keep it, and
-    Assemble restores it.)
+    holds (to 41), v43 the rework rounds and a step-run column naming the reopen a run consumed
+    (to 42); an older build never reads any of them, and every `INSERT INTO mission_step_runs`
+    names its columns. (A v41 build starts no step by itself, so the holds it does not read hold
+    nothing it would start; a v42 build reads no rework round and so resets nothing again. A plan
+    revision carrying a team, #1950, reads fine on an older build. Applying another procedure
+    there rebuilds every step with `assignment: null`, so that one write drops the team: earlier
+    revisions keep it, and Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1833,6 +1870,8 @@ def _migrate(con) -> int:
             _migrate_40_to_41(con)
         if version < 42:
             _migrate_41_to_42(con)
+        if version < 43:
+            _migrate_42_to_43(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -5693,6 +5732,22 @@ def observe_objective(
                     blob_source = fit_judged(obs) if rec is not None else obs
             state = str(row["state"] or "")
             settle = observed and bool(obs.get("value")) and state not in ("met", "waived")
+            held = _rework_fenced_tx(con, mission_id, objective_key) if settle else None
+            if held is not None:
+                # THE REWORK EPISODE FENCE (#1951 §4, Hermes 8191/8193): this row was reset by a
+                # rework reopen that granted its step a NEW episode, and that episode has not
+                # started. What is read now is the old episode's output, so it is recorded and does
+                # not settle: the step stays `ready` for the new session, and the read counts once
+                # a run of the step has consumed the reopen.
+                obs["value"] = False
+                obs["awaits_rework_run"] = held
+                obs["detail"] = _cap(
+                    f"{obs.get('detail') or ''} (counts once {held} runs again for its rework)",
+                    OBSERVED_DETAIL_MAX,
+                )
+                blob = _json_or_none(obs, OBSERVED_MAX, field="observed")
+                blob_source = None
+                settle = False
             if settle:
                 con.execute(
                     "UPDATE mission_objectives SET state='met', met_at=?, observed=? "
@@ -5971,10 +6026,16 @@ def open_question(
     expect_episode: int | None = None,
     expect_content: str = "",
     origin: dict | None = None,
+    rework_round: tuple[str, int] | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Open ONE question about one objective, and stand that objective down (#892).
+
+    `rework_round` `(edge_from, round)` (#1951 §4): the question an exhausted rework round owes.
+    Its obligation is claimed in THIS transaction (`mission_reworks.question_at`, NULL → now), so
+    the question and its deduplication commit together: a second opener, a retry or a crash
+    between them can never open a second one (409 `already asked`).
 
     `origin` is the server's note on how the question was produced — `{"fallback": true,
     "refused": "<why>"}` when the model asked nothing usable and the server worded it (#1577).
@@ -6116,6 +6177,14 @@ def open_question(
                     f"objective {objective_key!r} moved on while the question was being written",
                     status=409,
                 )
+            if rework_round is not None:
+                owed = con.execute(
+                    "UPDATE mission_reworks SET question_at=? WHERE mission_id=? AND edge_from=? "
+                    "AND round=? AND outcome='exhausted' AND question_at IS NULL",
+                    (ts, mission_id, rework_round[0], int(rework_round[1])),
+                ).rowcount
+                if owed != 1:
+                    raise MissionError("this rework round's question was already asked", status=409)
             seq = _append_event(
                 con,
                 mission_id,
@@ -6138,6 +6207,14 @@ def open_question(
             # Storing the SEQ rather than a flag is what makes the lifecycle exact: a second
             # question overwrites it (superseding the first), and an answer clears it only when
             # it names the question that is actually holding.
+            if rework_round is not None:
+                # …and which question it is, so its one notification is retracted when it stops
+                # holding (#1951 §4, `mission_rework.notify_sync`).
+                con.execute(
+                    "UPDATE mission_reworks SET question_seq=? WHERE mission_id=? AND edge_from=? "
+                    "AND round=?",
+                    (seq, mission_id, rework_round[0], int(rework_round[1])),
+                )
             con.execute(
                 "INSERT INTO mission_objective_episode "
                 "(mission_id, objective_key, episode, stood_down, question_seq, at) "
@@ -10336,7 +10413,9 @@ def claim_step(
       `consent_id` no longer covers it (`consent_changed`);
     * a launch nobody tapped for (`authority` not `operator`) of a step the operator holds
       (`held`, #1951 slice B), or of a step that has a run that is not `refused`, whoever
-      started it (`already_ran`: HQ starts each step once);
+      started it (`already_ran`: HQ starts each step once) unless a rework reopen made it run
+      again since, or beyond the approval's 1 + rework rounds for the step (`bound_reached`,
+      #1951 §4);
     * the mission's budget is held or spent (`budget`). This one refusal WRITES: a cap reached
       here holds the mission, committed before the refusal, so the decision surfaces.
 
@@ -10473,8 +10552,13 @@ def claim_step(
                 raise StepRefused(
                     "held", "you asked to be asked before this step starts; start it yourself"
                 )
+            # BOUNDED REWORK (#1951 §4): the rework reopen this claim CONSUMES, whoever starts it
+            # (the operator's Start included). Explicit, never a clock: the run row names it
+            # (`rework_ref`), in this transaction, so one reopen is one further episode.
+            reopen = _open_reopen_tx(con, mission_id, doc, step_id)
             if (
                 authority != "operator"
+                and reopen is None
                 and con.execute(
                     "SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "
                     "AND state != 'refused' LIMIT 1",
@@ -10485,12 +10569,39 @@ def claim_step(
                 # seam's own fence, not only the runner's offer, so two app instances can't both
                 # start a step, and a step the operator started (and stopped) is never restarted
                 # by a launch nobody tapped for. Any run counts, whoever started it, except a
-                # refused one (it started nothing).
+                # refused one (it started nothing). A rework reopen no run has consumed yet (§4)
+                # is the one further episode a launch nobody tapped for may start.
                 raise StepRefused(
                     "already_ran",
                     "this step has run already, and HQ starts a step only once; start it again "
                     "yourself",
                 )
+            if authority != "operator" and approval_id is not None:
+                # THE APPROVED BOUND (#1951 §4): under an approval a step runs at most 1 + the
+                # rounds of every rework edge whose span holds it. A reopen within it is inside the
+                # approval; one beyond it is a question, never a launch (the operator may still
+                # start it, by their own tap).
+                # Pins that can't say fail CLOSED: the first run only, no rework beyond it.
+                bound = _approved_runs_tx(con, mission_id, approval_id, step_id) or 1
+                if bound is not None:
+                    # Every episode but a refused one (it started nothing) spends an instance, as
+                    # the once-only guard and the reopen's consumption count them: a `failed`
+                    # launch may already have created a session or attempted its effects (Hermes).
+                    ran = int(
+                        con.execute(
+                            "SELECT COUNT(*) FROM mission_step_runs WHERE mission_id=? AND "
+                            "step_id=? AND state != 'refused'",
+                            (mission_id, step_id),
+                        ).fetchone()[0]
+                    )
+                    if ran >= bound:
+                        raise StepRefused(
+                            "bound_reached",
+                            f"your approval covers {bound} run{'s' if bound != 1 else ''} of this "
+                            "step and they are used, so HQ does not start it again; start it "
+                            "yourself if it should run",
+                            bound=bound,
+                        )
             # THE MISSION'S BUDGET (#1581 S3): created by its first step claim; a hold or a spent
             # cap refuses, and a cap reached here is recorded (and committed) before the refusal.
             spent = _budget_admit_tx(con, mission_id, ts)
@@ -10509,8 +10620,8 @@ def claim_step(
                 "INSERT INTO mission_step_runs (mission_id, step_id, episode, revision, state, "
                 "plan_id, session_key, engine, model, effort, specialist_id, specialist_version, "
                 "use_kind, alternate_index, use_reason, project_id, cwd, authority, approval_id, "
-                "consent_id, prior_state, detail, created_at, updated_at, ended_at) "
-                "VALUES (?,?,?,?,'claimed',?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL)",
+                "consent_id, prior_state, detail, created_at, updated_at, ended_at, rework_ref) "
+                "VALUES (?,?,?,?,'claimed',?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL,?)",
                 (
                     mission_id,
                     step_id,
@@ -10533,6 +10644,7 @@ def claim_step(
                     prior,
                     ts,
                     ts,
+                    reopen,
                 ),
             )
             con.execute(
@@ -11089,6 +11201,142 @@ def set_step_hold(
             con.close()
 
 
+def _reopen_ref(edge_from: str, rnd: int) -> str:
+    """A rework reopen's identity, as a run's `rework_ref` names it."""
+    return f"{edge_from}#{int(rnd)}"
+
+
+def _open_reopen_tx(con, mission_id: str, doc: dict, step_id: str) -> str | None:
+    """The oldest rework reopen that GRANTED `step_id` a further run (`rework_granted`: a step of
+    the approved span that had run before it) and that no run of the step has consumed yet, as
+    its ref; None when there is none (#1951 §4). CONSUMED is a record, never a clock: a run that
+    is not `refused` names the reopen (`rework_ref`, written by the claim in its own
+    transaction), so the order of two timestamps decides nothing. Reopens are taken in insertion
+    order."""
+    used = {
+        str(r[0])
+        for r in con.execute(
+            "SELECT rework_ref FROM mission_step_runs WHERE mission_id=? AND step_id=? "
+            "AND rework_ref IS NOT NULL AND state != 'refused'",
+            (mission_id, step_id),
+        ).fetchall()
+    }
+    for r in con.execute(
+        "SELECT edge_from, round, granted_json FROM mission_reworks WHERE mission_id=? "
+        "AND outcome='reopened' ORDER BY rowid",
+        (mission_id,),
+    ).fetchall():
+        ref = _reopen_ref(r["edge_from"], r["round"])
+        if ref in used:
+            continue
+        if step_id in rework_granted(r):
+            return ref
+    return None
+
+
+def rework_granted_episodes(row) -> dict[str, int]:
+    """The steps a reopen lets run again (`granted_json`), each with the last episode it had when
+    the reopen was consumed: its NEW episode is any later one."""
+    try:
+        got = json.loads(row["granted_json"] or "[]")
+    except (TypeError, ValueError, KeyError, IndexError):
+        return {}
+    if isinstance(got, dict):
+        out: dict[str, int] = {}
+        for k, v in got.items():
+            with contextlib.suppress(TypeError, ValueError):
+                out[str(k)] = int(v)
+        return out
+    return {str(x): 0 for x in got} if isinstance(got, list) else {}
+
+
+def rework_granted(row) -> list[str]:
+    """The steps a reopen lets run again (`granted_json`), as recorded when it was consumed."""
+    return list(rework_granted_episodes(row))
+
+
+#: The run states that mean a step's new episode actually STARTED: a `claimed` launch may still be
+#: refused or fail before any session works, and a `failed` one is the operator's to restart.
+REWORK_EPISODE_STARTED = ("running", "done", "stopped", "unknown")
+
+
+def _rework_fenced_tx(con, mission_id: str, objective_key: str) -> str | None:
+    """The step whose rework reopen fences `objective_key` from settling, or None. A reopen
+    GRANTED the step a new episode (`rework_granted_episodes`), and no run of it LATER than the
+    episode it had then has actually started (`REWORK_EPISODE_STARTED`): until one has, evidence
+    read from the old episode's output must not complete the step and skip the new session. A
+    claimed launch, or one that failed, does not lift it (the reopen's consumption is another
+    record: `_open_reopen_tx`). Cheap when the mission has no reopen."""
+    rows = con.execute(
+        "SELECT granted_json FROM mission_reworks WHERE mission_id=? AND outcome='reopened'",
+        (mission_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    latest = _latest_plan_tx(con, mission_id)
+    if latest is None:
+        return None
+    owner = next(
+        (
+            str(s["id"])
+            for s in latest["document"].get("steps") or []
+            if objective_key in (s.get("evidence") or [])
+        ),
+        None,
+    )
+    if owner is None:
+        return None
+    marks = ",".join("?" for _ in REWORK_EPISODE_STARTED)
+    for r in rows:
+        episodes = rework_granted_episodes(r)
+        if owner not in episodes:
+            continue
+        started = con.execute(
+            f"SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "  # noqa: S608
+            f"AND episode > ? AND state IN ({marks}) LIMIT 1",
+            (mission_id, owner, int(episodes[owner]), *REWORK_EPISODE_STARTED),
+        ).fetchone()
+        if not started:
+            return owner
+    return None
+
+
+def open_reopens(mission_id: str, doc: dict, *, path: Path | None = None) -> dict[str, str]:
+    """Per step of `doc`, the rework reopen it may still run under (`_open_reopen_tx`): the board
+    reads the claim's own rule. Steps with none are absent."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        out: dict[str, str] = {}
+        for s in doc["steps"]:
+            ref = _open_reopen_tx(con, mission_id, doc, s["id"])
+            if ref is not None:
+                out[s["id"]] = ref
+        return out
+    finally:
+        con.close()
+
+
+def _approved_runs_tx(con, mission_id: str, approval_id: str, step_id: str) -> int | None:
+    """How many runs of `step_id` the approval covers: 1, plus `max_rounds` per pinned rework edge
+    whose span holds it (`mission_approval._session_bounds`). None when the pins can't say."""
+    row = con.execute(
+        "SELECT pins_json FROM mission_plan_approvals WHERE mission_id=? AND id=?",
+        (mission_id, approval_id),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        pins = json.loads(row["pins_json"])
+        if not any(s.get("id") == step_id for s in pins.get("steps") or []):
+            return None
+        return 1 + sum(
+            int(e["max_rounds"]) for e in pins.get("rework") or [] if step_id in e["steps"]
+        )
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
 def _step_held_tx(con, mission_id: str, step_id: str) -> bool:
     return (
         con.execute(
@@ -11128,6 +11376,450 @@ def approved_missions(*, path: Path | None = None) -> list[str]:
         return [r["id"] for r in rows if str(r["state"] or "") in STEP_LAUNCH_STATES]
     finally:
         con.close()
+
+
+def _descendants(doc: dict, root: str) -> set[str]:
+    """Every step that comes after `root` through `after` (transitively). Rework edges are not
+    `after` edges, so this never loops."""
+    out: set[str] = set()
+    frontier = [root]
+    while frontier:
+        cur = frontier.pop()
+        for s in doc["steps"]:
+            if cur in s["after"] and s["id"] not in out:
+                out.add(s["id"])
+                frontier.append(s["id"])
+    return out
+
+
+def rework_reset_steps(doc: dict, edge_from: str, edge_to: str) -> list[str]:
+    """The steps one reopen of `edge_from → edge_to` makes stale: the target and every step after
+    it (its descendants, the edge's own span included), in plan order."""
+    stale = {edge_to} | _descendants(doc, edge_to)
+    return [s["id"] for s in doc["steps"] if s["id"] in stale]
+
+
+#: What a probe-backed rework `when` row's observation must say (`state`, a probe extra) to count
+#: as "changes requested" (#1951 §4): `forge_review`'s outstanding request for changes.
+REWORK_REQUEST_STATES = frozenset({"REQUEST_CHANGES", "CHANGES_REQUESTED"})
+
+
+def rework_observation(row: dict, since: float) -> str | None:
+    """The identity of the NOT-MET observation a rework `when` row holds since `since` (the source
+    episode's start), or None when it holds none: a met, waived or dropped row, a stale or unknown
+    read, or an observation from before the episode never counts. A JUDGED row says not met only
+    when its verdict does (`met: false`): the store keeps a met verdict under the confidence floor
+    as `value=False` too, and that is unknown, never "changes requested"; so is a not-met verdict
+    the judge is not sure of (`confidence`, its probability of MET, above `1 - threshold`) or
+    that quotes nothing. A PROBE row asks for changes only when its observation
+    says so and names the requests (`state` in `REWORK_REQUEST_STATES`, `reviews`). The identity is
+    the fact: a judged verdict's fingerprint bound to the row's incarnation, or a probe's requests
+    and head. Pure; `row["observed"]` may be a dict or its JSON."""
+    if str(row.get("state") or "") in ("met", "waived"):
+        return None
+    obs = row.get("observed")
+    if isinstance(obs, str):
+        obs = _loads(obs)
+    if not isinstance(obs, dict) or obs.get("stale") or obs.get("value") is not False:
+        return None
+    at = obs.get("at")
+    if not isinstance(at, int | float) or float(at) < float(since):
+        return None
+    judged = obs.get("judged")
+    if judged is not None:
+        if not isinstance(judged, dict) or judged.get("met") is not False:
+            return None  # a met verdict under the floor, or an unreadable one: unknown
+        # A NOT-MET VERDICT IS A REQUEST only when the judge is sure the objective is NOT met and
+        # quoted what it read. `confidence` is the judge's probability that it IS met (the
+        # prompt's contract), so "sure it is not" is `confidence <= 1 - threshold`; a verdict
+        # in between is unknown. (D-P6-13: on the reviewer's current output, read once its
+        # session is idle, a sure not-met is the review's answer.)
+        try:
+            sure = float(judged.get("confidence")) <= 1.0 - float(judged.get("threshold"))
+        except (TypeError, ValueError):
+            sure = False
+        if not sure or not judged.get("evidence") or not judged.get("fingerprint"):
+            return None
+        raw = f"{row.get('incarnation') or ''}|{judged['fingerprint']}"
+        return "obs:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
+    if str(obs.get("state") or "").upper() not in REWORK_REQUEST_STATES or not obs.get("reviews"):
+        # A PROBE's not-met read is a request only when it SAYS so and names it (`forge_review`:
+        # the reviews that requested changes, at a head). "No review yet", or any other not-met
+        # read, is a review still to come, never "changes requested".
+        return None
+    # The FACT's identity (which requests, at which head), not the row's incarnation or the read's
+    # time: a reopen gives the row a new incarnation and every refresh a new time, and an
+    # outstanding request re-read in the next episode must not consume another round.
+    raw = f"probe|{obs.get('sha') or ''}|{obs['reviews']}"
+    return "obs:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def _rework_decide_tx(
+    con, mission_id: str, edge_from: str, source_episode: int, observation_id: str
+) -> dict:
+    """What consuming a round of `edge_from`'s rework edge for this source episode and observation
+    would do, read on an open transaction (#1951 §4). One of:
+
+    * `{"kind": "prior", "row"}`: this episode or this observation already consumed a round;
+    * `{"kind": "none"}`: nothing to consume: the run is not `running` at that episode, or not on
+      the latest plan revision, the step has no rework edge, its `when` row no longer holds the
+      not-met observation the caller saw (re-derived here: a passing result, a re-judged verdict
+      or a replaced row since), or the edge is already exhausted;
+    * `{"kind": "consume", "outcome", "round", "max_rounds", "edge", "doc", "revision"}`:
+      `outcome` is `reopened` (round ≤ `max_rounds`) or `exhausted` (round `max_rounds + 1`)."""
+    prior = con.execute(
+        "SELECT * FROM mission_reworks WHERE mission_id=? AND edge_from=? "
+        "AND (source_episode=? OR observation_id=?)",
+        (mission_id, edge_from, int(source_episode), observation_id),
+    ).fetchone()
+    if prior is not None:
+        return {"kind": "prior", "row": dict(prior)}
+    m = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+    if m is None or str(m["state"] or "") not in ("running", "dispatching"):
+        # Only a RUNNING mission reworks (`dispatching` is running with another step's launch in
+        # flight; a claim inside the reset span already waits below): one the operator moved to
+        # review (or closed) keeps the evidence it was judged on.
+        return {"kind": "none"}
+    run = con.execute(
+        "SELECT state, revision, created_at FROM mission_step_runs WHERE mission_id=? "
+        "AND step_id=? AND episode=?",
+        (mission_id, edge_from, int(source_episode)),
+    ).fetchone()
+    latest = con.execute(
+        "SELECT revision, document_json FROM mission_plan_revisions WHERE mission_id=? "
+        "ORDER BY revision DESC LIMIT 1",
+        (mission_id,),
+    ).fetchone()
+    if run is None or run["state"] != "running" or latest is None:
+        return {"kind": "none"}
+    if int(latest["revision"]) != int(run["revision"]):
+        return {"kind": "none"}
+    doc = json.loads(latest["document_json"])
+    src = next((x for x in doc["steps"] if x["id"] == edge_from), None)
+    edge = (src or {}).get("rework")
+    if not edge:
+        return {"kind": "none"}
+    when = con.execute(
+        "SELECT state, observed, incarnation FROM mission_objectives "
+        "WHERE mission_id=? AND key=?",
+        (mission_id, edge["when"]),
+    ).fetchone()
+    if when is None or rework_observation(dict(when), float(run["created_at"])) != observation_id:
+        # THE EVIDENCE, RE-READ IN THE TRANSACTION THAT ACTS ON IT (Hermes on #2032): a passing
+        # review, a re-judged verdict or a replaced row since the caller looked.
+        return {"kind": "none"}
+    used = int(
+        con.execute(
+            "SELECT COUNT(*) FROM mission_reworks WHERE mission_id=? AND edge_from=?",
+            (mission_id, edge_from),
+        ).fetchone()[0]
+    )
+    max_rounds = int(edge["max_rounds"])
+    if used > max_rounds:
+        # Already exhausted, by an earlier episode: its one question stands. Nothing more.
+        return {"kind": "none"}
+    span = rework_reset_steps(doc, edge_from, edge["to"])
+    marks = ",".join("?" for _ in OPEN_STEP_STATES)
+    for r in con.execute(
+        f"SELECT step_id, episode FROM mission_step_runs WHERE mission_id=? "  # noqa: S608
+        f"AND state IN ({marks})",
+        (mission_id, *OPEN_STEP_STATES),
+    ).fetchall():
+        if r["step_id"] in span and (r["step_id"], int(r["episode"])) != (
+            edge_from,
+            int(source_episode),
+        ):
+            # A step the reopen would reset still has an open episode: its session could answer
+            # the NEW episode's evidence. Not now; the next pass looks again once it settled.
+            return {"kind": "none"}
+    rnd = used + 1
+    return {
+        "kind": "consume",
+        "outcome": "reopened" if rnd <= max_rounds else "exhausted",
+        "round": rnd,
+        "max_rounds": max_rounds,
+        "edge": edge,
+        "doc": doc,
+        "revision": int(latest["revision"]),
+    }
+
+
+def rework_decision(
+    mission_id: str,
+    *,
+    edge_from: str,
+    source_episode: int,
+    observation_id: str,
+    path: Path | None = None,
+) -> str | None:
+    """`reopened` or `exhausted` when `consume_rework` would consume a round now, else None (a
+    round this episode or observation already consumed, or nothing to consume). A read: the pass
+    decides BEFORE it stops anything, and `consume_rework` decides again in its own
+    transaction."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        got = _rework_decide_tx(con, mission_id, edge_from, source_episode, observation_id)
+        return got["outcome"] if got["kind"] == "consume" else None
+    finally:
+        con.close()
+
+
+def consume_rework(
+    mission_id: str,
+    *,
+    edge_from: str,
+    source_episode: int,
+    observation_id: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict | None:
+    """Consume ONE round of the rework edge on step `edge_from` (#1951 §4, #1193), for the changes
+    its episode `source_episode` asked for, and SETTLE that run `done`. ONE transaction, idempotent
+    (`_rework_decide_tx` decides):
+
+    * nothing to consume (the run is not `running` at that episode on the latest revision, no
+      edge, the `when` row no longer holds `observation_id`, or the edge is exhausted) → None,
+      nothing written;
+    * the same source episode or the same observation already consumed a round → that row,
+      unchanged (a repeated sweep, a restart, a retry consume nothing);
+    * round ≤ `max_rounds` → `reopened`: every evidence row of the target and of every step after
+      it (`rework_reset_steps`) that is not waived goes back to `pending` with a NEW incarnation and
+      probe generation (so an observation, a probe or a judgment issued for the old episode can
+      neither satisfy nor retarget the new one), its supervisor episode advances (its pending
+      decisions settle) and any question hold on it is cleared;
+    * round `max_rounds + 1` → `exhausted`: nothing is reset or launched; the ONE question is owed
+      (`question_at` NULL until the question is opened, `open_question(rework_round=…)`).
+
+    Either way the source run settles `done` (expected `running`) in the SAME transaction, so a
+    consumed round never leaves its run open to block the next claim (`open_run`).
+
+    Returns the row with `new` (whether this call consumed it)."""
+    validate_id(mission_id)
+    validate_step_id(edge_from)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            ts = time.time() if now is None else now
+            got = _rework_decide_tx(con, mission_id, edge_from, source_episode, observation_id)
+            if got["kind"] != "consume":
+                con.execute("COMMIT")
+                return None if got["kind"] == "none" else {**got["row"], "new": False}
+            edge, doc, rnd = got["edge"], got["doc"], int(got["round"])
+            max_rounds, outcome = int(got["max_rounds"]), got["outcome"]
+            granted: dict[str, int] = {}
+            yours: list[str] = []
+            if outcome == "reopened":
+                from .mission_approval import _rework_span
+
+                approved = set(_rework_span(doc, edge_from, edge["to"]))
+                for sid in rework_reset_steps(doc, edge_from, edge["to"]):
+                    ran = con.execute(
+                        "SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "
+                        "AND state != 'refused' LIMIT 1",
+                        (mission_id, sid),
+                    ).fetchone()
+                    if not ran:
+                        continue  # never ran: its first run is no rework
+                    if sid not in approved:
+                        yours.append(sid)
+                        continue
+                    # The episode it has now: its NEW episode is any later one (the fence).
+                    granted[sid] = int(
+                        con.execute(
+                            "SELECT COALESCE(MAX(episode), 0) FROM mission_step_runs "
+                            "WHERE mission_id=? AND step_id=?",
+                            (mission_id, sid),
+                        ).fetchone()[0]
+                    )
+            con.execute(
+                "INSERT INTO mission_reworks (mission_id, edge_from, edge_to, round, max_rounds, "
+                "source_episode, observation_id, revision, outcome, question_at, granted_json, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
+                (
+                    mission_id,
+                    edge_from,
+                    edge["to"],
+                    rnd,
+                    max_rounds,
+                    int(source_episode),
+                    observation_id,
+                    int(got["revision"]),
+                    outcome,
+                    json.dumps(granted),
+                    ts,
+                ),
+            )
+            reset: list[str] = []
+            if outcome == "reopened":
+                by_id = {x["id"]: x for x in doc["steps"]}
+                for sid in rework_reset_steps(doc, edge_from, edge["to"]):
+                    for key in by_id[sid]["evidence"]:
+                        row = con.execute(
+                            "SELECT state FROM mission_objectives WHERE mission_id=? AND key=?",
+                            (mission_id, key),
+                        ).fetchone()
+                        if row is None or str(row["state"] or "") == "waived":
+                            continue  # dropped, or the operator waived it: their decision stands
+                        con.execute(
+                            "UPDATE mission_objectives SET state='pending', met_at=NULL, "
+                            "observed=NULL, incarnation=?, probe_gen=probe_gen+1, "
+                            "judge_rejected_fp=NULL WHERE mission_id=? AND key=?",
+                            (uuid.uuid4().hex, mission_id, key),
+                        )
+                        _bump_episode_con(con, mission_id, key, ts)
+                        con.execute(
+                            "UPDATE mission_objective_episode SET question_seq=NULL "
+                            "WHERE mission_id=? AND objective_key=?",
+                            (mission_id, key),
+                        )
+                        reset.append(key)
+            text = (
+                f"{edge_from} asked for changes: rework round {rnd} of {max_rounds}, "
+                f"{edge['to']} runs again as a new episode"
+                + (
+                    f"; {', '.join(yours)} must be started again by you (outside the steps the "
+                    "rework edge re-runs)"
+                    if yours
+                    else ""
+                )
+                if outcome == "reopened"
+                else f"{edge_from} asked for changes a {_ordinal(rnd)} time; the plan allows "
+                f"{max_rounds} rework round{'s' if max_rounds != 1 else ''}, so nothing was "
+                "started"
+            )
+            # THE SOURCE RUN SETTLES IN THE SAME TRANSACTION (Hermes on #2032, independent review
+            # of #2032): a round consumed and its evidence reset with the run still `running`
+            # would strand the run and block every later claim of the step (`open_run`).
+            _finish_step_run_tx(
+                con,
+                mission_id,
+                edge_from,
+                int(source_episode),
+                "done",
+                f"it asked for changes: rework round {rnd} of {max_rounds}"
+                if outcome == "reopened"
+                else f"it asked for changes again; the plan's {max_rounds} rework rounds are "
+                "used, so nothing was started",
+                "running",
+                ts,
+            )
+            _append_event(
+                con,
+                mission_id,
+                "objective",
+                at=ts,
+                text=_cap(text, EVENT_TEXT_MAX),
+                meta={
+                    "rework": True,
+                    "edge_from": edge_from,
+                    "edge_to": edge["to"],
+                    "round": rnd,
+                    "max_rounds": max_rounds,
+                    "outcome": outcome,
+                    "reset": len(reset),
+                },
+            )
+            con.execute("COMMIT")
+            out = con.execute(
+                "SELECT * FROM mission_reworks WHERE mission_id=? AND edge_from=? AND round=?",
+                (mission_id, edge_from, rnd),
+            ).fetchone()
+            return {**dict(out), "new": True}
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def _ordinal(n: int) -> str:
+    return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+
+
+def reworks(mission_id: str, *, path: Path | None = None) -> list[dict]:
+    """Every consumed rework round of the mission, oldest first."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return [
+            dict(r)
+            for r in con.execute(
+                "SELECT * FROM mission_reworks WHERE mission_id=? ORDER BY created_at, rowid",
+                (mission_id,),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+
+
+def mark_rework_question(
+    mission_id: str, edge_from: str, rnd: int, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Record that an exhausted round's ONE question was opened (once: a compare-and-set)."""
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            n = con.execute(
+                "UPDATE mission_reworks SET question_at=? WHERE mission_id=? AND edge_from=? "
+                "AND round=? AND outcome='exhausted' AND question_at IS NULL",
+                (ts, mission_id, edge_from, int(rnd)),
+            ).rowcount
+            con.commit()
+            return n == 1
+        finally:
+            con.close()
+
+
+def question_holds(
+    mission_id: str, objective_key: str, seq: int, *, path: Path | None = None
+) -> bool:
+    """Is question `seq` still the one holding `objective_key` (not answered, superseded, reset,
+    or released by a state nothing is asked in)? A read."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT question_seq FROM mission_objective_episode WHERE mission_id=? "
+            "AND objective_key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        return bool(row is not None and row["question_seq"] is not None) and int(
+            row["question_seq"]
+        ) == int(seq)
+    finally:
+        con.close()
+
+
+def mark_rework_notice(
+    mission_id: str,
+    edge_from: str,
+    rnd: int,
+    *,
+    closed: bool = False,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Record that an exhausted round's notification was raised (`notice_at`) or retracted
+    (`notice_closed_at`). Once each: a compare-and-set. True when this call recorded it."""
+    validate_id(mission_id)
+    col = "notice_closed_at" if closed else "notice_at"
+    with _write_lock:
+        con = _ready(path)
+        try:
+            n = con.execute(
+                f"UPDATE mission_reworks SET {col}=? WHERE mission_id=? AND edge_from=? "  # noqa: S608
+                f"AND round=? AND outcome='exhausted' AND {col} IS NULL",
+                (time.time() if now is None else now, mission_id, edge_from, int(rnd)),
+            ).rowcount
+            con.commit()
+            return n == 1
+        finally:
+            con.close()
 
 
 def stopping_missions(*, path: Path | None = None) -> list[str]:
@@ -11294,6 +11986,58 @@ _STEP_FINISH: dict[str, frozenset[str]] = {
 }
 
 
+def _finish_step_run_tx(
+    con, mission_id: str, step_id: str, episode: int, to: str, detail: str, expect: str, ts: float
+) -> dict | None:
+    """`finish_step_run`'s compare-and-set ON AN OPEN TRANSACTION (shared with bounded rework,
+    which settles its source run in the transaction that consumes the round)."""
+    row = con.execute(
+        "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? AND episode=?",
+        (mission_id, step_id, int(episode)),
+    ).fetchone()
+    if row is None or row["state"] != expect:
+        return None
+    run = _step_run_row(row)
+    con.execute(
+        "UPDATE mission_step_runs SET state=?, detail=?, updated_at=?, ended_at=? "
+        "WHERE mission_id=? AND step_id=? AND episode=? AND state=?",
+        (
+            to,
+            _cap(detail, EVENT_TEXT_MAX),
+            ts,
+            None if to in OPEN_STEP_STATES else ts,
+            mission_id,
+            step_id,
+            int(episode),
+            expect,
+        ),
+    )
+    words = {
+        "done": "is done",
+        "failed": "failed",
+        "stopped": "was stopped",
+        "unknown": "could not be proved stopped",
+    }[to]
+    said = f"step {step_id} {words}" + (f": {detail}" if detail else "")
+    _step_event_tx(con, mission_id, run, to, said, ts)
+    if to not in OPEN_STEP_STATES and run.get("session_key"):
+        # THE STEP'S SESSION LEAVES THE ACTIVE ROSTER with its run (D-1581-6): released as
+        # `closed` (still the mission's to archive), never stopped here, so nothing the
+        # mission automates sends into a session whose step is over. `unknown` keeps it.
+        con.execute(
+            "UPDATE mission_sessions SET removed_at=?, release_reason='closed' "
+            "WHERE mission_id=? AND session_key=? AND role='step' AND removed_at IS NULL",
+            (ts, mission_id, run["session_key"]),
+        )
+    out = _step_run_row(
+        con.execute(
+            "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? AND episode=?",
+            (mission_id, step_id, int(episode)),
+        ).fetchone()
+    )
+    return out
+
+
 def finish_step_run(
     mission_id: str,
     step_id: str,
@@ -11316,52 +12060,7 @@ def finish_step_run(
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? AND episode=?",
-                (mission_id, step_id, int(episode)),
-            ).fetchone()
-            if row is None or row["state"] != expect:
-                con.execute("COMMIT")
-                return None
-            run = _step_run_row(row)
-            con.execute(
-                "UPDATE mission_step_runs SET state=?, detail=?, updated_at=?, ended_at=? "
-                "WHERE mission_id=? AND step_id=? AND episode=? AND state=?",
-                (
-                    to,
-                    _cap(detail, EVENT_TEXT_MAX),
-                    ts,
-                    None if to in OPEN_STEP_STATES else ts,
-                    mission_id,
-                    step_id,
-                    int(episode),
-                    expect,
-                ),
-            )
-            words = {
-                "done": "is done",
-                "failed": "failed",
-                "stopped": "was stopped",
-                "unknown": "could not be proved stopped",
-            }[to]
-            said = f"step {step_id} {words}" + (f": {detail}" if detail else "")
-            _step_event_tx(con, mission_id, run, to, said, ts)
-            if to not in OPEN_STEP_STATES and run.get("session_key"):
-                # THE STEP'S SESSION LEAVES THE ACTIVE ROSTER with its run (D-1581-6): released as
-                # `closed` (still the mission's to archive), never stopped here, so nothing the
-                # mission automates sends into a session whose step is over. `unknown` keeps it.
-                con.execute(
-                    "UPDATE mission_sessions SET removed_at=?, release_reason='closed' "
-                    "WHERE mission_id=? AND session_key=? AND role='step' AND removed_at IS NULL",
-                    (ts, mission_id, run["session_key"]),
-                )
-            out = _step_run_row(
-                con.execute(
-                    "SELECT * FROM mission_step_runs WHERE mission_id=? AND step_id=? "
-                    "AND episode=?",
-                    (mission_id, step_id, int(episode)),
-                ).fetchone()
-            )
+            out = _finish_step_run_tx(con, mission_id, step_id, episode, to, detail, expect, ts)
             con.execute("COMMIT")
             return out
         except BaseException:

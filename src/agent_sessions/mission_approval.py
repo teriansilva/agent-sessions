@@ -586,6 +586,9 @@ _CLASS_TEXT = {
     "approval_revoked": "the approval does not cover it any more",
     "approval_expired": "the approval expired",
     "project_unavailable": "its project is not available",
+    # Not a pin (#1951 §4): the claim's refusal past the approved rework bound, recorded through
+    # the same one-per-change decision by the runner.
+    "bound_reached": "the runs your approval covers for it are used",
 }
 _CHANGED_TEXT = "the plan changed since you approved it"
 

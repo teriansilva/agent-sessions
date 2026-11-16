@@ -738,6 +738,12 @@ async def reconcile(mission_id: str) -> int:
                         await stop_step(mission_id, r["step_id"], r["episode"])
     except Exception:  # noqa: BLE001 — retried by the next pass
         log.debug("mission %s: recorded stop not finished", mission_id, exc_info=True)
+    # BOUNDED REWORK (#1951 §4): a review that asked for changes consumes one round of its edge,
+    # once, and makes its target ready again as a new episode (or asks, past the bound). It
+    # launches nothing: the runner, or the operator's Start, does.
+    from . import mission_rework
+
+    await mission_rework.sweep(mission_id)
     try:
         todo = await missions.run_admitted(lambda: _settled_runs(mission_id))
     except Exception:  # noqa: BLE001 — retried by the next pass
@@ -835,18 +841,27 @@ def _refusal_view(refusals: list[dict], runs: list[dict], state: str = "") -> di
     if any(float(r.get("created_at") or 0) > float(last["created_at"]) for r in runs):
         return None
     reasons = [{k: r[k] for k in ("code", "text", "old", "new") if k in r} for r in last["reasons"]]
+    codes = sorted({r["code"] for r in reasons})
+    if "bound_reached" in codes:
+        # Past the approved rework bound (#1951 §4): nothing changed that a new approval would fix
+        # for HQ; the step is the operator's to start.
+        remedy = "Start the step yourself if it should run again; HQ starts it no more."
+    elif state in ("draft", "planned"):
+        # The remedy by the mission's state: a plan can be approved again only before it runs.
+        remedy = "Approve the plan again to let HQ go on, or start the step yourself."
+    else:
+        remedy = (
+            "Start the step yourself, or stop the mission: a running mission's plan can't be "
+            "approved again."
+        )
     return {
         "boundary": last["boundary"],
         "at": last["created_at"],
-        "codes": sorted({r["code"] for r in reasons}),
+        "codes": codes,
         "reasons": reasons,
         "text": f"Not started: {mission_approval.class_text(reasons)}. Nothing was reserved, "
         "given or started. HQ asks once per change.",
-        # The remedy by the mission's state: a plan can be approved again only before it runs.
-        "remedy": "Approve the plan again to let HQ go on, or start the step yourself."
-        if state in ("draft", "planned")
-        else "Start the step yourself, or stop the mission: a running mission's plan can't be "
-        "approved again.",
+        "remedy": remedy,
     }
 
 
@@ -898,6 +913,10 @@ def view_sync(mission_id: str) -> dict:
     if approval is not None and approval.get("revoked_at") is not None:
         approval = None
     holds = missions.step_holds(mission_id)
+    from . import mission_rework
+
+    rework = mission_rework.view(mission_id, doc)
+    reopens = missions.open_reopens(mission_id, doc)
     refusals: dict[str, list[dict]] = {}
     if approval is not None:
         for r in missions.refusals(mission_id):
@@ -936,8 +955,19 @@ def view_sync(mission_id: str) -> dict:
         # whichever approval, is never started again by the runner. A run that ended without its
         # evidence (a Stop, a failed launch, a lost session) is the operator's to restart. A
         # refused create started nothing and does not count. The claim enforces the same rule
-        # (`already_ran`); rework reopens are the only further episodes (bounded rework, §4).
-        ran = approval is not None and any(r["state"] != "refused" for r in mine)
+        # (`already_ran`). A REWORK REOPEN (§4) no run has consumed yet is the only further
+        # episode: the claim's own rule (`missions.open_reopens`), read from the record its first
+        # run writes, never from clocks.
+        ran = (
+            approval is not None
+            and s["id"] not in reopens
+            and any(r["state"] != "refused" for r in mine)
+        )
+        refusal = _refusal_view(refusals.get(s["id"], []), mine, str(mission.get("state") or ""))
+        # PAST THE APPROVED BOUND (§4): a standing `bound_reached` refusal is final under this
+        # approval (its runs only grow), so the runner offers the step no more; the refusal
+        # itself was the one decision and notice.
+        bound_used = refusal is not None and "bound_reached" in refusal["codes"]
         steps.append(
             {
                 "id": s["id"],
@@ -956,7 +986,7 @@ def view_sync(mission_id: str) -> dict:
                     if on_hold and why is None and approval is not None
                     else None
                 ),
-                "runner_done": ran,
+                "runner_done": ran or bound_used,
                 "runner_text": (
                     "This step has run already, and HQ starts a step only once; start it again "
                     "yourself."
@@ -965,9 +995,8 @@ def view_sync(mission_id: str) -> dict:
                     and not any(r["state"] in missions.OPEN_STEP_STATES for r in mine)
                     else None
                 ),
-                "refusal": _refusal_view(
-                    refusals.get(s["id"], []), mine, str(mission.get("state") or "")
-                ),
+                "refusal": refusal,
+                "rework": rework.get(s["id"]),
                 "runs": [public_run(r) for r in mine],
             }
         )

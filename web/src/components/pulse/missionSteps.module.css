@@ -275,6 +275,15 @@
   margin: 0;
   accent-color: var(--accent);
 }
+/* Bounded rework (#1951 §4, frame 8b): the round a step runs again under, server text. */
+.round {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.roundOut {
+  color: var(--warn-text);
+}
 
 .sr {
   position: absolute;

@@ -594,14 +594,15 @@ def test_the_schema_is_v42_and_rolls_back_to_41(tmp_path):
     db = tmp_path / "missions.sqlite3"
     missions._ready(db).close()
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 42
+    v = missions.SCHEMA_VERSION
+    assert con.execute("PRAGMA user_version").fetchone()[0] == v >= 42
     assert con.execute("SELECT name FROM sqlite_master WHERE name='mission_step_holds'").fetchone()
     con.close()
-    assert missions.rollback_schema(41, path=db) == {"from": 42, "to": 41}
+    assert missions.rollback_schema(41, path=db) == {"from": v, "to": 41}
     missions.reset_schema_cache_for_test()
     missions._ready(db).close()  # re-opening converges
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 42
+    assert con.execute("PRAGMA user_version").fetchone()[0] == v
     con.close()
 
 

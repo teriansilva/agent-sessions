@@ -168,6 +168,13 @@ says so ("under your approval"), and each run says who started it.
 - **Ask me before this step starts** holds one step: HQ leaves it for your own **Start step**.
 - **An approved alternate** starts in its pick's place only when the pick's client can't run it
   (out of usage, or not mission-ready). A full pool waits.
+- **Rework.** When a review step asks for changes, the step it sends back to runs again as a new
+  episode, in a new session, and so do the steps between it and the review, and the review
+  itself. Any other step after it that already ran is left for you to start again; the mission's
+  timeline names it. The card says "rework 2 of 3". The approval covers only the rounds the
+  playbook allows; one more request starts nothing and asks you once what to do (keep it open,
+  waive the review, or stop following it up), with a notification. You can still start the review
+  step again yourself.
 - **Tool requests in those steps** still ask you. If the plan changed since you approved it,
   allowing one is refused; declining always works. A plan can be approved again only before the
   mission runs: once it runs, stop the step or start the steps yourself.

@@ -470,6 +470,14 @@ export function MissionStepsCard({
                 >
                   {st.word}
                 </span>
+                {s.rework ? (
+                  <span
+                    className={`${styles.round} ${s.rework.exhausted ? styles.roundOut : ""}`}
+                    data-testid="step-rework"
+                  >
+                    {s.rework.text}
+                  </span>
+                ) : null}
               </div>
               {s.actor === "agent" ? (
                 <div className={styles.side}>

@@ -1694,6 +1694,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # …and the debrief is written from the records (#1740 P2), after that collection.
             if str(body.get("to") or "") == "review" and mission_debrief.configured():
                 mission_debrief.generate_soon(mission_id)
+            # A state nothing is asked in releases the question holds: the rework question's
+            # bell row goes with them (#1951 §4).
+            from .. import mission_rework
+
+            await asyncio.to_thread(mission_rework.retract_sync, mission_id)
             return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
@@ -1715,18 +1720,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             body = await _body(request)
             missions.validate_id(mission_id)
-            return JSONResponse(
-                await mission_archive.archive_mission(
-                    mission_id,
-                    # A REAL boolean. `bool("false")` is True, and on the flag that authorises
-                    # abandoning a live mission and terminating its agents that is not a type
-                    # nit — it is an authorisation bug reachable from any client that
-                    # stringifies its JSON.
-                    abandon=missions.strict_bool(body.get("abandon"), "abandon", default=False),
-                )
+            out = await mission_archive.archive_mission(
+                mission_id,
+                # A REAL boolean. `bool("false")` is True, and on the flag that authorises
+                # abandoning a live mission and terminating its agents that is not a type
+                # nit — it is an authorisation bug reachable from any client that
+                # stringifies its JSON.
+                abandon=missions.strict_bool(body.get("abandon"), "abandon", default=False),
             )
         except missions.MissionError as e:
             return _fail(e)
+        # An archived mission is never swept again: its rework question's bell row goes now.
+        from .. import mission_rework
+
+        await asyncio.to_thread(mission_rework.retract_sync, mission_id)
+        return JSONResponse(out)
 
     @app.post("/api/missions/{mission_id}/unarchive")
     async def unarchive_route(
@@ -2460,6 +2468,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         action = str(out.get("action") or "")
         if action not in mission_questions.ACTION_NAMES:
             return _fail(missions.MissionError(f"unknown answer action {action!r}", status=422))
+        # An answered rework question's bell row goes with the answer (#1951 §4).
+        from .. import mission_rework
+
+        await asyncio.to_thread(mission_rework.retract_sync, mission_id)
         return JSONResponse(out)
 
     @app.get("/api/missions/{mission_id}/objectives")

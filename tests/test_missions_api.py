@@ -4358,3 +4358,34 @@ def test_a_LIVE_session_whose_engine_PINS_THE_ID_FIRST_can_be_adopted(api, monke
         headers=hdr,
     )
     assert gone.status_code == 404, gone.text
+
+
+def test_an_answer_a_state_change_and_an_archive_retract_a_rework_questions_bell_row(
+    api, monkeypatch
+):
+    """#1951 §4: the rework question's notification goes with the answer (and with a state change
+    that releases question holds), not on a later supervisor pass."""
+    from agent_sessions import mission_rework
+
+    calls: list[str] = []
+    monkeypatch.setattr(mission_rework, "retract_sync", lambda mid: calls.append(mid) or 0)
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    r = c.post(
+        f"/api/missions/{m['id']}/answer", json={"seq": q["seq"], "option_index": 0}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [m["id"]]
+    state = missions.get_mission(m["id"])["state"]
+    r = c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": state, "to": "abandoned", "outcome": "abandoned"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [m["id"], m["id"]]
+    # An archived mission is never swept again: archiving retracts too.
+    r = c.post(f"/api/missions/{m['id']}/archive", json={}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert calls == [m["id"], m["id"], m["id"]]

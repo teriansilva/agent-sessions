@@ -62,6 +62,13 @@ export type MissionStep = {
   held?: boolean;
   hold_text?: string | null;
   refusal?: StepRefusal | null;
+  /** Bounded rework (#1951 §4): the round that made this step run again, or the exhausted edge. */
+  rework?: {
+    round: number;
+    max_rounds: number;
+    exhausted: boolean;
+    text: string;
+  } | null;
   /** HQ already started this step under the approval and won't again (server text). */
   runner_text?: string | null;
   runs: StepRun[];
