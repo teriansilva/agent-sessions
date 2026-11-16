@@ -365,7 +365,10 @@ def _answer_evidence(rep: dict, reason: str) -> dict:
     """What an ENDED report keeps about whether it was answered (#1882, Hermes on #1884): the
     ledger rows that prove it are pinned only while the report is current, so the history row
     itself must carry it for as long as it is kept. ``answered_by_delivery``: an ordinary
-    answer/relay was delivered to the session after the report was filed; ``answer_unknown``: the
+    answer/relay was delivered to the session after the report was filed; ``answer_in_flight``:
+    none was, but one proposed after it is still live or was claimed without a confirmed
+    outcome, so its bytes may be on the pty or may yet be (#1889: the report is replaced while
+    HQ's answer is being typed, and that answer settles only afterwards); ``answer_unknown``: the
     ledger could not be read to say. A report ended BY its answer, or holding a reservation,
     already says so (``ended_by``, ``answer``)."""
     if reason == "answered" or answer_mark(rep):
@@ -376,10 +379,13 @@ def _answer_evidence(rep: dict, reason: str) -> dict:
     if not phys:
         return {"answer_unknown": True}
     try:
-        if orchestrator_ledger.answered_after(phys, float(rep["at"])):
-            return {"answered_by_delivery": True}
+        verdict = orchestrator_ledger.ordinary_answer_after(phys, float(rep["at"]))
     except Exception:  # noqa: BLE001 — unknown is recorded as unknown, never as "unanswered"
         return {"answer_unknown": True}
+    if verdict == "delivered":
+        return {"answered_by_delivery": True}
+    if verdict == "in_flight":
+        return {"answer_in_flight": True}
     return {}
 
 
@@ -560,10 +566,16 @@ def end(
 
 
 def answered_or_maybe(rep: dict) -> str | None:
-    """For an ENDED report: ``"spent"`` when its record shows an answer went (ended by it, a
-    reservation, an ordinary delivery after it), ``"uncertain"`` when it could not be told, else
-    None — the only case in which a refusal may say "nothing was sent"."""
-    if rep.get("ended_by") == "answered" or answer_mark(rep) or rep.get("answered_by_delivery"):
+    """For an ENDED report: ``"spent"`` when its record shows an answer went or may have (ended
+    by it, a reservation, an ordinary delivery after it, or one in flight when it ended),
+    ``"uncertain"`` when it could not be told, else None — the only case in which a refusal may
+    say "nothing was sent"."""
+    if (
+        rep.get("ended_by") == "answered"
+        or answer_mark(rep)
+        or rep.get("answered_by_delivery")
+        or rep.get("answer_in_flight")
+    ):
         return "spent"
     if rep.get("answer_unknown"):
         return "uncertain"

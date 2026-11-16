@@ -2945,3 +2945,247 @@ def test_F2_the_real_curation_reads_metadata_once_per_strict_read(hq, world, mon
     assert _file(token)["ok"]  # a current report forces the full (out-of-window) card read too
     pulse_routes.build_needs_you(1, strict=True)
     assert reads["n"] == 1
+
+
+# ---- #1889: the review findings left open by #1884 ---------------------------------------------
+
+
+def _replace_report(rep, summary="a newer question"):
+    agent_reports.file(
+        {**DECISION, "summary": summary},
+        session_key=A,
+        phys_key=A,
+        engine="claude",
+        generation=rep["generation"],
+        now=time.time() + 60,
+    )
+
+
+@pytest.mark.parametrize("settled", ["delivered", "indeterminate", "failed"])
+def test_1889_an_ordinary_answer_in_flight_at_a_replacement_keeps_the_old_report_spent(
+    hq, world, app, writer, settled
+):
+    """(#1889, 1) HQ's ordinary answer to report A is CLAIMED — its bytes may be on the pty —
+    when the agent files report B, replacing A; the answer settles only afterwards. A retry of
+    A's option is `spent`, never `stale` ("Nothing was sent"), even once compaction evicted the
+    answer's ledger rows: A's ended row recorded the answer in flight when it ended."""
+    _env, token = _launch(A)
+    assert _file(token)["ok"]
+    a = agent_reports.current(A)
+    _hq_answer("hq-1", ts=float(a["at"]) + 1)
+    assert orchestrator_ledger.claim("hq-1", frozenset({"proposed"}))  # bytes on their way
+    _replace_report(a)
+    assert orchestrator_ledger.compare_and_set("hq-1", frozenset({"claimed"}), settled)
+    assert agent_reports.current(A)["summary"] == "a newer question"  # B is not its answer
+    _fill_ledger()
+    orchestrator_ledger.compact()
+    assert "hq-1" not in orchestrator_ledger.latest_by_id()
+    r = app.answer(a["id"], 1)
+    assert r.status_code == 409 and r.json()["code"] == pulse_routes.REFUSED_SPENT
+    assert writer["sent"] == [] and writer["hooks"]["calls"] == 0
+    old = next(x for x in agent_reports.history(A) if x["id"] == a["id"])
+    assert old["ended_by"] == "replaced" and old["answer_in_flight"] is True
+
+
+@pytest.mark.parametrize("settled", ["indeterminate", "failed"])
+def test_1889_an_uncertain_ordinary_answer_is_pinned_while_its_report_is_current(
+    hq, world, app, writer, settled
+):
+    """(#1889, Hermes review 8297) HQ's ordinary answer to report A is claimed and settles
+    UNCERTAIN (indeterminate, or failed after its claim) while A is still current; 500+ newer
+    rows compact the ledger BEFORE B replaces A. Compaction pins what the report end counts, so
+    A's ended row still records the answer and a retry of A's option is `spent`, zero bytes."""
+    _env, token = _launch(A)
+    assert _file(token)["ok"]
+    a = agent_reports.current(A)
+    _hq_answer("hq-1", ts=float(a["at"]) + 1)
+    assert orchestrator_ledger.claim("hq-1", frozenset({"proposed"}))
+    assert orchestrator_ledger.compare_and_set("hq-1", frozenset({"claimed"}), settled)
+    assert agent_reports.current(A)["id"] == a["id"]  # an uncertain answer ends nothing
+    _fill_ledger(orchestrator_ledger.HISTORY_MAX + 520)
+    assert orchestrator_ledger.compact() > 0
+    kept = orchestrator_ledger.latest_by_id()
+    _replace_report(a)
+    r = app.answer(a["id"], 1)
+    assert r.status_code == 409 and r.json()["code"] == pulse_routes.REFUSED_SPENT
+    assert writer["sent"] == [] and writer["hooks"]["calls"] == 0
+    assert "hq-1" in kept and "filler0" not in kept  # the tail was cut; the evidence was not
+    old = next(x for x in agent_reports.history(A) if x["id"] == a["id"])
+    assert old["answer_in_flight"] is True
+
+
+def test_1889_which_ordinary_answers_count_as_in_flight(hq):
+    """(#1889, 1) Live (it may still be typed) and claimed-without-proof count as in flight; a
+    clean pre-byte `stale`, an expiry, a rejection and a never-claimed failure do not; a delivery
+    is a delivery; an answer proposed before the report is never its answer."""
+    t = time.time()
+    _candidate("live", ts=t + 1, phys=A, state="proposed")
+    assert orchestrator_ledger.ordinary_answer_after(A, t) == "in_flight"
+    orchestrator_ledger.transition("live", "rejected")
+    assert orchestrator_ledger.ordinary_answer_after(A, t) is None
+    for aid, state in (("stale", "stale"), ("exp", "expired"), ("fail", "failed")):
+        _candidate(aid, ts=t + 2, phys=A, state="proposed")
+        if aid == "stale":
+            orchestrator_ledger.claim(aid, frozenset({"proposed"}))
+        orchestrator_ledger.transition(aid, state)
+    assert orchestrator_ledger.ordinary_answer_after(A, t) is None
+    _candidate("indet", ts=t + 3, phys=A, state="indeterminate")
+    assert orchestrator_ledger.ordinary_answer_after(A, t) == "in_flight"
+    assert orchestrator_ledger.ordinary_answer_after(A, t + 5) is None  # proposed before it
+    _candidate("done", ts=t + 4, phys=A)
+    assert orchestrator_ledger.ordinary_answer_after(A, t) == "delivered"
+    assert orchestrator_ledger.answered_after(A, t)
+
+
+def test_1889_strict_observation_reads_the_screen_through_the_one_alias_snapshot(
+    hq, world, pushes, monkeypatch
+):
+    """(#1889, 2) The strict read resolves a dismissed row's SCREEN through the same checked
+    alias snapshot it curated with. A later alias read that changed (or failed, which the
+    fail-soft read answers as "no aliases") must not resolve the placeholder-launched session to
+    another key, read another screen and reopen the dismissed episode."""
+    from agent_sessions import metadata, needs_you_dismissals
+
+    placeholder, real = _reconciled_report_world(hq, monkeypatch)
+    screens = {placeholder: SCREEN}
+    monkeypatch.setattr(scrollback, "live_tail_text", lambda key, n=4000: screens.get(key, ""))
+    (row,) = pulse_routes.build_needs_you(1, strict=True)["rows"]
+    assert row["id"] == real
+    assert needs_you_notify.sync_once()["opened"] == 1
+    # The operator hides what they saw: this report, on this screen.
+    fp = orchestrator.observed_screen(placeholder)["fingerprint"]
+    needs_you_dismissals.dismiss(real, fp, report_id=agent_reports.current(placeholder)["id"])
+    assert pulse_routes.build_needs_you(1, strict=True)["rows"] == []
+    assert needs_you_notify.sync_once() == {"opened": 0, "closed": 1}
+    # The alias map changes after the snapshot: every later fail-soft read sees no alias.
+    monkeypatch.setattr(metadata, "load_aliases", lambda *a, **k: {})
+    assert pulse_routes.build_needs_you(1, strict=True)["rows"] == []
+    assert needs_you_notify.sync_once() == {"opened": 0, "closed": 0}  # never reopened
+
+
+def test_1889_answerability_is_judged_on_the_one_metadata_snapshot(hq, world, monkeypatch):
+    """(#1889, 2) The strict read judges a report's opt-out on the metadata snapshot it curated
+    with: a later fail-soft read that lost the session's `orchestrator_excluded` (changed or
+    unreadable, which reads as "nothing") never offers the report as answerable."""
+    from agent_sessions import metadata
+
+    _env, token = _launch(A)
+    assert _file(token)["ok"]
+    excluded = metadata.SessionMeta(orchestrator_excluded=True)
+    monkeypatch.setattr(metadata, "load_checked", lambda *a, **k: ({A: excluded}, {}, {}))
+    monkeypatch.setattr(metadata, "load", lambda *a, **k: {})
+    (row,) = pulse_routes.build_needs_you(1, strict=True)["rows"]
+    assert row["report_answer"] == {
+        "available": False,
+        "reason": pulse_routes.REPORT_ANSWER_EXCLUDED,
+    }
+
+
+@contextlib.contextmanager
+def _stat_fails(monkeypatch, path, err, *, after=0):
+    """``stat`` of ``path`` raises ``err`` (after the first ``after`` calls), and `Path.exists()`
+    answers as Python 3.14's does — False on ANY stat error — whatever this interpreter's own
+    does, so the regression holds on every version."""
+    real_stat = os.stat
+    target = os.fspath(path)
+    calls = {"n": 0}
+
+    def fake_stat(p, *a, **k):
+        if isinstance(p, str | os.PathLike) and os.fspath(p) == target:
+            calls["n"] += 1
+            if calls["n"] > after:
+                raise OSError(err, os.strerror(err))
+        return real_stat(p, *a, **k)
+
+    def exists_314(self, *a, **k):
+        try:
+            self.stat()
+        except OSError:
+            return False
+        return True
+
+    with monkeypatch.context() as m:
+        m.setattr(os, "stat", fake_stat)
+        m.setattr(pathlib.Path, "exists", exists_314)
+        yield
+
+
+@pytest.mark.parametrize("err", [errno.EIO, errno.EACCES], ids=["EIO", "EACCES"])
+def test_1889_a_ledger_stat_error_is_unreadable_and_only_enoent_is_empty(hq, monkeypatch, err):
+    """(#1889, 4) Every strict ledger read classifies an explicit ``stat``: EIO / EACCES are
+    unreadable (raise, or say so), never an empty ledger; only ENOENT reads as no rows."""
+    L = orchestrator_ledger
+    _candidate("hq-1", ts=time.time(), phys=A)
+    path = L._path()
+    with _stat_fails(monkeypatch, path, err):
+        for read in (
+            lambda: L.answered_after(A, 0),
+            lambda: L.ordinary_answer_after(A, 0),
+            lambda: L.report_answer_spent("r1"),
+            lambda: L.delivered_report_ids(),
+            lambda: L._read_all_strict(path),
+        ):
+            with pytest.raises(L.LedgerUnreadable):
+                read()
+        assert L.latest_by_id_checked() == ("unreadable", {})
+        assert L.latest_by_id_serialized_checked() == ("unreadable", {})
+        assert L.lookup("hq-1") == ("unreadable", None)
+    with _stat_fails(monkeypatch, path, errno.ENOENT):
+        assert L.answered_after(A, 0) is False
+        assert L.ordinary_answer_after(A, 0) is None
+        assert L._read_all_strict(path) == []
+        assert L.latest_by_id_checked() == ("ok", {})
+        assert L.lookup("hq-1") == ("absent", None)
+
+
+@pytest.mark.parametrize("err", [errno.EIO, errno.EACCES], ids=["EIO", "EACCES"])
+def test_1889_a_ledger_stat_error_refuses_admission(hq, world, app, writer, monkeypatch, err):
+    """(#1889, 4) At ADMISSION a ledger whose ``stat`` fails refuses the tap as `unknown`: zero
+    bytes, nothing minted, never "no earlier answer"."""
+    _env, token = _launch(A)
+    assert _file(token)["ok"]
+    rep = agent_reports.current(A)
+    _fill_ledger(5)
+    path = orchestrator_ledger._path()
+    before = path.read_bytes()
+    with _stat_fails(monkeypatch, path, err):
+        r = app.answer(rep["id"], 1)
+    assert r.status_code == 503 and r.json()["code"] == pulse_routes.REFUSED_UNKNOWN
+    assert writer["sent"] == [] and path.read_bytes() == before
+
+
+@pytest.mark.parametrize("err", [errno.EIO, errno.EACCES], ids=["EIO", "EACCES"])
+def test_1889_a_ledger_stat_error_declines_compaction(hq, monkeypatch, err):
+    """(#1889, 4) At COMPACTION a ``stat`` failing inside the lock (after the pre-check passed),
+    or at the pre-check itself, declines the pass and leaves every byte — never an empty ledger
+    written over the history."""
+    _candidate("hq-1", ts=time.time(), phys=A)
+    _fill_ledger()
+    path = orchestrator_ledger._path()
+    before = path.read_bytes()
+    with _stat_fails(monkeypatch, path, err, after=1):
+        assert orchestrator_ledger.compact() == 0
+    assert path.read_bytes() == before
+    with _stat_fails(monkeypatch, path, err):
+        assert orchestrator_ledger.compact() == 0
+    assert path.read_bytes() == before
+    assert orchestrator_ledger.compact() > 0  # readable again: it compacts as before
+
+
+@pytest.mark.parametrize("err", [errno.EIO, errno.EACCES], ids=["EIO", "EACCES"])
+def test_1889_a_sidecar_stat_error_fails_the_checked_metadata_read(hq, world, monkeypatch, err):
+    """(#1889, 4) The strict Needs-you read's alias snapshot: a sidecar whose ``stat`` fails is
+    `MetadataUnreadable` (the read fails, the sync retracts nothing), never "no aliases"; only
+    ENOENT is an absent sidecar."""
+    from agent_sessions import metadata
+
+    path = metadata._default_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"__aliases__": {"opencode:new-x": "opencode:ses_x"}}))
+    with _stat_fails(monkeypatch, path, err):
+        with pytest.raises(metadata.MetadataUnreadable):
+            REAL_LOAD_CHECKED(strict_aliases=True)
+        with pytest.raises(needs_you.ReadIncomplete):
+            pulse_routes.build_needs_you(1, strict=True)
+    with _stat_fails(monkeypatch, path, errno.ENOENT):
+        assert REAL_LOAD_CHECKED(strict_aliases=True) == ({}, {}, {})

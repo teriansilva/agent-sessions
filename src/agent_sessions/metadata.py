@@ -581,9 +581,15 @@ def load_checked(
     """
     path = path or _default_path()
     # `_exclusive` touches the file into existence, so ask FIRST — a read-only preview must not
-    # create the operator's sidecar as a side effect.
-    if not path.exists():
+    # create the operator's sidecar as a side effect. An explicit stat, never `Path.exists()`:
+    # from Python 3.14 that answers False for every stat error, and an unreadable sidecar would
+    # read as "nothing overridden, no aliases" (#1889). Only ENOENT / ENOTDIR are absent.
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
         return {}, {}, {}
+    except OSError as e:
+        raise MetadataUnreadable(f"{type(e).__name__}: {e.strerror or e}") from e
     try:
         with _exclusive(path) as fh:
             body = fh.read()

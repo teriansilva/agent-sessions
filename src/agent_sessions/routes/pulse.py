@@ -561,9 +561,16 @@ def build_needs_you(
         cards,
         pending,
         held,
-        # The strict read raises on an unreadable screen; the fail-soft call is unchanged.
+        # The strict read raises on an unreadable screen, and resolves the screen's key through
+        # the SAME alias snapshot (#1889): a fresh fail-soft alias read here could resolve a
+        # dismissed session to another key, read another screen and reopen its episode. The
+        # fail-soft call is unchanged.
         observe=(
-            (lambda row: orchestrator.observed_screen(engines.physical_key(row["id"]), strict=True))
+            (
+                lambda row: orchestrator.observed_screen(
+                    engines.physical_key(row["id"], aliases), strict=True
+                )
+            )
             if strict
             else (lambda row: orchestrator.observed_screen(engines.physical_key(row["id"])))
         ),
@@ -581,7 +588,9 @@ def build_needs_you(
                 stored = current_reports.get(engines.physical_key(row["id"], aliases))
             except Exception:  # noqa: BLE001 — unresolvable: the ledger half still answers
                 stored = None
-            row["report_answer"] = report_answerable(row, stored, aliases)
+            row["report_answer"] = report_answerable(
+                row, stored, aliases, snapshot[0] if snapshot is not None else None
+            )
     out["window_days"] = wd
     return out
 
@@ -663,7 +672,10 @@ def _report_spent(report_id: str, stored: dict | None) -> bool:
 
 
 def report_answerable(
-    row: dict, stored: dict | None = None, aliases: dict[str, str] | None = None
+    row: dict,
+    stored: dict | None = None,
+    aliases: dict[str, str] | None = None,
+    index: dict | None = None,
 ) -> dict:
     """Can an option tap on this row's report be DELIVERED? ``{"available", "reason"}``.
 
@@ -671,7 +683,10 @@ def report_answerable(
     is not `off` (an operator's tap is consent to THIS action, not an exemption from the switch),
     an actuable engine and a session not opted out — and a report no earlier answer to was
     already sent, or may have been (one answer per report). A card is never offered as
-    actionable when every tap would be refused. Never raises; unknown reads as unavailable."""
+    actionable when every tap would be refused. Never raises; unknown reads as unavailable.
+
+    ``aliases`` / ``index``: the strict read's ONE checked metadata snapshot (#1889), so the
+    opt-out is judged on the sidecar the cards were curated from; ``None`` reads it fail-soft."""
     try:
         report_id = str((row.get("report") or {}).get("id") or "")
         try:
@@ -686,7 +701,7 @@ def report_answerable(
         if not engines.supports_orchestrator_input(prov):
             return {"available": False, "reason": REPORT_ANSWER_NOT_ACTUABLE}
         phys = engines.physical_key(str(row["id"]), aliases)
-        idx = metadata.load()
+        idx = index if index is not None else metadata.load()
         meta = idx.get(str(row["id"])) or idx.get(phys)
         if meta is not None and meta.orchestrator_excluded:
             return {"available": False, "reason": REPORT_ANSWER_EXCLUDED}

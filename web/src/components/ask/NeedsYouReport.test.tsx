@@ -10,6 +10,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError } from "../../lib/api";
 import type { NeedsYouPayload, NeedsYouRow } from "../../types/api";
 import { NeedsYou } from "./NeedsYou";
+import { resetReportLocks } from "./reportLocks";
 
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
@@ -83,6 +84,7 @@ function renderRows(rows: NeedsYouRow[], onChanged = vi.fn()) {
 beforeEach(() => {
   vi.mocked(api.answerReport).mockReset();
   vi.mocked(api.dismissReport).mockReset();
+  resetReportLocks();
 });
 
 test("the report is framed as the agent's own words, rendered as text, with numbered options", () => {
@@ -202,6 +204,119 @@ test("a lost response (the fetch rejects after the server wrote) never re-enable
   for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeDisabled();
   await userEvent.click(screen.getAllByTestId("needs-you-report-option")[1]);
   expect(api.answerReport).toHaveBeenCalledTimes(1);
+});
+
+/** The NEEDS YOU section while its list is (re)reading with nothing painted — a filter change
+ *  to a question not answered before. */
+function loadingView() {
+  return (
+    <MemoryRouter>
+      <NeedsYou
+        state={{ status: "loading", data: null }}
+        facets={null}
+        engine=""
+        project=""
+        onEngine={() => {}}
+        onProject={() => {}}
+        onDetails={() => {}}
+        onChanged={() => {}}
+      />
+    </MemoryRouter>
+  );
+}
+
+function expectLockedWithWarning() {
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeDisabled();
+  const alert = screen.getByRole("alert");
+  expect(alert.textContent).toMatch(/may already have been sent/);
+  expect(alert.textContent).not.toMatch(/Nothing was sent/);
+  expect(within(alert).getByRole("link", { name: "Open session" })).toBeInTheDocument();
+}
+
+test("the lost-response lock survives a remount from the retained list (#1889)", async () => {
+  vi.mocked(api.answerReport).mockRejectedValue(new TypeError("Failed to fetch"));
+  const onChanged = vi.fn();
+  const { rerender, unmount } = render(view([row()], onChanged));
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[0]);
+  expect((await screen.findByRole("alert")).textContent).toMatch(/may already have been sent/);
+  // A filter change: the rows unmount while the new question reads…
+  rerender(loadingView());
+  expect(screen.queryByTestId("needs-you-row")).toBeNull();
+  // …and the retained answer to the old question paints again, its refresh still out: the row
+  // still says `available`, but this report's options stay locked, with the warning.
+  rerender(view([row()], onChanged));
+  expectLockedWithWarning();
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[1]);
+  // A navigation away and back: a whole new tree from the same retained rows.
+  unmount();
+  render(view([row()], onChanged));
+  expectLockedWithWarning();
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[2]);
+  expect(api.answerReport).toHaveBeenCalledTimes(1);
+  // A NEWER report on the same session is its own question: unlocked.
+  render(view([row({ report: { ...row().report!, id: "rep2" } })], onChanged));
+  const fresh = screen.getAllByTestId("needs-you-row").at(-1)!;
+  for (const o of within(fresh).getAllByTestId("needs-you-report-option")) expect(o).toBeEnabled();
+});
+
+/** An answer POST held open; ``fail`` settles it the way the test says. */
+function heldAnswer() {
+  let fail: (e: unknown) => void = () => {};
+  vi.mocked(api.answerReport).mockReturnValue(
+    new Promise((_resolve, reject) => {
+      fail = reject;
+    }),
+  );
+  return (e: unknown) => act(async () => fail(e));
+}
+
+test("a row remounted while the tap is PENDING is locked, and shows the lost response's warning (#1889)", async () => {
+  const settle = heldAnswer();
+  const first = render(view([row()], vi.fn()));
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[0]);
+  // Navigate away while the POST is out, and back: the retained row paints, still `available`.
+  first.unmount();
+  render(view([row()], vi.fn()));
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeDisabled();
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[1]);
+  expect(api.answerReport).toHaveBeenCalledTimes(1);
+  // The ORIGINAL request then loses its response: the remounted row hears it.
+  await settle(new TypeError("Failed to fetch"));
+  expectLockedWithWarning();
+});
+
+test("a row remounted while the tap is pending is given its options back by an explicit STALE (#1889)", async () => {
+  const settle = heldAnswer();
+  const first = render(view([row()], vi.fn()));
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[0]);
+  first.unmount();
+  render(view([row()], vi.fn()));
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeDisabled();
+  await settle(new ApiError(409, "the agent's report was replaced", { detail: "x", code: "stale" }));
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeEnabled();
+});
+
+test("a DELIVERED answer keeps the options locked on a remounted row, with no warning", async () => {
+  vi.mocked(api.answerReport).mockResolvedValue({ id: "act", state: "delivered", outcome: "delivered" } as never);
+  const first = render(view([row()], vi.fn()));
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[0]);
+  first.unmount();
+  render(view([row()], vi.fn()));
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeDisabled();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("an explicit STALE refusal leaves nothing locked across a remount", async () => {
+  vi.mocked(api.answerReport).mockRejectedValue(
+    new ApiError(409, "the agent's report was replaced", { detail: "x", code: "stale" }),
+  );
+  const { unmount } = render(view([row()], vi.fn()));
+  await userEvent.click(screen.getAllByTestId("needs-you-report-option")[0]);
+  expect((await screen.findByRole("alert")).textContent).toMatch(/^Nothing was sent/);
+  unmount();
+  render(view([row()], vi.fn()));
+  for (const o of screen.getAllByTestId("needs-you-report-option")) expect(o).toBeEnabled();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("a 5xx without a code is possibly sent too; only an explicit stale gives the options back", async () => {

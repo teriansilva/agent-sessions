@@ -118,6 +118,19 @@ class LedgerUnreadable(Exception):
     """The ledger exists but could not be read: whether an answer was sent is UNKNOWN (#1882)."""
 
 
+def _absent(p: Path) -> bool:
+    """Is the ledger ABSENT? Only ``ENOENT`` / ``ENOTDIR`` from an explicit ``stat`` say so; any
+    other stat error raises `OSError` for the caller to classify as unreadable (#1889).
+    ``Path.exists()`` cannot be asked instead: from Python 3.14 it answers False for EVERY stat
+    error (EIO, EACCES), so a strict read asking it would take an unreadable ledger for an empty
+    one."""
+    try:
+        p.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    return False
+
+
 def report_answer_spent(
     report_id: str, path: Path | None = None, *, exclude: str | None = None
 ) -> bool:
@@ -169,8 +182,11 @@ def _proposed_at(rec: dict, first_ts: float | None) -> float | None:
 
 def _spends_report(rec: dict, first_ts: float | None, phys_key: str, report: dict) -> bool:
     """Could this TERMINAL action spend ``report`` (the session's current one)? Its own option's
-    answer that the one-answer rule counts as spent, or an ordinary answer/relay delivered to the
-    session and proposed after the report."""
+    answer that the one-answer rule counts as spent, or an ordinary answer/relay to the session
+    proposed after the report that `ordinary_answer_after` counts — delivered, or settled without
+    proof either way (#1889: an uncertain answer compacted away while its report is current
+    would leave nothing for the report's end to record). One predicate,
+    `_ordinary_answer_state`, so the pin and the evidence can never drift."""
     if rec.get("source") == "report":
         # Exactly what the one-answer rule counts as spent (`report_answer_spent`): claimed, and
         # not settled as a clean pre-byte `stale`. A clean refusal, an expiry or a never-claimed
@@ -180,7 +196,7 @@ def _spends_report(rec: dict, first_ts: float | None, phys_key: str, report: dic
             and bool(rec.get("claim_owner") or rec.get("state") == "claimed")
             and rec.get("state") != "stale"
         )
-    if rec.get("state") != "delivered" or rec.get("verb") not in REPORT_ENDING:
+    if _ordinary_answer_state(rec) is None:
         return False
     if str((rec.get("authority") or {}).get("physical_key") or "") != phys_key:
         return False
@@ -198,10 +214,44 @@ def answered_after(
     option tap from sending a SECOND answer. Proposal time as the end binds it: the earliest of
     the action's first surviving event and its precondition's screen read. STRICT: raises
     `LedgerUnreadable`."""
+    return ordinary_answer_after(phys_key, report_at, path, exclude=exclude) == "delivered"
+
+
+def _in_flight(rec: dict) -> bool:
+    """May this answer's bytes yet reach, or already be on, the pty without a confirmed delivery
+    (#1889)? Still live (it may be claimed and typed later), or claimed and settled without proof
+    either way. A clean `stale`, an expiry, a rejection and a never-claimed failure typed
+    nothing."""
+    state = rec.get("state")
+    if state in LIVE_STATES or state == "indeterminate":
+        return True
+    return state == "failed" and bool(rec.get("claim_owner"))
+
+
+def _ordinary_answer_state(rec: dict) -> str | None:
+    """For an ordinary `answer` / `relay` (not a report option's): ``"delivered"``,
+    ``"in_flight"`` (`_in_flight`), or None when it typed nothing / is not one. Shared by the
+    report-end evidence (`ordinary_answer_after`) and compaction's pin (`_spends_report`)."""
+    if rec.get("source") == "report" or rec.get("verb") not in REPORT_ENDING:
+        return None
+    if rec.get("state") == "delivered":
+        return "delivered"
+    return "in_flight" if _in_flight(rec) else None
+
+
+def ordinary_answer_after(
+    phys_key: str, report_at: float, path: Path | None = None, *, exclude: str | None = None
+) -> str | None:
+    """What the ledger says about ordinary answers/relays to this session proposed after a report
+    filed at ``report_at`` (as `answered_after` binds them): ``"delivered"`` when one was
+    delivered; ``"in_flight"`` when none was but one may still be typed or may have been (live,
+    claimed, indeterminate, failed after its claim — #1889: a report REPLACED while such an
+    answer is in flight must keep that on its ended row, never read as unanswered); else None.
+    STRICT: raises `LedgerUnreadable`."""
     p = _path(path)
-    if not p.exists():
-        return False
     try:
+        if _absent(p):
+            return None
         raw = p.read_text(errors="replace")
     except OSError:
         raise LedgerUnreadable("the decision ledger could not be read") from None
@@ -211,17 +261,22 @@ def answered_after(
         t = r.get("ts")
         if r["id"] not in first and isinstance(t, int | float) and not isinstance(t, bool):
             first[r["id"]] = float(t)
+    verdict: str | None = None
     for rec in _latest_of(records).values():
-        if rec.get("state") != "delivered" or rec.get("verb") not in REPORT_ENDING:
+        # A report's own answer is the one-answer rule's (`report_answer_spent`), not this.
+        state = _ordinary_answer_state(rec)
+        if state is None or rec.get("id") == exclude:
             continue
-        if rec.get("source") == "report" or rec.get("id") == exclude:
-            continue  # a report's own answer is the one-answer rule's (`report_answer_spent`)
+        delivered = state == "delivered"
         if str((rec.get("authority") or {}).get("physical_key") or "") != phys_key:
             continue
         when = _proposed_at(rec, first.get(rec["id"]))
-        if when is not None and when > report_at:
-            return True
-    return False
+        if when is None or not when > report_at:
+            continue
+        if delivered:
+            return "delivered"
+        verdict = "in_flight"
+    return verdict
 
 
 def delivered_report_ids(path: Path | None = None) -> set[str]:
@@ -524,9 +579,9 @@ def _read_all_strict(p: Path) -> list[dict]:
     EMPTY are both ``[]``; a failed read (permission, I/O) is never mistaken for them — anything
     that REWRITES the ledger reads this way, so it can never replace history it could not read
     with nothing (#1882, Hermes on #1884)."""
-    if not p.exists():
-        return []
     try:
+        if _absent(p):
+            return []
         raw = p.read_text(errors="replace")
     except OSError as e:
         raise LedgerUnreadable(f"the decision ledger could not be read ({type(e).__name__})") from e
@@ -550,9 +605,9 @@ def lookup(action_id: str, path: Path | None = None) -> tuple[str, dict | None]:
     that exists and will not read is unreadable, and the caller must not draw a conclusion from it.
     """
     p = _path(path)
-    if not p.exists():
-        return "absent", None
     try:
+        if _absent(p):
+            return "absent", None
         raw = p.read_text(errors="replace")
     except OSError:
         return "unreadable", None
@@ -587,9 +642,9 @@ def latest_by_id_checked(path: Path | None = None) -> tuple[str, dict[str, dict]
     a file that exists and will not read is unreadable, and the caller must draw no conclusion.
     """
     p = _path(path)
-    if not p.exists():
-        return "ok", {}
     try:
+        if _absent(p):
+            return "ok", {}
         raw = p.read_text(errors="replace")
     except OSError:
         return "unreadable", {}
@@ -635,9 +690,9 @@ def latest_by_id_serialized_checked(path: Path | None = None) -> tuple[str, dict
     """
     p = _path(path)
     with _locked(p):
-        if not p.exists():
-            return "ok", {}
         try:
+            if _absent(p):
+                return "ok", {}
             raw = p.read_text(errors="replace")
         except OSError:
             return "unreadable", {}
@@ -1291,7 +1346,11 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
     on a later pass once the missions store is available again.
     """
     p = _path(path)
-    if not p.exists():
+    try:
+        if _absent(p):
+            return 0
+    except OSError as e:
+        log.warning("ledger: compaction declined — the ledger could not be read (%s)", e)
         return 0
     with _locked(p):
         # STRICT: a ledger that exists and cannot be read is never rewritten (it would become an

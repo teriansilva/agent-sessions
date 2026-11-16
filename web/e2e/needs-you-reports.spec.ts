@@ -275,6 +275,89 @@ test("a lost response on the answer POST says it may have been sent and keeps th
   for (const o of await row.getByTestId("needs-you-report-option").all()) await expect(o).toBeDisabled();
 });
 
+test("the lost-response lock survives a filter change and a navigation with the refresh held (#1889)", async ({ page }, info) => {
+  await mockShell(page, "dark", () => rows());
+  // Once the tap is out, no list read is ever answered: every remount paints the RETAINED list —
+  // whose row still says the report is answerable — and its refresh never lands.
+  let held = false;
+  let posts = 0;
+  await page.route(/\/api\/pulse\/needs-you(\?.*)?$/, (r) => (held ? undefined : r.fallback()));
+  await page.route(/\/api\/needs-you\/.+\/report\/answer$/, (r) => {
+    posts += 1;
+    held = true;
+    return r.abort("connectionreset");
+  });
+  await open(page, info.project.name === "mobile");
+  const first = () => needs(page).getByTestId("needs-you-row").first();
+  await first().getByTestId("needs-you-report-option").first().click();
+  await expect(first().getByTestId("needs-you-row-error")).toHaveText(/may already have been sent/);
+  const stillLocked = async () => {
+    const opts = first().getByTestId("needs-you-report-option");
+    await expect(opts).toHaveCount(4);
+    for (const o of await opts.all()) await expect(o).toBeDisabled();
+    const alert = first().getByTestId("needs-you-row-error");
+    await expect(alert).toHaveText(/may already have been sent/);
+    await expect(alert).not.toHaveText(/Nothing was sent/);
+    await expect(alert.getByRole("link", { name: "Open session" })).toBeVisible();
+    await opts.nth(1).click({ force: true });
+  };
+  // A filter change: the rows unmount while the new question reads (never answered)…
+  const agent = needs(page).getByLabel("Agent");
+  await agent.selectOption("claude");
+  await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(0);
+  // …and back: the retained list paints again, with this report still locked.
+  await agent.selectOption("");
+  await stillLocked();
+  // A navigation away and back, inside the app: the same retained list, the same lock.
+  await page.locator('[data-testid="section-nav"] a[data-section="mission"]').click();
+  await expect(needs(page)).toHaveCount(0);
+  await page.locator('[data-testid="section-nav"] a[data-section="ask"]').click();
+  await stillLocked();
+  expect(posts).toBe(1);
+});
+
+for (const ending of ["lost", "stale"] as const) {
+  test(`a tap still PENDING across a navigation locks the remounted row, which follows it to ${ending === "lost" ? "the lost response" : "an explicit stale"} (#1889)`, async ({ page }, info) => {
+    await mockShell(page, "dark", () => rows());
+    // The answer POST is HELD until the row has been navigated away from and back to.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let posts = 0;
+    await page.route(/\/api\/needs-you\/.+\/report\/answer$/, async (r) => {
+      posts += 1;
+      await held;
+      if (ending === "lost") return r.abort("connectionreset");
+      return r.fulfill({ status: 409, json: { detail: "the agent's report was replaced", code: "stale" } });
+    });
+    await open(page, info.project.name === "mobile");
+    const first = () => needs(page).getByTestId("needs-you-row").first();
+    const opts = () => first().getByTestId("needs-you-report-option");
+    await opts().first().click();
+    await expect.poll(() => posts).toBe(1);
+    // Away and back inside the app while the POST is out: the remounted row (its list read still
+    // says `available`) is locked from the moment the tap left.
+    await page.locator('[data-testid="section-nav"] a[data-section="mission"]').click();
+    await expect(needs(page)).toHaveCount(0);
+    await page.locator('[data-testid="section-nav"] a[data-section="ask"]').click();
+    await expect(opts()).toHaveCount(4);
+    for (const o of await opts().all()) await expect(o).toBeDisabled();
+    release();
+    if (ending === "lost") {
+      const alert = first().getByTestId("needs-you-row-error");
+      await expect(alert).toHaveText(/may already have been sent/);
+      await expect(alert).not.toHaveText(/Nothing was sent/);
+      await expect(alert.getByRole("link", { name: "Open session" })).toBeVisible();
+      for (const o of await opts().all()) await expect(o).toBeDisabled();
+      await opts().nth(1).click({ force: true });
+      expect(posts).toBe(1);
+    } else {
+      for (const o of await opts().all()) await expect(o).toBeEnabled();
+    }
+  });
+}
+
 test("Dismiss posts the report and sends nothing", async ({ page }, info) => {
   const seen = await mockShell(page, "light", () => rows());
   await open(page, info.project.name === "mobile");

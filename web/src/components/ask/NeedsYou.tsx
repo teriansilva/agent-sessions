@@ -8,6 +8,7 @@ import { Loader } from "../hud/Loader";
 import { Led } from "../hud/Meters";
 import s from "./AskHome.module.css";
 import { KIND_LABEL, approveLabel, sessionRoute } from "./needsYouLabels";
+import { pendReport, releaseReport, reportLock, settleReport, useReportLock } from "./reportLocks";
 import type { NeedsYouState } from "./useNeedsYou";
 
 /** NEEDS YOU on the Ask page (#1086): sessions no mission holds that need the operator, newest
@@ -211,6 +212,11 @@ function Row({
   // An agent's own report (#1882) is drawn as its words, with its options, when the row carries
   // no pending decision of its own (a pending decision is what the row's controls settle).
   const report = !row.action && row.report ? row.report : null;
+  // A tap that may have been sent says so on EVERY row showing that report (#1889) — one remounted
+  // while it was pending included: the warning lives with the shared lock (`reportLocks`), which
+  // this row observes, not only in the state of the row that made the request.
+  const lock = useReportLock(report?.id ?? null);
+  const shown = error ?? (lock?.state === "settled" ? lock.note : null);
 
   const dismissReport = async () => {
     if (!report || busy) return;
@@ -262,10 +268,10 @@ function Row({
             {row.reason || row.action?.rationale || row.summary || "Waiting on you."}
           </div>
         )}
-        {error ? (
+        {shown ? (
           <div className={s.rowErr} role="alert" data-testid="needs-you-row-error">
-            {error.text}
-            {error.open ? (
+            {shown.text}
+            {shown.open ? (
               <>
                 {" "}
                 <Link className={s.reportOpen} to={sessionRoute(row.id)}>
@@ -338,37 +344,44 @@ function ReportBody({
   const [sending, setSending] = useState<number | null>(null);
   // A tap that may have reached the agent LOCKS this report's options (#1882, Hermes on #1884):
   // only an explicit "nothing was sent" (or a refusal the server gave before anything was minted)
-  // gives them back. The row is keyed by report id, so a newer report starts unlocked.
-  const [locked, setLocked] = useState(false);
+  // gives them back. The lock is kept by report id OUTSIDE this component and observed (#1889): it
+  // is taken BEFORE the request starts, so a row remounted from the retained list while the tap is
+  // pending — a filter change, a navigation — is locked too, and follows the tap as it settles. A
+  // newer report has its own id and starts unlocked.
+  const locked = useReportLock(report.id) !== undefined;
   const options = report.state === "needs_decision" ? report.options ?? [] : [];
   const answer = row.report_answer ?? { available: false, reason: "" };
   const reasonId = `report-reason-${row.id}`;
 
   const pick = async (n: number) => {
-    if (busy || locked || !answer.available) return;
+    if (busy || reportLock(report.id) !== undefined || !answer.available) return;
+    pendReport(report.id); // locked from HERE, before a byte of the request leaves
     setBusy(true);
     setSending(n);
     setError(null);
     let reopen = false;
+    let note: RowError | null = null;
     try {
       const done = await api.answerReport(row.id, report.id, n);
       // Success only for `delivered`: the server answers 200 for an attempted write too.
       if (done.outcome === "uncertain") {
-        setError({ text: UNCERTAIN, open: true });
+        note = { text: UNCERTAIN, open: true };
       } else if (done.outcome === "stale") {
         reopen = true;
-        setError({
+        note = {
           text: "Nothing was sent — the session couldn’t take it. Open the session to see where it is now.",
           open: true,
-        });
+        };
       }
+      if (note) setError(note);
       onChanged();
     } catch (e) {
-      const refused = reportRefusal(e);
-      reopen = refused.reopen === true;
-      setError(refused);
+      note = reportRefusal(e);
+      reopen = note.reopen === true;
+      setError(note);
     } finally {
-      setLocked(!reopen);
+      if (reopen) releaseReport(report.id);
+      else settleReport(report.id, note ? { text: note.text, open: note.open } : null);
       setSending(null);
       setBusy(false);
     }
