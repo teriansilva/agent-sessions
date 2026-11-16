@@ -257,12 +257,14 @@ test("no console sends into a conversation with a turn it is not streaming, unti
   await waitFor(() => expect(within(thread).getByTestId("ask-turn")).toBeInTheDocument());
   const input = within(thread).getByTestId("composer-input");
   await userEvent.type(input, "and then?{Enter}");
-  const send = within(thread).getByRole("button", { name: /send/i });
-  expect(send).toBeDisabled();
+  // While that turn runs there is no Send: Stop has its place (#2076).
+  expect(within(thread).queryByRole("button", { name: /send/i })).toBeNull();
+  expect(within(thread).getByRole("button", { name: "Stop HQ" })).toBeInTheDocument();
   expect(api.askMessageStream).not.toHaveBeenCalled();
 
   // The other console's turn settles; the page's poll reads it, and only then may it send.
   settled = true;
+  const send = await within(thread).findByRole("button", { name: /send/i }, { timeout: 5000 });
   await waitFor(() => expect(send).toBeEnabled(), { timeout: 5000 });
   await userEvent.click(send);
   await waitFor(() => expect(api.askMessageStream).toHaveBeenCalledTimes(1));

@@ -51,6 +51,36 @@ def is_no_speech_phrase(said: str) -> bool:
     return text in NO_SPEECH_PHRASES or bool(_NO_SPEECH_CREDITS.match(text))
 
 
+#: What stops HQ's running turn when it is the WHOLE utterance (#2076), by language. Only while
+#: a turn runs (the caller's rule); at any other time these words reach HQ like any others. Never
+#: a goodbye: stopping the work never ends the call.
+STOP_PHRASES: dict[str, frozenset[str]] = {
+    "en": frozenset({
+        "stop", "stop it", "stop that", "please stop", "stop please", "cancel", "cancel that",
+        "cancel it", "never mind", "nevermind",
+    }),
+    "de": frozenset({
+        "stopp", "stop", "halt", "halt stopp", "abbrechen", "abbruch", "bitte abbrechen",
+        "vergiss es", "hör auf",
+    }),
+    "es": frozenset({"para", "detente", "alto", "cancela", "cancelar", "olvídalo"}),
+    "fr": frozenset({"stop", "arrête", "arrêtez", "annule", "annuler", "laisse tomber"}),
+    "it": frozenset({"stop", "ferma", "fermati", "basta", "annulla", "lascia stare"}),
+    "pt": frozenset({"pare", "para", "cancela", "cancelar", "esquece", "deixa para lá"}),
+}  # fmt: skip
+
+
+def is_stop_phrase(said: str, languages: frozenset | None = None) -> bool:
+    """Whether an utterance is NOTHING but a stop phrase (#2076), in one of ``languages`` (the
+    call's listening set; ``None`` or empty: every language listed). A sentence that merely
+    contains one ("stop the staging deploy") is a request, never a stop."""
+    text = " ".join(_PUNCT.sub(" ", said or "").split()).casefold()
+    if not text:
+        return False
+    langs = [lang for lang in STOP_PHRASES if not languages or lang in languages]
+    return any(text in STOP_PHRASES[lang] for lang in langs or STOP_PHRASES)
+
+
 #: How many consecutive words of HQ's own line make an echo (#1807). Three: HQ's shortest fixed
 #: line ("Take care, Commander.") is three words, and two common words in a row ("the session")
 #: are not evidence that the microphone heard the speaker.

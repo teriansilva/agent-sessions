@@ -63,6 +63,7 @@ vi.mock("../../lib/api", async () => {
       askNewConversation: vi.fn(),
       askDeleteConversation: vi.fn(),
       askMessageStream: vi.fn(),
+      askStopTurn: vi.fn(),
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
       decideAskProposal: vi.fn(),
@@ -165,6 +166,7 @@ function twoConversations() {
 
 beforeEach(() => {
   vi.mocked(api.askMessageStream).mockReset();
+  vi.mocked(api.askStopTurn).mockReset();
   vi.mocked(api.askConversations).mockReset();
   vi.mocked(api.askConversation).mockReset();
   vi.mocked(api.askNewConversation).mockReset();
@@ -450,7 +452,9 @@ test("a stream cut mid-turn reads the conversation again and waits for the turn 
   await waitFor(() => expect(reads).toBe(1));
   expect(screen.getByTestId("ask-working")).toBeInTheDocument();
   expect(screen.queryByTestId("ask-error")).toBeNull();
-  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  // Nothing can be sent while it runs: Stop has taken Send's place (#2076).
+  expect(screen.queryByTestId("composer-send")).toBeNull();
+  expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
   // …then it is read again until it settles.
   expect(
     await screen.findByText("Settled after the cut.", {}, { timeout: 4000 }),
@@ -557,7 +561,7 @@ test("a watch that settles LATE does not unlock the box under the next question"
   await act(async () => settleOld!(turnOf("old", "t-old", { answer: "late" })));
   await userEvent.type(screen.getByTestId("composer-input"), "third");
   // Still busy with "new": the late settle of "old" must not have re-enabled Send.
-  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  expect(screen.queryByTestId("composer-send")).toBeNull(); // Stop is in its place (#2076)
   expect(screen.getByTestId("ask-working")).toBeInTheDocument();
   expect(screen.queryByText("late")).toBeNull();
 });
@@ -2719,4 +2723,123 @@ test("the folder radio group is one Tab stop and arrow keys move and select (#15
   await userEvent.keyboard("{ArrowUp}{ArrowUp}");
   expect(screen.getByRole("radio", { name: "/srv/c" })).toHaveAttribute("aria-checked", "true");
   expect(screen.getByRole("radio", { name: "/srv/c" })).toHaveFocus();
+});
+
+// ---- Stop (#2076) ------------------------------------------------------------------------------
+
+/** A question that never settles on its own: the stream stays open until `finish` is called. */
+function heldStream() {
+  const held: {
+    turnId?: string;
+    emit?: (ev: AskTurnEvent) => void;
+    finish?: (t: AskConversationTurn) => void;
+  } = {};
+  vi.mocked(api.askMessageStream).mockImplementation(
+    (_id, body, onEvent) =>
+      new Promise<AskConversationTurn>((res) => {
+        held.turnId = body.turnId;
+        held.emit = onEvent;
+        held.finish = res;
+      }),
+  );
+  return held;
+}
+
+function stoppedTurn(question: string, turnId: string): AskConversationTurn {
+  return {
+    ...turnOf(question, turnId, { answer: "", status: "stopped" }),
+    tools: [{ name: "list_sessions", outcome: "ok", n: 1, ms: 400, count: 38 }],
+    steps: { count: 1, more: null, incomplete: false },
+    elapsed_ms: 9_000,
+  };
+}
+
+test("Stop takes Send's place while a turn runs, stops THAT turn, and the row opens (#2076)", async () => {
+  const held = heldStream();
+  vi.mocked(api.askStopTurn).mockImplementation(async (_cid, turnId) => ({
+    turn: stoppedTurn("how far is the epic", turnId),
+    running: false,
+  }));
+  mount(<AskConsole configured />);
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  await userEvent.type(screen.getByTestId("composer-input"), "how far is the epic{Enter}");
+  const stop = await screen.findByTestId("composer-stop");
+  expect(stop).toHaveAccessibleName("Stop HQ");
+  expect(screen.queryByTestId("composer-send")).toBeNull();
+  // The field stays enabled: the next question can be typed while HQ works.
+  expect(screen.getByTestId("composer-input")).toBeEnabled();
+  await waitFor(() => expect(held.emit).toBeDefined());
+  act(() => held.emit!({ type: "progress", step: "tool", tool: "list_sessions", n: 1, at: 1 }));
+  expect(screen.getByRole("status")).toHaveTextContent("Listing your sessions…");
+
+  await userEvent.click(stop);
+  expect(api.askStopTurn).toHaveBeenCalledWith(CID, held.turnId);
+  const row = await screen.findByTestId("ask-process");
+  expect(row).toHaveAttribute("open");
+  expect(row).toHaveTextContent("Stopped after 1 step");
+  expect(screen.getByTestId("ask-stopped-line")).toHaveTextContent("Stopped by you. Nothing was sent.");
+  expect(screen.queryByTestId("ask-answer")).toBeNull();
+  expect(screen.queryByTestId("ask-error")).toBeNull();
+  // The stream then ends with the same stopped turn: Send is back, and nothing is duplicated.
+  await act(async () => held.finish!(stoppedTurn("how far is the epic", held.turnId!)));
+  expect(await screen.findByTestId("composer-send")).toBeInTheDocument();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
+});
+
+test("Esc stops from inside HQ — but an open dialog, or an IME composition, takes it first", async () => {
+  const held = heldStream();
+  vi.mocked(api.askStopTurn).mockImplementation(async (_cid, turnId) => ({
+    turn: stoppedTurn("q", turnId),
+    running: false,
+  }));
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "q{Enter}");
+  await screen.findByTestId("composer-stop");
+  await waitFor(() => expect(held.emit).toBeDefined());
+
+  // An Esc that ends an IME composition is the composition's own.
+  fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+  fireEvent.keyDown(input, { key: "Escape", keyCode: 229 });
+  expect(api.askStopTurn).not.toHaveBeenCalled();
+  // A dialog over HQ takes Esc first.
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  document.body.appendChild(dialog);
+  fireEvent.keyDown(input, { key: "Escape" });
+  expect(api.askStopTurn).not.toHaveBeenCalled();
+  dialog.remove();
+  // An Esc typed somewhere else on the page (a terminal beside HQ) is not HQ's.
+  const elsewhere = document.createElement("textarea");
+  document.body.appendChild(elsewhere);
+  fireEvent.keyDown(elsewhere, { key: "Escape" });
+  expect(api.askStopTurn).not.toHaveBeenCalled();
+  elsewhere.remove();
+
+  fireEvent.keyDown(input, { key: "Escape" });
+  await waitFor(() => expect(api.askStopTurn).toHaveBeenCalledTimes(1));
+  expect(api.askStopTurn).toHaveBeenCalledWith(CID, held.turnId);
+});
+
+test("with nothing running Esc is not HQ's to take", async () => {
+  mount(<AskConsole configured />);
+  fireEvent.keyDown(screen.getByTestId("composer-input"), { key: "Escape" });
+  expect(api.askStopTurn).not.toHaveBeenCalled();
+});
+
+test("a running turn read back shows its process row and the server's live count (#2076)", async () => {
+  twoConversations();
+  const running: AskConversationTurn = {
+    ...turnOf("the latest", "t1", { answer: "", status: "pending" }),
+    tools: [{ name: "find_sessions", outcome: "ok", n: 1, ms: 800, count: 3 }],
+    steps: { count: 240, more: { count: 40, ms: 1, tools: { session_status: 40 }, refused: {} }, incomplete: false, live: { n: 241, tool: "session_status", at: 1 } },
+    elapsed_ms: 61_000,
+  };
+  vi.mocked(api.askConversation).mockResolvedValue({ ...conversation(CID, [running]), running: true });
+  await mountAt(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-working");
+  expect(within(row).getByRole("status")).toHaveTextContent("Reading a session's status…");
+  expect(within(row).getByTestId("ask-process-tally")).toHaveTextContent(/^240 steps · 1 m 0\d s$/);
+  expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
 });

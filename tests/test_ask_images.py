@@ -275,7 +275,8 @@ def test_a_vision_models_name_in_an_unrelated_error_is_not_an_image_refusal(app,
     d = app.new()
     png = _publish(d, "shot.png", PNG)
     turn = app.ask(d, "look", attachments=[png["id"]]).json()["turn"]
-    assert turn["status"] == "failed" and "HTTP 400" in turn["detail"]
+    # Since #2076 the endpoint's own context refusal is named as that (`context_full`).
+    assert turn["status"] == "failed" and turn["code"] == "context_full"
     assert all(_images(_question(b)) for b in script.bodies)
     assert ask_orchestrator._IMAGES_REFUSED == set()
 

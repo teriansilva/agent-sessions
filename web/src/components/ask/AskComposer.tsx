@@ -65,6 +65,8 @@ export function AskComposer({
   convKey = null,
   threadKey = 0,
   onDraftChange,
+  onStop,
+  stopping = false,
 }: {
   /** False when no AI endpoint is configured: the field is disabled and says why. */
   configured: boolean;
@@ -95,6 +97,11 @@ export function AskComposer({
   /** Whether unsent text or a staged file is in the box (#1776: the sidebar's Open as page waits
    *  for it, so a draft is never lost or silently carried across). */
   onDraftChange?: (hasDraft: boolean) => void;
+  /** A turn is running and can be stopped (#2076): Stop takes Send's place. The text field stays
+   *  enabled — the next question can be typed while HQ works. Absent: nothing to stop. */
+  onStop?: () => void;
+  /** The Stop is in; the turn has not settled yet. */
+  stopping?: boolean;
   /** Moves on every SWITCH of the thread on screen (a pick, New, Back/Forward, a delete) — never
    *  on the first send creating a conversation (#1776, Hermes review 7393). */
   threadKey?: number;
@@ -316,6 +323,7 @@ export function AskComposer({
   };
 
   return (
+    <>
     <form
       className={`${styles.composerBox} ${a.box}`}
       onSubmit={(e) => {
@@ -492,18 +500,43 @@ export function AskComposer({
         </div>
         <div className={styles.footTrail}>
           <span className={styles.footSpacer} aria-hidden="true" />
-          <button
-            type="submit"
-            className={`${compose.send} shine`}
-            disabled={!canSend}
-            data-testid="composer-send"
-          >
-            <Send size={15} aria-hidden="true" />
-            Send
-          </button>
+          {onStop ? (
+            // STOP TAKES SEND'S EXACT SLOT while a turn runs (#2076): outlined danger, never
+            // filled. `type="button"`: Enter in the field never stops, and never sends either.
+            <button
+              type="button"
+              className={a.stop}
+              aria-label="Stop HQ"
+              aria-keyshortcuts="Escape"
+              disabled={stopping}
+              onClick={onStop}
+              data-testid="composer-stop"
+            >
+              <span className={a.stopSquare} aria-hidden="true" />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className={`${compose.send} shine`}
+              disabled={!canSend}
+              data-testid="composer-send"
+            >
+              <Send size={15} aria-hidden="true" />
+              Send
+            </button>
+          )}
         </div>
       </div>
     </form>
+    {/* Under the button, outside the box (its cut corner clips what hangs out of it). For the
+        eye and a keyboard only: hidden on a coarse pointer and a phone-width layout. */}
+    {onStop ? (
+      <div className={a.stopHint} aria-hidden="true" data-testid="composer-stop-hint">
+        <kbd>Esc</kbd> to stop
+      </div>
+    ) : null}
+    </>
   );
 }
 

@@ -595,6 +595,9 @@ def register(
                         return
                     if ev.get("t") == "needs_you":
                         await call.on_needs_you_request()
+                    if ev.get("t") == "stop":
+                        # Stop on the call screen (#2076): the running turn, never the call.
+                        call.stop_turn()
                     if ev.get("t") == "card_decided":
                         await call.on_card_decided(ev.get("id"))
                     if ev.get("t") == "mute":

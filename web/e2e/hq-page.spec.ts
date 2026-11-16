@@ -300,7 +300,9 @@ test("in-flight handoff: a turn the sidebar is streaming shows pending on the pa
   const input = thread(page).getByTestId("composer-input");
   await input.fill("one more");
   const send = thread(page).getByRole("button", { name: "Send", exact: true });
-  await expect(send).toBeDisabled();
+  // Nothing can be sent while it runs: Stop has taken Send's place (#2076).
+  await expect(thread(page).getByRole("button", { name: "Stop HQ" })).toBeVisible();
+  await expect(send).toHaveCount(0);
   await input.press("Enter");
   expect(posts).toEqual(["still thinking?"]);
 

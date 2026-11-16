@@ -12,26 +12,74 @@ export type AskStep =
   | { step: "thinking"; round: number }
   | { step: "tool"; tool: string };
 
-/** What each read tool is doing, in the operator's words. An unknown tool reads as a lookup. */
-const TOOL_WORDS: Record<string, string> = {
-  find_sessions: "Searching your sessions and missions…",
-  session_status: "Reading a session's status…",
-  list_missions: "Reading your missions…",
-  mission_status: "Reading a mission's status…",
-  list_projects: "Listing your projects…",
-  list_agents: "Listing the agents…",
+/** What each HQ tool does, in the operator's words (#2076): ONE table for the running row
+ *  ("Reading a session's status…") and for the step list ("Reading a session's status"), covering
+ *  EVERY tool the server offers — `tests/test_ask_stop.py` pins the keys against the server's tool
+ *  list. `noun`: what the step's stored count counts, singular and plural. */
+export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string] }> = {
+  find_sessions: { label: "Searching your sessions and missions", noun: ["match", "matches"] },
+  artifacts_find: { label: "Searching the artifacts", noun: ["artifact", "artifacts"] },
+  session_status: { label: "Reading a session's status", noun: ["session", "sessions"] },
+  session_report: { label: "Reading a session's report", noun: ["report", "reports"] },
+  session_brief: { label: "Reading a session's brief", noun: ["session", "sessions"] },
+  list_sessions: { label: "Listing your sessions", noun: ["session", "sessions"] },
+  list_missions: { label: "Reading your missions", noun: ["mission", "missions"] },
+  mission_status: { label: "Reading a mission's status", noun: ["objective", "objectives"] },
+  list_projects: { label: "Listing your projects", noun: ["project", "projects"] },
+  list_folders: { label: "Listing your folders", noun: ["folder", "folders"] },
+  list_agents: { label: "Listing the agents", noun: ["agent", "agents"] },
+  list_specialists: { label: "Listing the specialists", noun: ["specialist", "specialists"] },
   // #1554: the read-only usage, fleet and settings views.
-  agent_usage: "Reading agent usage…",
-  fleet_status: "Counting your sessions and missions…",
-  read_settings: "Reading your settings…",
-  // #1559: the session and project reads, and staging a change for the operator to confirm.
-  list_sessions: "Listing your sessions…",
-  session_brief: "Reading a session's brief…",
-  list_folders: "Listing your folders…",
-  propose_session_change: "Preparing the change for you to confirm…",
-  propose_project_change: "Preparing the change for you to confirm…",
-  propose_mission: "Preparing the draft mission for you to confirm…",
+  agent_usage: { label: "Reading agent usage", noun: ["agent", "agents"] },
+  fleet_status: { label: "Counting your sessions and missions" },
+  read_settings: { label: "Reading your settings", noun: ["setting", "settings"] },
+  // #1950: a mission's team.
+  read_plan: { label: "Reading a mission's team", noun: ["step", "steps"] },
+  read_pool: { label: "Reading who can take a step", noun: ["choice", "choices"] },
+  assemble: { label: "Preparing the team for you to confirm" },
+  assign: { label: "Preparing the assignment for you to confirm" },
+  set_override: { label: "Preparing the override for you to confirm" },
+  clear_override: { label: "Preparing the override's removal for you to confirm" },
+  // HQ memory.
+  list_memory_notebooks: { label: "Listing the memory notebooks", noun: ["notebook", "notebooks"] },
+  search_memory: { label: "Searching memory", noun: ["note", "notes"] },
+  read_memory: { label: "Reading a memory note", noun: ["note", "notes"] },
+  remember_hq_memory: { label: "Writing a memory note" },
+  propose_hq_memory_change: { label: "Preparing the memory change for you to confirm" },
+  // #1611: the Library.
+  list_playbooks: { label: "Listing your playbooks", noun: ["playbook", "playbooks"] },
+  playbook_detail: { label: "Reading a playbook" },
+  playbook_schema: { label: "Reading the playbook format" },
+  list_skills: { label: "Listing your skills", noun: ["skill", "skills"] },
+  skill_detail: { label: "Reading a skill" },
+  list_automations: { label: "Listing your automations", noun: ["automation", "automations"] },
+  automation_detail: { label: "Reading an automation" },
+  list_secrets: { label: "Listing your secrets' names", noun: ["secret", "secrets"] },
+  propose_library: { label: "Preparing the Library change for you to confirm" },
+  propose_secret: { label: "Preparing the secret change for you to confirm" },
+  // #1750, #1833: connected services.
+  list_connectors: { label: "Listing your connectors", noun: ["connector", "connectors"] },
+  connector_search: { label: "Searching a connected service", noun: ["result", "results"] },
+  connector_read: { label: "Reading from a connected service" },
+  connector_list: { label: "Listing a connected folder", noun: ["item", "items"] },
+  list_recipients: { label: "Listing the recipients", noun: ["recipient", "recipients"] },
+  propose_message: { label: "Preparing the message for you to send" },
+  // #1559: staging a change for the operator to confirm.
+  propose_session: { label: "Preparing the session for you to start" },
+  propose_session_change: { label: "Preparing the change for you to confirm" },
+  propose_project_change: { label: "Preparing the change for you to confirm" },
+  propose_mission: { label: "Preparing the draft mission for you to confirm" },
+  // What HQ does itself, and how a turn ends.
+  send_nudge: { label: "Sending a message", noun: ["session", "sessions"] },
+  ask_operator: { label: "Asking you a question" },
+  end_call: { label: "Ending the call" },
 };
+
+/** A step's words in the list: the tool's label, or a lookup for a tool this build does not know
+ *  (a newer server). */
+export function toolLabel(tool: string): string {
+  return TOOL_LABELS[tool]?.label ?? "Looking it up";
+}
 
 const plural = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`;
@@ -40,7 +88,7 @@ export function askStepLabel(step: AskStep | null): string {
   if (!step || step.step === "classify") return "Reading your question…";
   if (step.step === "thinking")
     return step.round === 0 ? "Reading your question…" : "Putting the answer together…";
-  if (step.step === "tool") return TOOL_WORDS[step.tool] ?? "Looking it up…";
+  if (step.step === "tool") return `${toolLabel(step.tool)}…`;
   if (step.step === "instruct") {
     return step.sessions
       ? `Drafting the instruction for ${plural(step.sessions, "session", "sessions")}…`

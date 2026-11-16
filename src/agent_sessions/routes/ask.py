@@ -10,6 +10,11 @@
 * ``POST /api/ask/conversations/{id}/message/stream`` — the same turn as NDJSON: ``progress``
   lines while it runs, then exactly ONE ``{"type": "turn", "status", "turn"}`` or
   ``{"type": "error", "status", "detail"}``.
+* ``POST /api/ask/conversations/{id}/turns/{turn_id}/stop`` — the Commander stops that running
+  turn (#2076). Answers ``{"turn", "running"}`` with the turn as it is now: ``stopped`` once it
+  settled (an effect in flight finishes first), unchanged for a turn that had already settled, a
+  second Stop or a stale id. 404 for a conversation or a turn that does not exist. It can only
+  ever end the turn it names.
 
 * ``POST /api/ask/proposals/{id}/decide`` — ``{"decision": "start" | "dismiss", "bypass": bool}``
   for a session proposal (#1443 Phase 3a); ``{"decision": "confirm" | "dismiss"}`` for an HQ
@@ -236,7 +241,10 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
     return {
         "id": cid,
         "title": title,
-        "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid),
+        # A turn running here carries the server's live step totals (#2076), not the store's.
+        "turns": ask_orchestrator.with_running(
+            ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid), cid
+        ),
         "running": ask_orchestrator.running(cid),
         # #1443 Phase 4: what the follower wrote, in order; the client shows each session's newest
         # one in a single block (#1755).
@@ -488,6 +496,39 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             _watch(cid, task) if task is not None else settled(),
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/ask/conversations/{cid}/turns/{turn_id}/stop")
+    async def stop_turn(
+        cid: str,
+        turn_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Stop ONE running turn (#2076): a fence the turn settles on (``ask_orchestrator.stop``),
+        never a cancellation. Idempotent; a turn that is not running here is returned as it is."""
+        if not (ask_store.valid_cid(cid) and ask_store.valid_turn_id(turn_id)):
+            return JSONResponse({"detail": "no such turn"}, status_code=404)
+        try:
+            await ask_orchestrator.stop(cid, turn_id)
+            records = await ask_orchestrator.read_conversation(cid)
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+
+        def view() -> dict | None:
+            views = [t for t in ask_orchestrator.turn_views(records) if t["turn_id"] == turn_id]
+            if not views:
+                return None
+            return ask_orchestrator.with_running(ask_orchestrator.with_live(views, cid), cid)[0]
+
+        turn = await asyncio.to_thread(view)
+        if turn is None:
+            return JSONResponse({"detail": "no such turn"}, status_code=404)
+        return JSONResponse(
+            {"turn": turn, "running": ask_orchestrator.running(cid)},
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.get("/api/ask/proposals/{pid}/content")

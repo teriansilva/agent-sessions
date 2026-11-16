@@ -3,8 +3,8 @@
 What is pinned here:
 
 * **the tool list** — read tools only, by name; nothing can propose an effect in this phase;
-* **the bounds** — tool rounds (the last forced to answer), calls per round, proposals per turn,
-  the screen-tail cap;
+* **the bounds** — no cap on rounds or on calls a round (#2076: a turn works until it answers
+  or is stopped); the send cap, the cards a conversation keeps, the screen-tail cap;
 * **model output picks, the server resolves** — a session key or mission id the turn's own tools
   did not return is refused, and nothing is read for it;
 * **the store boundary** — (a) a screen holding a planted template secret and a credential-shaped
@@ -351,104 +351,138 @@ def test_every_request_offers_exactly_the_read_tools_and_the_guarded_prompt(app,
 # ---- bounds ----------------------------------------------------------------------------------
 
 
-def test_the_round_after_the_last_is_forced_to_answer(app, ai):
-    script = ai(
-        *[call("list_projects", cid=f"r{i}") for i in range(ask_orchestrator.MAX_TOOL_ROUNDS)],
-        answer("done looking"),
-    )
-    r = app.ask(app.new(), "projects?")
-    assert r.json()["turn"]["status"] == "done"
-    assert len(script.bodies) == ask_orchestrator.MAX_TOOL_ROUNDS + 1
-    assert all("tool_choice" not in b for b in script.bodies[:-1])
-    assert script.bodies[-1]["tool_choice"] == "none"
-
-
-def test_a_model_that_keeps_calling_tools_after_being_told_to_answer_fails_closed(app, ai):
-    script = ai(call("list_projects"))
-    turn = app.ask(app.new(), "loop").json()["turn"]
-    assert turn["status"] == "failed"
-    assert "kept calling tools" in turn["detail"]
-    assert len(script.bodies) == ask_orchestrator.MAX_TOOL_ROUNDS + 1
-
-
-def test_calls_past_the_per_round_cap_are_dropped_before_replay_and_storage(app, ai):
-    """A provider reply with far more calls than the cap: only the first MAX_CALLS_PER_ROUND are
-    run, replayed and recorded — the rest never enter the conversation or the store."""
-    n = 1000
-    script = ai(calls(*[("list_agents", {})] * n), answer("ok"))
+def test_a_turn_of_forty_rounds_answers(app, ai):
+    """#2076: no round cap. Forty rounds of lookups, then the answer — never "ran out of
+    lookups", and no request is ever forced to answer with `tool_choice`."""
+    script = ai(*[call("list_projects", cid=f"r{i}") for i in range(40)], answer("done looking"))
     cid = app.new()
-    app.ask(cid, "agents")
+    turn = app.ask(cid, "projects?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "done looking"
+    assert len(script.bodies) == 41
+    assert all("tool_choice" not in b for b in script.bodies)
+    assert turn["steps"] == {"count": 40, "more": None, "incomplete": False}
+    assert [t["n"] for t in turn["tools"]] == list(range(1, 41))
+
+
+def test_twenty_calls_in_one_round_all_run(app, ai):
+    """#2076: no per-round cap. Every call the model made is run, replayed and recorded."""
+    script = ai(calls(*[("list_agents", {})] * 20), answer("ok"))
+    cid = app.new()
+    turn = app.ask(cid, "agents").json()["turn"]
+    assert turn["status"] == "done"
     replayed = [m for m in script.bodies[1]["messages"] if m.get("role") == "assistant"]
-    assert len(replayed[-1]["tool_calls"]) == ask_orchestrator.MAX_CALLS_PER_ROUND
-    assert len(script.tool_results(1)) == ask_orchestrator.MAX_CALLS_PER_ROUND
-    tools = [r for r in ask_store.read(cid) if r["type"] == "tool"]
-    assert len(tools) == ask_orchestrator.MAX_CALLS_PER_ROUND
+    assert len(replayed[-1]["tool_calls"]) == 20
+    assert len(script.tool_results(1)) == 20
+    assert len([r for r in ask_store.read(cid) if r["type"] == "tool"]) == 20
 
 
-def test_an_oversized_reply_every_round_keeps_the_turn_inside_its_record_budget(app, ai):
-    script = ai(calls(*[("list_agents", {})] * 1000))
-    cid = app.new()
-    turn = app.ask(cid, "loop").json()["turn"]
-    assert turn["status"] == "failed"
-    tools = [r for r in ask_store.read(cid) if r["type"] == "tool"]
-    rounds = ask_orchestrator.MAX_TOOL_ROUNDS
-    assert len(tools) == rounds * ask_orchestrator.MAX_CALLS_PER_ROUND
-    assert len(script.bodies) == rounds + 1
+def test_the_removed_caps_are_gone():
+    for name in ("MAX_TOOL_ROUNDS", "MAX_CALLS_PER_ROUND", "MAX_PROPOSALS_PER_TURN"):
+        assert not hasattr(ask_orchestrator, name)
+    assert set(ask_orchestrator._BUDGETS) == {"memory", "send"}
+    assert ask_orchestrator.MAX_SENDS_PER_TURN == 10 and ask_orchestrator._BUDGETS["memory"][1] == 3
 
 
-def test_proposals_past_the_per_turn_cap_are_refused(app, ai, monkeypatch):
+def _fake_tool(monkeypatch, kind: str, run, name: str = "propose_thing"):
+    spec = ask_orchestrator._spec(name, "a test tool", {"refuse": {"type": "boolean"}}, [])
+    monkeypatch.setitem(ask_orchestrator.TOOLS, name, ask_orchestrator.Tool(name, kind, spec, run))
+
+
+def test_a_turn_may_stage_more_than_three_cards(app, ai, monkeypatch):
+    """#2076: no per-turn proposal cap — a card does nothing until the Commander decides it."""
     ran: list[str] = []
 
     async def stage(turn, args):
         ran.append("x")
         return {"staged": True}, {}
 
-    fake = ask_orchestrator.Tool(
-        "propose_thing",
-        "proposal",
-        ask_orchestrator._spec("propose_thing", "a test proposal", {}, []),
-        stage,
-    )
-    monkeypatch.setitem(ask_orchestrator.TOOLS, "propose_thing", fake)
-    n = ask_orchestrator.MAX_PROPOSALS_PER_TURN + 1
-    script = ai(calls(*[("propose_thing", {})] * n), answer("ok"))
+    _fake_tool(monkeypatch, "proposal", stage)
+    script = ai(calls(*[("propose_thing", {})] * 7), answer("ok"))
     app.ask(app.new(), "do things")
     results = [json.loads(m["content"]) for m in script.tool_results(1)]
-    assert len(ran) == ask_orchestrator.MAX_PROPOSALS_PER_TURN
-    assert "proposals per turn" in results[-1]["error"]
+    assert len(ran) == 7 and all("error" not in r for r in results)
 
 
-@pytest.mark.parametrize("code, refunded", [("not_actuable", True), ("uncertain", False)])
-def test_a_refused_proposal_gives_its_slot_back_unless_it_may_have_landed(
-    app, ai, monkeypatch, code, refunded
-):
-    """#1960: refusals wrote nothing, so they spend no budget — except an outcome that could not
-    be confirmed, which may have staged something and keeps its slot."""
-    staged: list[str] = []
+def test_a_full_conversation_refuses_a_card_before_anything_is_written(app, ai, monkeypatch):
+    """The one limit on cards is what a conversation keeps (`MAX_SESSION_PROPOSALS`): at it, a
+    propose tool is refused with the store's reason BEFORE it runs, and the turn goes on."""
+    ran: list[str] = []
 
     async def stage(turn, args):
-        if args.get("refuse"):
-            raise ask_orchestrator._ToolRefused("refused: no", code)
-        staged.append("x")
-        return {"proposed": True}, {}
+        ran.append("x")
+        await ask_orchestrator._append(
+            turn.cid,
+            {
+                "type": "proposal",
+                "turn_id": turn.turn_id,
+                "action_id": uuid.uuid4().hex,
+                "kind": "session",
+                "title": "t",
+                "agent": "a",
+                "text": "b",
+            },
+        )
+        return {"proposed": True}, {"count": 1}
 
-    spec = ask_orchestrator._spec(
-        "propose_thing", "a test proposal", {"refuse": {"type": "boolean"}}, []
-    )
-    monkeypatch.setitem(
-        ask_orchestrator.TOOLS,
-        "propose_thing",
-        ask_orchestrator.Tool("propose_thing", "proposal", spec, stage),
-    )
-    cap = ask_orchestrator.MAX_PROPOSALS_PER_TURN
+    _fake_tool(monkeypatch, "proposal", stage)
+    monkeypatch.setattr(ask_store, "MAX_SESSION_PROPOSALS", 3)
+    script = ai(calls(*[("propose_thing", {})] * 5), answer("that is all I can stage"))
+    cid = app.new()
+    turn = app.ask(cid, "do things").json()["turn"]
+    assert turn["status"] == "done" and len(ran) == 3
+    results = [json.loads(m["content"]) for m in script.tool_results(1)]
+    assert all("holds as many proposals as it can" in r["error"] for r in results[3:])
+    assert len([r for r in ask_store.read(cid) if r["type"] == "proposal"]) == 3
+    assert [t.get("error") for t in turn["tools"][3:]] == ["proposals_full"] * 2
+    # …and the next turn of the same conversation starts at the limit.
+    script = ai(call("propose_thing"), answer("still full"))
+    app.ask(cid, "one more")
+    assert len(ran) == 3
+
+
+@pytest.mark.parametrize(
+    "code, wrote, refunded",
+    [("not_actuable", False, True), ("uncertain", False, False), ("pending", True, False)],
+)
+def test_a_refused_send_gives_its_slot_back_unless_it_may_have_left_something(
+    app, ai, monkeypatch, code, wrote, refunded
+):
+    """#1960: refusals wrote nothing, so they spend no budget — except an outcome that could not
+    be confirmed, and (#2076) a refusal that came after the tool's card was written."""
+    sent: list[str] = []
+
+    async def send(turn, args):
+        if args.get("refuse"):
+            if wrote:
+                await ask_orchestrator._append(
+                    turn.cid,
+                    {
+                        "type": "proposal",
+                        "turn_id": turn.turn_id,
+                        "action_id": uuid.uuid4().hex,
+                        "kind": "nudge",
+                        "key": S1,
+                        "title": "t",
+                        "text": "x",
+                    },
+                )
+            raise ask_orchestrator._ToolRefused("refused: no", code)
+        sent.append("x")
+        return {"sent": True}, {"sent": "yes"}
+
+    _fake_tool(monkeypatch, "send", send, "send_thing")
+    cap = ask_orchestrator.MAX_SENDS_PER_TURN
     script = ai(
-        calls(*[("propose_thing", {"refuse": True})] * cap, *[("propose_thing", {})] * cap),
+        calls(*[("send_thing", {"refuse": True})] * cap, *[("send_thing", {})] * cap),
         answer("ok"),
     )
-    app.ask(app.new(), "do things")
+    cid = app.new()
+    turn = app.ask(cid, "do things").json()["turn"]
     results = [json.loads(m["content"]) for m in script.tool_results(1)]
     assert all("refused: no" in r["error"] for r in results[:cap])
-    assert len(staged) == (cap if refunded else 0)
+    assert len(sent) == (cap if refunded else 0)
+    # A refusal that left nothing is a no-effect step; the others are effect steps.
+    assert [bool(t.get("effect")) for t in turn["tools"][:cap]] == [not refunded] * cap
 
 
 def test_the_screen_tail_is_capped(app, ai, found, screen):
@@ -584,21 +618,22 @@ def test_call_markup_quoted_without_a_tool_name_is_an_answer(app, ai):
     assert len(script.bodies) == 1
 
 
-def test_a_call_written_as_text_on_the_forced_round_says_hq_ran_out_of_rounds(app, ai):
-    """The live MiMo turn: every round spent walking folders, then — tools off — the next call
-    arrived as text and was stored as the answer. It now fails, naming the cause."""
+def test_a_call_written_as_text_after_many_rounds_is_asked_again_not_out_of_rounds(app, ai):
+    """The live MiMo turn spent every round walking folders and then failed as "ran out of
+    lookups" (#2076: that no longer exists). After any number of rounds a call that arrives as
+    text is asked again once, and the turn then answers."""
     script = ai(
-        *[call("list_projects", cid=f"r{i}") for i in range(ask_orchestrator.MAX_TOOL_ROUNDS)],
+        *[call("list_projects", cid=f"r{i}") for i in range(20)],
         answer(LEAKED_XML_CALL),
+        answer("here is what I found"),
     )
     cid = app.new()
     turn = app.ask(cid, "walk my folders").json()["turn"]
-    assert turn["status"] == "failed" and turn["code"] == "out_of_rounds"
-    assert "ran out of lookups" in turn["detail"]
-    assert turn["answer"] is None
-    assert len(script.bodies) == ask_orchestrator.MAX_TOOL_ROUNDS + 1
-    assert script.bodies[-1]["tool_choice"] == "none"
+    assert turn["status"] == "done" and turn["answer"] == "here is what I found"
+    assert len(script.bodies) == 22
+    assert all("tool_choice" not in b for b in script.bodies)
     assert TC not in json.dumps(ask_store.read(cid))
+    assert "out_of_rounds" not in json.dumps(ask_store.read(cid))
 
 
 LEAKED_SHAPES = [
@@ -835,12 +870,52 @@ def test_a_running_turn_pins_its_conversation():
     assert ask_store.sweep() == [cid]
 
 
-def test_the_worst_case_conversation_fits_the_read_cap():
-    """Every record at its caps, every field all quotes (each doubles when escaped): MAX_TURNS of
-    the worst turn still read back whole."""
-    big = '"' * 10_000
+def worst_case_bytes() -> int:
+    """MAX_TURNS of the worst turn, every record at its caps and every field all quotes (each
+    doubles when escaped). A turn's WORK is unbounded (#2076); what it STORES is: its first
+    `STEP_RECORDS_MAX` no-effect steps, one record per step with an effect (the send cap with
+    each send's card, the memory cap, the question it ends on), and the `steps_more` summary.
+    Cards are bounded per conversation (`MAX_SESSION_PROPOSALS`), each with its step."""
+    big = '"' * 40_000  # longer than every cap, the message card's 32,000 included
     key = "claude:" + "0" * 36
     tid = str(uuid.uuid4())
+    n = ask_store.STEP_NUMBER_MAX
+
+    def size(*records: dict) -> int:
+        return len(ask_store._records_bytes([ask_store._admit(r, []) for r in records]))
+
+    step = {
+        "type": "tool",
+        "turn_id": tid,
+        "call_id": "c" * 128,
+        "name": "x" * 40,
+        "args": {"x" * (i + 1): big for i in range(8)},
+        # Every field a step record can carry (#2076: the ordinal, the duration, the effect
+        # mark, a send's outcome), each at its largest.
+        "meta": {
+            "keys": [key] * 99,
+            "missions": [M1] * 99,
+            "count": n,
+            "length": n,
+            "rounds": n,
+            "n": n,
+            "ms": n,
+            "effect": True,
+            "sent": "unknown",
+            "error": "e" * 40,
+        },
+    }
+    nudge = {
+        "type": "proposal",
+        "turn_id": tid,
+        "action_id": "a" * 32,
+        "kind": "nudge",
+        "key": key,
+        "title": big,
+        "text": big,
+    }
+    names = [f"{i:03d}".translate(str.maketrans("0123456789", "abcdefghij")) + "x" * 37 for i in
+             range(ask_store.STEPS_MORE_NAMES_MAX)]  # fmt: skip
     turn = [
         # The longest HQ contact id (#1525) rides on the turn's user record.
         {
@@ -851,17 +926,6 @@ def test_the_worst_case_conversation_fits_the_read_cap():
             "contact": max(hq_contacts.IDS, key=len),
         },
         {"type": "status", "turn_id": tid, "status": "pending"},
-        *(
-            {
-                "type": "tool",
-                "turn_id": tid,
-                "call_id": "c" * 128,
-                "name": "session_status",
-                "args": {"x" * (i + 1): big for i in range(8)},
-                "meta": {"keys": [key] * 99, "missions": [M1] * 99, "count": 1, "length": 1},
-            }
-            for _ in range(ask_orchestrator.MAX_TOOL_ROUNDS * ask_orchestrator.MAX_CALLS_PER_ROUND)
-        ),
         {
             "type": "assistant",
             "turn_id": tid,
@@ -869,19 +933,6 @@ def test_the_worst_case_conversation_fits_the_read_cap():
             "matches": [{"id": key, "title": big, "why": big}] * 99,
             "mission_matches": [{"id": M1, "title": big, "state": "done", "why": big}] * 99,
         },
-        *(
-            {
-                "type": "proposal",
-                "turn_id": tid,
-                "action_id": "a" * 32,
-                # The larger card (#1443 Phase 3a): a session's brief outweighs a nudge's text.
-                "kind": "session",
-                "title": big,
-                "agent": big,
-                "text": big,
-            }
-            for _ in range(ask_orchestrator.MAX_PROPOSALS_PER_TURN)
-        ),
         {
             "type": "question",
             "turn_id": tid,
@@ -890,13 +941,48 @@ def test_the_worst_case_conversation_fits_the_read_cap():
             "options": [big] * ask_store.OPTIONS_MAX,
             "allow_text": True,
         },
-        {"type": "status", "turn_id": tid, "status": "failed", "detail": big},
+        {
+            "type": "steps_more",
+            "turn_id": tid,
+            "count": n,
+            "ms": n,
+            "tools": {name: n for name in names},
+            "refused": {name: n for name in names},
+        },
+        {"type": "status", "turn_id": tid, "status": "failed", "detail": big, "code": "e" * 40},
     ]
-    size = len(ask_store._records_bytes([ask_store._admit(r, []) for r in turn]))
+    # The largest card of each kind, with the step that staged it.
+    cards = [
+        {"type": "proposal", "turn_id": tid, "action_id": "a" * 32, "kind": "session",
+         "title": big, "agent": big, "text": big},
+        {"type": "proposal", "turn_id": tid, "action_id": "a" * 32, "kind": "operation",
+         "op": "a" * 20 + "." + "b" * 40, "risk": "destructive", "binding": QD, "title": big,
+         "label": big, "verb": big, "text": big, "needs": sorted(ask_store.OPERATION_INPUTS)},
+        {"type": "proposal", "turn_id": tid, "action_id": "a" * 32, "kind": "message",
+         "binding": QD, "connector": big, "recipient": big, "recipient_kind": big,
+         "recipient_members": 10**6, "text": big, "sender": big, "address": big, "subject": big,
+         "body": big},
+    ]  # fmt: skip
+    card = max(size(c) for c in cards) + size(step)
+    # Every stored step: the no-effect ones, every send (and its card), every memory write, and
+    # the question the turn ends on.
+    effects = ask_orchestrator.MAX_SENDS_PER_TURN + ask_orchestrator._BUDGETS["memory"][1] + 1
+    steps = (
+        size(step) * (ask_orchestrator.STEP_RECORDS_MAX + effects)
+        + size(nudge) * ask_orchestrator.MAX_SENDS_PER_TURN
+    )
     # …plus every update the follower may write (#1443 Phase 4), each at its caps.
     update = {"type": "update", "key": key, "kind": "needs_you", "title": big, "event_id": "e" * 32}
-    size_u = len(ask_store._records_bytes([ask_store._admit(update, [])]))
-    assert size * ask_store.MAX_TURNS + size_u * ask_store.MAX_UPDATES < ask_store.READ_MAX_BYTES
+    return (
+        (size(*turn) + steps) * ask_store.MAX_TURNS
+        + card * ask_store.MAX_SESSION_PROPOSALS
+        + size(update) * ask_store.MAX_UPDATES
+    )
+
+
+def test_the_worst_case_conversation_fits_the_read_cap():
+    """Measured, not estimated — and re-measured for #2076, whose turns have no round cap."""
+    assert worst_case_bytes() < ask_store.READ_MAX_BYTES
 
 
 def test_retention_decides_again_under_the_lock(monkeypatch):

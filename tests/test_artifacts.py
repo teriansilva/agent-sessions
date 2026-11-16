@@ -1065,7 +1065,7 @@ def test_an_absurd_since_through_the_real_dispatch_is_a_refusal_not_a_failed_tur
         '{"since_hours": "1e999"}',
         '{"since_hours": "nan"}',
     ):
-        content, _args, meta = asyncio.run(
+        content, _args, meta, _effect = asyncio.run(
             ask_orchestrator._call(_hq_turn(), "artifacts_find", raw)
         )
         assert meta.get("error") == "bad_arguments", (raw[:40], meta)

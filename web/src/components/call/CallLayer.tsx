@@ -22,6 +22,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAskPanel } from "../ask/askPanel";
+import { formatElapsed } from "../ask/askProcess";
+import { askStepLabel, type AskStep } from "../ask/askStep";
 import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import b from "../ui/actionButton.module.css";
@@ -42,6 +44,13 @@ const STATE_WORD: Record<string, string> = {
 function fmt(ms: number): string {
   const t = Math.max(0, Math.floor(ms / 1000));
   return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
+/** A call's progress word as the step HQ's row names: a tool by its name, else HQ thinking. */
+function callStep(step: string): AskStep {
+  if (step === "thinking" || step === "classify") return { step: "thinking", round: 1 };
+  if (step === "catalog" || step === "content") return { step: "tool", tool: "find_sessions" };
+  return { step: "tool", tool: step };
 }
 
 function useTick(on: boolean, every = 1000): number {
@@ -332,6 +341,41 @@ function CallPanel() {
         <AudioSheet api={devices} id={audioId} />
       ) : null}
       {live ? (
+        <div className={s.dock}>
+        {/* THE WORKING BAND (#2076): its own band above the five call controls, never a sixth
+            one. The acquire bar on its top edge, what HQ is doing, and Stop — which stops the
+            turn and never the call. */}
+        {snap.phase === "connected" && snap.work ? (
+          <div className={s.work} data-testid="call-work">
+            <div className={`nj-acquire ${s.workBar}`} aria-hidden="true" />
+            <div className={s.workRow}>
+              <div className={s.workText}>
+                <span role="status" className={s.workNow} data-testid="call-work-step">
+                  {snap.work.stopping
+                    ? "Stopping…"
+                    : askStepLabel(callStep(snap.work.step))}
+                </span>
+                <span className={s.workTally} aria-hidden="true" data-testid="call-work-tally">
+                  {snap.work.steps.toLocaleString("en-US")} {snap.work.steps === 1 ? "step" : "steps"}
+                  {" · "}
+                  {formatElapsed(Math.max(0, now - snap.work.since))}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={`${b.danger} ${s.workStop}`}
+                aria-label="Stop HQ"
+                disabled={snap.work.stopping}
+                onClick={call.stopTurn}
+                data-testid="call-stop"
+              >
+                <span className={s.workSquare} aria-hidden="true" />
+                Stop
+              </button>
+            </div>
+            <p className={s.workSay}>Or say “stop”. The call stays open.</p>
+          </div>
+        ) : null}
         <div className={s.controls}>
           <div className={s.ctl}>
             <button
@@ -409,6 +453,7 @@ function CallPanel() {
               {dialing ? "Cancel" : "End"}
             </span>
           </div>
+        </div>
         </div>
       ) : null}
     </aside>

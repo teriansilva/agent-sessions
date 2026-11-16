@@ -195,7 +195,8 @@ export type CallServerMessage =
       turn_id?: string | null;
     }
   | { t: "turn"; turn: { turn_id?: string; status?: string; [k: string]: unknown } }
-  | { t: "progress"; step: string }
+  // `steps` (#2076): how many steps the running turn has finished; absent from an older server.
+  | { t: "progress"; step: string; steps?: number | null }
   | { t: "interrupt" }
   | { t: "speaking"; id?: string; on: boolean }
   | { t: "user"; speaking: boolean }

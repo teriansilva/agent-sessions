@@ -138,6 +138,7 @@ export function CallProvider({
       setMuted: (on: boolean) => client?.setMuted(on),
       cardDecided: (id: string) => client?.cardDecided(id),
       askNeedsYou: () => client?.askNeedsYou(),
+      stopTurn: () => client?.stopTurn(),
       dismiss,
       minimized,
       setMinimized,

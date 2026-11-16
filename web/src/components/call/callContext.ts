@@ -18,6 +18,8 @@ export interface CallContextValue {
   cardDecided: (id: string) => void;
   /** "What needs me?" by tap: HQ reads the Needs-you list out, as if asked aloud. */
   askNeedsYou: () => void;
+  /** Stop the HQ turn running on this call (#2076). The call stays open. */
+  stopTurn: () => void;
   /** Close the ended state and hand focus back to what started the call. */
   dismiss: () => void;
   minimized: boolean;
@@ -41,6 +43,7 @@ export const CallContext = createContext<CallContextValue>({
   setMuted: noop,
   cardDecided: noop,
   askNeedsYou: noop,
+  stopTurn: noop,
   dismiss: noop,
   minimized: false,
   setMinimized: noop,

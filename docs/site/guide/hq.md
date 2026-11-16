@@ -136,14 +136,31 @@ loaded at all), and so is a loop that fails to load. Motion is set in
 [Settings → Appearance → Interface](/guide/settings) and follows the device until you choose.
 
 On a wide screen it sits beside the page, so you can keep working while it answers. **Escape**
-closes it, and so does the icon that opened it. On a phone or a window 800px wide or less it covers
+closes it (while HQ is working on an answer, Escape stops that answer instead; press it again to
+close), and so does the icon that opened it. On a phone or a window 800px wide or less it covers
 the page; tap outside it or ✕ to close it. Opening a session or a mission from an answer closes it
 there and leaves it open on a wide screen. A `/hq` link, or an old `/ask` one, opens the Dashboard
 with the sidebar open.
 
-- While it works, the answer shows what it is doing: *Searching your sessions and missions…*,
-  *Searching 140 sessions…*, *Checking against 3 transcripts…*, *Reading a session's status…*,
-  with the seconds so far.
+- **HQ works until it has an answer, or until you stop it.** There is no limit on how many
+  things it may look up for one question. While it works, one row shows what it is doing
+  (*Searching your sessions and missions…*, *Reading a session's status…*), how many steps it
+  has taken and for how long. Open the row to see every step: what it was, what it was about,
+  what came back (*12 matches*, *refused: unknown key*) and how long it took; the step running
+  now is marked. The row stays above the answer afterwards as *23 steps · 1 m 48 s* and opens
+  to the same list, on every device and after a reload. It shows what HQ looked up and counted,
+  never the contents it read.
+- **Stop** takes the place of **Send** while HQ works; **Esc** does the same from the keyboard
+  (when no dialog is open). HQ finishes a message it is already sending, then stops: the turn
+  reads *Stopped after 9 steps* with the steps it took and no answer, and under it *Stopped by
+  you. Nothing was sent.* If a message did go out it is in the list, and if HQ could not confirm
+  whether one arrived the line says so. You can keep typing while HQ works, and "continue" in
+  your next message picks the stopped question up again.
+- A question that runs for a very long time keeps its first 200 lookups one by one and counts
+  the rest (*… and 1,240 more lookups*, by kind). Everything HQ sent, staged or remembered is
+  always listed. On a very long question HQ lets go of its oldest lookups to make room for new
+  ones; if the question still outgrows what the model can hold, HQ says so and you can ask for
+  a smaller step.
 - HQ can look up a session's live state and screen, your missions and their objectives, your
   projects and your agents to answer.
 - HQ can tell you **how your agents' usage looks** ("how is my Claude usage?"), using what each

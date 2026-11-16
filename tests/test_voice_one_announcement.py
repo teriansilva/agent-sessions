@@ -60,7 +60,9 @@ def _run(monkeypatch, via, result):
     monkeypatch.setitem(ask_orchestrator.TOOLS, "propose_session", tool)
     turn = ask_orchestrator._Turn(cid="x", turn_id="t", question="q", working_keys=set(),
                                   via=via, progress=lambda ev: None)  # fmt: skip
-    content, _args, _meta = asyncio.run(ask_orchestrator._call(turn, "propose_session", "{}"))
+    content, _args, _meta, _effect = asyncio.run(
+        ask_orchestrator._call(turn, "propose_session", "{}")
+    )
     return json.loads(content)
 
 

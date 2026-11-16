@@ -13,3 +13,7 @@ export const AUTOMATIONS_API = "/api/automations";
 /** `GET` — `{origins: {key: {automation_id, name, …}}}`: which sessions and missions an automation
  *  started, for the origin badges. */
 export const AUTOMATION_ORIGINS_API = `${AUTOMATIONS_API}/origins`;
+
+/** `POST` — stop one running HQ turn (#2076). It names the turn, so it can never end another. */
+export const askStopTurnPath = (cid: string, turnId: string) =>
+  `/api/ask/conversations/${encodeURIComponent(cid)}/turns/${encodeURIComponent(turnId)}/stop`;

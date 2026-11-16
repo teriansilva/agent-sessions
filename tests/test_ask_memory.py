@@ -20,7 +20,9 @@ def turn(question="Remember that research answers should cite primary sources.")
 
 
 def invoke(state, name, args):
-    content, stored, meta = asyncio.run(ask_orchestrator._call(state, name, json.dumps(args)))
+    content, stored, meta, _effect = asyncio.run(
+        ask_orchestrator._call(state, name, json.dumps(args))
+    )
     return json.loads(content), stored, meta
 
 

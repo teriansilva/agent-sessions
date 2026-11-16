@@ -1,9 +1,11 @@
 """Ask as a conversation that can look things up, ask back and propose (#1443 Phases 1–3a).
 
-One turn is a bounded tool loop over the configured AI endpoint: the model may call READ tools —
+One turn is a tool loop over the configured AI endpoint: the model may call READ tools —
 find sessions, a session's status, the missions, one mission's status, the projects, the agents —
-and then answers in plain text. Everything a turn decides is in :mod:`ask_store`'s conversation,
-so the answer survives a reload or a client that went away.
+and then answers in plain text. The loop has no round or call cap (#2076): it ends when the model
+answers, asks, fails for a real reason, or the Commander stops it (:func:`stop`). Everything a
+turn decides is in :mod:`ask_store`'s conversation, so the answer survives a reload or a client
+that went away.
 
 **One transport.** Each round is ``review.post_chat_response`` with the AI-review configuration:
 the registered-prompt check and template-secret redaction apply, and no outbound-HTTP site is
@@ -16,8 +18,8 @@ tools, ``ask_operator`` (ends the turn on a stored question), ``send_nudge`` (#1
 a ledger action delivered at once through `actuator.deliver` with HQ's own authority — the
 Commander told HQ to message a session, so HQ does, as any agent session can) and the
 ``proposal`` tools (e.g. ``propose_session``: staged for the operator's tap, which alone acts).
-:data:`MAX_PROPOSALS_PER_TURN` bounds proposals per turn and :data:`MAX_SENDS_PER_TURN` sends;
-a refused call spends neither.
+:data:`MAX_SENDS_PER_TURN` bounds sends per turn (a refused call that wrote nothing spends
+none); cards are bounded per conversation (`ask_store.MAX_SESSION_PROPOSALS`), not per turn.
 
 **Model output picks, the server resolves.** A session key is accepted only when this turn's own
 tools returned it (and it parses); a mission id only when this turn's tools returned it. Anything
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import math
@@ -76,10 +79,6 @@ from .connectors import hq as connector_hq
 
 log = logging.getLogger(__name__)
 
-#: Bounds (#1443 §2). The round after the last is sent with `tool_choice: "none"`. Sixteen, not
-#: six: a connector folder is walked one level per round (refs are minted, never built), so a
-#: path seven folders deep spent every round of six before HQ read a single file.
-MAX_TOOL_ROUNDS = 16
 #: Added to a staged card's tool result on a call (#1911): the call announces every card itself
 #: (`voice_text.card_sentences` / the read-back), so HQ's own words would say it twice.
 CALL_CARD_NOTE = (
@@ -88,8 +87,6 @@ CALL_CARD_NOTE = (
     "what the card does not show, such as a warning: never describe its project, agent, brief or "
     "effect, and never tell them to start or confirm it."
 )
-MAX_CALLS_PER_ROUND = 8
-MAX_PROPOSALS_PER_TURN = 3
 #: Messages HQ may send into sessions in one turn (#1960): "nudge every stuck session" is one ask.
 MAX_SENDS_PER_TURN = 10
 #: Refusal codes after which a proposal MAY have been staged (an append whose outcome could not be
@@ -109,6 +106,25 @@ HISTORY_TURNS = 8
 #: detail (some details carry endpoint text). Without it the question vanished from the history, so
 #: the operator's "try again" reached HQ with nothing to try.
 FAILED_TURN_NOTE = "[No answer: this request failed before HQ could reply.]"
+#: What a STOPPED turn's question is replayed with (#2076): the Commander ended it, so "continue"
+#: in the next message has something to continue.
+STOPPED_TURN_NOTE = "[Stopped by the Commander before HQ answered.]"
+
+#: No-effect tool records a turn stores one by one (#2076). The work is not capped: steps past
+#: this still run and still reach the model; they are counted, and one `steps_more` record says
+#: how many when the turn settles. A step that had, or may have had, an effect is ALWAYS stored.
+STEP_RECORDS_MAX = 200
+#: The whole serialized request (messages and tool schemas) HQ aims to stay under, in characters
+#: (#2076): about 75k tokens at four characters a token, well under common context windows.
+#: `_fit` makes room by dropping old tool results, then old rounds; never the question or the
+#: newest round.
+REQUEST_BUDGET_CHARS = 300_000
+#: What one image part counts as against the budget: its bytes are not text the model reads.
+IMAGE_PART_CHARS = 4_000
+DROPPED_RESULT = "[an earlier result, dropped to make room]"
+#: How long the stop route waits for the turn to settle before it answers with the turn as it is
+#: (an effect in flight, a send's delivery, runs to its recorded outcome first).
+STOP_WAIT_S = 5.0
 
 #: How long shutdown waits for running turns — under systemd's default 90 s stop timeout.
 TURN_SHUTDOWN_WAIT_S = 60.0
@@ -126,6 +142,10 @@ class TurnError(Exception):
         self.status = status
         self.detail = detail
         self.extra = extra
+
+
+class _Stopped(Exception):
+    """The Commander stopped this turn (#2076): raised at a safe point, settled as ``stopped``."""
 
 
 class _ToolRefused(Exception):
@@ -178,6 +198,31 @@ class _Draft:
     def open(self) -> bool:
         """Still a draft: neither committed nor being committed."""
         return not self.committing and not self.committed.is_set()
+
+
+@dataclass
+class _More:
+    """The steps a turn ran past its stored ones (#2076): how many, how long, and a count per
+    tool name with refusals apart. Numbers and tool names only; bounded by the tool list."""
+
+    count: int = 0
+    ms: int = 0
+    tools: dict[str, int] = field(default_factory=dict)
+    refused: dict[str, int] = field(default_factory=dict)
+
+    def add(self, name: str, ms: int, *, refused: bool) -> None:
+        self.count += 1
+        self.ms += ms
+        into = self.refused if refused else self.tools
+        into[name] = into.get(name, 0) + 1
+
+    def view(self) -> dict:
+        return {
+            "count": self.count,
+            "ms": self.ms,
+            "tools": dict(self.tools),
+            "refused": dict(self.refused),
+        }
 
 
 @dataclass
@@ -258,6 +303,26 @@ class _Turn:
     connectors: connector_hq.TurnConnectors = field(default_factory=connector_hq.TurnConnectors)
     #: A call's DRAFT turn (#1845): nothing stored, shown or done with an effect until committed.
     draft: _Draft | None = None
+    #: The Commander stopped this turn (#2076). A FENCE, never a cancellation of the turn's own
+    #: task: it is read before each model request and before each tool starts, and `_settle`
+    #: decides under the conversation lock. Set only by :func:`stop`.
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
+    #: What Stop may abandon right now: the model request in flight, or a read tool. Never a
+    #: tool with an effect — that one runs to its recorded outcome.
+    inflight: asyncio.Future | None = None
+    #: The outcome is written (under the conversation lock): a Stop from here on changes nothing.
+    settled: bool = False
+    #: Steps finished so far, how many no-effect ones are stored one by one, the ones past
+    #: `STEP_RECORDS_MAX` (counted, not stored) and the step running now (``{"n", "tool",
+    #: "at"}``): the live totals a reader of a running turn is given (`with_running`).
+    steps: int = 0
+    plain_stored: int = 0
+    more: _More = field(default_factory=_More)
+    live: dict | None = None
+    #: Cards (proposal records, a nudge's own aside) this conversation holds, counted when the
+    #: turn began and as its tools write them: a propose tool is refused at
+    #: `ask_store.MAX_SESSION_PROPOSALS`, BEFORE it writes anything.
+    cards: int = 0
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -1542,9 +1607,12 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         # did nothing, and the row is whatever that other caller made it.
         return (
             {"sent": False, "reason": str(e)[:REASON_MAX], "note": "Nothing was sent by you."},
-            {"keys": [key], "count": 1},
+            {"keys": [key], "count": 1, "sent": "no"},
         )
-    return _sent_result(done), {"keys": [key], "count": 1}
+    # What became of the message, on the step's own record (#2076): a stopped turn's "nothing
+    # was sent" is read from these, never from a missing step.
+    outcome = {"delivered": "yes", "indeterminate": "unknown"}.get(done.get("state"), "no")
+    return _sent_result(done), {"keys": [key], "count": 1, "sent": outcome}
 
 
 def _index_arg(args: dict, name: str, rows: list[dict] | None, listed_by: str) -> dict:
@@ -2989,12 +3057,25 @@ TOOLS: dict[str, Tool] = {
 }
 
 
-#: Per-turn budgets by tool kind: ``kind: (turn counter, cap, noun, refusal code)``.
+#: Per-turn budgets by tool kind: ``kind: (turn counter, cap, noun, refusal code)``. They bound
+#: what HQ does on its own authority, never its work (#2076): there is none for reads, and none
+#: for proposals — a card does nothing until the Commander decides it.
 _BUDGETS = {
     "memory": ("memories", 3, "memory writes", "too_many_memories"),
-    "proposal": ("proposals", MAX_PROPOSALS_PER_TURN, "proposals", "too_many_proposals"),
     "send": ("sends", MAX_SENDS_PER_TURN, "messages", "too_many_sends"),
 }
+#: Kinds whose call can have an effect. A step of one that went through, or whose refusal may
+#: have left something behind, is ALWAYS stored (#2076); every other step is a no-effect step.
+EFFECT_KINDS = frozenset({"send", "proposal", "memory", "ends_turn"})
+#: …of which the kinds whose REFUSAL may have left something behind (an unconfirmed outcome, a
+#: card written before the refusal). Each is bounded: a send or memory slot it then keeps, or one
+#: of the conversation's card slots.
+BOUNDED_EFFECT_KINDS = frozenset({"send", "proposal", "memory"})
+#: Kinds a Stop abandons mid-flight: reads. Their late result is discarded, never recorded.
+ABANDONED_ON_STOP = frozenset({"read"})
+#: The cards a running tool wrote (`_append` notes them here): a refusal AFTER its card was
+#: written did not "write nothing", so it keeps its slot and its record.
+_WROTE: contextvars.ContextVar[list | None] = contextvars.ContextVar("ask_wrote", default=None)
 
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
 CALL_ONLY_TOOLS = frozenset({"end_call"})
@@ -3022,23 +3103,54 @@ def tool_specs(via: str | None = None) -> list[dict]:
     return [t.spec for t in TOOLS.values() if via == "call" or t.name not in CALL_ONLY_TOOLS]
 
 
-async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]:
-    """Run one tool call. Returns ``(content for the model, args to store, metadata to store)``."""
+def _count_card(turn: _Turn, wrote: list) -> None:
+    """A proposal step that had, or may have had, an effect takes at least one of the
+    conversation's card slots, whether or not its card landed: stored effect steps are bounded
+    by `ask_store.MAX_SESSION_PROPOSALS` by construction, never by how often the model tried."""
+    turn.cards += max(1, sum(1 for r in wrote if r.get("kind") != "nudge"))
+
+
+async def _stoppable(turn: _Turn, coro):
+    """Await ``coro`` as a CHILD of the turn that Stop may cancel (#2076): a model request or a
+    read. Raises `_Stopped` when the Commander stopped the turn; the turn's own task is never
+    cancelled by a Stop. A cancellation of the turn itself (a draft's discard) passes through."""
+    if turn.stop.is_set():
+        coro.close()
+        raise _Stopped
+    child = asyncio.ensure_future(coro)
+    turn.inflight = child
+    try:
+        return await child
+    except asyncio.CancelledError:
+        me = asyncio.current_task()
+        if turn.stop.is_set() and not (me is not None and me.cancelling()):
+            # Abandoned: whatever the child still finishes (a worker thread, say) is discarded.
+            raise _Stopped from None
+        raise
+    finally:
+        turn.inflight = None
+
+
+async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict, bool]:
+    """Run one tool call. Returns ``(content for the model, args to store, metadata to store,
+    whether it had or may have had an effect)``."""
     tool = TOOLS.get(name)
     if tool is None:
         refusal = json.dumps({"error": f"refused: no tool named {name!r}"})
-        return refusal, {}, {"error": "unknown_tool"}
+        return refusal, {}, {"error": "unknown_tool"}, False
     try:
         args = json.loads(raw_args or "{}")
     except ValueError:
         args = None
     if not isinstance(args, dict):
         refusal = json.dumps({"error": "arguments are not a JSON object"})
-        return refusal, {}, {"error": "bad_arguments"}
+        return refusal, {}, {"error": "bad_arguments"}, False
     if turn.draft is not None and name not in DRAFT_READ_TOOLS:
         # A draft runs no tool with an effect before it is committed (#1845): this one waits
         # here, with nothing of it done, and runs only once the Commander has finished.
         await turn.draft.committed.wait()
+        if turn.stop.is_set():
+            raise _Stopped
     declared = tool.spec["function"]["parameters"]["properties"]
     # Declared STRING arguments only; the store guards each one. Nothing else the model sent is
     # kept, whatever its type.
@@ -3051,18 +3163,49 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
                 json.dumps({"error": f"refused: at most {cap} {noun} per turn"}),
                 stored_args,
                 {"error": code},
+                False,
             )
         setattr(turn, counter, getattr(turn, counter) + 1)
-    turn.progress({"type": "progress", "step": "tool", "tool": name})
+    if tool.kind == "proposal" and turn.cards >= ask_store.MAX_SESSION_PROPOSALS:
+        # The one limit on cards (#2076): what a conversation keeps, not what a turn may stage.
+        # Refused BEFORE the tool runs, so nothing is written; the turn goes on.
+        return (
+            json.dumps(
+                {
+                    "error": "refused: this conversation holds as many proposals as it can — "
+                    "tell the Commander to start a new conversation for more"
+                }
+            ),
+            stored_args,
+            {"error": "proposals_full"},
+            False,
+        )
+    wrote: list = []
+    token = _WROTE.set(wrote)
     try:
-        result, meta = await tool.run(turn, args)
+        if tool.kind in ABANDONED_ON_STOP:
+            result, meta = await _stoppable(turn, tool.run(turn, args))
+        else:
+            # A tool with an effect runs to its recorded outcome, whatever Stop says meanwhile.
+            result, meta = await tool.run(turn, args)
     except _ToolRefused as e:
-        if budget is not None and e.code not in UNSETTLED_REFUSALS:
-            # A refusal did nothing (refusals write nothing), so it gives its slot back (#1960):
-            # refused calls must not leave no room for the one that can go through. The slot was
-            # taken BEFORE the run, so nothing is ever done past the cap.
+        # A refusal did nothing (refusals write nothing), so it gives its slot back (#1960):
+        # refused calls must not leave no room for the one that can go through. The slot was
+        # taken BEFORE the run, so nothing is ever done past the cap. Kept: an outcome that
+        # could not be confirmed, and a refusal that came after the tool's card was written.
+        left_something = tool.kind in BOUNDED_EFFECT_KINDS and (
+            e.code in UNSETTLED_REFUSALS or bool(wrote)
+        )
+        if budget is not None and not left_something:
             setattr(turn, budget[0], getattr(turn, budget[0]) - 1)
-        return json.dumps({"error": str(e)}), stored_args, {"error": e.code}
+        if left_something and tool.kind == "proposal":
+            _count_card(turn, wrote)
+        return json.dumps({"error": str(e)}), stored_args, {"error": e.code}, left_something
+    finally:
+        _WROTE.reset(token)
+    effect = tool.kind in EFFECT_KINDS
+    if tool.kind == "proposal":
+        _count_card(turn, wrote)
     if tool.kind == "proposal" and turn.via == "call" and result.get("proposed") is True:
         result = {**result, "on_call": CALL_CARD_NOTE}  # one announcement per card (#1911)
     content = json.dumps(result, ensure_ascii=False)
@@ -3071,8 +3214,9 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
             json.dumps({"error": "refused: the result was too large — narrow the question"}),
             stored_args,
             {"error": "too_large"},
+            effect,
         )
-    return content, stored_args, meta
+    return content, stored_args, meta, effect
 
 
 # ---- the turn ----------------------------------------------------------------------------------
@@ -3087,7 +3231,8 @@ def _history(
     speaker's label (`speaker_label`), so the contact answering now never reads it as their own
     (`_handover` says what the label means). Decided from the stored speaker, never the text.
     A question whose turn FAILED is replayed with `FAILED_TURN_NOTE` (#1887) — no speaker's answer,
-    so no label — and a still-pending one not at all."""
+    so no label — one the Commander STOPPED with `STOPPED_TURN_NOTE` (#2076), and a still-pending
+    one not at all."""
     questions: dict[str, str] = {}
     speakers: dict[str, str] = {}
     answers: dict[str, str] = {}
@@ -3116,7 +3261,8 @@ def _history(
             answers[tid] = r["text"]
     out: list[dict] = []
     switched = False
-    replayed = [t for t in order if t in answers or statuses.get(t, {}).get("status") == "failed"]
+    ended = {t: statuses.get(t, {}).get("status") for t in order}
+    replayed = [t for t in order if t in answers or ended[t] in ("failed", "stopped")]
     for tid in replayed[-HISTORY_TURNS:]:
         if tid in answers:
             answer = answers[tid]
@@ -3124,7 +3270,7 @@ def _history(
                 answer = f"{speaker_label(speakers[tid])}\n\n{answer}"
                 switched = True
         else:
-            answer = FAILED_TURN_NOTE
+            answer = STOPPED_TURN_NOTE if ended[tid] == "stopped" else FAILED_TURN_NOTE
         out += [
             {"role": "user", "content": questions[tid]},
             {"role": "assistant", "content": answer},
@@ -3269,17 +3415,19 @@ async def _no_tools_turn(turn: _Turn, history: list[dict], switched: bool, cfg: 
     """The endpoint takes no tools: the router answers directly, or the two-stage find does
     (#2028). The call-end judgement runs here as on the tool path — there is no `end_call` tool."""
     try:
-        direct = await _route(turn, history, switched)
+        # The router, the find and a memory RECALL only read: Stop abandons them (#2076). Only a
+        # routed memory WRITE runs to its recorded outcome (`ask_memory.routed_turn`).
+        direct = await _stoppable(turn, _route(turn, history, switched))
         if turn.memory_route is not None:
             records = await ask_memory.routed_turn(turn, history, switched)
         elif direct is not None:
             records = [_assistant(turn, direct), _status(turn, "done")]
         else:
-            records = await _fallback_find(turn, history)
+            records = await _stoppable(turn, _fallback_find(turn, history))
     except review.ReviewError as e:
         return [_status(turn, "failed", str(e))]
     if _judges_call_end(turn):
-        turn.end_call = await _call_is_over(turn, cfg, records[0]["text"])
+        turn.end_call = await _stoppable(turn, _call_is_over(turn, cfg, records[0]["text"]))
     return records
 
 
@@ -3331,24 +3479,33 @@ def _status(turn: _Turn, status: str, detail: str = "", code: str | None = None)
     return rec
 
 
-async def _append(cid: str, *records: dict) -> None:
-    await asyncio.to_thread(ask_store.append, cid, *records)
+async def _append(cid: str, *records: dict) -> list[dict]:
+    """Append through the store boundary; returns the records AS WRITTEN (redacted, capped)."""
+    written = await asyncio.to_thread(ask_store.append, cid, *records)
+    wrote = _WROTE.get()
+    if wrote is not None:
+        wrote.extend(r for r in written if r.get("type") == "proposal")
+    return written
 
 
-async def _turn_append(turn: _Turn, *records: dict) -> None:
+async def _turn_append(turn: _Turn, *records: dict) -> list[dict]:
     """A turn's own records: a draft keeps them until it is committed (#1845). One that is being
-    committed right now waits for the commit's write, so the records keep their order."""
+    committed right now waits for the commit's write, so the records keep their order. Returns
+    the records as written, or nothing for ones a draft holds."""
     draft = turn.draft
     if draft is not None and not draft.committed.is_set():
         if draft.open():
             draft.records.extend(records)
-            return
+            return []
         await draft.committed.wait()
-    await _append(turn.cid, *records)
+    return await _append(turn.cid, *records)
 
 
 def _emit(turn: _Turn, ev: dict) -> None:
-    """A turn's progress: a draft shows none of it until it is committed (#1845)."""
+    """A turn's progress: a draft shows none of it until it is committed (#1845), and a stopped
+    or settled turn publishes nothing more (#2076: an abandoned read's late callback included)."""
+    if turn.stop.is_set() or turn.settled:
+        return
     if turn.draft is not None and not turn.draft.committed.is_set():
         if len(turn.draft.events) < PROGRESS_QUEUE_MAX:
             turn.draft.events.append(ev)
@@ -3681,6 +3838,207 @@ def _leaked_calls(text: str) -> bool:
     return False
 
 
+# ---- the request budget (#2076) ----------------------------------------------------------------
+
+
+def _msg_chars(m: dict) -> int:
+    """One message as the request serializes it; an image part counts a flat amount."""
+    content = m.get("content")
+    if isinstance(content, list):
+        n = 32
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                n += IMAGE_PART_CHARS
+            else:
+                n += len(json.dumps(part, ensure_ascii=False))
+        return n
+    return len(json.dumps(m, ensure_ascii=False))
+
+
+def _request_chars(convo: list[dict], tools: list[dict]) -> int:
+    """The whole request, measured: every message (system prompts, history, each assistant
+    message with its tool-call arguments, each tool result) and the tool schemas."""
+    return len(json.dumps(tools, ensure_ascii=False)) + sum(_msg_chars(m) for m in convo)
+
+
+def _cards_held(records: list[dict]) -> int:
+    """The card slots this conversation has used: the cards it holds (a nudge's aside is no card
+    to decide), or the proposal steps stored with an effect, whichever is more."""
+    cards = sum(1 for r in records if r.get("type") == "proposal" and r.get("kind") != "nudge")
+    steps = 0
+    for r in records:
+        if r.get("type") == "tool" and (r.get("meta") or {}).get("effect") is True:
+            tool = TOOLS.get(str(r.get("name") or ""))
+            steps += tool is not None and tool.kind == "proposal"
+    return max(cards, steps)
+
+
+def _dropped_note(n: int) -> str:
+    if n == 1:
+        return "[1 earlier lookup was dropped to make room]"
+    return f"[{n} earlier lookups were dropped to make room]"
+
+
+@dataclass
+class _Fit:
+    """What `_fit` has dropped from one turn's request so far."""
+
+    #: Tool calls whose whole round was dropped.
+    dropped: int = 0
+    #: The assistant message carrying the note about them, and its own text before the note.
+    noted: dict | None = None
+    noted_text: str | None = None
+
+
+def _fit(convo: list[dict], question_at: int, tools: list[dict], state: _Fit) -> bool:
+    """Make the request fit `REQUEST_BUDGET_CHARS`, in place; whether it now does.
+
+    1. The oldest tool results become `DROPPED_RESULT` — the call and its result stay paired.
+    2. Still over: the oldest whole rounds go as a unit (an assistant message with ALL of its
+       results), and one fixed note (`_dropped_note`) opens the oldest round that is left. A
+       call is never left without its result, nor a result without its call.
+    3. The question and the newest round are never dropped: what still does not fit is sent
+       as it is, and an endpoint that refuses it fails the turn as ``context_full``."""
+    budget = REQUEST_BUDGET_CHARS
+    size = _request_chars(convo, tools)
+    if size <= budget:
+        return True
+    starts = [i for i in range(question_at + 1, len(convo)) if convo[i].get("role") == "assistant"]
+    if not starts:
+        return False
+    for i in range(question_at + 1, starts[-1]):
+        m = convo[i]
+        if m.get("role") == "tool" and m.get("content") != DROPPED_RESULT:
+            before = _msg_chars(m)
+            m["content"] = DROPPED_RESULT
+            size -= before - _msg_chars(m)
+            if size <= budget:
+                return True
+    while len(starts) > 1:
+        first, following = starts[0], starts[1]
+        if state.noted is convo[first]:
+            state.noted = state.noted_text = None
+        state.dropped += len(convo[first].get("tool_calls") or [])
+        del convo[first:following]
+        starts = [i - (following - first) for i in starts[1:]]
+        head = convo[starts[0]]
+        if state.noted is not head:
+            state.noted = head
+            state.noted_text = head.get("content") if isinstance(head.get("content"), str) else None
+        note = _dropped_note(state.dropped)
+        head["content"] = f"{note}\n\n{state.noted_text}" if state.noted_text else note
+        if _request_chars(convo, tools) <= budget:
+            return True
+    return False
+
+
+#: An endpoint's own words for "this request is larger than the model's context".
+_CONTEXT_FULL_RE = re.compile(
+    r"context[ _-]?(?:length|window|size|limit)|maximum context|context_length_exceeded"
+    r"|too many (?:input )?tokens|(?:prompt|input|request) is too long"
+    r"|exceeds? the (?:model'?s? )?(?:maximum|max)(?:imum)? (?:context|input|number of tokens)"
+)
+CONTEXT_FULL = (
+    "this question needed more than the model can hold at once, even after HQ dropped its "
+    "earlier lookups — ask for a smaller step, or start a new conversation"
+)
+
+
+def _context_refused(r, model: str, fits: bool) -> bool:
+    """The endpoint refused the request for its SIZE: it says so in its own words, or the
+    request was still over HQ's budget and the refusal is a client error (never an auth or a
+    rate-limit one, which keep their own reason)."""
+    if r.status_code not in (400, 413, 422, 500):
+        return False
+    if _CONTEXT_FULL_RE.search(_refusal_message(r, model)):
+        return True
+    return not fits and r.status_code != 500
+
+
+# ---- one step of a turn (#2076) ----------------------------------------------------------------
+
+
+def step_view(rec: dict) -> dict:
+    """One stored tool record as the process view shows it: the tool's name, its guarded string
+    arguments and its metadata (counts, a length, an error code, the ordinal and the duration).
+    Nothing else exists to show: no model text and no tool output is ever stored."""
+    meta = rec.get("meta") if isinstance(rec.get("meta"), dict) else {}
+    args = rec.get("args") if isinstance(rec.get("args"), dict) else {}
+    out: dict = {"name": rec.get("name"), "outcome": "refused" if meta.get("error") else "ok"}
+    for k in ("n", "ms", "count", "length"):
+        if isinstance(meta.get(k), int) and not isinstance(meta.get(k), bool):
+            out[k] = meta[k]
+    if meta.get("error"):
+        out["error"] = meta["error"]
+    if meta.get("sent") in ask_store.SENT_OUTCOMES:
+        out["sent"] = meta["sent"]
+    if meta.get("effect") is True:
+        out["effect"] = True
+    shown = {k: v for k, v in args.items() if isinstance(k, str) and isinstance(v, str)}
+    if shown:
+        out["args"] = shown
+    return out
+
+
+async def _step(turn: _Turn, round_no: int, n_in_round: int, call: dict) -> str:
+    """Run one tool call as a step: its ordinal and start time go out as progress, its record is
+    stored (the first `STEP_RECORDS_MAX` no-effect ones, and EVERY one with an effect) or counted,
+    and its result is returned for the model. Raises `_Stopped` at the safe point before it."""
+    if turn.stop.is_set():
+        raise _Stopped
+    name, args, cid = call["function"]["name"], call["function"]["arguments"], call["id"]
+    shown = name if name in TOOLS else "unknown"
+    n = turn.steps + 1
+    began = time.monotonic()
+    turn.live = {"n": n, "tool": shown, "at": time.time()}
+    turn.progress({"type": "progress", "step": "tool", **turn.live})
+    try:
+        result, stored, meta, effect = await _call(turn, name, args)
+    finally:
+        turn.live = None
+    ms = int((time.monotonic() - began) * 1000)
+    turn.steps = n
+    record = None
+    if effect or turn.plain_stored < STEP_RECORDS_MAX:
+        if not effect:
+            turn.plain_stored += 1
+        written = await _turn_append(
+            turn,
+            {
+                "type": "tool",
+                "turn_id": turn.turn_id,
+                "call_id": cid if ask_store._CALL_ID_RE.match(cid) else f"call_{n_in_round}",
+                "name": shown,
+                "args": stored,
+                "meta": {
+                    **meta,
+                    "rounds": round_no + 1,
+                    "n": n,
+                    "ms": ms,
+                    **({"effect": True} if effect else {}),
+                },
+            },
+        )
+        # The step as STORED (through the store boundary); a draft's held record has none yet.
+        record = step_view(written[0]) if written else None
+    else:
+        turn.more.add(shown, ms, refused="error" in meta)
+    turn.progress(
+        {
+            "type": "progress",
+            "step": "tool_done",
+            "tool": shown,
+            "n": n,
+            "ms": ms,
+            "outcome": "refused" if "error" in meta else "ok",
+            "steps": turn.steps,
+            "more": turn.more.count,
+            "record": record,
+        }
+    )
+    return result
+
+
 @ai_providers.independent_model_work
 async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it. A
@@ -3703,6 +4061,7 @@ async def _run_turn(turn: _Turn) -> list[dict]:
         return fail("the AI endpoint is not configured", "unconfigured")
     records = await asyncio.to_thread(ask_store.read, turn.cid)
     history, switched = _history(records, turn.turn_id, turn.contact)
+    turn.cards = _cards_held(records)
     await _carry_sessions(turn, records)
     question, shown = _user_message(turn, cfg)
     convo: list[dict] = [
@@ -3721,21 +4080,28 @@ async def _run_turn(turn: _Turn) -> list[dict]:
     if _tools_key(cfg) in _TOOLS_UNSUPPORTED:
         # This endpoint already said it takes no tools (#2028): don't send a request it refuses.
         return await _no_tools_turn(turn, history, switched, cfg)
-    for round_no in range(MAX_TOOL_ROUNDS + 1):
-        last = round_no == MAX_TOOL_ROUNDS
-        turn.progress({"type": "progress", "step": "thinking", "round": round_no})
+    fit = _Fit()
+    round_no = 0
+    # No round cap and no per-round call cap (#2076): the loop runs until the model answers
+    # without a tool call, fails for a real reason, or the Commander stops it.
+    while True:
+        if turn.stop.is_set():
+            raise _Stopped
+        turn.progress(
+            {"type": "progress", "step": "thinking", "round": round_no, "steps": turn.steps}
+        )
+        tools = tool_specs(turn.via)
+        fits = _fit(convo, question_at, tools, fit)
         body: dict = {
             "model": cfg["model"],
             "messages": convo,
             "temperature": 0,
             "stream": False,
-            "tools": tool_specs(turn.via),
+            "tools": tools,
         }
-        if last:
-            body["tool_choice"] = "none"
         try:
             with hq_usage.hq_call():  # the footer's HQ token count (#1531)
-                r = await review.post_chat_response(cfg, body)
+                r = await _stoppable(turn, review.post_chat_response(cfg, body))
             wire_model = _vision_key(cfg)[1]
             if r.status_code != 200 and shown and _images_refused(r, wire_model):
                 # The endpoint cannot take these images (#1779): asked ONCE more without them,
@@ -3750,7 +4116,7 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                     "content": _user_content(turn) + _known_sessions_note(turn),
                 }
                 with hq_usage.hq_call():
-                    r = await review.post_chat_response(cfg, body)
+                    r = await _stoppable(turn, review.post_chat_response(cfg, body))
         except review.TransportTimeout as e:
             return fail(str(e), "timeout")
         except review.ReviewError as e:
@@ -3760,6 +4126,9 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 if _tools_unsupported(r):  # the capability itself: remembered (#2028)
                     _TOOLS_UNSUPPORTED.add(_tools_key(cfg))
                 return await _no_tools_turn(turn, history, switched, cfg)
+            if _context_refused(r, wire_model, fits):
+                # The one natural limit (#2076): said plainly, never dressed up as a cap.
+                return fail(CONTEXT_FULL, "context_full")
             what = {401: "the key was rejected", 403: "access was refused", 429: "rate limited"}
             suffix = f" — {what[r.status_code]}" if r.status_code in what else ""
             return fail(f"the endpoint refused the request (HTTP {r.status_code}{suffix})")
@@ -3775,10 +4144,10 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             # arguments are not what the model meant either. Never stored as complete.
             return fail("the endpoint cut the answer off at its length limit", "truncated")
         calls = message.get("tool_calls") if isinstance(message, dict) else None
-        if not last and isinstance(calls, list) and calls:
-            # Bounded BEFORE anything is replayed or recorded: calls past the cap are dropped from
-            # the turn entirely, so neither the conversation nor the store grows with them.
-            clean = _sanitize(calls[:MAX_CALLS_PER_ROUND])
+        if isinstance(calls, list) and calls:
+            # Every call the model made in this round runs (#2076): rebuilt field by field
+            # first, so nothing it sent is echoed back unread.
+            clean = _sanitize(calls)
             if clean is None:
                 return fail("the endpoint returned an unexpected response shape")
             # Text beside the parsed calls is replayed only when it is clean: leaked call markup
@@ -3788,43 +4157,20 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 replay = None
             convo.append({"role": "assistant", "content": replay, "tool_calls": clean})
             for n, call in enumerate(clean):
-                name, args, cid = (
-                    call["function"]["name"],
-                    call["function"]["arguments"],
-                    call["id"],
-                )
                 if turn.asked is not None:
                     # A question ends the turn, and the calls after it in the same reply are
                     # never run: nothing is staged while Ask waits for the operator's detail.
                     break
-                result, stored, meta = await _call(turn, name, args)
-                convo.append({"role": "tool", "tool_call_id": cid, "content": result})
-                await _turn_append(
-                    turn,
-                    {
-                        "type": "tool",
-                        "turn_id": turn.turn_id,
-                        "call_id": cid if ask_store._CALL_ID_RE.match(cid) else f"call_{n}",
-                        "name": name if name in TOOLS else "unknown",
-                        "args": stored,
-                        "meta": {**meta, "rounds": round_no + 1},
-                    },
-                )
+                result = await _step(turn, round_no, n, call)
+                convo.append({"role": "tool", "tool_call_id": call["id"], "content": result})
             if turn.asked is not None:
                 # `ask_operator` ends the turn: the operator holds the next move.
                 return _asked_records(turn)
+            round_no += 1
             continue
         if isinstance(content, str) and _leaked_calls(content):
             # Tool calls the endpoint returned as text it could not parse: not an answer, and
-            # never stored as one. Asked again once (the round still counts), then the turn fails.
-            if last:
-                # Told to answer, the model still wanted to look something up: with tools off the
-                # endpoint parses no call, so it arrives as text. HQ ran out of rounds — say so.
-                return fail(
-                    f"HQ ran out of lookups ({MAX_TOOL_ROUNDS} rounds) before it could answer — "
-                    "ask for a smaller step, or name the file or folder to start from",
-                    "out_of_rounds",
-                )
+            # never stored as one. Asked again once, then the turn fails.
             if not asked_again:
                 asked_again = True
                 continue
@@ -3832,15 +4178,12 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 "the model wrote its tool calls as text instead of making them", "tool_markup"
             )
         if not isinstance(content, str) or not content.strip():
-            if calls:
-                return fail("the endpoint kept calling tools after it was told to answer")
             return fail("the endpoint returned an empty answer")
         if round_no == 0 and _judges_call_end(turn):
             # Small talk on a call where HQ did not hang up itself: the AI judges, once more and
             # focused, whether the Commander's words mean the call is over (#1668).
-            turn.end_call = await _call_is_over(turn, cfg, content.strip())
+            turn.end_call = await _stoppable(turn, _call_is_over(turn, cfg, content.strip()))
         return [_assistant(turn, content.strip()), _status(turn, "done")]
-    return fail("the endpoint kept calling tools after it was told to answer")  # pragma: no cover
 
 
 #: The focused "is the call over?" judgement runs only on SHORT call utterances (#1668): goodbyes
@@ -3965,6 +4308,10 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "matches": [],
                 "mission_matches": [],
                 "tools": [],
+                # #2076: how many steps the turn took (the stored ones and the counted ones),
+                # the `steps_more` summary if it ran past the stored ones, and how long it ran.
+                "steps": {"count": 0, "more": None, "incomplete": False},
+                "elapsed_ms": None,
                 # #1443 Phase 2: the question this turn ends on, the nudges it proposed, and the
                 # question this turn ANSWERS.
                 "ask": None,
@@ -4001,11 +4348,22 @@ def turn_views(records: list[dict]) -> list[dict]:
             t["status"] = r.get("status")
             t["detail"] = r.get("detail")
             t["code"] = r.get("code")
+            asked, at = t.get("asked_at"), r.get("ts")
+            if (
+                r.get("status") != "pending"
+                and isinstance(asked, int | float)
+                and isinstance(at, int | float)
+            ):
+                t["elapsed_ms"] = max(0, int((at - asked) * 1000))
         elif kind == "tool":
-            meta = r.get("meta") or {}
-            t["tools"].append(
-                {"name": r.get("name"), "outcome": "refused" if meta.get("error") else "ok"}
-            )
+            t["tools"].append(step_view(r))
+        elif kind == "steps_more":
+            t["steps"]["more"] = {
+                "count": r.get("count") or 0,
+                "ms": r.get("ms") or 0,
+                "tools": dict(r.get("tools") or {}),
+                "refused": dict(r.get("refused") or {}),
+            }
         elif kind == "question":
             t["ask"] = {
                 "question_id": r.get("question_id"),
@@ -4045,6 +4403,14 @@ def turn_views(records: list[dict]) -> list[dict]:
                 }
             )
     out = [turns[t] for t in order]
+    for t in out:
+        steps = t["steps"]
+        plain = sum(1 for s in t["tools"] if not s.get("effect"))
+        steps["count"] = len(t["tools"]) + (steps["more"]["count"] if steps["more"] else 0)
+        # A turn that filled its stored steps and has no summary ended without one (a crash, an
+        # interruption) or still runs elsewhere: its count is not known here, and says so.
+        # `with_running` replaces it with the live totals for a turn this process runs.
+        steps["incomplete"] = plain >= STEP_RECORDS_MAX and steps["more"] is None
     # Only a SETTLED answer answers: a failed or still-running one leaves the question open, so
     # the operator can answer again after a timeout or an interruption.
     answered = {t["answers"] for t in out if t.get("answers") and t.get("status") == "done"}
@@ -4066,6 +4432,7 @@ def with_live(views: list[dict], cid: str) -> list[dict]:
     from . import ask_proposals
     from . import orchestrator_ledger as ledger
 
+    _guard_steps(views)
     cards = [p for t in views for p in t.get("proposals") or []]
     # Session starts and HQ operations (#1559) both live in the proposal sidecar.
     sessions = [p for p in cards if p.get("kind") in SIDECAR_KINDS]
@@ -4105,6 +4472,121 @@ def with_live(views: list[dict], cid: str) -> list[dict]:
     return views
 
 
+def _guard_steps(views: list[dict]) -> None:
+    """Every step's stored arguments through the store's guard AGAIN as they are read (#2076): a
+    secret registered since the record was written is redacted in the process view too. Redaction
+    that cannot run shows no argument at all. Blocking."""
+    try:
+        secrets = template_secrets.redaction_values()
+    except Exception:  # noqa: BLE001 — fail closed: the labels and counts still show
+        secrets = None
+    for t in views:
+        for step in t.get("tools") or []:
+            args = step.get("args")
+            if not args:
+                continue
+            if secrets is None:
+                step.pop("args", None)
+                continue
+            try:
+                step["args"] = {
+                    k: ask_store.guard_text(v, ask_store.ARG_MAX, secrets=secrets)
+                    for k, v in args.items()
+                }
+            except ask_store.StoreRefused:
+                step.pop("args", None)
+
+
+def with_running(views: list[dict], cid: str) -> list[dict]:
+    """A turn THIS process is running, with the server's live totals (#2076): steps so far, the
+    ones past the stored ones, the step running now and the time it has run — so a reload or a
+    second device shows the same count the stream does. Memory only; nothing is read."""
+    r = _RUNNING.get(cid)
+    turn = r.turn if r is not None else None
+    if turn is None or turn.settled:
+        return views
+    for v in views:
+        if v.get("turn_id") != turn.turn_id or v.get("status") != "pending":
+            continue
+        v["steps"] = {
+            "count": turn.steps,
+            "more": turn.more.view() if turn.more.count else None,
+            "incomplete": False,
+            "live": dict(turn.live) if turn.live else None,
+        }
+        asked = v.get("asked_at")
+        if isinstance(asked, int | float):
+            v["elapsed_ms"] = max(0, int((time.time() - asked) * 1000))
+        v["stopping"] = turn.stop.is_set()
+    return views
+
+
+def running_turn(cid: str) -> str | None:
+    """The id of the turn running and visible in ``cid`` here, or None (an open draft is not)."""
+    r = _RUNNING.get(cid)
+    return r.turn_id if r is not None and running(cid) else None
+
+
+def request_stop(cid: str, turn_id: str, *, committing: bool = False) -> bool:
+    """Set the stop flag on the running turn ``turn_id`` — SYNCHRONOUSLY, with no await (#2076).
+
+    This is the whole fence: from the moment it returns True the turn starts no model request
+    and no tool, whatever is scheduled next. `stop` adds only the bounded wait. A caller that
+    must not let anything slip between its decision and the flag (the call, hearing "stop")
+    calls this before it awaits anything.
+
+    It needs no lock: nothing here awaits, and the settle marks the turn `settled` in the same
+    step in which it reads the flag, so Stop and the answer still meet at one point — a flag set
+    before the settle's read wins, one requested after it is refused.
+
+    Returns whether the named turn is being stopped (now, or by an earlier request). False —
+    and nothing changes — for another id, a turn not running here, a settled turn, or a call's
+    OPEN draft, which keeps `discard`. A draft whose commit is being written IS accepted
+    (`draft.committing`), and so is one whose commit the caller itself is making and which has
+    not reached the write yet (``committing=True``): the flag is then set BEFORE `commit` sets
+    `committed`, so an effect tool parked on that event in `_call` wakes, reads the flag and
+    never starts, and the committed turn settles ``stopped``."""
+    r = _RUNNING.get(cid)
+    turn = r.turn if r is not None and r.turn_id == turn_id else None
+    if turn is None or turn.settled:
+        return False
+    draft = turn.draft
+    if draft is not None and draft.open() and not committing:
+        return False
+    if not turn.stop.is_set():
+        turn.stop.set()
+        if turn.inflight is not None:
+            turn.inflight.cancel()
+    return True
+
+
+async def stop(cid: str, turn_id: str) -> bool:
+    """The Commander stops the running turn ``turn_id`` (#2076).
+
+    A settlement FENCE, never a cancellation of the turn: the turn's stop flag is set
+    (`request_stop`, at once) and only what it may abandon — the model request in flight, or a
+    read — is cancelled. The turn's own task sees the flag at its next safe point (before a
+    model request, before a tool starts) and `_settle` writes ``stopped`` and frees the slot and
+    the lock as for any outcome. A tool with an effect that was already IN FLIGHT runs to its
+    recorded outcome first; one that had not started never starts.
+
+    It names ONE turn: another id, a settled turn or a call's open draft (which keeps `discard`)
+    changes nothing, so a stale Stop can never end the turn that replaced it. Against an answer,
+    whichever reaches the settle first wins. Waits up to `STOP_WAIT_S` for the turn to settle,
+    so the caller can usually read the stopped turn at once. Returns `request_stop`'s answer."""
+    if not request_stop(cid, turn_id):
+        return False
+    await wait_settled(cid, turn_id)
+    return True
+
+
+async def wait_settled(cid: str, turn_id: str, timeout: float = STOP_WAIT_S) -> None:
+    """Wait, bounded, until the running turn ``turn_id`` has settled (or is no longer here)."""
+    r = _RUNNING.get(cid)
+    if r is not None and r.turn_id == turn_id:
+        await asyncio.wait({r.task}, timeout=timeout)
+
+
 def _view_of(records: list[dict], turn_id: str) -> dict | None:
     return next((t for t in turn_views(records) if t["turn_id"] == turn_id), None)
 
@@ -4123,6 +4605,8 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
     try:
         try:
             records = await run_turn(turn)
+        except _Stopped:
+            records = [_status(turn, "stopped")]
         except review.NotConfiguredError:
             records = [_status(turn, "failed", "the AI endpoint is not configured", "unconfigured")]
         except ask_store.StoreRefused as e:
@@ -4138,22 +4622,37 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
         intent = await asyncio.to_thread(
             memory_capture.intent, turn.question, expected=turn.memory_snapshot
         )
-        if intent is not None:
-            for rec in records:
-                if rec.get("type") == "status" and rec.get("status") == "done":
-                    rec["memory_capture"] = intent
-        try:
-            await _append(turn.cid, *records)
-        except ask_store.StoreRefused as e:
-            await _append(turn.cid, _status(turn, "failed", str(e)))
-        else:
+        async with _lock(turn.cid):
+            # THE SETTLEMENT FENCE (#2076). Stop and the answer meet here, under the
+            # conversation lock: a Stop that set its flag first leaves no answer, even one the
+            # model has just finished; once `settled` is set, a Stop changes nothing.
+            if turn.stop.is_set():
+                records, intent = [_status(turn, "stopped")], None
+            # Decided: marked in the same step as the read above (no await between), so a
+            # `request_stop` — which takes no lock — can never land between the two.
+            turn.settled = True
             if intent is not None:
-                try:
-                    await asyncio.to_thread(
-                        memory_capture.enqueue_committed, turn.cid, turn.turn_id
-                    )
-                except Exception:  # noqa: BLE001 — the committed intent is the recovery source
-                    log.warning("HQ capture handoff deferred to reconciliation", exc_info=True)
+                for rec in records:
+                    if rec.get("type") == "status" and rec.get("status") == "done":
+                        rec["memory_capture"] = intent
+            # The steps past the stored ones, counted (#2076): written with the outcome, so a
+            # turn that ended without its summary is known to have an incomplete count.
+            more = (
+                [{"type": "steps_more", "turn_id": turn.turn_id, **turn.more.view()}]
+                if turn.plain_stored >= STEP_RECORDS_MAX
+                else []
+            )
+            committed = True
+            try:
+                await _append(turn.cid, *more, *records)
+            except ask_store.StoreRefused as e:
+                committed = False
+                await _append(turn.cid, _status(turn, "failed", str(e)))
+        if committed and intent is not None:
+            try:
+                await asyncio.to_thread(memory_capture.enqueue_committed, turn.cid, turn.turn_id)
+            except Exception:  # noqa: BLE001 — the committed intent is the recovery source
+                log.warning("HQ capture handoff deferred to reconciliation", exc_info=True)
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
         view = _view_of(stored, turn.turn_id) or {}
         view = (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view

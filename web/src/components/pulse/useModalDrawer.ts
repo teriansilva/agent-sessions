@@ -196,6 +196,8 @@ export function useModalDrawer({
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // An Escape that ends an IME composition is the composition's own (#2076).
+      if (e.isComposing || e.keyCode === 229) return;
       // A child dialog answers its own Escape — see `nestedSurfaceHasFocus` and `surfaceStack`.
       // Without this one press closes the child and the drawer beneath it, which is never what
       // was asked for.
@@ -344,7 +346,10 @@ export function useFocusContainment({
       if (nestedSurfaceHasFocus(host, document.activeElement)) return;
       const focusable = Array.from(
         host.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          // `details > summary` is a native tab stop (#2076: HQ's process row). Left out, Tab from
+          // one read as "focus is on no tab stop" and was sent back to the first control, so
+          // nothing after the row could be reached from the keyboard.
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"])',
         ),
         // A control inside a `hidden` subtree is not a tab stop (#1233): the shell keeps the
         // session list mounted but hidden beside the mission rail, and "wrapping" to one of its

@@ -1270,19 +1270,63 @@ export type AskMessageCard = {
 export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
 export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;
 
+/** One step of an HQ turn as the process view shows it (#2076): a stored tool record. The tool's
+ *  name, its guarded string arguments, and numbers — never model text, never tool output. */
+export interface AskToolStep {
+  name: string;
+  outcome: "ok" | "refused";
+  /** The step's ordinal in its turn; absent on a record from before #2076. */
+  n?: number;
+  /** How long it took, in milliseconds. */
+  ms?: number;
+  count?: number;
+  length?: number;
+  /** The refusal's code, when refused. */
+  error?: string;
+  /** What became of a send's message. */
+  sent?: "yes" | "no" | "unknown";
+  /** It had, or may have had, an effect: always stored, whatever its position. */
+  effect?: boolean;
+  args?: Record<string, string>;
+}
+
+/** The steps a turn ran past its stored ones (#2076): numbers and tool names only. */
+export interface AskStepsMore {
+  count: number;
+  ms: number;
+  tools: Record<string, number>;
+  refused: Record<string, number>;
+}
+
+/** How many steps a turn took. `incomplete`: it ended without its summary (a crash), so the
+ *  count is at least the stored steps. `live`: the step running now, on a running turn. */
+export interface AskSteps {
+  count: number;
+  more: AskStepsMore | null;
+  incomplete: boolean;
+  live?: { n: number; tool: string; at: number } | null;
+}
+
 /** One question and what became of it. `status` is the server's: a `pending` turn is still
- *  running there (or in another tab), whatever this page is doing. */
+ *  running there (or in another tab), whatever this page is doing. `stopped` (#2076): the
+ *  operator ended it before HQ answered; what it did is kept. */
 export interface AskConversationTurn {
   turn_id: string;
   question: string;
   asked_at: number;
-  status: "pending" | "done" | "failed";
+  status: "pending" | "done" | "failed" | "stopped";
   answer: string | null;
   detail: string | null;
   code: string | null;
   matches: AskStoredMatch[];
   mission_matches: AskStoredMissionMatch[];
-  tools: { name: string; outcome: "ok" | "refused" }[];
+  tools: AskToolStep[];
+  /** #2076; absent from an older server. */
+  steps?: AskSteps;
+  /** How long the turn ran (settled), or has run so far (running, by the server's clock). */
+  elapsed_ms?: number | null;
+  /** A Stop is in: the turn settles once what it is doing has reached its outcome. */
+  stopping?: boolean;
   /** The question this turn ended on (#1443 Phase 2). */
   ask?: AskQuestionCard | null;
   proposals?: AskProposalCard[];
@@ -1349,8 +1393,21 @@ export type AskTurnEvent =
       mission_hits?: number;
     }
   | { type: "progress"; step: "content"; candidates: number }
-  | { type: "progress"; step: "thinking"; round: number }
-  | { type: "progress"; step: "tool"; tool: string }
+  | { type: "progress"; step: "thinking"; round: number; steps?: number }
+  // #2076: a step's ordinal and start time (server clock, seconds)…
+  | { type: "progress"; step: "tool"; tool: string; n?: number; at?: number }
+  // …and its end: the stored record (absent for a step past the stored ones) and the totals.
+  | {
+      type: "progress";
+      step: "tool_done";
+      tool: string;
+      n: number;
+      ms: number;
+      outcome: "ok" | "refused";
+      steps: number;
+      more: number;
+      record: AskToolStep | null;
+    }
   | { type: "turn"; status: number; turn: AskConversationTurn }
   | { type: "error"; status: number; detail: string };
 

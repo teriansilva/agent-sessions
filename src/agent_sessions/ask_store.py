@@ -77,11 +77,13 @@ MAX_CONVERSATIONS = 50
 #: Turns one conversation may hold; past it the operator starts a new one (honest, not a cut).
 MAX_TURNS = 50
 #: The most of one conversation file read back. Above the worst case by construction: a turn is
-#: at most a question and an answer (TEXT_MAX each), 8+8 matches, two status records and
-#: `ask_orchestrator.MAX_TOOL_ROUNDS` × 8 tool records (ARG_MAX of arguments and META_IDS_MAX ids
-#: each). The worst case is measured, not estimated, by
-#: `test_the_worst_case_conversation_fits_the_read_cap`.
-READ_MAX_BYTES = 32 * 1024 * 1024
+#: at most a question and an answer (TEXT_MAX each), 8+8 matches, two status records, its first
+#: `ask_orchestrator.STEP_RECORDS_MAX` no-effect tool records (ARG_MAX of arguments and
+#: META_IDS_MAX ids each), one record per step that had or may have had an effect (bounded by the
+#: send and memory caps and by `MAX_SESSION_PROPOSALS` cards a conversation), and one `steps_more`
+#: summary. A turn's WORK is not bounded (#2076); the detail kept of it is. The worst case is
+#: measured, not estimated, by `test_the_worst_case_conversation_fits_the_read_cap`.
+READ_MAX_BYTES = 96 * 1024 * 1024
 #: The head read for the conversation list: enough for the header and the first question.
 _HEAD_BYTES = 64 * 1024
 
@@ -100,14 +102,25 @@ META_IDS_MAX = 20
 #: Proposal states that pin a conversation past retention (Phase 3 writes them).
 PINNING_PROPOSAL_STATES = frozenset({"deciding", "creating"})
 
-TURN_STATUSES = frozenset({"pending", "done", "failed"})
+#: `stopped` (#2076): the Commander ended the turn before HQ answered; its records are kept.
+TURN_STATUSES = frozenset({"pending", "done", "failed", "stopped"})
+#: What a `send` step's record says of its message: delivered, not sent, or not known.
+SENT_OUTCOMES = frozenset({"yes", "no", "unknown"})
+#: The largest number a step record or a `steps_more` summary keeps (an ordinal, a duration in
+#: milliseconds, a count): bounds the bytes a number can take.
+STEP_NUMBER_MAX = 10**12
+#: Tool names one `steps_more` summary may count, each way (run, refused).
+STEPS_MORE_NAMES_MAX = 128
 #: How a question may arrive besides typing (#1397). `call` = spoken on an in-app call; the
 #: phone and WhatsApp channels (#1397 P5) add theirs here when they exist.
 VIAS = frozenset({"call"})
 
 RECORD_TYPES = frozenset(
-    {"conversation", "user", "assistant", "tool", "status", "question", "proposal", "update"}
-)
+    {
+        "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
+        "steps_more",
+    }
+)  # fmt: skip
 
 # A shared file's descriptor on a `user` record (#1707): the blob lives beside the conversation
 # (`ask_attachments`), this is only its metadata and is shape-checked here like every structural
@@ -174,7 +187,7 @@ MAX_FOLLOW_ROWS = 50
 MAX_UPDATES = 300
 #: Ids a conversation has followed FOR (a started proposal) — never
 #: forgotten, so a replayed reason never re-follows after Unfollow. Bounded by construction: a
-#: conversation holds at most MAX_TURNS × 3 proposals of either kind.
+#: conversation holds at most `MAX_SESSION_PROPOSALS` proposals of either kind.
 MAX_CONSUMED = MAX_TURNS * 3
 
 
@@ -551,6 +564,20 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             v = meta_in.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
                 meta[k] = v
+        # #2076: the step's ordinal in its turn and how long it took, in milliseconds. Numbers.
+        for k in ("n", "ms"):
+            v = meta_in.get(k)
+            if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= STEP_NUMBER_MAX:
+                meta[k] = v
+        # …whether it had, or may have had, an effect (always stored, whatever its position),
+        # and what became of a send's message: "nothing was sent" is read from these records.
+        if meta_in.get("effect") is True:
+            meta["effect"] = True
+        sent = meta_in.get("sent")
+        if sent is not None:
+            if sent not in SENT_OUTCOMES:
+                raise ValueError("unknown send outcome")
+            meta["sent"] = sent
         if meta_in.get("keys"):
             meta["keys"] = _key_list(meta_in.get("keys"))
         if meta_in.get("missions"):
@@ -561,6 +588,28 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 raise ValueError("malformed tool error code")
             meta["error"] = err
         out["meta"] = meta
+    elif kind == "steps_more":
+        # The steps a turn ran past its stored ones (#2076): numbers and tool names only.
+        out["turn_id"] = _turn_id(rec)
+        for k in ("count", "ms"):
+            v = rec.get(k)
+            if not (isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= STEP_NUMBER_MAX):
+                raise ValueError("malformed step summary")
+            out[k] = v
+        for k in ("tools", "refused"):
+            counts = rec.get(k) or {}
+            if not isinstance(counts, dict) or len(counts) > STEPS_MORE_NAMES_MAX:
+                raise ValueError("malformed step summary")
+            admitted_counts: dict = {}
+            for name, v in counts.items():
+                if not (isinstance(name, str) and _TOOL_NAME_RE.match(name)):
+                    raise ValueError("malformed tool name")
+                if not (
+                    isinstance(v, int) and not isinstance(v, bool) and 0 < v <= STEP_NUMBER_MAX
+                ):
+                    raise ValueError("malformed step summary")
+                admitted_counts[name] = v
+            out[k] = admitted_counts
     return out
 
 
@@ -813,7 +862,9 @@ SESSION_PROPOSAL_STATES = frozenset(
         "interrupted",
     }
 )
-#: Proposals one conversation may hold — the most its turns can make.
+#: Proposals one conversation may hold. A turn has no cap of its own (#2076): at this limit
+#: `ask_orchestrator` refuses a propose tool before it writes anything, and the operator starts
+#: a new conversation for more.
 MAX_SESSION_PROPOSALS = MAX_TURNS * 3
 NOTICES = frozenset({"", "default_changed", "busy", "session_limit"})
 _ENGINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")

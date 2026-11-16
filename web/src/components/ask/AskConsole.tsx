@@ -112,7 +112,14 @@ import {
   refreshConversations,
   useAskConversations,
 } from "./askConversationsStore";
-import { AskWorking } from "./AskWorking";
+import { AskProcess } from "./AskProcess";
+import { surfaceOver } from "./escOwner";
+import {
+  applyProcessEvent,
+  processFromServer,
+  startedProcess,
+  type AskProcessState,
+} from "./askProcess";
 import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import { useHqContact } from "../hq/useHqContact";
@@ -135,6 +142,12 @@ export interface AskTurn {
   step: AskStep | null;
   /** Still running on the server. */
   pending: boolean;
+  /** What it is doing and what it did (#2076): its steps, the totals, the time. */
+  process: AskProcessState;
+  /** The operator stopped it before HQ answered; what it did is kept. */
+  stopped: boolean;
+  /** A Stop is in and the turn has not settled yet. */
+  stopping?: boolean;
   /** Who answers it (#1525): a contact id, or "off" for plain HQ. */
   contact: string;
   /** Its answer arrived while this page watched — the only answer that writes itself out. One read
@@ -190,8 +203,12 @@ function fromServer(t: AskConversationTurn): AskTurn {
         : null,
     matches: t.matches ?? [],
     missions: t.mission_matches ?? [],
-    step: null,
+    // A running turn read back (a reload, another device) is on the step the SERVER says.
+    step: t.steps?.live ? { step: "tool", tool: t.steps.live.tool } : null,
     pending: t.status === "pending",
+    process: processFromServer(t, Date.now()),
+    stopped: t.status === "stopped",
+    stopping: t.stopping === true,
     ask: t.ask ?? null,
     proposals: t.proposals ?? [],
     at: typeof t.asked_at === "number" ? t.asked_at : null,
@@ -261,8 +278,10 @@ function AnswerHead({ contact }: { contact: string }) {
 }
 
 /** Fold one streamed progress line into its turn. */
-function applyEvent(t: AskTurn, ev: AskTurnEvent): AskTurn {
-  if (ev.type !== "progress") return t;
+function applyEvent(turn: AskTurn, ev: AskTurnEvent): AskTurn {
+  if (ev.type !== "progress") return turn;
+  const t = { ...turn, process: applyProcessEvent(turn.process, ev, Date.now()) };
+  if (ev.step === "tool_done") return t; // the next line says what runs now
   if (ev.step === "classify") return { ...t, step: { step: "classify" } };
   if (ev.step === "catalog")
     return {
@@ -814,6 +833,8 @@ export function AskConsole({
         missions: [],
         step: null,
         pending: true,
+        process: startedProcess(Date.now()),
+        stopped: false,
         ask: null,
         proposals: [],
         at: null,
@@ -939,6 +960,32 @@ export function AskConsole({
     [busy, configured, load, refreshList, title],
   );
 
+  /** STOP (#2076). It names the running turn, so it can never end another; the server lets what
+   *  the turn is doing reach its recorded outcome first and answers with the turn as it is. A
+   *  turn whose message has not reached the server yet has nothing to stop. */
+  const runningTurn = turns.find((t) => t.pending && !t.error) ?? null;
+  const canStop = cid !== null && runningTurn !== null && (streaming || hydrated === cid);
+  const stopCid = canStop ? cid : null;
+  const stopId = canStop ? (runningTurn?.id ?? null) : null;
+  const stopTurn = useCallback(async () => {
+    if (!stopCid || !stopId) return;
+    const target = { cid: stopCid, turn: stopId };
+    const mark = (stopping: boolean) =>
+      setTurns((prev) =>
+        prev.map((t) => (t.id === target.turn && t.pending ? { ...t, stopping } : t)),
+      );
+    mark(true);
+    try {
+      const r = await api.askStopTurn(target.cid, target.turn);
+      if (!live.current || cidRef.current !== target.cid) return;
+      const now = fromServer(r.turn);
+      setTurns((prev) => prev.map((t) => (t.id === target.turn ? { ...now, live: t.live } : t)));
+    } catch {
+      // Not stopped as far as this page knows: the button comes back, and the stream or the
+      // next read says what became of the turn.
+      if (live.current) mark(false);
+    }
+  }, [stopCid, stopId]);
   /** A nudge card's decision goes to the SAME routes every decision uses; the card then reads
    *  the ledger's own verdict back (a 409 "out of date" is an outcome, not an error). */
   const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());
@@ -1186,6 +1233,17 @@ export function AskConsole({
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
    *  does — when a turn is added, the conversation changes, or the operator was already at the
    *  bottom. A BACKGROUND re-read (cards, polling) never pulls someone reading earlier turns away. */
+  // What a step's session key or mission id reads as (#2076): the titles this conversation
+  // already holds — its answers' matches and its cards. Anything else shows as stored.
+  const titles = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const t of turns) {
+      for (const m of t.matches) if (m.title) out.set(m.id, m.title);
+      for (const m of t.missions) if (m.title) out.set(m.id, m.title);
+      for (const p of t.proposals) if (p.kind === "nudge" && p.title) out.set(p.key, p.title);
+    }
+    return out;
+  }, [turns]);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const atBottom = useRef(true);
   const shown = useRef<{ cid: string | null; count: number }>({ cid: null, count: 0 });
@@ -1195,6 +1253,27 @@ export function AskConsole({
     shown.current = { cid, count: turns.length };
     if (el && turns.length && (moved || atBottom.current)) el.scrollTop = el.scrollHeight;
   }, [turns, cid]);
+
+  // ESC STOPS — only from inside HQ (a terminal beside it keeps its own Esc), only when no dialog
+  // or list is open over it (theirs first), and never an Esc that belongs to an IME composition.
+  useEffect(() => {
+    if (!canStop || !visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      const root = paneRef.current?.parentElement;
+      if (!root) return;
+      const target = e.target instanceof Node ? e.target : null;
+      const inside = target !== null && root.contains(target);
+      if (!inside && target !== document.body && target !== document.documentElement) return;
+      if (surfaceOver(root)) return;
+      e.preventDefault();
+      e.stopPropagation(); // the panel's own Escape (close HQ) stands down while a turn runs
+      void stopTurn();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [canStop, visible, stopTurn]);
 
   return (
     <div
@@ -1386,6 +1465,18 @@ export function AskConsole({
                   data-speaker={t.contact}
                 >
                   <AnswerHead contact={t.contact} />
+                  {/* Persona line → process row → answer (#2076). The row shows while the turn
+                      runs and stays above the answer once it did anything. */}
+                  {t.pending || t.stopped || t.process.count > 0 || t.process.steps.length > 0 ? (
+                    <AskProcess
+                      process={t.process}
+                      running={t.pending && !t.error}
+                      stopped={t.stopped}
+                      stopping={t.stopping === true}
+                      step={t.step}
+                      titles={titles}
+                    />
+                  ) : null}
                   {t.answer !== null ? (
                     <>
                       <RevealText
@@ -1528,8 +1619,6 @@ export function AskConsole({
                           })()
                         : null}
                     </>
-                  ) : t.pending ? (
-                    <AskWorking step={t.step} />
                   ) : null}
                   {t.error ? (
                     <div className={`${styles.objStale} ${a.errorRow}`} data-testid="ask-error">
@@ -1655,6 +1744,8 @@ export function AskConsole({
           <AskComposer
             configured={configured}
             busy={busy}
+            onStop={canStop ? () => void stopTurn() : undefined}
+            stopping={runningTurn?.stopping === true}
             onAsk={(q, atts) => ask(q, atts)} // the outcome drives the composer's draft restore
         convKey={cid}
         uploadFile={async (file, secret) => {

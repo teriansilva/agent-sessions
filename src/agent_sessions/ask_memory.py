@@ -421,21 +421,31 @@ async def routed_turn(turn, history, switched=False):
     from . import hq_usage, prompts, pulse_chat, review
     from .ask_orchestrator import (
         _assistant,
-        _call,
         _call_style,
         _handover,
         _persona,
         _status,
+        _step,
+        _stoppable,
         _ToolRefused,
     )
 
     route = turn.memory_route
     try:
         if route["action"] == "remember":
-            content, _, meta = await _call(
+            # The write is ONE STEP like any tool's (#2076): `_step` gives it its ordinal and
+            # duration and stores its effect record, so the process view shows what HQ changed.
+            # It is the only part of a routed turn a Stop does not abandon: a memory write runs
+            # to its recorded outcome, and the Stop takes effect when the turn settles.
+            args = {k: route[k] for k in ("title", "body", "quote", "type") if k in route}
+            content = await _step(
                 turn,
-                "remember_hq_memory",
-                json.dumps({k: route[k] for k in ("title", "body", "quote", "type") if k in route}),
+                0,
+                0,
+                {
+                    "id": "routed_memory",
+                    "function": {"name": "remember_hq_memory", "arguments": json.dumps(args)},
+                },
             )
             result = json.loads(content)
             state = result.get("state")
@@ -456,7 +466,8 @@ async def routed_turn(turn, history, switched=False):
                 + str(result.get("error") or "Open Library → Memory to inspect it."),
             )
             return [_assistant(turn, text), _status(turn, "done")]
-        result, _ = await search(turn, {"query": route.get("query")})
+        # A recall only reads: its search and its model request are abandoned by a Stop.
+        result, _ = await _stoppable(turn, search(turn, {"query": route.get("query")}))
         cfg = review._require_config()
         messages = [
             *_persona(turn),
@@ -472,15 +483,18 @@ async def routed_turn(turn, history, switched=False):
             },
         ]
         with hq_usage.hq_call():
-            response = await review.post_chat_response(
-                cfg,
-                {
-                    "model": cfg["model"],
-                    "messages": messages,
-                    "temperature": 0,
-                    "stream": False,
-                    "response_format": {"type": "json_object"},
-                },
+            response = await _stoppable(
+                turn,
+                review.post_chat_response(
+                    cfg,
+                    {
+                        "model": cfg["model"],
+                        "messages": messages,
+                        "temperature": 0,
+                        "stream": False,
+                        "response_format": {"type": "json_object"},
+                    },
+                ),
             )
         if response.status_code != 200:
             raise review.ReviewError(f"endpoint returned HTTP {response.status_code}")

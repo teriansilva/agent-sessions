@@ -188,12 +188,68 @@
 /* Mute … End stay at the bottom of the screen however much the panel holds: the panel scrolls
  * as a whole, and this row sticks to its bottom edge, on its own surface so nothing behind
  * shows through. */
-.controls {
+/* The dock: the working band (while HQ works) and the five controls, sticky as one. */
+.dock {
   position: sticky;
   bottom: 0;
   z-index: var(--z-raised);
   background: var(--bg-1);
   margin-top: auto;
+}
+/* THE WORKING BAND (#2076): what HQ is doing and Stop, in their own band above the controls —
+ * never a sixth control. Tokens only; the bar holds still outside Full motion (nightjar.css). */
+.work {
+  position: relative;
+  border-top: 1px solid var(--hud-dim);
+}
+.workBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+}
+.workRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+.workText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: 500 var(--fs-micro) / 1.3 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.workNow {
+  color: var(--text-1);
+}
+.workTally {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.workStop {
+  min-width: 96px;
+  min-height: 48px;
+  flex: none;
+}
+.workSquare {
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  flex: none;
+}
+.workSay {
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-2);
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.controls {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--sp-2);

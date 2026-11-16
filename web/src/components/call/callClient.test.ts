@@ -408,3 +408,42 @@ test("HQ ending the call and no answer are ends the operator chose, not drops (#
   expect(normalEnd("tts_failed")).toBe(false);
   expect(normalEnd("worker_failed")).toBe(false);
 });
+
+describe("the running turn and its Stop (#2076)", () => {
+  test("progress opens the working band with the step and the steps done; the turn's end closes it", async () => {
+    const c = await dial();
+    sock.open();
+    sock.msg({ t: "connected" });
+    expect(c.snapshot.work).toBeNull();
+    sock.msg({ t: "state", state: "thinking" });
+    sock.msg({ t: "progress", step: "thinking", steps: 0 });
+    expect(c.snapshot.work).toEqual({ step: "thinking", steps: 0, since: 1_000, stopping: false });
+    sock.msg({ t: "progress", step: "session_status", steps: 6 });
+    expect(c.snapshot.work).toMatchObject({ step: "session_status", steps: 6, since: 1_000 });
+    // HQ saying a status line does not close the band: the turn is still running.
+    sock.msg({ t: "state", state: "speaking" });
+    expect(c.snapshot.work).not.toBeNull();
+    // An older server sends no count: the last one known stays.
+    sock.msg({ t: "progress", step: "list_sessions" });
+    expect(c.snapshot.work?.steps).toBe(6);
+    sock.msg({ t: "turn", turn: { turn_id: "t1", status: "done" } });
+    expect(c.snapshot.work).toBeNull();
+  });
+
+  test("Stop asks the server to stop the turn — never to end the call", async () => {
+    const c = await dial();
+    sock.open();
+    sock.msg({ t: "connected" });
+    c.stopTurn(); // nothing running: nothing is sent
+    expect(sock.json().some((m) => m.t === "stop")).toBe(false);
+    sock.msg({ t: "progress", step: "session_status", steps: 2 });
+    c.stopTurn();
+    expect(sock.json().filter((m) => m.t === "stop")).toHaveLength(1);
+    expect(sock.json().some((m) => m.t === "end")).toBe(false);
+    expect(c.snapshot.work?.stopping).toBe(true);
+    expect(c.snapshot.phase).toBe("connected");
+    sock.msg({ t: "turn", turn: { turn_id: "t1", status: "stopped" } });
+    expect(c.snapshot.work).toBeNull();
+    expect(c.snapshot.phase).toBe("connected");
+  });
+});

@@ -55,6 +55,10 @@ export interface CallSnapshot {
   turnSeq: number;
   lastTurnId: string | null;
   progress: string | null;
+  /** The HQ turn running on this call (#2076): the step it is on, the steps it has finished and
+   *  when this page first heard of it — the call screen's process row and its Stop. `null`
+   *  between turns. `stopping`: Stop was tapped and the turn has not settled yet. */
+  work: { step: string; steps: number; since: number; stopping: boolean } | null;
   /** The cards a spoken "confirm" may settle, in their spoken order, and until when (ms). */
   challenge: { cards: string[]; expiresAt: number } | null;
   /** Cards settled by voice on this call. */
@@ -93,6 +97,7 @@ export const IDLE: CallSnapshot = {
   turnSeq: 0,
   lastTurnId: null,
   progress: null,
+  work: null,
   challenge: null,
   settled: {},
   cardSeq: 0,
@@ -268,11 +273,22 @@ export class CallClient {
       case "muted":
         this.set({ muted: msg.on });
         return;
-      case "progress":
-        this.set({ progress: msg.step });
+      case "progress": {
+        const was = this.snap.work;
+        this.set({
+          progress: msg.step,
+          work: {
+            step: msg.step,
+            steps: typeof msg.steps === "number" ? msg.steps : (was?.steps ?? 0),
+            since: was?.since ?? this.now(),
+            stopping: was?.stopping ?? false,
+          },
+        });
         return;
+      }
       case "turn":
         this.set({
+          work: null, // the turn settled: answered, failed or stopped
           turnSeq: this.snap.turnSeq + 1,
           lastTurnId: typeof msg.turn?.turn_id === "string" ? msg.turn.turn_id : this.snap.lastTurnId,
         });
@@ -329,6 +345,14 @@ export class CallClient {
     if (this.snap.challenge?.cards.includes(id)) this.set({ challenge: null });
   }
 
+  /** Stop on the call screen (#2076): the running HQ turn, never the call. HQ says "Stopped." */
+  stopTurn(): void {
+    if (this.snap.phase !== "connected" || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this.snap.work) return;
+    this.ws.send(JSON.stringify({ t: "stop" }));
+    this.set({ work: { ...this.snap.work, stopping: true } });
+  }
+
   setMuted(on: boolean): void {
     if (!this.active) return;
     this.audio?.setMuted(on);
@@ -369,6 +393,7 @@ export class CallClient {
       c.who === "hq" && (c.status === "queued" || c.status === "speaking") ? { ...c, status: "cut" as const } : c,
     );
     this.set({
+      work: null,
       phase: "ended",
       serverState: "ended",
       hqSpeaking: false,

@@ -147,6 +147,8 @@ PROGRESS_TICK_S = 1.0
 #: `pulse_chat`'s sub-steps (the find pipeline, also the no-tools fallback): looking through
 #: sessions.
 FIND_STEPS = frozenset({"catalog", "content"})
+#: What HQ says once the Commander stopped its running turn (#2076). The call stays open.
+STOPPED_LINE = "Stopped."
 
 
 def progress_line(work: dict, now: float) -> str:
@@ -211,6 +213,7 @@ from .voice_text import (  # noqa: E402,F401
     classify_decision,
     is_no_speech_phrase,
     is_skip,
+    is_stop_phrase,
     pick_option,
     readback,
     readback_screen_only,
@@ -287,6 +290,9 @@ class Call:
     #: HQ's answer started before the Commander has surely finished (#1845), until it is committed
     #: or dropped. Only `_take_draft` clears it, so a commit and a discard never both act on it.
     draft: _CallDraft | None = None
+    #: The draft whose commit is being written right now (#2076): neither `draft` any more nor
+    #: a visible running turn yet. A Stop in that window stops it by its id once the write ends.
+    committing: _CallDraft | None = None
     #: Utterances being handled right now: a held first part is never released past one.
     in_flight: int = 0
     #: The newest worker turn whose transcript is all in (its `turn_end`, #1842): a held first part
@@ -743,6 +749,11 @@ class Call:
         self.touch()
         if await self._answer_challenge(text, late=late, turn=turn):
             return
+        if not captioned and is_stop_phrase(text, self.listen_languages):
+            # Nothing but "stop" while HQ works (#2076): the running turn is stopped and the
+            # call stays open. With no turn running the words go to HQ like any others.
+            if self.stop_turn(said=text):
+                return
         # A new question. Its generation is taken BEFORE anything is awaited — the void below
         # included — so an older offer still in flight sees it is stale and never installs its
         # challenge (#1631 review 6874).
@@ -850,6 +861,72 @@ class Call:
         draft = self.commit_pause > 0 and heard.get("turn") is not None
         self.turn_task = asyncio.create_task(self._ask(text, gen, heard, draft=draft))
 
+    def stop_turn(self, *, said: str | None = None) -> bool:
+        """Stop the HQ turn running in this call's conversation (#2076): the Stop on the call
+        screen, or a spoken stop phrase (`said`, captioned). HQ says `STOPPED_LINE`; the call
+        NEVER ends by this. A draft not yet committed is dropped — nothing of it was stored or
+        shown. False when nothing was running: nothing is said and nothing changes. Decided
+        now; the stop itself runs beside the relay loop (an effect in flight finishes first)."""
+        if self.state == "ended":
+            return False
+        # WHAT is stopped is fixed NOW, before anything awaits, so nothing can slip between the
+        # decision and the stop:
+        # - an open draft is CLAIMED here (`_take_draft`), so the quiet timer can no longer
+        #   commit it while the caption below is being sent;
+        # - a draft whose commit is in progress is neither `self.draft` any more nor visible
+        #   as running yet. Its STOP FLAG IS SET HERE, on that exact turn, before the commit can
+        #   set `committed`: a tool waiting on the commit then wakes to a stopped turn and never
+        #   starts. Waiting for the commit first would let it start a send that was not in
+        #   flight when the Commander said stop;
+        # - a turn already running has its flag set here too, not behind the caption send.
+        d = self.draft
+        if d is not None and self._take_draft(d):
+            d.dropped = True  # a draft still being begun is discarded by `_run_turn` itself
+        else:
+            d = None
+        committing = self.committing
+        turn_id = committing.turn_id if committing is not None else None
+        turn_id = turn_id or ask_orchestrator.running_turn(self.cid)
+        if d is None and turn_id is None:
+            return False
+        flagged = turn_id is not None and ask_orchestrator.request_stop(
+            self.cid, turn_id, committing=committing is not None
+        )
+        self.queued = None  # "stop" also takes back what was asked while HQ was working
+        self._side(self._stop_turn(d, committing, turn_id, said, flagged))
+        return True
+
+    async def _stop_turn(
+        self,
+        d: _CallDraft | None,
+        committing: _CallDraft | None,
+        turn_id: str | None,
+        said: str | None,
+        flagged: bool,
+    ) -> None:
+        """The waiting half of a stop. The fence itself was set in `stop_turn` (`flagged`)."""
+        if said is not None:
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": said}
+            )
+        stopped = flagged
+        if d is not None:
+            await self._discard_claimed(d)  # claimed in `stop_turn`: nothing else acts on it
+            stopped = True
+        if committing is not None:
+            await committing.commit_done.wait()  # then it is a normal, visible turn — or gone
+        if turn_id is not None:
+            if flagged:
+                await ask_orchestrator.wait_settled(self.cid, turn_id)
+            else:
+                # Not there to flag a moment ago (its commit had not reached the orchestrator's
+                # turn): asked again now that the commit has ended.
+                stopped = await ask_orchestrator.stop(self.cid, turn_id) or stopped
+        # Said only when a turn really was stopped or discarded: one that answered first, or
+        # whose commit failed, was not stopped, and its own outcome speaks for it.
+        if stopped:
+            await self.say(STOPPED_LINE, kind="status")
+
     def _take_draft(self, d: _CallDraft) -> bool:
         """Claim `d` for ONE commit or discard, before anything awaits: whichever path claims it
         first acts, and the other finds it gone."""
@@ -864,16 +941,30 @@ class Call:
         if not self._take_draft(d):
             return False
         d.dropped = True  # a draft still being begun is discarded by `_run_turn` itself
+        await self._discard_claimed(d)
+        return True
+
+    async def _discard_claimed(self, d: _CallDraft) -> None:
+        """Discard a draft this caller already claimed (`_take_draft`) and marked dropped."""
         await ask_orchestrator.discard(self.cid, d.turn_id)
         task = self.turn_task
         if task is not None and task is not asyncio.current_task():
             await asyncio.wait({task})  # its `_ask` ends quietly: nothing said, nothing queued
-        return True
 
     async def _commit_draft(self, d: _CallDraft) -> None:
-        """The Commander has finished: the draft `d` becomes HQ's turn (#1845)."""
-        if self._take_draft(d) and await ask_orchestrator.commit(self.cid, d.turn_id):
-            d.committed.set()
+        """The Commander has finished: the draft `d` becomes HQ's turn (#1845). While the commit
+        is being written the draft is `committing`: no longer `self.draft`, not yet a visible
+        running turn — a Stop in that window waits for `commit_done` and stops it by id (#2076)."""
+        if not self._take_draft(d):
+            return
+        self.committing = d
+        try:
+            if await ask_orchestrator.commit(self.cid, d.turn_id):
+                d.committed.set()
+        finally:
+            if self.committing is d:
+                self.committing = None
+            d.commit_done.set()
 
     async def drop_draft(self) -> None:
         """The call is going (#1845): an open draft is discarded, never left holding the
@@ -1084,6 +1175,8 @@ class Call:
             elif cards:
                 # Only picks on a call in another language: read for the screen (`offer`).
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
+        elif view.get("status") == "stopped":
+            pass  # the Commander stopped it (#2076): `stop_turn` said so; nothing failed
         else:
             await self.say(
                 "Sorry, I couldn't answer that. " + (str(view.get("detail") or "")[:160]),
@@ -1621,8 +1714,19 @@ class Call:
                 if get in done:
                     ev = get.result()
                     self._track(ev)
+                    if ev.get("step") == "tool_done":
+                        continue  # a finished step: the next event says what runs now
                     step = ev.get("tool") or ev.get("step")
-                    await self.client({"t": "progress", "step": str(step)[:40]})
+                    # The process row on the call screen (#2076): the step's name and how many
+                    # steps the turn has finished. Numbers on screen only, never spoken.
+                    steps = ev.get("n") - 1 if isinstance(ev.get("n"), int) else ev.get("steps")
+                    await self.client(
+                        {
+                            "t": "progress",
+                            "step": str(step)[:40],
+                            "steps": steps if isinstance(steps, int) else None,
+                        }
+                    )
                 else:
                     get.cancel()
             if draft is not None and task.cancelled():
@@ -1743,6 +1847,8 @@ class _CallDraft:
     heard: dict
     started: float
     committed: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Its commit has ended, whichever way (`Call._commit_draft`).
+    commit_done: asyncio.Event = field(default_factory=asyncio.Event)
     #: Claimed for a discard (`Call._drop_draft`): it is never committed, said or shown.
     dropped: bool = False
 

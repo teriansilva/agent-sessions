@@ -56,6 +56,7 @@ import {
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
   DIRECTION_PREVIEW_PATH,
+  askStopTurnPath,
 } from "./apiPaths";
 import type {
   Automation,
@@ -2158,6 +2159,14 @@ export const api = {
   askDeleteConversation: (id: string) =>
     mutateJson<{ deleted: boolean; id: string }>("DELETE", `/api/ask/conversations/${enc(id)}`),
   askMessageStream: streamAskTurn,
+  /** Stop one running HQ turn (#2076). Answers the turn as it is now: `stopped` once it has
+   *  settled, unchanged if it had already ended. It can only ever end the turn it names. */
+  askStopTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn: AskConversationTurn; running: boolean }>(
+      "POST",
+      askStopTurnPath(id, turnId),
+      {},
+    ),
   /** Share one file in the conversation (#1707): one file per request, the kind is decided
    *  server-side from the bytes. Answers the descriptor the message will carry. */
   askUploadAttachment: (id: string, file: File, secret = false) => {

@@ -81,6 +81,11 @@ enter that server's key again or remove it.
 - **Trail off and HQ waits.** If you stop in the middle of a thought, HQ gives you about three
   seconds before it answers on Natural and Patient; a finished sentence is answered after the
   setting's pause. Quick answers at once either way.
+- **Say "stop" to stop what HQ is doing.** While HQ works on an answer the call screen shows
+  what it is doing and a **Stop** button above the call controls. Tapping it, or saying nothing
+  but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;
+  HQ says "Stopped." and keeps listening. It never ends the call, and a sentence that only
+  contains the word ("stop the staging deploy") is a request like any other.
 - **Captions are off unless you turn them on** (Settings → AI → HQ → Calls → Conversation, or the
   call panel). A call then shows only the cards that need your decision.
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
