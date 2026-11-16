@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -43,7 +43,8 @@ describe("ArtifactViewer (#2068)", () => {
     expect(screen.getByText("SITE")).toBeInTheDocument();
     expect(screen.getByText("UPDATED 2 H AGO")).toBeInTheDocument();
     expect(screen.getByTestId("public-bar-brand")).toHaveAttribute("href", "https://battlelabos.com/");
-    expect(document.title).toBe("Q4 latency report · BattleLab");
+    // The title is set by a passive effect after the metadata lands; wait for it.
+    await waitFor(() => expect(document.title).toBe("Q4 latency report · BattleLab"));
     // One read, cookie-less.
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`/artifacts/p/${ID}/~meta`);
