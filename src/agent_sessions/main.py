@@ -855,6 +855,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, cfg=cfg, must_change=_must_change
     )
 
+    from .routes import agent_accounts as agent_account_routes
+
+    agent_account_routes.register(
+        app, logged_in=_logged_in, csrf_guard=_csrf_guard, cfg=cfg, must_change=_must_change
+    )
+
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).
     terminal_routes.register(

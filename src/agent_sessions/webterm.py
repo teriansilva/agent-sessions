@@ -634,6 +634,7 @@ async def run(
     launch_provider=None,
     attach_provider=None,
     launch_env: dict[str, str] | None = None,
+    account=None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -654,6 +655,12 @@ async def run(
     ``launch_env`` (#1441) is extra environment for a LAUNCH only — the shared project memory
     paths, and a config variable carrying the memory tool where the CLI takes it that way
     (#1506); ignored on attach.
+
+    ``account`` (#1820, an ``agent_account_store.Launch``) runs a LAUNCH on one of the agent's
+    accounts: applied after ``launch_env`` and before the agent's forced environment, so it sets
+    the vendor's home variable and drops credentials that would outrank that login, and neither
+    the brokers nor the agent's own isolation can be changed by it. ``None`` leaves the
+    environment exactly as it was before accounts existed. Ignored on attach.
 
     ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
     is the logical session key for saved transcript replay; alias-backed Codex sessions need
@@ -720,6 +727,8 @@ async def run(
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         env.update(launch_env or {})
+        if account is not None:
+            account.apply(env)  # the account's home, and no credential that outranks its login
         env.update(forced)  # last: nothing assembled above may override the agent's isolation
 
     def create():

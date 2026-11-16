@@ -279,6 +279,14 @@ POST   /api/2fa/disable                                                         
 POST   /api/2fa/enroll                                                            never  # credentials
 POST   /api/2fa/recovery-codes                                                    never  # credentials
 PATCH  /api/agents/budgets                                                        P2
+GET    /api/agent-accounts                                                         P2  # read: pools, labels and health, never a path (#1820, HQ is its P5)
+POST   /api/agent-accounts/{engine}                                                P2
+PUT    /api/agent-accounts/{engine}/order                                          P2
+PUT    /api/agent-accounts/{engine}/new-sessions                                   P2
+PATCH  /api/agent-accounts/{engine}/{account}                                      P2
+DELETE /api/agent-accounts/{engine}/{account}                                      P2
+POST   /api/agent-accounts/{engine}/{account}/status                               P2  # external: the vendor's status command
+POST   /api/agent-accounts/{engine}/{account}/signin/cancel                        never  # ends an interactive vendor login
 GET    /api/agents/catalog                                                        P6
 PATCH  /api/agents/catalog/preferences                                            P6
 POST   /api/agents/catalog/refresh                                                P6
@@ -704,6 +712,7 @@ POST   /api/federation/pairings/{pairing_id}/deny                               
 PATCH  /api/federation/peers/{peer_id}                                            never  # the name a trusted instance is shown under
 POST   /api/federation/peers/{peer_id}/revoke                                     P6  # narrows: ends trust in a peer
 WS     /ws/fed                                                                    n/a  # another instance's channel; Noise-authenticated, never a browser's
+WS     /ws/agent-accounts/{engine}/{account}/signin                                never  # interactive vendor login (#1820)
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)
 POST   /api/voice/settings                                                        never  # same: credentials and destinations
 POST   /api/voice/test                                                            never  # tests a draft speech endpoint with a token

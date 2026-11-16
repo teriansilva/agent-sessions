@@ -42,6 +42,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket
 
 from .. import (
+    agent_account_store,
     agent_tools,
     ai_review_loop,
     artifact_broker,
@@ -314,6 +315,7 @@ async def _serve_takeover(
     launch_provider=None,
     attach_provider=None,
     launch_env: dict[str, str] | None = None,
+    account=None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -369,6 +371,7 @@ async def _serve_takeover(
             launch_provider=launch_provider,
             attach_provider=attach_provider,
             launch_env=launch_env,
+            account=account,
             have=have,
             read_only_gate=read_only_gate,
             seed_key=seed_key,
@@ -886,6 +889,22 @@ def register(
             # written anywhere. Resolved before the argv is built, because it is part of it, and
             # OFF the loop as one unit (#1505): the store lookup takes the scope lock and mints
             # this launch's inbox.
+            # The account this LAUNCH runs on (#1820): a new session takes the agent's
+            # new-session pick and keeps it; a resume takes the account it was started on, or the
+            # default login. Refused rather than started on another login. Past admission and the
+            # capacity slot, so the `finally` hands both back. An agent without accounts reads
+            # nothing and gets None.
+            account_launch = None
+            if action == sessions.LAUNCH and launch is not None:
+                try:
+                    account_launch = await asyncio.to_thread(
+                        agent_account_store.for_launch,
+                        prov,
+                        [transcript_key, phys_key],
+                        new=is_new,
+                    )
+                except agent_account_store.AccountRefused as e:
+                    return await reject(4422, e.detail)
             memory_env: dict[str, str] = {}
             mcp = agent_tools.NONE
             if action == sessions.LAUNCH and launch is not None:
@@ -1079,6 +1098,7 @@ def register(
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
                     launch_env={**memory_env, **mcp.env},
+                    account=account_launch,
                     have=have,
                     fp=fp,
                     tab_id=tab_id,
@@ -1143,6 +1163,7 @@ def register(
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
                     launch_env={**memory_env, **mcp.env},
+                    account=account_launch,
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,

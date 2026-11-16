@@ -159,6 +159,18 @@ def _private_dir(path: Path) -> None:
         raise AccountError(f"{path.name}: not a private directory of this user")
 
 
+def ensure_root() -> Path:
+    """The accounts directory, made 0700 if missing and refused if anyone else could enter it.
+    Its parent is the app's own config directory, created as every other store there is."""
+    top = root()
+    try:
+        top.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AccountError(f"{top.parent.name}: cannot be created ({exc.strerror})") from exc
+    _private_dir(top)
+    return top
+
+
 def problems(rec: Recipe, account_home: Path, shared_home: Path) -> list[str]:
     """Why this home must not be launched with; empty when it is sound.
 

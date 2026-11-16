@@ -194,7 +194,12 @@ SPAWNS_ELSEWHERE = {
     "plugins/manager.py": "an API source's version only (runtime `api`); opencode2 has none",
     "ptybridge.py": "wraps an agent argv in dtach (its own `launch_argv`); spawns nothing",
 }
-APPLIES = {"webterm.py", "plugins/process.py", "headless_dispatch.py"}
+APPLIES = {
+    "webterm.py",
+    "plugins/process.py",
+    "headless_dispatch.py",
+    "agent_account_store.py",  # #1820: an account's status command
+}
 RESOLVERS = {"entrypoint_path", "launch_argv", "new_launch_argv", "unattended_launch"}
 
 

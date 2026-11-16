@@ -633,6 +633,11 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # writes no history. For opencode (`opencode models`) it runs under the store's SHARED
         # admission for its whole life, so it never overlaps a compaction (#1312).
         ("native_models.py", "entrypoint_path"): 1,
+        # #1820: an account's `signed_in` runs its recipe's `status` command in the account's
+        # home (exit code only). Only an agent whose manifest names a reviewed account recipe
+        # reaches it (claude, codex), and none of those recipes is a shared-sqlite-store agent;
+        # a recipe for one would be reviewed code and would need the store's shared admission.
+        ("agent_account_store.py", "entrypoint_path"): 1,
     }
     # The native worker creates two processes (#1312): the `opencode acp` child, and before it
     # the `opencode debug config` probe whose MCP overrides that child needs (#1336). Both run

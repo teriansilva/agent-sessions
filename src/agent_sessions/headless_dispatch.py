@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from . import (
+    agent_account_store,
     agent_tools,
     engine_auth,
     engines,
@@ -751,6 +752,22 @@ async def dispatch(
         except opencode_admission.Unavailable as e:
             out.reason, out.refusal = str(e), "maintenance"
             return out
+        # THE ACCOUNT (#1820): an unattended start is a new session, so it takes the agent's
+        # new-session pick and records it under this key. Resolved before the auth probe, because
+        # the probe must ask about the login the agent will actually run on. A late-id agent's
+        # preflight is its provider's own and takes no environment, so it cannot be pointed at an
+        # account: refused rather than checked against the default login and started on another.
+        try:
+            account_launch = await asyncio.to_thread(
+                agent_account_store.for_launch, prov, [key], new=True
+            )
+        except agent_account_store.AccountRefused as e:
+            out.reason, out.refusal = e.detail, "account"
+            return out
+        if account_launch is not None and late_id:
+            out.reason = "this agent cannot start unattended on a second account yet"
+            out.refusal = "account"
+            return out
         # The brief goes into the ONE seed store, so delivery redeems it through the same
         # atomic claim/ack every other seed uses — exactly-once across a retry or a second
         # attempt, without this module knowing how that is done.
@@ -841,6 +858,8 @@ async def dispatch(
             *artifact_broker.ALL_ENV_KEYS,
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
+        if account_launch is not None:
+            account_launch.apply(env)  # #1820: the account's home, no credential outranking it
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
         # The moment `create_subprocess_exec` is entered, the lock fd may already have been
@@ -936,7 +955,14 @@ async def dispatch(
                 None,
                 contextvars.copy_context().run,
                 partial(
-                    engine_auth.check, probe_bin, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+                    engine_auth.check,
+                    probe_bin,
+                    cwd=spawn_cwd,
+                    probe=auth_probe,
+                    gate=_probe_gate,
+                    # The launch's own environment (`check`'s contract): on an account, the probe
+                    # asks about that login, not the default one.
+                    **({"env": dict(env)} if account_launch is not None else {}),
                 ),
             )
         try:

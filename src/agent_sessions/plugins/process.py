@@ -344,8 +344,18 @@ async def spawn(
     cwd: Path,
     native_id: str | None = None,
     operation_id: str | None = None,
+    account=None,
 ):
-    seconds = SIGNIN_SECONDS if purpose == "signin" else PROBE_SECONDS
+    """A temporary agent process on a PTY: a sign-in, a version check or a verification.
+
+    ``purpose="account-signin"`` (#1820) signs one of a LIVE agent's accounts in: ``account`` is
+    an ``agent_account_store.Launch``, the argv is its reviewed recipe's login command, and the
+    vendor's home variable points at the account's home. It takes the live agent's launch
+    admission, not a candidate's, and like every purpose here it is no session.
+    """
+    if (purpose == "account-signin") != (account is not None):
+        raise ProcessError("an account sign-in names its account, and only it does")
+    seconds = SIGNIN_SECONDS if purpose in ("signin", "account-signin") else PROBE_SECONDS
     if not cwd.is_absolute() or not cwd.is_dir():
         raise ProcessError("the temporary workspace is unavailable")
     operation_id = operation_id or str(uuid.uuid4())
@@ -382,8 +392,14 @@ async def spawn(
             agent_env = forced_env(prov)
         except EngineError as exc:
             raise ProcessError(str(exc)) from None
+        if account is not None:
+            # The account's home, under the agent's own isolation (which still wins).
+            agent_env = {account.recipe.home_env: str(account.home), **agent_env}
+            inner = [prov.entrypoint_path(), *account.recipe.login]
+        else:
+            inner = _argv(prov, purpose, cwd, native_id, operation_id)
         argv = _wrapped(
-            _argv(prov, purpose, cwd, native_id, operation_id),
+            inner,
             cwd,
             unit,
             seconds,
@@ -394,9 +410,13 @@ async def spawn(
 
         # jobs/signin own the worker fence for the operation's entire lifetime. Order its
         # actual spawn with native creation and roster changes, then release after handoff.
-        launch_guard = await admission.acquire_candidate_async(
-            prov, purpose, operation_id, native_id
-        )
+        if account is not None:
+            # A live agent's own launch admission (raises `Refused` on a refusal).
+            launch_guard = await admission.acquire_async(prov)
+        else:
+            launch_guard = await admission.acquire_candidate_async(
+                prov, purpose, operation_id, native_id
+            )
         if launch_guard.reason:
             # The helper raises on refusal today; the spawn site must not depend on that.
             reason = launch_guard.reason
