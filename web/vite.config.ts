@@ -3,7 +3,8 @@ import { defineConfig, type Plugin } from "vite";
 
 /** The public share viewer (#1404) is not the app: VitePWA links the app manifest into EVERY html
  *  entry, which would offer a visitor "Install BattleLab" (the operator's app, whose
- *  `handle_links` would then capture public links). Drop it from share.html only. */
+ *  `handle_links` would then capture public links). Drop it from share.html, and from the public
+ *  artifact viewer (#2068), artifact.html. */
 function shareViewerWithoutManifest(): Plugin {
   return {
     name: "share-viewer-without-manifest",
@@ -11,9 +12,11 @@ function shareViewerWithoutManifest(): Plugin {
     // On the emitted file, after every other plugin has written to it (VitePWA adds the link in
     // its own late hooks).
     generateBundle(_options, bundle) {
-      const page = bundle["share.html"];
-      if (page && page.type === "asset" && typeof page.source === "string") {
-        page.source = page.source.replace(/\s*<link rel="manifest"[^>]*>/g, "");
+      for (const name of ["share.html", "artifact.html"]) {
+        const page = bundle[name];
+        if (page && page.type === "asset" && typeof page.source === "string") {
+          page.source = page.source.replace(/\s*<link rel="manifest"[^>]*>/g, "");
+        }
       }
     },
   };
@@ -60,6 +63,9 @@ export default defineConfig({
         share: "share.html",
         // A reply link (#1956), served at /r/<id>: one sealed reply, opened in the page.
         reply: "reply.html",
+        // A publicly shared artifact (#2068), served at /artifacts/p/<id>/: the BattleLab header
+        // above the artifact, framed in a sandbox from ~/.
+        artifact: "artifact.html",
       },
     },
   },

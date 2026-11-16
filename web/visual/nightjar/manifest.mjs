@@ -1766,6 +1766,23 @@ export const SWEEP = [
       { id: "reply:password", path: R("9zf74A-Nr9gDg3WHtK7vLFj_sJtGwnrWFbjF849gVUs"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: pw }, present: "[data-testid=reply-password-gate]" },
       { id: "reply:unavailable", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: { status: 404, json: { detail: "link unavailable" } } }, present: "[data-testid=reply-unavailable]" },
       { id: "reply:incomplete", path: `/r/${ID}`, document: "/reply.html", present: "[data-testid=reply-incomplete]" },
+      { id: "reply:collapsed", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: plain }, open: [{ css: "[data-testid=public-bar-toggle]" }], present: "[data-testid=public-bar][data-collapsed=true]" },
+    ];
+  })(),
+  // A publicly shared artifact (#2068) at /artifacts/p/<id>/ (artifact.html): the header over the
+  // artifact, framed from ~/ (answered here as a small static page, as the server would).
+  ...(() => {
+    const ID = "Ar7fQ2xAAAAAAAAAAAAAAA";
+    const P = `/artifacts/p/${ID}/`;
+    const meta = { title: "Q4 latency report", kind: "site", updated_at: Math.floor(Date.now() / 1000) - 7200 };
+    const page = "<!doctype html><meta charset=utf-8><title>Q4 latency report</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:32px;max-width:720px}h1{margin:0 0 8px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}</style><h1>Q4 latency report</h1><p>p95 request latency by region, last 30 days.</p><table><tr><th>Region</th><th>p50</th><th>p95</th></tr><tr><td>eu-central</td><td>38 ms</td><td>112 ms</td></tr><tr><td>us-east</td><td>41 ms</td><td>131 ms</td></tr><tr><td>ap-south</td><td>66 ms</td><td>204 ms</td></tr></table>";
+    const open = { [`${P}~meta`]: meta, [`${P}~/`]: { status: 200, html: page } };
+    return [
+      { id: "artifact:loading", path: P, document: "/artifact.html", holdAsset: "~meta", at: 1200 },
+      { id: "artifact:open", path: P, document: "/artifact.html", api: open, present: "[data-testid=artifact-frame]" },
+      { id: "artifact:collapsed", path: P, document: "/artifact.html", api: open, open: [{ css: "[data-testid=public-bar-toggle]" }], present: "[data-testid=public-bar][data-collapsed=true]" },
+      { id: "artifact:unavailable", path: P, document: "/artifact.html", api: { [`${P}~meta`]: { status: 404, json: { detail: "Not Found" } } }, present: "[data-testid=artifact-unavailable]" },
+      { id: "artifact:offline", path: P, document: "/artifact.html", api: { [`${P}~meta`]: { status: 502, json: {} } }, present: "[data-testid=artifact-offline]" },
     ];
   })(),
   ...(() => {
@@ -1821,6 +1838,23 @@ export const SWEEP = [
           "/api/public/events": { link: "L1", revision: 3, next_cursor: 3, events: [] },
         },
         present: "[data-testid=share-composer]",
+      },
+      {
+        id: "share:collapsed",
+        path: P,
+        document: "/share.html",
+        api: {
+          "/api/public/unlock": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/share": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/session": {
+            link: "L1", revision: 3, event_cursor: 3, state: "idle", active_turn: null, model: "gpt-5-codex", omitted_turns: 0,
+            pending_requests: [], read_only: false, images: true, can_send: true, mission_held: false, background: false,
+            turns: [{ turn_id: "t1", state: "completed", delivery: null, text: "Login bounces between /login and / after the cookie refresh. Find out why.", text_truncated: false, reply: "The refresh middleware re-issues the cookie with `Path=/api`, so the SPA shell never sees it.", reply_ts: 1800000000, reply_truncated: false, attachments: [], tools: [{ name: "read", outcome: "ok", summary: "src/auth/middleware.py · 212 lines" }], tools_truncated: false, author: null, mine: false }],
+          },
+          "/api/public/events": { link: "L1", revision: 3, next_cursor: 3, events: [] },
+        },
+        open: [{ css: "[data-testid=public-bar-toggle]" }],
+        present: "[data-testid=public-bar][data-collapsed=true]",
       },
     ];
   })(),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { BrandMark } from "../components/brand/Brand";
+import { PublicBar } from "../components/public/PublicBar";
 import { Avatar } from "../components/chat/Avatar";
 import { Atmosphere } from "../components/hud/Atmosphere";
 import { Loader } from "../components/hud/Loader";
@@ -114,17 +114,13 @@ export function ReplyViewer() {
     <>
       <Atmosphere />
       <div className={styles.page} data-testid="reply-viewer" data-phase={phase.kind}>
-        <header className={styles.bar}>
-          <span className={styles.brand}>
-            <BrandMark size={20} />
-            BattleLab
-          </span>
+        <PublicBar>
           <span className={styles.title}>Shared reply</span>
           <span className={styles.facts}>
             <span className={`${styles.chip} ${styles.chipMode}`}>READ ONLY</span>
             {expires != null && <span className={styles.chip}>{expiryChip(expires, nowSeconds())}</span>}
           </span>
-        </header>
+        </PublicBar>
 
         {phase.kind === "loading" && (
           <main className={styles.center}>

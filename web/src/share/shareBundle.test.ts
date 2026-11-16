@@ -39,6 +39,11 @@ const ALLOWED_OUTSIDE = new Set([
   "components/chat/Avatar.tsx",
   "components/chat/Avatar.module.css",
   "lib/who.ts",
+  // The header of every public page (#2068): markup, a sessionStorage flag, and the one
+  // battlelabos.com constant (links.ts holds URL constants and pure builders only, no fetch).
+  "components/public/PublicBar.tsx",
+  "components/public/PublicBar.module.css",
+  "lib/links.ts",
   "components/brand/Brand.tsx",
   "components/brand/Brand.module.css",
   "brand/mark-amber.svg",

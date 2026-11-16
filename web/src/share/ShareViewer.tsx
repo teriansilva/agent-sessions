@@ -10,7 +10,7 @@ import {
   type Unlocked,
 } from "./publicApi";
 import styles from "./ShareViewer.module.css";
-import { BrandMark } from "../components/brand/Brand";
+import { PublicBar } from "../components/public/PublicBar";
 import { Atmosphere } from "../components/hud/Atmosphere";
 import { Loader } from "../components/hud/Loader";
 import { followDeviceMotion } from "../theme/motion";
@@ -184,11 +184,7 @@ export function ShareViewer() {
         data-testid="share-viewer"
         data-phase={phase.kind}
       >
-        <header className={styles.bar}>
-          <span className={styles.brand}>
-            <BrandMark size={20} />
-            BattleLab
-          </span>
+        <PublicBar>
           {open ? (
             <>
               <span className={styles.title}>
@@ -219,7 +215,7 @@ export function ShareViewer() {
           ) : (
             <span className={styles.sub}>Shared session</span>
           )}
-        </header>
+        </PublicBar>
 
         {phase.kind === "loading" && (
           <main className={styles.center}>

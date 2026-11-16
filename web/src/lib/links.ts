@@ -5,6 +5,10 @@
 /** The documentation site's home. */
 export const DOCS_HOME_URL = "https://docs.battlelabos.com/";
 
+/** BattleLab's public site: where the mark on every public page (a shared session, reply or
+ *  artifact) takes a visitor (#2068). */
+export const BATTLELAB_SITE_URL = "https://battlelabos.com/";
+
 /** The shared-memory guide, with the table of which agents can reach it (#1441). */
 export const MEMORY_GUIDE_URL = `${DOCS_HOME_URL}guide/memory#which-agents-can-reach-it`;
 

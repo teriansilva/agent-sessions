@@ -15,27 +15,7 @@
   font-size: var(--fs-body);
 }
 
-.bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-1) var(--sp-3);
-  min-height: 52px;
-  padding: var(--sp-2) var(--sp-4);
-  background: var(--bg-1);
-  border-top: 2px solid var(--hud);
-  border-bottom: 1px solid var(--line-strong);
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font: 700 var(--fs-label) / 1 var(--font-display);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--hud-text);
-}
+/* The bar itself is PublicBar's (components/public, #2068); the facts it holds are these. */
 .sub {
   font: 500 var(--fs-micro) / 1.2 var(--font-mono);
   letter-spacing: 0.16em;

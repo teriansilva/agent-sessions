@@ -93,7 +93,8 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
         if (cap.holdAsset) await page.route(new RegExp(cap.holdAsset), () => {});
         // Per-capture answers, registered AFTER the shared handler so they win (the last route
         // registered for a URL is asked first): a state the shared fixtures do not hold.
-        // A body `{ status, json }` answers that status; anything else is the JSON body. The path
+        // A body `{ status, json }` answers that status, `{ status, html }` a page; anything else is
+        // the JSON body. The path
         // matches with or without a query string.
         // A `{ status, json, method }` body answers only that method; any other falls through to
         // the shared handler (a refused PATCH on a path whose GET still reads the list).
@@ -104,6 +105,9 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
               ? new RegExp(path.slice(3))
               : new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\?|$)`);
             await page.route(re, (r) => {
+              // `{ status, html }` answers a page (a public artifact's framed content, #2068).
+              if (body && typeof body === "object" && "status" in body && "html" in body)
+                return r.fulfill({ status: body.status, contentType: "text/html", body: body.html });
               const shaped = body && typeof body === "object" && "status" in body && "json" in body;
               if (shaped && body.method && r.request().method() !== body.method) return r.fallback();
               return shaped ? r.fulfill({ status: body.status, json: body.json }) : r.fulfill({ json: body });

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request
@@ -153,7 +154,16 @@ async def _json_body(request: Request) -> dict | None:
     return body if isinstance(body, dict) else None
 
 
-def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
+#: The public viewer page (#2068) is the app's own page, not agent content: no sandbox CSP (the
+#: app's normal CSP applies), but never cached and never a Referer.
+_VIEWER_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+#: The prefix a public artifact's own files live under, beneath the viewer page (#2068).
+CONTENT_PREFIX = "~/"
+
+
+def register(
+    app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard, web_dist: Path | None = None
+) -> None:
     artifact_store.PUBLIC_AVAILABLE = cfg.auth_mode != "none"
     # ---- the operator API -----------------------------------------------------------------
 
@@ -299,9 +309,22 @@ def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)
 
-    @app.get("/artifacts/p/{public_id}/{rest:path}")
+    @app.get("/artifacts/p/{public_id}/~meta")
+    async def hosted_public_meta(public_id: str) -> Response:
+        """The viewer page's one fetch (#2068): `{title, kind, updated_at}` of a live link, else 404
+        (the same answer for unknown, revoked and `none` mode)."""
+        try:
+            meta = await asyncio.to_thread(artifact_store.public_meta, public_id)
+        except artifact_store.ArtifactsUnavailable:
+            meta = None
+        if meta is None:
+            return JSONResponse({"detail": "not found"}, status_code=404, headers=_VIEWER_HEADERS)
+        return JSONResponse(meta, headers=_VIEWER_HEADERS)
+
+    @app.get("/artifacts/p/{public_id}/~/{rest:path}")
     async def hosted_public(public_id: str, rest: str, request: Request) -> Response:
-        """A public link: no account, the row re-read now, the latest revision."""
+        """A public link's own files: no account, the row re-read now, the latest revision, under
+        the sandbox headers. The viewer page frames ``~/``; relative links stay beneath it."""
         try:
             aid = await asyncio.to_thread(artifact_store.by_public_id, public_id)
         except artifact_store.ArtifactsUnavailable:
@@ -311,6 +334,34 @@ def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
         resp = await _serve(aid, rest, None, request)
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    @app.get("/artifacts/p/{public_id}/{rest:path}")
+    async def hosted_public_viewer(public_id: str, rest: str, request: Request) -> Response:
+        """The public link itself (#2068): ``/artifacts/p/<id>/`` is the BattleLab viewer page — the
+        public header above the artifact in a sandboxed frame. The same page for every well-formed
+        id: its own ``~meta`` fetch decides, so this route tells a prober nothing. A deeper path
+        from before the viewer existed redirects to the same file under ``~/``."""
+        if not artifact_store.PUBLIC_AVAILABLE:
+            return _hosted_error(404, "not found")  # every public route is a 404 without a login
+        if not artifact_store.PUBLIC_ID_RE.fullmatch(public_id):
+            # Not an id's shape at all: the format is public, so this says nothing about any link.
+            return _hosted_error(404, "not found")
+        if rest:
+            query = f"?{request.url.query}" if request.url.query else ""
+            return RedirectResponse(
+                f"/artifacts/p/{quote(public_id)}/{CONTENT_PREFIX}{quote(rest)}{query}",
+                status_code=308,
+                headers=SANDBOX_HEADERS,
+            )
+        page = (web_dist / "artifact.html") if web_dist is not None else None
+        if page is None or not page.is_file():
+            # A build without the viewer bundle: the artifact itself, as before the viewer.
+            return RedirectResponse(
+                f"/artifacts/p/{quote(public_id)}/{CONTENT_PREFIX}",
+                status_code=307,
+                headers=SANDBOX_HEADERS,
+            )
+        return FileResponse(page, headers=_VIEWER_HEADERS)
 
     @app.get("/artifacts/p/{public_id}")
     async def hosted_public_bare(public_id: str) -> Response:

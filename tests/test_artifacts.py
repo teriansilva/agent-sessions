@@ -634,8 +634,10 @@ def test_a_site_without_an_index_gets_an_escaped_listing(client, auth_cfg, origi
     assert "&lt;b&gt;.png" in page.text and "<b>.png" not in page.text
 
 
-def test_public_links_are_not_served_yet(client, origin, proj):
-    assert client.get("/artifacts/p/" + "a" * 22 + "/").status_code == 404
+def test_an_unknown_public_id_serves_nothing(client, origin, proj):
+    unknown = "/artifacts/p/" + "a" * 22 + "/"
+    assert client.get(unknown + "~/").status_code == 404
+    assert client.get(unknown + "~meta").status_code == 404
 
 
 def test_the_operator_api_lists_filters_and_deletes(client, auth_cfg, origin, proj):
@@ -1092,32 +1094,36 @@ def test_a_public_link_opens_without_an_account_and_a_revoke_ends_it(
     again = client.post(f"/api/artifacts/{a['id']}/share", headers=h).json()
     assert again["public_url"] == shared["public_url"]
     visitor = TestClient(client.app, base_url="https://your-domain.example")
-    page = visitor.get(path)
+    # The link is the viewer page (#2068); the artifact's own files are under ~/.
+    content = path + "~/"
+    page = visitor.get(content)
     assert page.status_code == 200 and "<h1>hi</h1>" in page.text
     assert "allow-same-origin" not in page.headers["content-security-policy"]
     assert page.headers["cache-control"] == "no-store"
     assert "cross-origin-resource-policy" not in page.headers  # its own assets must load
     assert page.headers["referrer-policy"] == "no-referrer"
-    assert visitor.get(path + "docs/").text == "docs"
+    assert visitor.get(content + "docs/").text == "docs"
     # The admin cookie gets nothing extra on a public route.
-    assert client.get(path).text == page.text
+    assert client.get(content).text == page.text
     # It follows the latest revision.
     (proj / "dist" / "index.html").write_text("<h1>v2</h1>")
     artifact_store.publish(
         origin, {"path": "dist", "title": "Hi", "why": "w", "artifact_id": a["id"]}
     )
-    assert "v2" in visitor.get(path).text
+    assert "v2" in visitor.get(content).text
     # Revoke: the next request is a 404, and a re-share is a NEW link.
     assert client.delete(f"/api/artifacts/{a['id']}/share", headers=h).json()["public_url"] is None
-    assert visitor.get(path).status_code == 404
+    assert visitor.get(content).status_code == 404
+    assert visitor.get(path + "~meta").status_code == 404
     fresh = client.post(f"/api/artifacts/{a['id']}/share", headers=h).json()["public_url"]
     assert fresh != shared["public_url"]
-    assert visitor.get(path).status_code == 404
+    assert visitor.get(content).status_code == 404
 
 
 def test_unknown_public_ids_are_404_and_listed_as_public(client, auth_cfg, origin, proj):
     a = _published(origin, proj)
-    assert client.get("/artifacts/p/" + "A" * 22 + "/").status_code == 404
+    assert client.get("/artifacts/p/" + "A" * 22 + "/~/").status_code == 404
+    assert client.get("/artifacts/p/" + "A" * 22 + "/~meta").status_code == 404
     assert client.get("/artifacts/p/short/").status_code == 404
     _login(client, auth_cfg)
     client.post(f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(client, auth_cfg))
@@ -1371,3 +1377,92 @@ def test_a_folderless_or_archived_project_is_well_formed(proj, tmp_path):
     doc["projects"][p.id]["archived"] = False
     idx.write_text(_json.dumps(doc))
     assert set(projects.load(strict=True)) == {p.id, q.id}
+
+
+# ---- #2068: the public viewer page, ~/ content, ~meta ---------------------------------------
+
+
+@pytest.fixture
+def viewer_client(auth_cfg, monkeypatch, tmp_path):
+    from agent_sessions import main
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "artifact.html").write_text("<!doctype html><title>viewer</title><div id=root></div>")
+    monkeypatch.setattr(main, "_WEB_DIST", dist)
+    return TestClient(main.create_app(auth_cfg), base_url="https://your-domain.example")
+
+
+def _shared_path(client, auth_cfg, origin, proj) -> tuple[dict, str]:
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    shared = client.post(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(client, auth_cfg)
+    ).json()
+    return a, shared["public_url"].split("your-domain.example", 1)[1]
+
+
+def test_the_public_link_is_the_battlelab_viewer_page(viewer_client, auth_cfg, origin, proj):
+    a, path = _shared_path(viewer_client, auth_cfg, origin, proj)
+    visitor = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    page = visitor.get(path)
+    assert page.status_code == 200 and "<title>viewer</title>" in page.text
+    # The app's own page: the app's CSP (not the sandbox), never cached, never a Referer.
+    assert "sandbox" not in page.headers["content-security-policy"]
+    assert page.headers["cache-control"] == "no-store"
+    assert page.headers["referrer-policy"] == "no-referrer"
+    # Its one fetch: the title, kind and time of a LIVE link — nothing else.
+    meta = visitor.get(path + "~meta")
+    assert meta.status_code == 200
+    assert set(meta.json()) == {"title", "kind", "updated_at"}
+    assert meta.json()["title"] == "Hi" and meta.json()["kind"] == "site"
+    assert meta.headers["cache-control"] == "no-store"
+    # The artifact's own files live under ~/, sandboxed, with relative links beneath it.
+    content = visitor.get(path + "~/")
+    assert "<h1>hi</h1>" in content.text
+    csp = content.headers["content-security-policy"]
+    assert csp.startswith("sandbox ") and "allow-same-origin" not in csp
+    assert visitor.get(path + "~/docs/").text == "docs"
+
+
+def test_a_legacy_deep_link_redirects_under_the_content_prefix(
+    viewer_client, auth_cfg, origin, proj
+):
+    _, path = _shared_path(viewer_client, auth_cfg, origin, proj)
+    visitor = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    r = visitor.get(path + "docs/?x=1", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == path + "~/docs/?x=1"
+    assert visitor.get(path + "docs/").text == "docs"
+
+
+def test_meta_answers_404_for_unknown_revoked_and_no_login(viewer_client, auth_cfg, origin, proj):
+    a, path = _shared_path(viewer_client, auth_cfg, origin, proj)
+    visitor = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    assert visitor.get("/artifacts/p/" + "A" * 22 + "/~meta").status_code == 404
+    viewer_client.delete(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(viewer_client, auth_cfg)
+    )
+    assert visitor.get(path + "~meta").status_code == 404
+    assert visitor.get(path + "~/").status_code == 404
+    # The page itself is the same for every id (its fetch decides) — it tells a prober nothing.
+    assert visitor.get(path).status_code == 200
+    artifact_store.PUBLIC_AVAILABLE = False
+    try:
+        assert visitor.get(path).status_code == 404
+        assert visitor.get(path + "~meta").status_code == 404
+    finally:
+        artifact_store.PUBLIC_AVAILABLE = True
+
+
+def test_without_a_viewer_build_the_link_still_opens_the_artifact(
+    auth_cfg, origin, proj, monkeypatch, tmp_path
+):
+    from agent_sessions import main
+
+    monkeypatch.setattr(main, "_WEB_DIST", tmp_path / "no-build")  # no artifact.html in it
+    client = TestClient(main.create_app(auth_cfg), base_url="https://your-domain.example")
+    _, path = _shared_path(client, auth_cfg, origin, proj)
+    visitor = TestClient(client.app, base_url="https://your-domain.example")
+    r = visitor.get(path, follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == path + "~/"
+    assert "<h1>hi</h1>" in visitor.get(path).text

@@ -691,7 +691,9 @@ DELETE /api/artifacts/{aid}                                                     
 POST   /api/artifacts/{aid}/share                                                 never  # public exposure
 DELETE /api/artifacts/{aid}/share                                                 never  # the share's own control
 GET    /artifacts/p/{public_id}                                                   n/a  # hosted bytes
-GET    /artifacts/p/{public_id}/{rest:path}                                       n/a  # hosted bytes
+GET    /artifacts/p/{public_id}/{rest:path}                                       n/a  # the public viewer page (#2068)
+GET    /artifacts/p/{public_id}/~/{rest:path}                                     n/a  # hosted bytes
+GET    /artifacts/p/{public_id}/~meta                                             n/a  # the public viewer's title/kind/time
 GET    /artifacts/v/{token}/{rest:path}                                           n/a  # hosted bytes
 GET    /artifacts/v/{token}                                                       n/a  # hosted bytes
 GET    /artifacts/{ref}                                                           n/a  # hosted bytes

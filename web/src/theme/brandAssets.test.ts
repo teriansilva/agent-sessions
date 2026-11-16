@@ -171,7 +171,11 @@ describe("the old marks are gone from the surfaces #1590 owns", () => {
 
   test("the SPA surfaces show the kit's logo through the shared components", () => {
     expect(read("web/src/routes/Onboarding.tsx")).toContain("<BrandMark");
-    expect(read("web/src/share/ShareViewer.tsx")).toContain("<BrandMark");
+    // The public pages' one header (#2068) carries the mark; the session, reply and artifact
+    // viewers all wear it.
+    expect(read("web/src/components/public/PublicBar.tsx")).toContain("<BrandMark");
+    for (const page of ["share/ShareViewer.tsx", "reply/ReplyViewer.tsx", "artifact/ArtifactViewer.tsx"])
+      expect(read(`web/src/${page}`), page).toContain("<PublicBar");
     expect(read("web/src/whatsnew/WhatsNewDialog.tsx")).toContain("<BrandLockup");
   });
 

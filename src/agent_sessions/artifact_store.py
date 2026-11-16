@@ -1259,6 +1259,21 @@ def by_public_id(public_id: str) -> str | None:
     return row["id"] if row else None
 
 
+def public_meta(public_id: str) -> dict | None:
+    """What the public viewer page shows of a live public link (#2068): the title, the kind and
+    when it last changed. Nothing else — no session, folder, why or files. None when there is no
+    such live link (or public links are off)."""
+    if not PUBLIC_AVAILABLE or not PUBLIC_ID_RE.fullmatch(public_id or "") or _absent():
+        return None
+    with _con() as con:
+        row = con.execute(
+            "SELECT title, kind, updated_at FROM artifacts WHERE public_id=?", (public_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {"title": row["title"], "kind": row["kind"], "updated_at": row["updated_at"]}
+
+
 def delete(aid: str) -> bool:
     """Delete an artifact, every revision and (once no other revision names them) its blobs."""
     validate_id(aid)

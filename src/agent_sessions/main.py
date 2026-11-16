@@ -831,7 +831,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # The mission shelf (#1740): manifest, verdict and the mission-bound read path.
     mission_shelf_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Artifacts (#1932): the operator API and the sandboxed hosting routes.
-    artifacts_routes.register(app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    artifacts_routes.register(
+        app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard, web_dist=_WEB_DIST
+    )
     # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
