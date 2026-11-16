@@ -600,11 +600,10 @@ def test_an_old_signed_release_relabelled_as_newer_refuses(world, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("gpg"), reason="gpg required")
-def test_a_pgp_signature_never_substitutes_for_the_ssh_root(world, tmp_path):
+def test_a_pgp_signature_never_substitutes_for_the_ssh_root(world, tmp_path, gnupg_home):
     # git picks the verifier from the signature format: a PGP-signed tag was checked against the
     # operator's GPG keyring — here one holding ONLY the (untrusted) signer's public key.
-    gnupg = tmp_path / "gnupg"
-    gnupg.mkdir(mode=0o700)
+    gnupg = gnupg_home  # its teardown stops the gpg-agent the key generation starts (#2045)
     genv = {**_base_env(tmp_path), "GNUPGHOME": str(gnupg)}
     subprocess.run(
         [

@@ -517,11 +517,10 @@ def test_a_signed_release_relabelled_under_a_higher_name_is_refused(tmp_path):
 @pytest.mark.skipif(
     subprocess.run(["which", "gpg"], capture_output=True).returncode != 0, reason="gpg absent"
 )
-def test_a_pgp_signed_tag_is_refused_even_with_its_key_in_the_keyring(tmp_path):
+def test_a_pgp_signed_tag_is_refused_even_with_its_key_in_the_keyring(tmp_path, gnupg_home):
     _keygen(tmp_path / "good")
     repo = _repo(tmp_path, tmp_path / "good.pub")
-    gnupg = tmp_path / "gnupg"
-    gnupg.mkdir(mode=0o700)
+    gnupg = gnupg_home  # its teardown stops the gpg-agent the key generation starts (#2045)
     env = {**os.environ, "GNUPGHOME": str(gnupg)}
     subprocess.run(
         [

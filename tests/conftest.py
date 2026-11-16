@@ -6,13 +6,16 @@ every fixture sets up isolated paths.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pwd
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -1123,3 +1126,72 @@ def lift_console_cutoff(monkeypatch) -> None:
     from agent_sessions import actuator
 
     monkeypatch.setattr(actuator, "console_member_hold", lambda rec: None)
+
+
+# --- GnuPG homes: no agent outlives its test (#2045) ---------------------------------------------
+#
+# `gpg --quick-gen-key` / `git tag -s` autostart `gpg-agent --homedir <home> --daemon` (and on
+# GnuPG 2.4 possibly `keyboxd` / `dirmngr`). Nothing stopped them: on the CI runners they outlived
+# the run and held its pytest basetemp open, so the /ci tmpfs could not be reclaimed. A test that
+# needs a GNUPGHOME takes `gnupg_home`, whose teardown stops that home's daemons through `gpgconf`
+# on that home only (never by process name: the runner host is shared), then asserts none is left.
+
+
+def gnupg_daemons(home: Path) -> list[int]:
+    """Pids of live processes started for ``home``: gpg launches its daemons as
+    ``<daemon> --homedir <home> …``. A zombie has an empty cmdline, so it never matches."""
+    want = str(home)
+    found: list[int] = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = Path(entry.path, "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        args = [a.decode(errors="replace") for a in argv]
+        if any(
+            (a == "--homedir" and i + 1 < len(args) and args[i + 1] == want)
+            or a == f"--homedir={want}"
+            for i, a in enumerate(args)
+        ):
+            found.append(int(entry.name))
+    return found
+
+
+def stop_gnupg(home: Path, timeout: float = 15.0) -> list[int]:
+    """Stop every GnuPG daemon of ``home`` and remove its socket dir under /run/user; return the
+    pids still alive after ``timeout`` (empty when all are gone)."""
+    gpgconf = shutil.which("gpgconf")
+    if gpgconf:
+        for action in (["--kill", "all"], ["--remove-socketdir"]):
+            subprocess.run(
+                [gpgconf, "--homedir", str(home), *action],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+    deadline = time.monotonic() + timeout
+    while (left := gnupg_daemons(home)) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return left
+
+
+@contextlib.contextmanager
+def stopped_gnupg(home: Path):
+    """Stop ``home``'s GnuPG daemons when the block ends, by an exception too; then assert none
+    is left. Entered before anything can start one."""
+    try:
+        yield home
+    finally:
+        left = stop_gnupg(home)
+        assert not left, f"GnuPG daemons of {home} outlived the test: pids {left}"
+
+
+@pytest.fixture
+def gnupg_home(tmp_path):
+    """A fresh 0700 GNUPGHOME under ``tmp_path`` whose daemons are stopped at teardown."""
+    home = tmp_path / "gnupg"
+    home.mkdir(mode=0o700)
+    with stopped_gnupg(home):
+        yield home
