@@ -289,7 +289,8 @@ def test_the_temporary_operations_apply_it_last():
     assert tail[1] == "-i"
     for key, value in env.items():
         assert f"{key}={value}" in tail
-    # The probe still gets its deny-all tool profile (2.2.7 normalizes it to a final deny).
+    # The probe still gets its no-tools profile: `ask`, which non-interactive `run` rejects.
+    # `deny` is refused by 2.2.7's free gateway with a 429 (#1986).
     probe = process._wrapped(
         ["/x/opencode", "run"],
         Path("/tmp"),
@@ -299,7 +300,11 @@ def test_the_temporary_operations_apply_it_last():
         agent_env=env,
     )
     profile = next(a for a in probe if a.startswith("OPENCODE_CONFIG_CONTENT="))
-    assert json.loads(profile.partition("=")[2])["permission"] == {"*": "deny"}
+    cfg = json.loads(profile.partition("=")[2])
+    assert cfg["permission"] == {"*": "ask"}
+    agent = cfg["default_agent"]
+    assert agent.startswith("battlelab-probe-")
+    assert cfg["agent"] == {agent: {"mode": "primary", "permission": {"*": "ask"}}}
 
 
 def test_a_refused_temporary_operation_spawns_nothing(monkeypatch, tmp_path):
@@ -661,3 +666,12 @@ def test_the_real_binary_stays_in_its_tree_on_loopback_and_leaves_nothing_runnin
     stray = {k for k in changed if not k.startswith("home/o2/")}
     assert stray == set(), stray
     assert (r / "data/opencode/opencode.db").exists()
+
+
+def test_every_probe_profile_leaves_the_probe_unable_to_act():
+    """Each no-tools profile names a rule, and no rule can grant a tool (#1986): 1.x `deny`; 2.x
+    `ask`, which non-interactive `run` rejects (2.2.7's free gateway 429s any `*: deny`)."""
+    assert set(process._PROBE_TOOL_RULE) == set(process._DENY_ALL_PROFILE_KINDS)
+    assert set(process._PROBE_TOOL_RULE.values()) <= {"deny", "ask"}
+    assert process._PROBE_TOOL_RULE["opencode2-run"] == "ask"
+    assert process._PROBE_TOOL_RULE["run-session"] == "deny"

@@ -197,6 +197,14 @@ def _argv(
 
 #: Probe kinds whose CLI defaults to allowing tools, so the check is given a deny-all profile.
 _DENY_ALL_PROFILE_KINDS = frozenset({"run-session", "opencode2-run"})
+#: The blanket rule each kind's profile uses. Both leave the probe unable to act.
+#: opencode 1.x: `deny`. opencode 2.x (#1986): `ask`, because 2.2.7's free gateway answers any
+#: request carrying a `*: deny` rule with HTTP 429 `provider.free-limit` (measured 2026-11-16:
+#: deny → 429 every time, per-tool or `ask` → reply), so verification could never pass signed
+#: out. In non-interactive `run` an `ask` is rejected, never prompted: measured with an allow-all
+#: project `opencode.json` AND an allow-all global config, a shell `touch` and a file write were
+#: both rejected with no effect, and a plain reply exited 0 under a pty.
+_PROBE_TOOL_RULE = {"run-session": "deny", "opencode2-run": "ask"}
 
 
 def _wrapped(
@@ -219,13 +227,14 @@ def _wrapped(
     }
     if probe_kind in _DENY_ALL_PROFILE_KINDS:
         # This CLI defaults to allowing tools. Its own newly minted primary agent makes the
-        # deny rule last, without merging a project's earlier per-tool grants under that name.
+        # rule last, without merging a project's earlier per-tool grants under that name.
+        rule = _PROBE_TOOL_RULE[probe_kind]
         agent = "battlelab-probe-" + uuid.uuid4().hex
         environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(
             {
-                "permission": {"*": "deny"},
+                "permission": {"*": rule},
                 "default_agent": agent,
-                "agent": {agent: {"mode": "primary", "permission": {"*": "deny"}}},
+                "agent": {agent: {"mode": "primary", "permission": {"*": rule}}},
             }
         )
     # Last: the agent's own isolation (#1986, opencode 2.x's XDG tree) wins over everything above.

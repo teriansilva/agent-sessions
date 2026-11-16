@@ -40,7 +40,10 @@ MAX_REVIEWS = 64
 REVIEW_SECONDS = 900
 MAX_TOTAL_DOWNLOAD = 512 * 1024 * 1024
 MAX_TOTAL_EXPANDED = 1024 * 1024 * 1024
-MAX_INSTALL_SECONDS = 600
+# The whole install: download, extraction and validation. A 121 MB GitHub tarball (opencode2
+# 2.2.7) at a measured ~134 KB/s per connection needs ~15 min, so the old 600 s failed every time
+# on such a link (#1986). A stalled transfer still fails fast: httpx's 10 s read timeout.
+MAX_INSTALL_SECONDS = 3900
 _ID = re.compile(r"[a-z][a-z0-9-]{1,23}")
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _BUSY = frozenset({"planned", "running", "ready", "cleanup_pending"})

@@ -26,7 +26,10 @@ MAX_EXPANDED = 512 * 1024 * 1024
 MAX_FILE = 320 * 1024 * 1024  # pinned native Codex is 287,086,056 bytes (#1266)
 MAX_MEMBERS = 50000
 MAX_METADATA = 16384
-DOWNLOAD_SECONDS = 600  # shares the unchanged total install deadline; no extra budget
+# The download's own ceiling, inside the shared install deadline (`manager.MAX_INSTALL_SECONDS`).
+# Slow-but-moving links need it (#1986: ~15 min for 121 MB at ~134 KB/s); a STALLED one does not
+# wait for it, because the client's 10 s read timeout ends a transfer that stops delivering bytes.
+DOWNLOAD_SECONDS = 3600
 # Test seam only; no route, manifest or environment variable supplies a transport.
 _TRANSPORT = None
 
