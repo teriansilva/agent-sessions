@@ -180,6 +180,9 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Maintenance: scrollback size and clear; prune (preview, prune); compact (measure, compact) | GET/POST /api/scrollback*, /api/maintenance/prune, /api/maintenance/compact | P6 R/W (destructive) |
 | Peers (#1246): this instance's id, paired instances and whether each is connected; revoke a peer | GET /api/federation, POST /api/federation/peers/{peer_id}/revoke | P6 R/W (revoking narrows) |
 | Peers (#1246): make or withdraw an invite, accept one, confirm or deny the short code, rename a peer | POST /api/federation/invites, DELETE …/invites/{invite_id}, POST /api/federation/pairings, POST …/pairings/{pairing_id}/confirm, …/deny, PATCH /api/federation/peers/{peer_id} | **never** (pairing decides which other instance this one trusts; the confirmation is the Commander's own comparison of two screens) |
+| Sessions shared with a peer (#2054): the grants of this instance (list); end one | GET /api/federation/grants, POST /api/federation/grants/{grant_id}/revoke | P6 R/W (revoking narrows) |
+| Sessions shared with a peer (#2054): share an API session with a paired instance (view only); change a grant's expiry | POST /api/federation/grants, PATCH /api/federation/grants/{grant_id} | **never** (decides what another instance may read of a session, and for how long) |
+| Sessions a peer shares with this instance (#2054): the list; read one (snapshot, events, older turns) | GET /api/federation/remote, GET …/remote/{peer_id}/{grant_id}/snapshot, …/events, …/history | P6 R |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
 #### Library
@@ -268,6 +271,7 @@ Each row is a credential, a grant of more permission or autonomy, or a tap that 
 | Outsiders driving agents | public share in "can send messages" mode | external control of an agent |
 | Consent | analytics consent | consent is the operator's own act |
 | Trusting another instance | federation invites, accepting one, confirming or denying a pairing, renaming a peer (#1246) | a paired instance can later be granted access to sessions; who is trusted, and under which name it is shown, is the Commander's decision |
+| Sharing a session with another instance | granting a paired instance access to a session, changing that grant's expiry (#2054) | it decides what another instance's operator may read; ending a grant narrows and is allowed |
 
 
 ## Route map
@@ -713,6 +717,14 @@ POST   /api/federation/pairings/{pairing_id}/confirm                            
 POST   /api/federation/pairings/{pairing_id}/deny                                 never  # part of the pairing the Commander runs
 PATCH  /api/federation/peers/{peer_id}                                            never  # the name a trusted instance is shown under
 POST   /api/federation/peers/{peer_id}/revoke                                     P6  # narrows: ends trust in a peer
+GET    /api/federation/grants                                                     P6  # what this instance shares with peers (#2054)
+POST   /api/federation/grants                                                     never  # decides what another instance may read
+PATCH  /api/federation/grants/{grant_id}                                          never  # decides for how long another instance may read
+POST   /api/federation/grants/{grant_id}/revoke                                   P6  # narrows: ends one grant
+GET    /api/federation/remote                                                     P6  # sessions peers share with this instance (#2054)
+GET    /api/federation/remote/{peer_id}/{grant_id}/snapshot                       P6  # read a shared session (view only)
+GET    /api/federation/remote/{peer_id}/{grant_id}/events                         P6  # read: cursors and kinds
+GET    /api/federation/remote/{peer_id}/{grant_id}/history                        P6  # read: older turns
 WS     /ws/fed                                                                    n/a  # another instance's channel; Noise-authenticated, never a browser's
 WS     /ws/agent-accounts/{engine}/{account}/signin                                never  # interactive vendor login (#1820)
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)

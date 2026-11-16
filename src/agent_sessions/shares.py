@@ -16,8 +16,9 @@ operator sets when creating it. The rules this module holds are pinned in
 * **Archive ends a link, or does not happen.** Every archive path runs the provider's archive
   inside :func:`archiving`, which takes the session's lock, revokes its links (raising
   :class:`SharesUnavailable` when it cannot, so the archive aborts) and holds the lock until the
-  move is done. Creating a link takes the same lock and refuses an archived or unknown session, so
-  no link can be minted in the window. Unarchiving does not revive a link.
+  move is done. The same step ends the session's federation grants (#2054), with the same rule.
+  Creating a link takes the same lock and refuses an archived or unknown session, so no link can
+  be minted in the window. Unarchiving does not revive a link.
 * **Revoke is fenced against a racing send.** :meth:`ShareStore.fence` is a per-share lock that
   :meth:`ShareStore.revoke` takes too; the send routes (P2) re-check the share inside it at the
   mutation seam, so a revoke that wins blocks the effect.
@@ -46,7 +47,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import auth, template_secrets
+from . import auth, metadata, template_secrets
+from .federation import store as federation_store
 
 log = logging.getLogger("agent_sessions.shares")
 
@@ -771,6 +773,41 @@ def hash_share_password(password: str | None) -> str | None:
     return auth.hash_password(password)
 
 
+def session_state(prov, native: str) -> str:
+    """``live`` / ``archived`` / ``unknown`` / ``unreadable`` for a session a link or a federation
+    grant would name.
+
+    Stricter than the archive path's own precedence, because this is an authorization boundary
+    (Hermes on #1414): the PROVIDER'S fresh scan must affirmatively list the session — a sidecar
+    row alone proves nothing (the history may be gone) — and it is ``archived`` if EITHER the
+    provider or the sidecar says so. A stale ``archived: false`` override cannot make a
+    provider-archived session shareable (e.g. a move that landed while its stamp failed). An
+    unreadable sidecar, or a scan that raises, decides nothing and refuses."""
+    try:
+        rows = [s for s in prov.scan() if getattr(s, "uuid", None) == native]
+    except Exception:  # noqa: BLE001 — an unreadable engine store must not grant anything
+        return "unreadable"
+    if not rows:
+        return "unknown"
+    if any(getattr(s, "archived", False) for s in rows):
+        return "archived"
+    key = f"{prov.engine_id}:{native}"
+    for k in dict.fromkeys((key, metadata.resolve_key(key))):
+        state = metadata.archive_override_under_lock(k)
+        if state == "unreadable":
+            return "unreadable"
+        if state == "archived":
+            return "archived"
+    return "live"
+
+
+def _end_federation_grants(session_key: str) -> int:
+    """End the federation grants of a session being archived (#2054). The process's own store
+    (the environment's federation directory): no store means nothing was ever granted and nothing
+    is created; a store that cannot be read or written raises, and the archive is refused."""
+    return len(federation_store.Store().end_grants_for_session(session_key))
+
+
 # How long an archive (or a create) waits for the session's lock before giving up. Holders keep
 # it for a provider scan or a move, so anything longer is a wedge, not a queue.
 SESSION_LOCK_TIMEOUT_S = 60
@@ -779,13 +816,13 @@ SESSION_LOCK_TIMEOUT_S = 60
 @contextlib.asynccontextmanager
 async def archiving(session_key: str):
     """Wrap a provider's archive of ``session_key``: take the session's lock (off the event loop),
-    end every link to it, yield for the move, release.
+    end every link to it and every federation grant of it (#2054), yield for the move, release.
 
-    Fail closed: when the links cannot be ended — or the lock cannot be had within
+    Fail closed: when the links or the grants cannot be ended — or the lock cannot be had within
     ``SESSION_LOCK_TIMEOUT_S`` — this raises :class:`SharesUnavailable` and the body never runs,
-    so the session is NOT archived while a link to it stays live. Holding the lock across the move
-    is what stops a concurrent create from minting a link in between; the body must not ``await``
-    (it runs on the loop with a thread lock held).
+    so the session is NOT archived while a link or a grant to it stays live. Holding the lock
+    across the move is what stops a concurrent create from minting a link in between; the body
+    must not ``await`` (it runs on the loop with a thread lock held).
 
     Cancellation-safe: if this coroutine is cancelled while the worker thread is still waiting,
     the thread's eventual acquisition is released by a done-callback, so a cancelled archive can
@@ -812,6 +849,15 @@ async def archiving(session_key: str):
             raise SharesUnavailable("could not end this session's public links") from e
         if n:
             log.info("public share: ended %d link(s) for an archived session", n)
+        try:
+            # The same step, the same rule: a peer's grant ends with the session, or the session
+            # is not archived. Granting takes this session lock too (`federation/grants.py`).
+            ended = await asyncio.to_thread(_end_federation_grants, session_key)
+        except Exception as e:
+            log.error("federation: could not end grants for a session being archived")
+            raise SharesUnavailable("could not end this session's shares with peers") from e
+        if ended:
+            log.info("federation: ended %d grant(s) for an archived session", ended)
         yield
     finally:
         lock.release()

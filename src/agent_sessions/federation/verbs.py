@@ -7,16 +7,19 @@ channel resets the stream for an unknown name, a name outside its mode, or refus
 A handler receives the :class:`channel.Channel` it was called on; ``channel.context`` is what the
 service attached when it built the channel (``(federation, pairing)`` in ``pair`` mode,
 ``(federation, peer_id)`` in ``peer`` mode). Handlers never take a path, a URL to fetch, a command
-or a session key from this phase's arguments.
+or a session key from a peer's arguments: a shared session is addressed by its **grant id**
+(#2054), and the handlers behind those verbs live in :mod:`sharing`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 
+from .. import chat_store
 from . import channel as ch
 from . import endpoints as ep
-from . import store
+from . import grants, sharing, store
 
 APP_PROTOCOL = 1
 
@@ -50,6 +53,61 @@ def _pair_hello_args(args: dict) -> dict:
 def _peer_hello_args(args: dict) -> dict:
     _only(args, "endpoints")
     return {"endpoints": _endpoints(args)}
+
+
+def _grant_ref(args: dict) -> dict:
+    """The two arguments every session verb carries: which grant, and the revision the caller was
+    told. Shapes only; whether the grant serves this caller is the handler's per-call check."""
+    grant_id, revision = args.get("grant_id"), args.get("revision")
+    if not grants.valid_grant_id(grant_id) or not grants.valid_revision(revision):
+        raise ch.BadArgs("grant")
+    return {"grant_id": grant_id, "revision": revision}
+
+
+def _int(args: dict, name: str, *, default: int, low: int, high: int) -> int:
+    value = args.get(name, default)
+    if type(value) is not int or not low <= value <= high:
+        raise ch.BadArgs(name)
+    return value
+
+
+def _share_list_args(args: dict) -> dict:
+    _only(args, "after", "limit")
+    after = args.get("after")
+    if after is not None and not grants.valid_grant_id(after):
+        raise ch.BadArgs("after")
+    limit = _int(args, "limit", default=sharing.LIST_LIMIT_MAX, low=1, high=sharing.LIST_LIMIT_MAX)
+    return {"after": after, "limit": limit}
+
+
+def _snapshot_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision")
+    return _grant_ref(args)
+
+
+def _events_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "after", "limit", "wait")
+    wait = args.get("wait", 0)
+    if isinstance(wait, bool) or not isinstance(wait, int | float):
+        raise ch.BadArgs("wait")
+    if not math.isfinite(wait) or not 0 <= wait <= sharing.WAIT_MAX_S:
+        raise ch.BadArgs("wait")
+    return {
+        **_grant_ref(args),
+        "after": _int(args, "after", default=0, low=0, high=grants.REVISION_MAX),
+        "limit": _int(
+            args, "limit", default=sharing.EVENTS_LIMIT_MAX, low=1, high=sharing.EVENTS_LIMIT_MAX
+        ),
+        "wait": float(wait),
+    }
+
+
+def _history_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "before")
+    before = args.get("before")
+    if not chat_store.valid_turn_id(before):
+        raise ch.BadArgs("before")
+    return {**_grant_ref(args), "before": before}
 
 
 # ── pair mode ─────────────────────────────────────────────────────────
@@ -115,4 +173,11 @@ PEER = _table(
     ("peer.hello", _peer_hello_args, _peer_hello),
     ("peer.ping", _no_args, _peer_ping),
     ("peer.bye", _no_args, _peer_bye),
+    # Sharing an API session, view only (#2054). The first four are answered by the OWNER of a
+    # session; `share.changed` is the owner's hint to the receiver and carries no data.
+    ("share.list", _share_list_args, sharing.share_list),
+    ("session.snapshot", _snapshot_args, sharing.session_snapshot),
+    ("session.events", _events_args, sharing.session_events),
+    ("session.history", _history_args, sharing.session_history),
+    ("share.changed", _no_args, sharing.share_changed),
 )

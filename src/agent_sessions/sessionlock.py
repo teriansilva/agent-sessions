@@ -41,6 +41,10 @@ def lock_path(key: str) -> Path:
     """Lock file for a session ``key`` (``"{engine}:{native_id}"``)."""
     if not key:
         raise ValueError("empty session key")
+    if key.startswith("peer:"):
+        # A session another instance shares (#1246) is never a local session. No local key has
+        # this prefix (`engines.parse_key` refuses it), so a lock for one is refused here too.
+        raise ValueError("a remote session has no local lock")
     return lock_dir() / f"{_UNSAFE.sub('_', key)}.lock"
 
 

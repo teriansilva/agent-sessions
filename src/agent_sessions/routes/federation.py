@@ -12,6 +12,25 @@ Origin/Referer check):
 * ``PATCH  /api/federation/peers/{peer_id}``         — ``{name}``
 * ``POST   /api/federation/peers/{peer_id}/revoke``
 
+Sharing an API session with a peer, view only (#2054). The owner's side:
+
+* ``GET    /api/federation/grants?session=<key>``    — the live grants (of one session)
+* ``POST   /api/federation/grants``                  — ``{session_key, peer_id, level, expires_in}``
+* ``PATCH  /api/federation/grants/{grant_id}``       — ``{expires_in, revision}``
+* ``POST   /api/federation/grants/{grant_id}/revoke``
+
+The receiving side (reads only; each read is a verb on the owner's live channel, and the owner
+checks its grant for that call):
+
+* ``GET    /api/federation/remote``                  — what trusted peers share with this instance
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/snapshot``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/events?after=&limit=&wait=``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/history?before=``
+
+No channel answers ``503 peer_offline``; a grant the owner refuses answers ``404``. What a peer
+returns is validated (``federation/remote.py``) and passed on as data; it is never a path, a key
+or HTML here.
+
 The wire (no cookie, no CSRF, no ``AUTH_MODE``):
 
 * ``WS /ws/fed`` — the ONE door another instance uses. It is authenticated by the Noise
@@ -25,15 +44,18 @@ The wire (no cookie, no CSRF, no ``AUTH_MODE``):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+import math
 
 from fastapi import Depends, FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
+from .. import chat_store
 from ..federation import channel as ch
-from ..federation import store
+from ..federation import grants, identity, remote, sharing, store
 from ..federation.service import Federation, FederationError
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -70,6 +92,61 @@ async def _body(request: Request) -> dict:
     return payload
 
 
+#: A refused read of a remote session as an HTTP status. ``no_grant`` is 404 whatever the owner's
+#: reason was (it does not say); everything not listed is the peer failing to answer usefully.
+_READ_STATUS = {
+    sharing.NO_GRANT: 404,
+    "peer_offline": 503,
+    "unavailable": 503,
+    "busy": 429,
+    "conflict": 409,
+    "invalid": 422,
+    "timeout": 504,
+}
+_READ_DETAIL = {
+    sharing.NO_GRANT: "this session is not shared with this instance",
+    "peer_offline": "the instance that shares this session is not connected",
+    "unavailable": "the session can't be shown right now — try again",
+    "busy": "the other instance is busy — try again",
+    "conflict": "the session's history changed — read it again",
+    "invalid": "that request isn't valid for this session",
+    "timeout": "the other instance did not answer in time",
+}
+
+
+def _read_error(exc: remote.ReadError) -> FederationError:
+    status = _READ_STATUS.get(exc.code, 502)
+    code = exc.code if exc.code in _READ_STATUS else "bad_answer"
+    detail = _READ_DETAIL.get(code, "the other instance sent an answer this one refused")
+    return FederationError(code, detail, status=status)
+
+
+def _remote_ids(peer_id: str, grant_id: str) -> None:
+    """Shapes first: anything else is not a remote session this instance could hold."""
+    if not identity.PEER_ID_RE.fullmatch(peer_id) or not grants.valid_grant_id(grant_id):
+        raise FederationError("no_grant", _READ_DETAIL[sharing.NO_GRANT], status=404)
+
+
+def _query_int(raw: str | None, name: str, *, default: int, low: int, high: int) -> int:
+    if raw is None:
+        return default
+    if not (raw.isascii() and raw.isdigit()) or len(raw) > 18 or not low <= int(raw) <= high:
+        raise FederationError("invalid", f"{name} is out of range")
+    return int(raw)
+
+
+def _query_wait(raw: str | None) -> float:
+    if raw is None:
+        return 0.0
+    try:
+        wait = float(raw)
+    except ValueError:
+        raise FederationError("invalid", "wait must be a number of seconds") from None
+    if not math.isfinite(wait) or not 0 <= wait <= sharing.WAIT_MAX_S:
+        raise FederationError("invalid", f"wait must be 0-{int(sharing.WAIT_MAX_S)} seconds")
+    return wait
+
+
 class _ServerTransport:
     """An accepted Starlette WebSocket as a :class:`channel.FrameTransport`."""
 
@@ -101,12 +178,16 @@ class _ServerTransport:
 
 
 def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> None:
-    def guarded(fn):
+    def guarded(fn, status: int = 200):
         async def run(*args, **kwargs):
             try:
-                return _json(await fn(*args, **kwargs))
+                return _json(await fn(*args, **kwargs), status)
             except FederationError as exc:
                 return _error(exc)
+            except grants.GrantError as exc:
+                return _json({"detail": exc.detail, "code": exc.code}, exc.status)
+            except remote.ReadError as exc:
+                return _error(_read_error(exc))
             except store.StoreError as exc:
                 return _json({"detail": str(exc), "code": "store"}, exc.status)
 
@@ -174,6 +255,165 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
     )
     async def federation_peer_revoke(peer_id: str) -> JSONResponse:
         return await guarded(federation.revoke)(peer_id)
+
+    # ── grants: what this instance shares with a peer (#2054) ─────────
+    def _grant_view(grant: store.Grant, peers: dict[str, store.Peer]) -> dict:
+        peer = peers.get(grant.peer_id)
+        return {**grants.public(grant), "peer_name": peer.name if peer else ""}
+
+    async def _changed(grant: store.Grant) -> dict:
+        """After a grant change: tell the peer (a hint, best effort; on the event loop, where
+        the channel lives), then answer the operator."""
+        federation.notify_share_changed(grant.peer_id)
+
+        def answer() -> dict:
+            peers = {p.peer_id: p for p in federation.store.list_peers()}
+            return {
+                "grant": _grant_view(grant, peers),
+                "generation": federation.store.generation(),
+            }
+
+        return await asyncio.to_thread(answer)
+
+    @app.get(f"{PREFIX}/grants", dependencies=[Depends(logged_in)])
+    async def federation_grants(session: str = "") -> JSONResponse:
+        def read() -> dict:
+            rows = grants.listing(federation.store, session or None)
+            peers = {p.peer_id: p for p in federation.store.list_peers()}
+            return {
+                "grants": [_grant_view(g, peers) for g in rows],
+                "generation": federation.store.generation(),
+                "levels": list(grants.LEVELS),
+                "default_expires_in": dict(grants.DEFAULT_EXPIRY_S),
+                "max_expires_in": grants.MAX_EXPIRY_S,
+            }
+
+        async def run() -> dict:
+            return await asyncio.to_thread(read)
+
+        return await guarded(run)()
+
+    @app.post(f"{PREFIX}/grants", dependencies=[Depends(logged_in), Depends(csrf_guard)])
+    async def federation_grant_create(request: Request) -> JSONResponse:
+        async def run() -> dict:
+            body = await _body(request)
+            # Off the loop: it waits for the session's archive fence and scans the provider.
+            grant = await asyncio.to_thread(
+                lambda: grants.create(
+                    federation.store,
+                    session_key=body.get("session_key"),
+                    peer_id=body.get("peer_id"),
+                    level=body.get("level", "view"),
+                    expires_in=body.get("expires_in"),
+                )
+            )
+            return await _changed(grant)
+
+        return await guarded(run, 201)()
+
+    @app.patch(
+        f"{PREFIX}/grants/{{grant_id}}", dependencies=[Depends(logged_in), Depends(csrf_guard)]
+    )
+    async def federation_grant_change(grant_id: str, request: Request) -> JSONResponse:
+        async def run() -> dict:
+            body = await _body(request)
+            grant = await asyncio.to_thread(
+                lambda: grants.change(
+                    federation.store,
+                    grant_id,
+                    expires_in=body.get("expires_in"),
+                    revision=body.get("revision"),
+                )
+            )
+            return await _changed(grant)
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/grants/{{grant_id}}/revoke",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_grant_revoke(grant_id: str) -> JSONResponse:
+        async def run() -> dict:
+            grant = await asyncio.to_thread(grants.revoke, federation.store, grant_id)
+            return await _changed(grant)
+
+        return await guarded(run)()
+
+    # ── remote: what peers share with this instance (#2054) ───────────
+    @app.get(f"{PREFIX}/remote", dependencies=[Depends(logged_in)])
+    async def federation_remote() -> JSONResponse:
+        async def run() -> dict:
+            return {"remote": await asyncio.to_thread(remote.listing, federation)}
+
+        return await guarded(run)()
+
+    @app.get(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/snapshot", dependencies=[Depends(logged_in)]
+    )
+    async def federation_remote_snapshot(peer_id: str, grant_id: str) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            return await remote.read(
+                federation, peer_id, grant_id, "session.snapshot", {}, check=remote.check_snapshot
+            )
+
+        return await guarded(run)()
+
+    @app.get(f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/events", dependencies=[Depends(logged_in)])
+    async def federation_remote_events(
+        peer_id: str,
+        grant_id: str,
+        after: str | None = None,
+        limit: str | None = None,
+        wait: str | None = None,
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            held = _query_wait(wait)
+            extra = {
+                "after": _query_int(after, "after", default=0, low=0, high=grants.REVISION_MAX),
+                "limit": _query_int(
+                    limit,
+                    "limit",
+                    default=sharing.EVENTS_LIMIT_MAX,
+                    low=1,
+                    high=sharing.EVENTS_LIMIT_MAX,
+                ),
+                "wait": held,
+            }
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "session.events",
+                extra,
+                check=remote.check_events,
+                # The wait plus a margin: the channel's 20 s default would fire before a 20 s
+                # wait answers.
+                timeout=remote.events_timeout(held),
+            )
+
+        return await guarded(run)()
+
+    @app.get(f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/history", dependencies=[Depends(logged_in)])
+    async def federation_remote_history(
+        peer_id: str, grant_id: str, before: str | None = None
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            if not chat_store.valid_turn_id(before):
+                raise FederationError("invalid", "before must be a turn id")
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "session.history",
+                {"before": before},
+                check=remote.check_history,
+            )
+
+        return await guarded(run)()
 
     @app.websocket(WS_PATH)
     async def ws_fed(ws: WebSocket) -> None:

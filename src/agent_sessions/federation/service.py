@@ -6,7 +6,9 @@ One :class:`Federation` per app process. It owns
 * the pending **invites** it minted and the **pairings** in progress, both in memory and bounded
   (a restart drops them; the operator makes a new invite),
 * one live :class:`channel.Channel` per trusted peer,
-* the **dialer**.
+* the **dialer**, whose round also keeps shared sessions current (#2054): it ends expired
+  grants, tells a connected peer when its grants changed (also when another process or an archive
+  wrote the change), and refreshes the mirror of what each peer shares with this instance.
 
 **One owner process per store.** Invites, pairings and channels are in-process state, so exactly
 one app process may serve federation for a store: the one holding ``owner.lock`` (a ``flock``,
@@ -50,7 +52,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from .. import net_vetting
 from . import channel as ch
 from . import endpoints as ep
-from . import identity, store, verbs
+from . import grants, identity, remote, store, verbs
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +327,15 @@ class Federation:
         self._dialer_task: asyncio.Task | None = None
         self._stopped = False
         self._kick = asyncio.Event()
+        #: Parked `session.events` waits per peer (`sharing.WAITS_PER_PEER` bounds it).
+        self.waits: dict[str, int] = {}
+        # Shared sessions (#2054): the newest grant event seen per principal, and the mirror's
+        # refresh bookkeeping (one refresh per peer at a time; a hint during one runs another).
+        self._generation: int | None = None
+        self._marks: dict[str, int] = {}
+        self._refreshing: set[str] = set()
+        self._refresh_again: set[str] = set()
+        self._refreshed_at: dict[str, float] = {}
 
     # ── identity ──────────────────────────────────────────────────────
     def _key(self) -> X25519PrivateKey:
@@ -887,6 +898,8 @@ class Federation:
         await asyncio.to_thread(self.store.touch_seen, peer_id)
         self._refused.discard(peer_id)
         self._backoff.pop(peer_id, None)
+        # The channel is up: ask what this peer shares with this instance.
+        self.refresh_remote(peer_id)
 
     def peer_left(self, peer_id: str) -> None:
         """The peer told us, over its authenticated channel, that it no longer trusts this
@@ -896,6 +909,73 @@ class Federation:
     def channel_for(self, peer_id: str) -> ch.Channel | None:
         channel = self._channels.get(peer_id)
         return channel if channel is not None and not channel.closed else None
+
+    # ── shared sessions (#2054) ───────────────────────────────────────
+    def notify_share_changed(self, peer_id: str) -> None:
+        """Tell ``peer_id`` that its grants changed. A hint with no data, best effort: the peer
+        asks ``share.list`` again, and its own periodic refresh covers a hint that was lost."""
+        channel = self.channel_for(peer_id)
+        if channel is None or self._stopped:
+            return
+
+        async def hint() -> None:
+            with contextlib.suppress(ch.CallError):
+                await channel.call("share.changed", timeout=5)
+
+        self._spawn(hint())
+
+    def refresh_remote(self, peer_id: str) -> None:
+        """Refresh the mirror of what ``peer_id`` shares with this instance, in the background.
+        One refresh per peer at a time; a request during one runs another when it ends."""
+        if self._stopped:
+            return
+        if peer_id in self._refreshing:
+            self._refresh_again.add(peer_id)
+            return
+        self._refreshing.add(peer_id)
+        self._spawn(self._refresh_remote(peer_id))
+
+    async def _refresh_remote(self, peer_id: str) -> None:
+        try:
+            while True:
+                self._refresh_again.discard(peer_id)
+                self._refreshed_at[peer_id] = time.monotonic()
+                await remote.refresh(self, peer_id)
+                if peer_id not in self._refresh_again:
+                    return
+                # A peer's hints cannot make this side read its list faster than this.
+                await asyncio.sleep(remote.REFRESH_MIN_GAP_S)
+        except Exception:
+            log.exception("federation: refreshing a peer's shared sessions failed")
+        finally:
+            self._refreshing.discard(peer_id)
+            self._refresh_again.discard(peer_id)
+
+    async def _shares_round(self) -> None:
+        """The dialer round's share of the work. Never raises: sharing must not stop dialing."""
+        try:
+            await asyncio.to_thread(grants.sweep, self.store)
+            generation = await asyncio.to_thread(self.store.generation)
+            if generation != self._generation:
+                # Something changed since the last round, written by this process, another one
+                # over the same store, or an archive. Tell exactly the peers it concerns.
+                marks = await asyncio.to_thread(self.store.grant_marks)
+                first = self._generation is None
+                changed = [p for p, mark in marks.items() if self._marks.get(p) != mark]
+                self._generation, self._marks = generation, marks
+                for principal in () if first else changed:
+                    if principal.startswith(store.PRINCIPAL_PEER):
+                        self.notify_share_changed(principal[len(store.PRINCIPAL_PEER) :])
+            now = time.monotonic()
+            for peer_id in list(self._channels):
+                if self.channel_for(peer_id) is None:
+                    continue
+                if now - self._refreshed_at.get(peer_id, -remote.REFRESH_EVERY_S) >= (
+                    remote.REFRESH_EVERY_S
+                ):
+                    self.refresh_remote(peer_id)
+        except Exception:
+            log.exception("federation: the shared-sessions round failed")
 
     # ── dialer ────────────────────────────────────────────────────────
     def _hold_owner_lock(self) -> bool:
@@ -938,6 +1018,7 @@ class Federation:
         for pid, channel in list(self._channels.items()):
             if pid not in trusted:
                 channel.close("revoked")
+        await self._shares_round()
         for peer in peers:
             pid = peer.peer_id
             if not peer.trusted or not peer.endpoints or pid in self._dialing:

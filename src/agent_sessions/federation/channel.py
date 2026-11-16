@@ -95,6 +95,13 @@ class BadArgs(Exception):
     """Raised by a verb's validator. The stream is reset; the reason stays local."""
 
 
+def encode_answer(answer: object) -> bytes:
+    """THE serializer of everything a verb answers. ASCII-escaped compact JSON: a non-BMP
+    character costs 12 bytes here, so a verb that budgets its answer (``sharing.py``) measures
+    with this function and nothing else."""
+    return json.dumps(answer, separators=(",", ":")).encode()
+
+
 class FrameTransport(Protocol):
     """An ordered, reliable carrier of whole binary frames."""
 
@@ -565,7 +572,7 @@ class Channel:
             except Exception:
                 log.exception("federation verb %s failed", verb.name)
                 answer = {"ok": False, "code": "internal"}
-            body = json.dumps(answer, separators=(",", ":")).encode()
+            body = encode_answer(answer)
             if len(body) > ANSWER_MAX:
                 body = b'{"ok":false,"code":"too_large"}'
             elif not self._bytes_out.take(len(body)):

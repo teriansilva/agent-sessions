@@ -29,7 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import auth, engines, metadata, presence, share_api, shares, template_secrets
+from .. import auth, engines, presence, share_api, shares, template_secrets
 from ..auth import AuthConfig, enforce_origin
 
 SHARE_COOKIE = "agent_sessions_share"
@@ -271,31 +271,9 @@ def _client_ip(request) -> str:
     return peer
 
 
-def _session_state(prov, native: str) -> str:
-    """``live`` / ``archived`` / ``unknown`` / ``unreadable`` for a session a link would name.
-
-    Stricter than the archive path's own precedence, because this is an authorization boundary
-    (Hermes on #1414): the PROVIDER'S fresh scan must affirmatively list the session — a sidecar
-    row alone proves nothing (the history may be gone) — and it is ``archived`` if EITHER the
-    provider or the sidecar says so. A stale ``archived: false`` override cannot make a
-    provider-archived session shareable (e.g. a move that landed while its stamp failed). An
-    unreadable sidecar, or a scan that raises, decides nothing and refuses."""
-    try:
-        rows = [s for s in prov.scan() if getattr(s, "uuid", None) == native]
-    except Exception:  # noqa: BLE001 — an unreadable engine store must not grant anything
-        return "unreadable"
-    if not rows:
-        return "unknown"
-    if any(getattr(s, "archived", False) for s in rows):
-        return "archived"
-    key = f"{prov.engine_id}:{native}"
-    for k in dict.fromkeys((key, metadata.resolve_key(key))):
-        state = metadata.archive_override_under_lock(k)
-        if state == "unreadable":
-            return "unreadable"
-        if state == "archived":
-            return "archived"
-    return "live"
+# The one rule for "may this session be shared" lives beside the store (`shares.session_state`),
+# where the federation grants use it too (#2054). Kept under this name for this module's callers.
+_session_state = shares.session_state
 
 
 def _create_checked(store: shares.ShareStore, *, key: str, password: str | None, **kw):

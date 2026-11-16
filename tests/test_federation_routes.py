@@ -1,5 +1,7 @@
 """Federation over real sockets (#1246 P1): the operator routes' auth surface, the `/ws/fed` door,
-the dialer's WebSocket adapter, and two real app instances pairing end to end."""
+the dialer's WebSocket adapter, and two real app instances pairing end to end. And sharing an API
+session, view only (#2054): the grant and remote routes, and two real instances from grant to
+revoke (that last one lives in `test_federation_sharing.py`, beside the runtime fixtures)."""
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ import asyncio
 import http
 import threading
 import time
+import uuid
 
 import httpx
 import pytest
@@ -15,8 +18,9 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from fastapi.testclient import TestClient
 from websockets.asyncio.server import serve as ws_serve
 
+from agent_sessions import shares
 from agent_sessions.federation import channel as ch
-from agent_sessions.federation import service, store
+from agent_sessions.federation import noise, remote, service, store
 
 
 def _client(cfg):
@@ -44,6 +48,19 @@ WRITES = [
     ("post", "/api/federation/pairings/abcdefgh/deny", None),
     ("patch", f"/api/federation/peers/{'a' * 32}", {"name": "x"}),
     ("post", f"/api/federation/peers/{'a' * 32}/revoke", None),
+    # sharing a session with a peer (#2054)
+    ("post", "/api/federation/grants", {"session_key": "codex-api:x", "peer_id": "a" * 32}),
+    ("patch", f"/api/federation/grants/{'g' * 22}", {"expires_in": 3600, "revision": 1}),
+    ("post", f"/api/federation/grants/{'g' * 22}/revoke", None),
+]
+REMOTE = f"/api/federation/remote/{'a' * 32}/{'g' * 22}"
+READS = [
+    "/api/federation",
+    "/api/federation/grants",
+    "/api/federation/remote",
+    f"{REMOTE}/snapshot",
+    f"{REMOTE}/events",
+    f"{REMOTE}/history?before={uuid.UUID(int=1)}",
 ]
 
 
@@ -56,7 +73,8 @@ def _send(c, method, url, body, headers):
 
 def test_every_route_needs_a_session_and_every_write_csrf_and_origin(auth_cfg):
     c = _client(auth_cfg)
-    assert c.get("/api/federation").status_code == 401
+    for url in READS:
+        assert c.get(url).status_code == 401, url
     for method, url, body in WRITES:
         assert _send(c, method, url, body, {"Origin": auth_cfg.origin}).status_code == 401, url
     hdr = _login(c, auth_cfg)
@@ -68,6 +86,170 @@ def test_every_route_needs_a_session_and_every_write_csrf_and_origin(auth_cfg):
     assert state.status_code == 200 and state.headers["cache-control"] == "no-store"
     body = state.json()
     assert body["peers"] == [] and body["invites"] == [] and body["pairings"] == []
+    # with a session, the new reads answer (nothing is shared either way), uncached
+    for url, key in (("/api/federation/grants", "grants"), ("/api/federation/remote", "remote")):
+        listed = c.get(url)
+        assert listed.status_code == 200 and listed.json()[key] == []
+        assert listed.headers["cache-control"] == "no-store"
+    for url in READS[3:]:
+        assert c.get(url).status_code == 404, url  # not shared with this instance
+    # a read is not a write: none of them is reachable by another method
+    for url in READS[2:]:
+        assert c.post(url.split("?")[0], headers=hdr).status_code == 405, url
+
+
+def _trusted_peer(c) -> store.Peer:
+    key = noise.public_bytes(X25519PrivateKey.generate())
+    return c.app.state.federation.store.trust(key, name="GPU box", endpoints=[])
+
+
+def test_the_operator_grants_changes_and_revokes_through_the_api(auth_cfg, monkeypatch):
+    monkeypatch.setattr(shares, "session_state", lambda prov, native: "live")
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    peer = _trusted_peer(c)
+    key = f"codex-api:{uuid.uuid4()}"
+
+    made = c.post(
+        "/api/federation/grants", json={"session_key": key, "peer_id": peer.peer_id}, headers=hdr
+    )
+    assert made.status_code == 201 and made.headers["cache-control"] == "no-store"
+    grant = made.json()["grant"]
+    assert grant["session_key"] == key and grant["peer_id"] == peer.peer_id
+    assert grant["peer_name"] == "GPU box" and grant["level"] == "view" and grant["revision"] == 1
+    assert grant["state"] == "live" and made.json()["generation"] == 1
+    assert 7 * 86400 - 60 < grant["expires_at"] - time.time() < 7 * 86400 + 60  # the default
+
+    listed = c.get("/api/federation/grants").json()
+    assert [g["grant_id"] for g in listed["grants"]] == [grant["grant_id"]]
+    assert listed["levels"] == ["view"] and listed["max_expires_in"] == 90 * 86400
+    assert c.get(f"/api/federation/grants?session={key}").json()["grants"] == listed["grants"]
+    other = f"codex-api:{uuid.uuid4()}"
+    assert c.get(f"/api/federation/grants?session={other}").json()["grants"] == []
+
+    # what the operator API refuses, and how
+    def refused(body: dict) -> tuple[int, str]:
+        r = c.post("/api/federation/grants", json=body, headers=hdr)
+        return r.status_code, r.json()["code"]
+
+    terminal = "claude:11111111-1111-1111-1111-111111111111"
+    assert refused({"session_key": terminal, "peer_id": peer.peer_id}) == (422, "not_shareable")
+    assert refused({"session_key": key, "peer_id": peer.peer_id}) == (409, "conflict")
+    assert refused({"session_key": other, "peer_id": "b" * 32}) == (404, "not_found")
+    assert refused({"session_key": "nope:1", "peer_id": peer.peer_id}) == (404, "not_found")
+    assert refused({"session_key": f"peer:{'a' * 32}/{key}", "peer_id": peer.peer_id})[0] == 404
+    assert refused({"session_key": other, "peer_id": peer.peer_id, "level": "send"})[0] == 422
+    assert refused({"session_key": other, "peer_id": peer.peer_id, "expires_in": 91 * 86400}) == (
+        422,
+        "invalid",
+    )
+    assert c.get("/api/federation/grants?session=claude:nope").status_code in (404, 422)
+    assert len(c.get("/api/federation/grants").json()["grants"]) == 1
+
+    url = f"/api/federation/grants/{grant['grant_id']}"
+    changed = c.patch(url, json={"expires_in": 3600, "revision": 1}, headers=hdr)
+    assert changed.status_code == 200 and changed.json()["grant"]["revision"] == 2
+    assert changed.json()["grant"]["expires_at"] < grant["expires_at"]
+    assert c.patch(url, json={"expires_in": 3600, "revision": 1}, headers=hdr).status_code == 409
+    assert c.patch(url, json={"expires_in": 3600}, headers=hdr).status_code == 422
+    assert c.patch(url, json={"revision": 2}, headers=hdr).status_code == 422
+    missing = f"/api/federation/grants/{'z' * 22}"
+    assert (
+        c.patch(missing, json={"expires_in": 3600, "revision": 1}, headers=hdr).status_code == 404
+    )
+
+    ended = c.post(f"{url}/revoke", headers=hdr)
+    assert ended.status_code == 200 and ended.json()["grant"]["state"] == "revoked"
+    assert c.post(f"{url}/revoke", headers=hdr).status_code == 200  # idempotent
+    assert c.post(f"{missing}/revoke", headers=hdr).status_code == 404
+    assert c.post("/api/federation/grants/..%2Fx/revoke", headers=hdr).status_code in (404, 405)
+    assert c.get("/api/federation/grants").json()["grants"] == []
+    events = c.app.state.federation.store.grant_events(grant["grant_id"])
+    assert [e["event"] for e in events] == ["granted", "changed", "revoked"]
+
+
+def test_the_remote_routes_answer_offline_not_shared_and_invalid(auth_cfg, monkeypatch):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    fed = c.app.state.federation
+    peer = _trusted_peer(c)
+    grant_id = store.new_grant_id()
+    native = str(uuid.uuid4())
+    row = {
+        "grant_id": grant_id,
+        "engine": "codex-api",
+        "native_id": native,
+        "title": "shared with us",
+        "level": "view",
+        "expires_at": time.time() + 3600,
+        "revision": 4,
+    }
+    assert fed.store.replace_remote(peer.peer_id, [row])
+    (listed,) = c.get("/api/federation/remote").json()["remote"]
+    assert listed["key"] == f"peer:{peer.peer_id}/codex-api:{native}"
+    assert listed["peer_name"] == "GPU box" and listed["connected"] is False
+    assert listed["title"] == "shared with us" and listed["revision"] == 4
+
+    base = f"/api/federation/remote/{peer.peer_id}/{grant_id}"
+    turn = str(uuid.uuid4())
+    # Mirrored, and its owner is not connected: 503, never an answer from the cache.
+    for url in (f"{base}/snapshot", f"{base}/events", f"{base}/history?before={turn}"):
+        r = c.get(url)
+        assert r.status_code == 503 and r.json()["code"] == "peer_offline", url
+    # Not mirrored, or not an id at all: 404, whether or not anything is connected.
+    for url in (
+        f"/api/federation/remote/{peer.peer_id}/{'z' * 22}/snapshot",
+        f"/api/federation/remote/{'b' * 32}/{grant_id}/snapshot",
+        f"/api/federation/remote/{peer.peer_id}/..%2F..%2Fx/snapshot",
+        f"/api/federation/remote/NOT-A-PEER/{grant_id}/events",
+    ):
+        r = c.get(url)
+        assert r.status_code == 404, url
+    for query in ("wait=21", "wait=-1", "wait=nan", "wait=x", "limit=0", "limit=101", "after=-1"):
+        assert c.get(f"{base}/events?{query}").status_code == 422, query
+    for before in ("", "?before=", "?before=../x", "?before=7"):
+        assert c.get(f"{base}/history{before}").status_code == 422, before
+
+    # What the route asks of the channel: the verb, the arguments, and for a held read a timeout
+    # of the wait plus ten seconds (the channel's 20 s default would fire before a 20 s wait).
+    asked: list[tuple] = []
+    answer = {"link": "l", "revision": 9, "next_cursor": 9, "events": []}
+
+    async def read(federation, peer_id, grant, verb, extra, *, check, timeout=ch.CALL_TIMEOUT_S):
+        asked.append((peer_id, grant, verb, extra, timeout))
+        return check(answer)
+
+    monkeypatch.setattr(remote, "read", read)
+    held = c.get(f"{base}/events?after=5&limit=10&wait=20")
+    assert held.status_code == 200 and held.json() == answer
+    assert held.headers["cache-control"] == "no-store"
+    assert c.get(f"{base}/events").status_code == 200
+    assert asked == [
+        (peer.peer_id, grant_id, "session.events", {"after": 5, "limit": 10, "wait": 20.0}, 30.0),
+        (peer.peer_id, grant_id, "session.events", {"after": 0, "limit": 100, "wait": 0.0}, 10.0),
+    ]
+
+    # Every refusal a read can end in has a status; a refused grant is 404.
+    async def refused(*_a, **_k):
+        raise remote.ReadError(code)
+
+    monkeypatch.setattr(remote, "read", refused)
+    for code, status in (
+        ("no_grant", 404),
+        ("peer_offline", 503),
+        ("unavailable", 503),
+        ("busy", 429),
+        ("conflict", 409),
+        ("invalid", 422),
+        ("timeout", 504),
+        ("bad_answer", 502),
+        ("too_large", 502),
+        ("internal", 502),
+        ("something-a-peer-made-up", 502),
+    ):
+        r = c.get(f"{base}/snapshot")
+        assert r.status_code == status, code
+        assert "something-a-peer-made-up" not in r.text  # a peer's word is never echoed
 
 
 def test_the_operator_api_reports_this_instance_and_maps_errors(auth_cfg):
@@ -253,8 +435,20 @@ class Instance:
         self.fed: service.Federation = self.app.state.federation
         self.fed._directory = directory
         self.fed.store = store.Store(directory)
+        # `log_config=None, log_level=None` (and no `access_log=False`): uvicorn must not
+        # reconfigure the process's loggers. Its defaults set `propagate = False` and a level on
+        # `uvicorn.error` / `uvicorn.access` for good, which silently emptied `caplog` for any
+        # later test in the same worker
+        # (`test_shares.py::test_share_tokens_are_masked_in_uvicorn_logs`).
         self.server = uvicorn.Server(
-            uvicorn.Config(self.app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
+            uvicorn.Config(
+                self.app,
+                host="127.0.0.1",
+                port=0,
+                log_config=None,
+                log_level=None,
+                lifespan="off",
+            )
         )
         self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
         self.thread.start()
