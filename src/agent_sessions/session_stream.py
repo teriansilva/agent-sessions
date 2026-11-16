@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import termios
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -111,6 +112,12 @@ class SessionStream:
         # the live agent to 0×0, which renders into nothing and poisons the byte ring with
         # degenerate-width frames (#297; a big contributor to the garble saga). Never attach at 0×0.
         # `reader_size` is also the size headless_seed's claude rule judges the screen at (#966).
+        #
+        # Hydrated FIRST (off the loop: it reads the persisted ring): after a restart the width
+        # the retained ring was authored at is only on disk, and sizing the reader before it is
+        # read attached at the 80-column default, which re-rendered the agent at a width the
+        # ring's own sidecar then contradicted.
+        await asyncio.to_thread(webterm.scrollback._ensure_loaded, self.key)
         last_rows, last_cols = webterm.scrollback.reader_size(self.key)
         webterm._set_winsize(slave, last_rows, last_cols)
         try:
@@ -132,6 +139,12 @@ class SessionStream:
             return
         os.close(slave)
         self._master = master
+        # Record the geometry this reader's PTY really has (what the kernel reports, not what was
+        # asked for): dtach relays it to the program, so while this reader drains it IS the
+        # geometry the bytes are written for. A viewer's attach or resize replaces it (#2056).
+        with contextlib.suppress(OSError, termios.error):
+            rows, cols = termios.tcgetwinsize(master)
+            webterm.scrollback.note_reader_geometry(self.key, rows, cols)
         # Declare this stream the current byte-owner so the orchestrator's `send_input` seam
         # can reach a HEADLESS session (#726). Released in `stop()`. The registry hands
         # ownership to the WS bridge on attach, which registers itself the same way — so a

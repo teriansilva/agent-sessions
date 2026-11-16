@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from agent_sessions import engines as engines_mod
 from agent_sessions import session_stream, webterm
 
@@ -501,3 +503,247 @@ def test_session_stream_sizes_pty_to_avoid_0x0(monkeypatch):
     assert calls, "the reader pty must be sized before dtach attaches"
     assert (24, 80) in calls  # sane default (no last-known geometry for a fresh key) — never 0x0
     assert (0, 0) not in calls
+
+
+# ---- the headless reader records the geometry its PTY really has (#2056) ----------------------
+#
+# The recorded size is a claim about the bytes written AFTER it (`scrollback.note_geometry`):
+# what the ring already holds keeps the geometry it was marked with, or none.
+
+
+def _fresh_geometry(monkeypatch):
+    """The geometry tables are process-wide and not part of conftest's ring isolation."""
+    scrollback = webterm.scrollback
+    monkeypatch.setattr(scrollback, "_LAST_COLS", {})
+    monkeypatch.setattr(scrollback, "_LAST_ROWS", {})
+    monkeypatch.setattr(scrollback, "_RING_MIXED", set())
+    monkeypatch.setattr(scrollback, "_ATTACH_REPLAY_GRACE_S", 0.0)
+    return scrollback
+
+
+def _restart(scrollback) -> None:
+    """A new process: every in-memory table is gone, the disk mirror and its sidecars stay."""
+    for table in (
+        scrollback._BUFFERS,
+        scrollback._TOTALS,
+        scrollback._LAST_COLS,
+        scrollback._LAST_ROWS,
+        scrollback._RING_MIXED,
+        scrollback._LOADED_FROM_DISK,
+        scrollback._GEOM_MARK,
+        scrollback._GEOM_POS,
+    ):
+        table.clear()
+
+
+def _viewed(scrollback, key: str, rows: int, cols: int, data: bytes) -> None:
+    """A viewer had the session open at ``rows × cols`` (the bookkeeping of `webterm.run`) and
+    the agent wrote ``data``."""
+    scrollback._LAST_ROWS[key] = rows
+    scrollback.note_attach_width(key, cols)
+    scrollback.note_geometry(key, rows, cols)
+    scrollback._buffer_append(key, data)
+
+
+async def _drained(key: str, marker: bytes) -> None:
+    for _ in range(1000):
+        if marker in bytes(webterm._BUFFERS.get(key, b"")):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{marker!r} never reached the ring")
+
+
+def _refused(scrollback, key: str) -> str:
+    with pytest.raises(scrollback.ScreenUnavailable) as exc:
+        scrollback.screen_export(key)
+    return exc.value.reason
+
+
+# What the program under the reader's PTY sees as its size, written through that PTY.
+_REPORT_SIZE = ["/bin/sh", "-c", "printf 'size=%s.' \"$(stty size)\"; sleep 30"]
+
+
+def test_a_session_never_opened_in_a_browser_has_a_known_geometry_and_a_frame(monkeypatch):
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: _REPORT_SIZE)
+    key = "claude:never-opened"
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "never-opened")
+        assert _refused(scrollback, key) == "no_output"  # before any reader: nothing is known
+        await s.start()
+        try:
+            # Recorded from what the PTY reports, and it is what the program was given.
+            assert (scrollback._LAST_ROWS[key], scrollback.ring_cols(key)) == (24, 80)
+            assert scrollback._GEOM_MARK[key] == (24, 80, 0)
+            await _drained(key, b"size=24 80.")
+            export = scrollback.screen_export(key)
+            assert (export.rows, export.cols) == (24, 80)
+            assert export.grid[0].rstrip() == "size=24 80."
+        finally:
+            await s.stop()
+
+    asyncio.run(run())
+    # Both are persisted claims about the ring, like a viewer's.
+    assert scrollback._cols_path(key).read_text() == "80"
+    assert scrollback._geom_path(key).read_text() == "24 80 0"
+
+
+def test_after_a_restart_at_the_same_geometry_the_frame_is_available_at_once(monkeypatch):
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: _REPORT_SIZE)
+    key = "claude:restarted"
+    _viewed(scrollback, key, 40, 120, b"before the restart\r\n")
+    _restart(scrollback)
+
+    async def run() -> None:
+        # Only the disk is left, and it says what the retained bytes were drawn at.
+        export = scrollback.screen_export(key)
+        assert (export.rows, export.cols) == (40, 120)
+        s = session_stream.SessionStream("claude", "restarted")
+        await s.start()
+        try:
+            # The reader took the persisted size (not the 24 × 80 default), so the program was
+            # not resized and nothing changed: the ring and its mark are as they were.
+            await _drained(key, b"size=40 120.")
+            assert bytes(scrollback._BUFFERS[key]).startswith(b"before the restart\r\n")
+            export = scrollback.screen_export(key)
+            assert (export.rows, export.cols) == (40, 120)
+            assert [r.rstrip() for r in export.grid[:2]] == ["before the restart", "size=40 120."]
+        finally:
+            await s.stop()
+
+    asyncio.run(run())
+
+
+def test_a_reader_at_another_width_than_the_persisted_ring_starts_a_clean_one(monkeypatch):
+    """Drawn at 120 × 40, drained at 80 × 24 after the restart: the retained bytes are not
+    rendered at the new geometry. The width differs, so the ring's own rule applies (reset), and
+    the frame is back as soon as the program has written at the new size."""
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: _REPORT_SIZE)
+    key = "claude:other-width"
+    _viewed(scrollback, key, 40, 120, b"drawn at 120 columns\r\n")
+    _restart(scrollback)
+    monkeypatch.setattr(scrollback, "reader_size", lambda key: (24, 80))  # the PTY it really gets
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "other-width")
+        await s.start()
+        try:
+            assert (scrollback._LAST_ROWS[key], scrollback.ring_cols(key)) == (24, 80)
+            await _drained(key, b"size=24 80.")
+            assert b"drawn at 120" not in bytes(scrollback._BUFFERS[key])
+            export = scrollback.screen_export(key)
+            assert (export.rows, export.cols) == (24, 80)
+            assert export.grid[0].rstrip() == "size=24 80."
+        finally:
+            await s.stop()
+
+    asyncio.run(run())
+
+
+def test_a_reader_at_another_height_does_not_certify_the_persisted_ring(monkeypatch):
+    """Drawn at 80 × 40, drained at 80 × 24 after the restart: same width, so the ring is kept,
+    and exactly therefore nothing may be exported while its old bytes are in the rendered tail."""
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: _REPORT_SIZE)
+    key = "claude:other-height"
+    _viewed(scrollback, key, 40, 80, b"drawn at 40 rows\r\n")
+    _restart(scrollback)
+    monkeypatch.setattr(scrollback, "reader_size", lambda key: (24, 80))
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "other-height")
+        await s.start()
+        try:
+            assert (scrollback._LAST_ROWS[key], scrollback.ring_cols(key)) == (24, 80)
+            await _drained(key, b"size=24 80.")
+            assert bytes(scrollback._BUFFERS[key]).startswith(b"drawn at 40 rows\r\n")  # kept
+            assert _refused(scrollback, key) == "mixed_geometry"
+            assert scrollback.live_tail_text(key)  # the forgiving reader is unchanged
+        finally:
+            await s.stop()
+        # The program repaints from a cleared screen (as on a resize): coherent again.
+        scrollback._buffer_append(key, b"\x1b[H\x1b[2Jrepainted")
+        assert scrollback.screen_export(key).grid[0].rstrip() == "repainted"
+
+    asyncio.run(run())
+
+
+def test_a_ring_of_unknown_width_is_dropped_by_the_readers_attach_like_by_a_viewers(monkeypatch):
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: ["/bin/sh", "-c", "sleep 30"])
+    key = "claude:unknown-width"
+    scrollback._buffer_append(key, b"\x1b[5;1Hwritten at some width\r\n")  # no width on record
+    _restart(scrollback)
+    assert not scrollback._cols_path(key).exists()
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "unknown-width")
+        await s.start()
+        try:
+            # `note_attach_width`: the program re-renders at this width from here on (#245).
+            assert not scrollback._BUFFERS[key] and scrollback.ring_cols(key) == 80
+            assert _refused(scrollback, key) == "no_output"
+        finally:
+            await s.stop()
+
+    asyncio.run(run())
+
+
+def test_a_reader_whose_pty_reports_no_size_records_nothing(monkeypatch):
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: ["/bin/sh", "-c", "sleep 30"])
+    monkeypatch.setattr(session_stream.webterm, "_set_winsize", lambda fd, rows, cols: None)
+    key = "claude:unsized"
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "unsized")
+        await s.start()
+        await s.stop()
+
+    asyncio.run(run())
+    # The PTY reports 0 × 0: what was ASKED for is never recorded in its place.
+    assert key not in scrollback._LAST_ROWS and key not in scrollback._LAST_COLS
+    assert key not in scrollback._GEOM_MARK
+
+
+def test_a_later_viewer_attach_or_resize_supersedes_the_readers_geometry(monkeypatch):
+    """The viewer bridge's own bookkeeping (`webterm.run`: `_LAST_ROWS`, `note_attach_width` and
+    `note_geometry` at attach; `_reset_ring` + `note_cols` on a width change) runs after the
+    reader stopped, and its size replaces the reader's."""
+    scrollback = _fresh_geometry(monkeypatch)
+    _set_argv(monkeypatch, lambda e, s: _REPORT_SIZE)
+    key = "claude:then-viewed"
+
+    async def run() -> None:
+        s = session_stream.SessionStream("claude", "then-viewed")
+        await s.start()
+        await _drained(key, b"size=24 80.")
+        await s.stop()  # the registry stops the reader before a viewer reads
+
+    asyncio.run(run())
+    assert scrollback.screen_export(key).cols == 80
+
+    # A viewer attaches at the same size: a continuation, nothing changes.
+    scrollback._LAST_ROWS[key] = 24
+    scrollback.note_attach_width(key, 80)
+    scrollback.note_geometry(key, 24, 80)
+    assert scrollback.screen_export(key).grid[0].rstrip() == "size=24 80."
+
+    # It resizes to another height: the ring is kept (#245 resets on width only), and what the
+    # reader's bytes were drawn at is not the geometry any more.
+    scrollback._LAST_ROWS[key] = 50
+    scrollback.note_geometry(key, 50, 80)
+    assert _refused(scrollback, key) == "mixed_geometry"
+
+    # It resizes to another width: the ring is reset and the new size is the geometry.
+    scrollback._reset_ring(key)
+    scrollback.note_cols(key, 132)
+    scrollback._LAST_ROWS[key] = 43
+    scrollback.note_geometry(key, 43, 132)
+    assert _refused(scrollback, key) == "no_output"  # until the agent repaints at the new size
+    scrollback._buffer_append(key, b"repainted")
+    export = scrollback.screen_export(key)
+    assert (export.rows, export.cols) == (43, 132) and export.grid[0].rstrip() == "repainted"

@@ -61,6 +61,7 @@ READS = [
     f"{REMOTE}/snapshot",
     f"{REMOTE}/events",
     f"{REMOTE}/history?before={uuid.UUID(int=1)}",
+    f"{REMOTE}/frame",
 ]
 
 
@@ -133,7 +134,25 @@ def test_the_operator_grants_changes_and_revokes_through_the_api(auth_cfg, monke
         return r.status_code, r.json()["code"]
 
     terminal = "claude:11111111-1111-1111-1111-111111111111"
-    assert refused({"session_key": terminal, "peer_id": peer.peer_id}) == (422, "not_shareable")
+    # a terminal session is shared view only (#2056): any other level is refused, a chat
+    # endpoint (nothing to show) is not shareable, and `view` makes a grant of kind `terminal`
+    assert refused({"session_key": terminal, "peer_id": peer.peer_id, "level": "send"}) == (
+        422,
+        "invalid",
+    )
+    shown = c.post(
+        "/api/federation/grants",
+        json={"session_key": terminal, "peer_id": peer.peer_id, "level": "view"},
+        headers=hdr,
+    )
+    assert shown.status_code == 201, shown.text
+    assert shown.json()["grant"]["kind"] == "terminal" and grant["kind"] == "api"
+    assert (
+        c.post(
+            f"/api/federation/grants/{shown.json()['grant']['grant_id']}/revoke", headers=hdr
+        ).json()["grant"]["state"]
+        == "revoked"
+    )
     assert refused({"session_key": key, "peer_id": peer.peer_id}) == (409, "conflict")
     assert refused({"session_key": other, "peer_id": "b" * 32}) == (404, "not_found")
     assert refused({"session_key": "nope:1", "peer_id": peer.peer_id}) == (404, "not_found")
@@ -180,6 +199,7 @@ def test_the_remote_routes_answer_offline_not_shared_and_invalid(auth_cfg, monke
         "engine": "codex-api",
         "native_id": native,
         "title": "shared with us",
+        "kind": "api",
         "level": "view",
         "expires_at": time.time() + 3600,
         "revision": 4,

@@ -2,7 +2,7 @@
 
 Four verbs answer here (``verbs.py`` holds their validators and the table):
 
-* ``share.list``: the caller's own live grants, one page, in grant-id order;
+* ``share.list``: the caller's own live grants (of both kinds), one page, in grant-id order;
 * ``session.snapshot``: ``share_api.project`` of the session, the projection a public ``view``
   link gets, through the same redactor;
 * ``session.events``: cursors and kinds only, optionally held up to 20 s;
@@ -29,6 +29,9 @@ field together), under the channel's 256 KiB cap. One oversized turn or request 
 guarantee, :func:`_enforce` is.
 
 Images are not served to a peer in this phase: an attachment carries its name and type only.
+
+A **terminal** session is read by one more verb, ``terminal.frame``, in :mod:`terminal`. The
+session verbs here refuse a terminal grant as ``no_grant``, and that verb refuses an API grant.
 """
 
 from __future__ import annotations
@@ -304,10 +307,12 @@ def fit_events(view: dict) -> dict:
 
 
 # ── the per-call check ────────────────────────────────────────────────
-async def _authorize(fed, peer_id: str, args: dict) -> store.Grant:
-    """:func:`grants.authorize`, off the event loop. One refusal code, whatever failed."""
+async def _authorize(fed, peer_id: str, args: dict, *, kind: str = grants.KIND_API) -> store.Grant:
+    """:func:`grants.authorize`, off the event loop. One refusal code, whatever failed. The verbs
+    of this module read API sessions: a terminal grant is refused here like an unknown one
+    (``terminal.py`` asks for its own kind)."""
     grant = await asyncio.to_thread(
-        grants.authorize, fed.store, args["grant_id"], peer_id, args["revision"]
+        grants.authorize, fed.store, args["grant_id"], peer_id, args["revision"], kind=kind
     )
     if grant is None:
         raise ch.VerbError(NO_GRANT)
@@ -391,11 +396,12 @@ def _session_rows(engine: str) -> dict:
 
 
 def _list_entry(grant: store.Grant, redact, meta, scans: dict, use_ai_title: bool) -> dict | None:
-    """What a peer learns of one grant: the session's id, its redacted title, the level, the
-    expiry and the revision. No cwd, no project, no model. ``None`` for a session that is not
-    there to be read any more (the per-call check would refuse it)."""
+    """What a peer learns of one grant: the session's id, its redacted title, the kind, the
+    level, the expiry and the revision. No cwd, no project, no model. ``None`` for a session that
+    is not there to be read any more, or is not of the grant's kind any more (the per-call check
+    would refuse it)."""
     engine, _, native = grant.session_key.partition(":")
-    if grant.level not in grants.LEVELS:
+    if not grants.serves(grant):
         return None
     if engine not in scans:
         scans[engine] = _session_rows(engine)
@@ -414,6 +420,7 @@ def _list_entry(grant: store.Grant, redact, meta, scans: dict, use_ai_title: boo
         "grant_id": grant.grant_id,
         "session": {"engine": engine, "id": native},
         "title": title,
+        "kind": grant.kind,
         "level": grant.level,
         "expires_at": grant.expires_at,
         "revision": grant.revision,

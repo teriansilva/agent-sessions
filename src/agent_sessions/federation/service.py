@@ -53,7 +53,7 @@ from .. import net_vetting
 from ..homefree import peerpipe
 from . import channel as ch
 from . import endpoints as ep
-from . import grants, identity, remote, store, verbs
+from . import grants, identity, remote, store, terminal, verbs
 
 log = logging.getLogger(__name__)
 
@@ -428,6 +428,10 @@ class Federation:
         self._kick = asyncio.Event()
         #: Parked `session.events` waits per peer (`sharing.WAITS_PER_PEER` bounds it).
         self.waits: dict[str, int] = {}
+        #: Parked `terminal.frame` waits per peer (`terminal.FRAME_WAITS_PER_PEER` bounds it),
+        #: and the shared renders of the terminal screens peers watch (#2056).
+        self.frame_waits: dict[str, int] = {}
+        self.renders = terminal.Renders()
         # Shared sessions (#2054): the newest grant event seen per principal, and the mirror's
         # refresh bookkeeping (one refresh per peer at a time; a hint during one runs another).
         self._generation: int | None = None

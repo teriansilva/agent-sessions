@@ -19,7 +19,7 @@ import math
 from .. import chat_store
 from . import channel as ch
 from . import endpoints as ep
-from . import grants, sharing, store
+from . import frames, grants, sharing, store, terminal
 
 APP_PROTOCOL = 1
 
@@ -85,21 +85,37 @@ def _snapshot_args(args: dict) -> dict:
     return _grant_ref(args)
 
 
-def _events_args(args: dict) -> dict:
-    _only(args, "grant_id", "revision", "after", "limit", "wait")
+def _wait(args: dict) -> float:
+    """How long a call may be held: a finite number of seconds, at most ``WAIT_MAX_S``."""
     wait = args.get("wait", 0)
     if isinstance(wait, bool) or not isinstance(wait, int | float):
         raise ch.BadArgs("wait")
     if not math.isfinite(wait) or not 0 <= wait <= sharing.WAIT_MAX_S:
         raise ch.BadArgs("wait")
+    return float(wait)
+
+
+def _events_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "after", "limit", "wait")
+    wait = _wait(args)
     return {
         **_grant_ref(args),
         "after": _int(args, "after", default=0, low=0, high=grants.REVISION_MAX),
         "limit": _int(
             args, "limit", default=sharing.EVENTS_LIMIT_MAX, low=1, high=sharing.EVENTS_LIMIT_MAX
         ),
-        "wait": float(wait),
+        "wait": wait,
     }
+
+
+def _frame_args(args: dict) -> dict:
+    """``terminal.frame``: the grant, the fingerprint of the frame the caller already has (or
+    none) and how long it may be held. Nothing else: no key, no size, no input."""
+    _only(args, "grant_id", "revision", "have", "wait")
+    have = args.get("have")
+    if have is not None and not frames.valid_fingerprint(have):
+        raise ch.BadArgs("have")
+    return {**_grant_ref(args), "have": have, "wait": _wait(args)}
 
 
 def _history_args(args: dict) -> dict:
@@ -180,4 +196,7 @@ PEER = _table(
     ("session.events", _events_args, sharing.session_events),
     ("session.history", _history_args, sharing.session_history),
     ("share.changed", _no_args, sharing.share_changed),
+    # A terminal session's current screen as a redacted text frame, view only (#2056). Answered
+    # by the OWNER; it reads, and nothing on this channel types into or resizes a terminal.
+    ("terminal.frame", _frame_args, terminal.terminal_frame),
 )

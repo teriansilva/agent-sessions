@@ -35,6 +35,7 @@ and safer dependency.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import NamedTuple
 
 # One pass over the bytes. Order matters, and two of the alternatives are load-bearing for
@@ -188,6 +189,7 @@ class _Screen:
         "in_alt",
         "main",
         "untrusted",
+        "inexact",
     )
 
     def __init__(self, rows: int, cols: int, *, colours: bool = False) -> None:
@@ -209,6 +211,12 @@ class _Screen:
         self.main: tuple | None = None
         #: Why this frame cannot be trusted for authorisation, or None (colours mode only).
         self.untrusted: str | None = None
+        #: Why this screen's COLUMNS cannot be trusted, or None: the first written character
+        #: that does not occupy exactly one cell (see :func:`_one_cell`). :meth:`write` gives
+        #: every character one column, so after such a character every later coordinate, and
+        #: what has scrolled off, may differ from the real terminal. Readers that only need the
+        #: text ignore this; :func:`render_grid`, whose coordinates are relied on, refuses.
+        self.inexact: str | None = None
 
     def alt(self, on: bool) -> None:
         """DECSET/DECRST 1049 / 1047 / 47 — switch between the normal and alternate buffers.
@@ -312,6 +320,8 @@ class _Screen:
             elif ch == "\t":
                 self.col = min(self.cols, (self.col // 8 + 1) * 8)
             else:
+                if self.inexact is None and not _one_cell(ch):
+                    self.inexact = f"a character that is not one cell wide (U+{ord(ch):04X})"
                 if self.col >= self.cols:  # autowrap
                     self.col = 0
                     self._newline()
@@ -406,6 +416,11 @@ class _Screen:
     def display(self) -> str:
         start, end = self._kept_rows()
         return "\n".join("".join(row).rstrip() for row in self.grid[start:end])
+
+    def full_rows(self) -> list[str]:
+        """Every row at its full width, blanks included: exactly ``rows`` strings of exactly
+        ``cols`` characters, each cell at its own coordinate. Nothing is trimmed."""
+        return ["".join(row) for row in self.grid]
 
     def cells(self) -> list[Cells]:
         """The rows `display` keeps, each with its per-character colours (colours mode only)."""
@@ -592,3 +607,86 @@ def render_cells(data: bytes, rows: int, cols: int) -> list[Cells]:
         return []  # something this renderer does not model may have changed the screen
     cells = screen.cells()
     return cells if any(c.text.strip() for c in cells) else []
+
+
+def _one_cell(ch: str) -> bool:
+    """Whether a terminal draws ``ch`` in exactly ONE cell and advances one column, which is what
+    :meth:`_Screen.write` assumes for every character.
+
+    An **allowlist**, on purpose. Deriving a cell width from Unicode properties does not
+    converge: U+1160 (a Hangul filler) is a letter of neutral East Asian width and no combining
+    class, and a terminal still gives it no column. So a character counts as one cell only when
+    it lies in a block listed in :data:`_ONE_CELL_BLOCKS`, whose members terminals draw in one
+    cell, AND none of the property checks objects (a combining or enclosing mark, a format or
+    control character, an unassigned code point, or East Asian wide / fullwidth, which removes
+    the emoji-presentation members of the symbol blocks). Everything else is not known to be
+    one cell and is refused: every other script (Hangul, CJK, Arabic, Indic, …), emoji, private
+    use, U+FFFD. East Asian *ambiguous* characters in the listed blocks (box drawing, many
+    symbols) count as one cell, which is how a terminal draws them outside a CJK-width mode.
+
+    Add a block here only with evidence from a terminal's own width table, never by argument."""
+    if " " <= ch <= "~":
+        return True
+    code = ord(ch)
+    if not any(low <= code <= high for low, high in _ONE_CELL_BLOCKS):
+        return False
+    if unicodedata.combining(ch) or unicodedata.category(ch) in _NOT_ONE_CELL_CATEGORIES:
+        return False
+    return unicodedata.east_asian_width(ch) not in ("W", "F")
+
+
+#: Blocks whose assigned, non-mark members a terminal draws in exactly one cell. Printable ASCII
+#: is handled before this table.
+_ONE_CELL_BLOCKS = (
+    (0x00A0, 0x00FF),  # Latin-1 Supplement (U+00AD soft hyphen falls to the Cf check)
+    (0x0100, 0x024F),  # Latin Extended-A and -B
+    (0x0370, 0x03FF),  # Greek
+    (0x0400, 0x04FF),  # Cyrillic (its combining marks fall to the mark check)
+    (0x2010, 0x2027),  # dashes, quotes, bullets, ellipsis
+    (0x2030, 0x205E),  # per mille, primes, more punctuation
+    (0x20A0, 0x20BF),  # currency signs
+    (0x2100, 0x214F),  # letterlike symbols
+    (0x2190, 0x21FF),  # arrows
+    (0x2200, 0x22FF),  # mathematical operators
+    (0x2300, 0x23FF),  # miscellaneous technical
+    (0x2500, 0x257F),  # box drawing
+    (0x2580, 0x259F),  # block elements
+    (0x25A0, 0x25FF),  # geometric shapes
+    (0x2600, 0x26FF),  # miscellaneous symbols
+    (0x2700, 0x27BF),  # dingbats
+    (0x2800, 0x28FF),  # braille patterns (spinners)
+    (0x2B00, 0x2BFF),  # miscellaneous symbols and arrows (opencode draws U+2B1D)
+    (0x1D400, 0x1D7FF),  # mathematical alphanumeric symbols
+)
+
+#: Mn/Me/Mc marks, Cf format, Cc control, Cs surrogate, Co private use, Cn unassigned, and the
+#: line/paragraph separators.
+_NOT_ONE_CELL_CATEGORIES = frozenset({"Mn", "Me", "Mc", "Cf", "Cc", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def render_grid(data: bytes, rows: int, cols: int) -> list[str] | None:
+    """The CURRENT grid, UNTRIMMED: exactly ``rows`` strings of exactly ``cols`` characters, one
+    per cell, blanks included, every cell at the coordinate it was written to (#2056).
+
+    :func:`render` and :func:`render_cells` drop blank edge rows and right-strip each row, which
+    is right for a reader and wrong for matching text across a wrap: ``AB  CD`` wrapped at width 4
+    would come out as ``AB`` / ``CD``. This is the same replay as :func:`render_cells`, with the
+    same fail-closed trust checks (any control this module does not model exactly makes the whole
+    frame untrusted) and without :func:`render`'s fallback to the frame before a trailing erase.
+
+    ``None`` when there is nothing to trust: no data, a geometry outside
+    ``1..MAX_ROWS × 1..MAX_COLS`` (refused, never clamped: a clamped grid would not have the rows
+    it was asked for), an untrusted frame, or a frame whose columns are inexact: any character
+    written in it that a terminal does not draw in exactly one cell (:func:`_one_cell`). This
+    renderer gives every character one column, so one combining mark or wide character shifts
+    everything after it and can scroll text off this grid that the real screen still shows
+    whole. A caller that matches text by position (the secret mask of a shared frame) must never
+    be handed such a grid. A grid that is entirely blank IS returned; the caller decides what an
+    empty screen means.
+    """
+    if not data or not 1 <= rows <= MAX_ROWS or not 1 <= cols <= MAX_COLS:
+        return None
+    screen = _feed_screen(data, rows, cols, colours=True)
+    if screen.untrusted is not None or screen.inexact is not None:
+        return None
+    return screen.full_rows()

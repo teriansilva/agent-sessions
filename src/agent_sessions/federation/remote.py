@@ -28,10 +28,10 @@ import math
 import re
 import unicodedata
 
-from .. import chat_store, engines
+from .. import chat_store, engines, scrollback
 from ..plugins import kinds
 from . import channel as ch
-from . import grants, identity, sharing, store
+from . import frames, grants, identity, sharing, store
 
 log = logging.getLogger(__name__)
 
@@ -58,11 +58,20 @@ TURNS_MAX = 1000
 REQUESTS_MAX = 1000
 KIND_MAX = 64
 LINK_MAX = 64
+#: The keys every entry carries. ``kind`` (#2056) is optional: an owner on the build before it
+#: has API grants only and does not send it.
 ENTRY_KEYS = frozenset({"grant_id", "session", "title", "level", "expires_at", "revision"})
+#: The three answers of ``terminal.frame``, by their exact keys.
+FRAME_KEYS = frozenset({"fingerprint", "cols", "rows", "lines", "settled"})
+FRAME_UNCHANGED_KEYS = frozenset({"fingerprint", "unchanged"})
+FRAME_SETTLING_KEYS = frozenset({"settling"})
+#: The owner never renders a larger grid.
+FRAME_CELLS_MAX = scrollback.SCREEN_EXPORT_MAX_CELLS
 PAGE_KEYS = frozenset({"generation", "grants", "next"})
 #: An entry may carry keys from a newer build; this bounds how many.
 ENTRY_KEYS_MAX = 16
 LEVEL_SHAPE_RE = re.compile(r"\A[a-z][a-z_]{0,31}\Z")
+KIND_SHAPE_RE = LEVEL_SHAPE_RE
 
 
 class Invalid(Exception):
@@ -159,7 +168,8 @@ def clean_entry(raw: object) -> dict:
 
     Two instances are updated independently, so the list must survive a peer that is one version
     ahead: a key this build does not know is ignored, and an entry whose ``level`` this build
-    does not know is SKIPPED (it is not listed here, and nothing is guessed about it). Everything
+    or ``kind`` this build does not know is SKIPPED (it is not listed here, and nothing is guessed
+    about it). ``kind`` itself is optional: absent means ``api``. Everything
     this build does know is still checked strictly: a known field that is malformed fails the
     whole refresh, and the mirror stays as it was."""
     if not isinstance(raw, dict) or not ENTRY_KEYS <= set(raw) or len(raw) > ENTRY_KEYS_MAX:
@@ -172,6 +182,10 @@ def clean_entry(raw: object) -> dict:
         raise Invalid("session id")
     if not grants.valid_grant_id(raw["grant_id"]):
         raise Invalid("grant id")
+    # Absent: an owner on the build before kinds existed, whose grants are all API grants.
+    kind = raw.get("kind", grants.KIND_API)
+    if not isinstance(kind, str) or not KIND_SHAPE_RE.fullmatch(kind):
+        raise Invalid("kind")
     level = raw["level"]
     if not isinstance(level, str) or not LEVEL_SHAPE_RE.fullmatch(level):
         raise Invalid("level")
@@ -181,15 +195,17 @@ def clean_entry(raw: object) -> dict:
     if expires_at <= 0:
         raise Invalid("expires_at")
     title = clean_title(raw["title"])
-    if level not in grants.LEVELS:
-        # A level from a newer build: well formed, not understood, not listed. Its id is kept so
-        # the page's order and progress checks still see it.
+    if kind not in grants.KINDS or not grants._level_allowed(kind, level):
+        # A kind or a level from a newer build: well formed, not understood, not listed, and
+        # never stored as another kind. Its id is kept so the page's order and progress checks
+        # still see it.
         return {"grant_id": raw["grant_id"], "skipped": True}
     return {
         "grant_id": raw["grant_id"],
         "engine": engine,
         "native_id": native_id,
         "title": title,
+        "kind": kind,
         "level": level,
         "expires_at": expires_at,
         "revision": raw["revision"],
@@ -299,6 +315,7 @@ def listing(fed) -> list[dict]:
                 "engine": row.engine,
                 "native_id": row.native_id,
                 "title": row.title,
+                "kind": row.kind,
                 "level": row.level,
                 "expires_at": row.expires_at,
                 "revision": row.revision,
@@ -396,10 +413,47 @@ def check_history(doc: dict) -> dict:
     return doc
 
 
+def check_frame(doc: dict, have: str | None = None) -> dict:
+    """A ``terminal.frame`` answer fit to hand to the viewer, or :class:`Invalid`. Exactly one of
+    three shapes: ``{settling: true}``; ``{fingerprint, unchanged: true}``, and then only for the
+    fingerprint this instance sent as ``have``; or a frame, whose lines are at most ``rows``
+    strings of at most ``cols`` characters with no control character among them."""
+    if not isinstance(doc, dict):
+        raise Invalid("frame")
+    keys = set(doc)
+    if keys == FRAME_SETTLING_KEYS:
+        if doc["settling"] is not True:
+            raise Invalid("settling")
+        return doc
+    if not frames.valid_fingerprint(doc.get("fingerprint")):
+        raise Invalid("fingerprint")
+    if keys == FRAME_UNCHANGED_KEYS:
+        if doc["unchanged"] is not True or have is None or doc["fingerprint"] != have:
+            raise Invalid("unchanged")
+        return doc
+    if keys != FRAME_KEYS:
+        raise Invalid("frame")
+    rows, cols = doc["rows"], doc["cols"]
+    if type(rows) is not int or not 1 <= rows <= frames.ROWS_MAX:
+        raise Invalid("rows")
+    if type(cols) is not int or not 1 <= cols <= frames.COLS_MAX:
+        raise Invalid("cols")
+    if rows * cols > FRAME_CELLS_MAX:
+        raise Invalid("a larger grid than an owner renders")
+    if type(doc["settled"]) is not bool:
+        raise Invalid("settled")
+    try:
+        frames.check_lines(doc["lines"], rows, cols)
+    except ValueError as exc:
+        raise Invalid(str(exc)) from None
+    return doc
+
+
 def events_timeout(wait: float) -> float:
-    """How long the CALLER waits for ``session.events``: the wait it asked for, plus a margin for
-    the owner's checks and the way back. The channel's default call timeout (20 s) would fire
-    before a 20 s wait answers, so it is never used for this verb."""
+    """How long the CALLER waits for a held call (``session.events``, ``terminal.frame``): the
+    wait it asked for, plus a margin for the owner's checks and the way back. The channel's
+    default call timeout (20 s) would fire before a 20 s wait answers, so it is never used for
+    these verbs."""
     return float(wait) + sharing.WAIT_CALL_MARGIN_S
 
 
@@ -412,14 +466,17 @@ async def read(
     *,
     check,
     timeout: float = ch.CALL_TIMEOUT_S,
+    kind: str = grants.KIND_API,
 ) -> dict:
     """Call ``verb`` for a mirrored grant on its owner's live channel and return the validated
-    answer. Raises :class:`ReadError`: ``no_grant`` (not shared, or the owner refused),
+    answer. ``kind`` is what the verb reads: a mirrored grant of the other kind is ``no_grant``
+    here, without a call (the owner would refuse it the same way). Raises :class:`ReadError`:
+    ``no_grant`` (not shared, or the owner refused),
     ``peer_offline`` (no channel), ``bad_answer`` (the answer was refused here), or the call's own
     code."""
     row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
     peer = await asyncio.to_thread(fed.store.get, peer_id)
-    if row is None or peer is None or not peer.trusted:
+    if row is None or peer is None or not peer.trusted or row.kind != kind:
         raise ReadError(sharing.NO_GRANT)
     channel = fed.channel_for(peer_id)
     if channel is None:

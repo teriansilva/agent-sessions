@@ -142,6 +142,7 @@ def entry(i: int = 1, **over) -> dict:
         "grant_id": f"grant-{i:017d}",
         "session": {"engine": "codex-api", "id": str(uuid.UUID(int=i))},
         "title": f"session {i}",
+        "kind": "api",
         "level": "view",
         "expires_at": 2_000_000_000.0,
         "revision": 1,
@@ -160,6 +161,7 @@ def test_a_listed_entry_is_validated_field_by_field():
         "engine": "codex-api",
         "native_id": str(uuid.UUID(int=7)),
         "title": "session 7",
+        "kind": "api",
         "level": "view",
         "expires_at": 2_000_000_000.0,
         "revision": 1,
@@ -176,10 +178,17 @@ def test_a_listed_entry_is_validated_field_by_field():
     assert remote.clean_entry({**entry(7), "cwd": "/home/op", "kind": "api"}) == remote.clean_entry(
         entry(7)
     )
-    assert remote.clean_entry(entry(7, level="co_drive")) == {
-        "grant_id": "grant-00000000000000007",
-        "skipped": True,
-    }
+    skipped = {"grant_id": "grant-00000000000000007", "skipped": True}
+    assert remote.clean_entry(entry(7, level="co_drive")) == skipped
+    # The kind (#2056) is optional. An owner on the build before it sends none: its grants are
+    # all API grants. A kind this build does not know is skipped like an unknown level, never
+    # stored as another kind; so is a level this build does not serve for a kind it knows.
+    older = {k: v for k, v in entry(7).items() if k != "kind"}
+    assert remote.clean_entry(older) == remote.clean_entry(entry(7))
+    assert remote.clean_entry(older)["kind"] == "api"
+    assert remote.clean_entry(entry(7, kind="terminal"))["kind"] == "terminal"
+    assert remote.clean_entry(entry(7, kind="byte_stream")) == skipped
+    assert remote.clean_entry(entry(7, kind="terminal", level="send")) == skipped
 
     native = str(uuid.uuid4())
     refused = [
@@ -208,6 +217,14 @@ def test_a_listed_entry_is_validated_field_by_field():
         entry(title=" " * 801),  # longer than anything that could be one before it
         entry(level="Send!"),  # not even the shape of a level
         entry(level=None),
+        # a kind (#2056) that is present must at least have the shape of one
+        entry(kind="TERMINAL"),
+        entry(kind="byte-stream!"),
+        entry(kind=""),
+        entry(kind="x" * 33),
+        entry(kind=None),
+        entry(kind=["terminal"]),
+        entry(kind=7),
         entry(expires_at=True),
         entry(expires_at="tomorrow"),
         entry(expires_at=math.nan),
@@ -512,6 +529,7 @@ async def test_the_mirror_is_refreshed_when_the_channel_connects(
                 "engine": "codex-api",
                 "native_id": key.partition(":")[2],
                 "title": "shared before the channel came back",
+                "kind": "api",
                 "level": "view",
                 "expires_at": made.expires_at,
                 "revision": 1,
@@ -828,6 +846,7 @@ def remote_row(fake_jsonl):
         "engine": engine,
         "native_id": native,
         "title": "a remote session",
+        "kind": "api",
         "level": "view",
         "expires_at": time.time() + 3600,
         "revision": 1,

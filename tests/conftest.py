@@ -327,6 +327,8 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
         webterm.scrollback._LAST_VISIBLE_OUTPUT_AT,
         webterm._SUPPRESS_OUTPUT_UNTIL,
         webterm.scrollback._MODES,
+        webterm.scrollback._GEOM_MARK,
+        webterm.scrollback._GEOM_POS,
         webterm.scrollback._MODE_CARRY,
         webterm.scrollback._READY,
         webterm.scrollback._READY_SOURCE,

@@ -12,7 +12,8 @@ Origin/Referer check):
 * ``PATCH  /api/federation/peers/{peer_id}``         — ``{name}``
 * ``POST   /api/federation/peers/{peer_id}/revoke``
 
-Sharing an API session with a peer, view only (#2054). The owner's side:
+Sharing an API session (#2054) or a terminal session (#2056) with a peer, view only. The
+owner's side:
 
 * ``GET    /api/federation/grants?session=<key>``    — the live grants (of one session)
 * ``POST   /api/federation/grants``                  — ``{session_key, peer_id, level, expires_in}``
@@ -26,6 +27,8 @@ checks its grant for that call):
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/snapshot``
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/events?after=&limit=&wait=``
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/history?before=``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/frame?have=&wait=`` — a shared TERMINAL
+  session's current screen as a redacted text frame (#2056)
 
 No channel answers ``503 peer_offline``; a grant the owner refuses answers ``404``. What a peer
 returns is validated (``federation/remote.py``) and passed on as data; it is never a path, a key
@@ -55,7 +58,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from .. import chat_store
 from ..federation import channel as ch
-from ..federation import grants, identity, remote, sharing, store
+from ..federation import frames, grants, identity, remote, sharing, store
 from ..federation.service import Federation, FederationError
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -411,6 +414,31 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 "session.history",
                 {"before": before},
                 check=remote.check_history,
+            )
+
+        return await guarded(run)()
+
+    @app.get(f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/frame", dependencies=[Depends(logged_in)])
+    async def federation_remote_frame(
+        peer_id: str, grant_id: str, have: str | None = None, wait: str | None = None
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            if have is not None and not frames.valid_fingerprint(have):
+                raise FederationError("invalid", "have must be a frame's fingerprint")
+            held = _query_wait(wait)
+            extra: dict = {"wait": held}
+            if have is not None:
+                extra["have"] = have
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "terminal.frame",
+                extra,
+                check=lambda doc: remote.check_frame(doc, have),
+                timeout=remote.events_timeout(held),
+                kind=grants.KIND_TERMINAL,
             )
 
         return await guarded(run)()

@@ -1440,6 +1440,52 @@ def test_resize_burst_in_attach_window_yields_one_trailing_repaint(monkeypatch):
     assert calls == [(40, 100)]
 
 
+def test_the_viewer_bridge_marks_the_geometry_at_attach_on_a_resize_and_after_a_nudge(monkeypatch):
+    """#2056: a geometry is a claim about the bytes authored at it. The bridge records its
+    client's size at attach, a new mark on every resize, and moves the mark past the bytes
+    written while its repaint nudge had the pty shrunk. What the ring held before stays of the
+    geometry it was marked with (here: none)."""
+    from agent_sessions import webterm
+
+    scrollback = webterm.scrollback
+    key = "claude:geom-mark-1"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm._TOTALS[key] = 10
+    scrollback._LAST_COLS[key] = 80
+    marks: list[tuple] = []
+    real_note, real_break = scrollback.note_geometry, scrollback.note_geometry_break
+
+    def note(k, rows, cols):
+        real_note(k, rows, cols)
+        marks.append(("note", rows, cols, scrollback._GEOM_MARK[k]))
+
+    def brk(k):
+        real_break(k)
+        marks.append(("break", scrollback._GEOM_MARK.get(k)))
+
+    monkeypatch.setattr(scrollback, "note_geometry", note)
+    monkeypatch.setattr(scrollback, "note_geometry_break", brk)
+    try:
+        calls = _run_349(
+            monkeypatch,
+            key=key,
+            have=5,
+            script=[_resize(100, 40), ("sleep", 0.35)],
+        )
+        assert calls == [(40, 100)]
+        kinds = [m[0] for m in marks]
+        assert kinds[0] == "note" and "break" in kinds[1:]
+        assert marks[0][3][2] == 10  # the ten bytes already retained are before the mark
+        assert ("note", 40, 100) in [m[:3] for m in marks]
+        assert [m for m in marks if m[0] == "break"][-1][1][:2] == (40, 100)
+        assert kinds.index("break") > [m[:3] for m in marks].index(("note", 40, 100))
+    finally:
+        webterm._drop_buffer(key)
+        scrollback.forget_geometry(key)
+        scrollback._LAST_ROWS.pop(key, None)
+        scrollback._LAST_COLS.pop(key, None)
+
+
 def test_have_resume_with_real_delta_does_not_nudge(monkeypatch):
     # The non-blank have>0 reconnect keeps the #304 no-flicker behavior.
     from agent_sessions import webterm

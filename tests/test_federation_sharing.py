@@ -27,7 +27,7 @@ import pytest
 from agent_sessions import metadata, share_api, shares, template_secrets
 from agent_sessions import structured_runtime as runtime
 from agent_sessions.federation import channel as ch
-from agent_sessions.federation import grants, remote, service, sharing, store
+from agent_sessions.federation import grants, remote, service, sharing, store, terminal
 from agent_sessions.homefree import mux as hf_mux
 from federation_helpers import until
 from test_federation_grants import api_key, live, trusted  # noqa: F401 — `live` is a fixture
@@ -654,7 +654,12 @@ def test_the_second_check_is_the_last_await_before_every_answer():
     import inspect
     import textwrap
 
-    for handler in (sharing.session_snapshot, sharing.session_events, sharing.session_history):
+    for handler in (
+        sharing.session_snapshot,
+        sharing.session_events,
+        sharing.session_history,
+        terminal.terminal_frame,  # the terminal view (#2056)
+    ):
         tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
         body = tree.body[0].body
         last, check = body[-1], body[-2]
@@ -975,6 +980,7 @@ async def test_200_grants_with_200_non_bmp_character_titles_all_arrive_within_th
                 "grant_id": g.grant_id,
                 "session": {"engine": engine, "id": native},
                 "title": EMOJI * 200,
+                "kind": "api",
                 "level": "view",
                 "expires_at": g.expires_at,
                 "revision": 1,

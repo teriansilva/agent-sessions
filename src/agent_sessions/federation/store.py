@@ -36,7 +36,7 @@ from pathlib import Path
 
 from . import identity
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5000
 DB_FILE = "federation.db"
 PEERS_MAX = 64
@@ -46,6 +46,12 @@ STATES = ("trusted", "revoked")
 #: Live grants one peer may hold. The receiving side refuses a longer list (``remote.py``).
 GRANTS_PER_PEER_MAX = 200
 GRANT_STATES = ("live", "revoked", "expired")
+#: What a grant shares (#2056): an API session's projection, or a terminal session's screen as a
+#: redacted text frame. It is what the operator agreed to when granting, so it is STORED, and the
+#: per-call check also asks the session what it is today; a verb serves only where both agree.
+KIND_API = "api"
+KIND_TERMINAL = "terminal"
+GRANT_KINDS = (KIND_API, KIND_TERMINAL)
 GRANT_EVENTS = ("granted", "changed", "revoked", "expired", "peer_revoked", "archived")
 GRANT_ACTORS = ("operator", "system")
 PRINCIPAL_PEER = "peer:"
@@ -121,6 +127,15 @@ _SCHEMA_V2 = (
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)",
     "INSERT INTO meta (key, value) VALUES ('generation', 0)",
 )
+# Schema 3 (#2056): the kind of a grant, on the owner's rows and in the mirror. Every row an
+# earlier build wrote is an API grant (the only kind it could make), which is the default. The
+# CHECK makes the database the arbiter: a kind this build does not know is never stored.
+_SCHEMA_V3 = (
+    "ALTER TABLE grants ADD COLUMN kind TEXT NOT NULL DEFAULT 'api'"
+    " CHECK (kind IN ('api', 'terminal'))",
+    "ALTER TABLE remote_shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'api'"
+    " CHECK (kind IN ('api', 'terminal'))",
+)
 
 
 class StoreError(RuntimeError):
@@ -188,6 +203,7 @@ class Grant:
     created_at: float
     ended_at: float | None
     end_reason: str | None
+    kind: str
 
     @property
     def peer_id(self) -> str:
@@ -210,6 +226,7 @@ class RemoteShare:
     expires_at: float
     revision: int
     seen_at: float
+    kind: str
 
 
 def principal_of(peer_id: str) -> str:
@@ -281,6 +298,7 @@ def _grant(row: sqlite3.Row) -> Grant:
         created_at=row["created_at"],
         ended_at=row["ended_at"],
         end_reason=row["end_reason"],
+        kind=row["kind"],
     )
 
 
@@ -295,6 +313,7 @@ def _remote(row: sqlite3.Row) -> RemoteShare:
         expires_at=row["expires_at"],
         revision=row["revision"],
         seen_at=row["seen_at"],
+        kind=row["kind"],
     )
 
 
@@ -357,7 +376,10 @@ class Store:
                     if v == 0:
                         for stmt in _SCHEMA_V1:
                             con.execute(stmt)
-                    for stmt in _SCHEMA_V2:  # a new file, and schema 1 in place
+                    if v < 2:
+                        for stmt in _SCHEMA_V2:  # a new file, and schema 1 in place
+                            con.execute(stmt)
+                    for stmt in _SCHEMA_V3:  # a new file, and schema 1 or 2 in place
                         con.execute(stmt)
                     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 con.execute("COMMIT")
@@ -612,12 +634,15 @@ class Store:
         peer_id: str,
         level: str,
         expires_at: float,
+        kind: str,
         now: float | None = None,
     ) -> Grant:
         """Insert a live grant. ONE transaction that re-reads the peer's state: a grant is never
         created for a peer whose revoke already committed, and a revoke that commits later ends
-        it. The session rules (exists, API, not archived, the archive fence) are the caller's
-        (``grants.create``)."""
+        it. The session rules (exists, its kind, not archived, the archive fence) are the
+        caller's (``grants.create``)."""
+        if kind not in GRANT_KINDS:
+            raise Invalid("unknown grant kind")
         now = time.time() if now is None else now
         principal = principal_of(peer_id)
         with self._write() as con:
@@ -651,8 +676,8 @@ class Store:
             grant_id = new_grant_id()
             con.execute(
                 "INSERT INTO grants (grant_id, session_key, principal, level, expires_at,"
-                " revision, state, created_at) VALUES (?, ?, ?, ?, ?, 1, 'live', ?)",
-                (grant_id, session_key, principal, level, expires_at, now),
+                " revision, state, created_at, kind) VALUES (?, ?, ?, ?, ?, 1, 'live', ?, ?)",
+                (grant_id, session_key, principal, level, expires_at, now, kind),
             )
             self._event(con, grant_id, "granted", "operator", now)
             self._bump(con)
@@ -816,7 +841,7 @@ class Store:
             con.execute("DELETE FROM remote_shares WHERE peer_id = ?", (peer_id,))
             con.executemany(
                 "INSERT INTO remote_shares (peer_id, grant_id, engine, native_id, title, level,"
-                " expires_at, revision, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " expires_at, revision, seen_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         peer_id,
@@ -828,6 +853,7 @@ class Store:
                         r["expires_at"],
                         r["revision"],
                         now,
+                        r["kind"],
                     )
                     for r in rows
                 ],

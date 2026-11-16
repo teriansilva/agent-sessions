@@ -96,7 +96,7 @@ def test_schema_1_migrates_in_place_and_a_backup_is_taken_first(tmp_path):
     assert st.by_key(key).name == "old box"  # the first use migrates, and the peer is still there
 
     con = sqlite3.connect(st.db_path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 2
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 3
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"peers", "grants", "grant_events", "remote_shares", "meta"} <= tables
     con.close()
@@ -143,7 +143,7 @@ def test_a_store_from_a_newer_build_is_refused_untouched(st, live):
     assert st.db_path.read_bytes() == before
     assert list(st.db_path.parent.glob("*.bak-*")) == []
     # the per-call check reads it as "no": nothing is served from a store it cannot read
-    assert grants.authorize(other, made.grant_id, peer.peer_id, 1) is None
+    assert grants.authorize(other, made.grant_id, peer.peer_id, 1, kind="api") is None
 
 
 def test_reading_never_creates_the_store(tmp_path):
@@ -155,7 +155,7 @@ def test_reading_never_creates_the_store(tmp_path):
     assert st.grant_events("x" * 22) == [] and st.grant_marks() == {}
     assert st.expire_due() == [] and st.end_grants_for_session("codex-api:x") == []
     assert st.list_remote() == [] and st.get_remote("a" * 32, "x" * 22) is None
-    assert grants.authorize(st, "x" * 22, "a" * 32, 1) is None
+    assert grants.authorize(st, "x" * 22, "a" * 32, 1, kind="api") is None
     assert not (tmp_path / "never").exists()
 
 
@@ -186,8 +186,8 @@ def test_a_grant_needs_a_local_api_session_a_trusted_peer_and_a_bounded_expiry(s
     ]
     assert st.generation() == 1
 
-    # a terminal session is refused here (P4b), as is anything that is not a local session key
-    assert refusal(grant, st, peer, TERMINAL).code == "not_shareable"
+    # anything that is not a local session key is refused (a terminal session: see
+    # `test_federation_terminal.py`)
     for key in ("nope:1", f"peer:{'a' * 32}/codex-api:{uuid.uuid4()}", "", None, 7):
         assert refusal(
             grants.create, st, session_key=key, peer_id=peer.peer_id, level="view", expires_in=None
@@ -277,11 +277,11 @@ def test_changing_a_grant_bumps_its_revision_and_the_generation(st, live):
 def test_expiry_is_checked_at_use_and_swept(st, live, monkeypatch):
     peer = trusted(st)
     made = grant(st, peer, expires_in=60)
-    assert grants.authorize(st, made.grant_id, peer.peer_id, 1) == made
+    assert grants.authorize(st, made.grant_id, peer.peer_id, 1, kind="api") == made
     later = made.expires_at + 0.001
     monkeypatch.setattr(grants, "_clock", lambda: later)
     # at use: refused at once, though no sweep has run and the row still says live
-    assert grants.authorize(st, made.grant_id, peer.peer_id, 1) is None
+    assert grants.authorize(st, made.grant_id, peer.peer_id, 1, kind="api") is None
     assert st.get_grant(made.grant_id).state == "live"
     assert grants.listing(st) == [] and st.live_grants_of(peer.peer_id, now=later)[2] == []
     generation = st.generation()
@@ -310,11 +310,11 @@ def test_authorize_is_one_answer_for_everything_that_is_not_this_peers_live_gran
 
     def refused(grant_id, peer_id, revision, why: str) -> None:
         caplog.clear()
-        assert grants.authorize(st, grant_id, peer_id, revision) is None
+        assert grants.authorize(st, grant_id, peer_id, revision, kind="api") is None
         # the reason stays here, in the owner's log
         assert why in caplog.text, (why, caplog.text)
 
-    assert grants.authorize(st, mine.grant_id, peer.peer_id, 1) == mine
+    assert grants.authorize(st, mine.grant_id, peer.peer_id, 1, kind="api") == mine
     refused("z" * 22, peer.peer_id, 1, "unknown grant")
     refused(theirs.grant_id, peer.peer_id, 1, "another principal")
     refused(mine.grant_id, other.peer_id, 1, "another principal")
@@ -328,7 +328,7 @@ def test_authorize_is_one_answer_for_everything_that_is_not_this_peers_live_gran
     # a revision change: the old one is refused, the new one served
     grants.change(st, mine.grant_id, expires_in=3600, revision=1)
     refused(mine.grant_id, peer.peer_id, 1, "stale revision")
-    assert grants.authorize(st, mine.grant_id, peer.peer_id, 2) is not None
+    assert grants.authorize(st, mine.grant_id, peer.peer_id, 2, kind="api") is not None
 
     # the session: archived, gone, unreadable, or no longer an API session of a known agent
     for state in ("archived", "unknown", "unreadable"):
@@ -338,7 +338,11 @@ def test_authorize_is_one_answer_for_everything_that_is_not_this_peers_live_gran
     con = sqlite3.connect(st.db_path)
     con.execute("UPDATE grants SET session_key = ? WHERE grant_id = ?", (TERMINAL, mine.grant_id))
     con.commit()
-    refused(mine.grant_id, peer.peer_id, 2, "no longer a local API session")
+    # an API grant whose session is a terminal session now: the stored kind decides, not the row
+    refused(mine.grant_id, peer.peer_id, 2, "session is a terminal session now")
+    con.execute("UPDATE grants SET session_key = 'nope:1' WHERE grant_id = ?", (mine.grant_id,))
+    con.commit()
+    refused(mine.grant_id, peer.peer_id, 2, "no longer a local shareable session")
     con.execute(
         "UPDATE grants SET session_key = ?, level = 'send' WHERE grant_id = ?",
         (mine.session_key, mine.grant_id),
@@ -348,7 +352,7 @@ def test_authorize_is_one_answer_for_everything_that_is_not_this_peers_live_gran
     con.execute("UPDATE grants SET level = 'view' WHERE grant_id = ?", (mine.grant_id,))
     con.commit()
     con.close()
-    assert grants.authorize(st, mine.grant_id, peer.peer_id, 2) is not None
+    assert grants.authorize(st, mine.grant_id, peer.peer_id, 2, kind="api") is not None
 
     # expiry, on this instance's clock
     with monkeypatch.context() as m:
@@ -390,7 +394,7 @@ def test_revoking_a_peer_ends_its_grants_in_the_same_transaction(st, live, monke
     assert st.get(peer.peer_id).state == "trusted" and st.get(peer.peer_id).revision == 1
     assert st.get_grant(first.grant_id).state == st.get_grant(second.grant_id).state == "live"
     assert st.generation() == generation and len(st.list_remote(peer.peer_id)) == 1
-    assert grants.authorize(st, first.grant_id, peer.peer_id, 1) is not None
+    assert grants.authorize(st, first.grant_id, peer.peer_id, 1, kind="api") is not None
     assert store.Store._end_grants is real
 
     assert st.revoke(peer.peer_id).state == "revoked"
@@ -399,14 +403,14 @@ def test_revoking_a_peer_ends_its_grants_in_the_same_transaction(st, live, monke
         assert ended.state == "revoked" and ended.end_reason == "peer_revoked" and ended.ended_at
         assert st.grant_events(made.grant_id)[-1]["event"] == "peer_revoked"
         assert st.grant_events(made.grant_id)[-1]["actor"] == "system"
-        assert grants.authorize(st, made.grant_id, peer.peer_id, 1) is None
+        assert grants.authorize(st, made.grant_id, peer.peer_id, 1, kind="api") is None
     assert st.generation() == generation + 1  # one change, one transaction
     assert st.list_remote(peer.peer_id) == []  # what it shared with us is gone from the mirror
     # the other peer is untouched
     assert st.get_grant(kept.grant_id).state == "live" and len(st.list_remote(other.peer_id)) == 1
     # pairing again does not bring a grant back
     st.trust(st.get(peer.peer_id).public_key, name="box", endpoints=[])
-    assert grants.authorize(st, first.grant_id, peer.peer_id, 1) is None
+    assert grants.authorize(st, first.grant_id, peer.peer_id, 1, kind="api") is None
     assert st.live_grants_of(peer.peer_id)[2] == []
 
 
@@ -416,6 +420,7 @@ def _remote_row() -> dict:
         "engine": "codex-api",
         "native_id": str(uuid.uuid4()),
         "title": "t",
+        "kind": "api",
         "level": "view",
         "expires_at": time.time() + 60,
         "revision": 1,
@@ -474,7 +479,7 @@ def test_archive_ends_the_sessions_grants_before_the_move(live):
         async with shares.archiving(key):
             # The move happens here: by now nothing of this session is granted to anyone.
             seen["during"] = [st.get_grant(g.grant_id).state for g in (first, second)]
-            seen["check"] = grants.authorize(st, first.grant_id, peer.peer_id, 1)
+            seen["check"] = grants.authorize(st, first.grant_id, peer.peer_id, 1, kind="api")
 
     asyncio.run(archive())
     assert seen == {"during": ["revoked", "revoked"], "check": None}

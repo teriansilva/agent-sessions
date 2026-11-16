@@ -23,6 +23,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 from . import perfstats, ptybridge, session_input, transcript, vtscreen
 
@@ -97,6 +98,17 @@ _LAST_COLS: dict[str, int] = {}
 # mirror (#273) can size its emulator to the agent's full geometry (height matters: Ink's cursor-up
 # repaints must overwrite within the same screen height or they duplicate). Best-effort, in-memory.
 _LAST_ROWS: dict[str, int] = {}
+# The geometry MARK (#2056): ``key → (rows, cols, since)``. Like the persisted width (`note_cols`),
+# a geometry is a claim about the BYTES AUTHORED at it, not merely the latest client size: bytes
+# from absolute offset ``since`` (the `_TOTALS` coordinate) on were written for ``rows × cols``;
+# what lies before it was written for another geometry, or an unknown one, and is never certified
+# after the fact. Height counts like width here: a smaller reconstructed grid scrolls the first
+# row of a wrapped value off a frame the real screen shows whole. Only the strict screen export
+# reads it (`screen_export`); every other reader is unchanged. `_GEOM_POS` is the same boundary
+# as a position in the on-disk mirror, kept beside it in a `.geom` sidecar so the claim survives
+# a restart exactly as far as the mirror does.
+_GEOM_MARK: dict[str, tuple[int, int, int]] = {}
+_GEOM_POS: dict[str, int] = {}
 # The geometry a server-owned headless reader attaches at when no viewer has reported one.
 DEFAULT_READER_ROWS = 24
 DEFAULT_READER_COLS = 80
@@ -257,6 +269,80 @@ _MODE_PREFIX_RE = re.compile(rb"\x1b(?:\[(?:\?[0-9;]*)?)?\Z")
 # Bound the carried fragment so a never-completing ESC can't grow without limit. A real
 # private-mode param list is a handful of bytes — well under this.
 _MODE_CARRY_MAX = 64
+
+
+def _geom_path(key: str) -> Path:
+    """Sidecar beside the mirror: ``rows cols pos`` — the bytes of the mirror from ``pos`` on
+    were authored at ``rows × cols`` (see `_GEOM_MARK`)."""
+    safe = key.replace("/", "_").replace(":", "__")
+    return _SCROLLBACK_DIR / f"{safe}.geom"
+
+
+def _persist_geom(key: str) -> None:
+    """Write the geometry mark's sidecar from `_GEOM_MARK` / `_GEOM_POS`. Best-effort: a sidecar
+    that is missing or unreadable only means the retained bytes are not vouched for."""
+    mark = _GEOM_MARK.get(key)
+    if mark is None:
+        return
+    try:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        _geom_path(key).write_text(f"{mark[0]} {mark[1]} {max(0, _GEOM_POS.get(key, 0))}")
+    except OSError:
+        pass
+
+
+def _read_geom(key: str) -> tuple[int, int, int] | None:
+    try:
+        rows, cols, pos = (int(part) for part in _geom_path(key).read_text().split())
+    except (OSError, ValueError):
+        return None
+    return (rows, cols, pos) if rows >= 1 and cols >= 1 and pos >= 0 else None
+
+
+def _mirror_size(key: str) -> int:
+    try:
+        return _scrollback_path(key).stat().st_size
+    except OSError:
+        return 0
+
+
+def note_geometry(key: str, rows: int, cols: int) -> None:
+    """From now on the session's bytes are authored at ``rows × cols`` (#2056). Called by whoever
+    sizes the PTY the session is drained through: the viewer bridge at attach and on a resize,
+    the headless reader when it attaches.
+
+    The same geometry as the current mark changes nothing: the bytes since that mark are still
+    coherent. Any other one starts a new mark HERE; everything already retained keeps the
+    geometry it had (or none) and is never certified for the new one."""
+    if rows < 1 or cols < 1:
+        return
+    mark = _GEOM_MARK.get(key)
+    if mark is not None and mark[:2] == (rows, cols):
+        return
+    _GEOM_MARK[key] = (rows, cols, _TOTALS.get(key, 0))
+    _GEOM_POS[key] = _mirror_size(key)
+    _persist_geom(key)
+
+
+def note_geometry_break(key: str) -> None:
+    """The geometry was something else for a moment and is back (the viewer bridge's repaint
+    nudge shrinks the PTY and restores it): the bytes written meanwhile are not of the recorded
+    geometry, so the mark moves to now."""
+    mark = _GEOM_MARK.get(key)
+    if mark is None:
+        return
+    _GEOM_MARK[key] = (mark[0], mark[1], _TOTALS.get(key, 0))
+    _GEOM_POS[key] = _mirror_size(key)
+    _persist_geom(key)
+
+
+def forget_geometry(key: str) -> None:
+    """Nothing retained is vouched for any more: the geometry the session is at is not known to
+    be the recorded one. The next :func:`note_geometry` starts a new mark."""
+    _GEOM_MARK.pop(key, None)
+    _GEOM_POS.pop(key, None)
+    with contextlib.suppress(OSError):
+        _geom_path(key).unlink()
 
 
 def _visible_path(key: str) -> Path:
@@ -513,6 +599,31 @@ def note_attach_width(key: str, cols: int) -> None:
     note_cols(key, cols, persist=coherent)
 
 
+def note_reader_geometry(key: str, rows: int, cols: int) -> None:
+    """The headless reader attached with its PTY at ``rows × cols`` (#2056): record it, so a
+    session nobody has open in a browser (and every session after a restart) has a known geometry.
+
+    It is the TRUE geometry while that reader is the one draining: ``dtach`` relays the attaching
+    client's size to the program (#297), and the caller passes what its PTY reports, not what it
+    asked for. A viewer that attaches or resizes later records its own size over this one, exactly
+    as before.
+
+    It does exactly what a viewer's attach does, and certifies nothing after the fact:
+
+    * the WIDTH goes through :func:`note_attach_width`, the attach policy: a ring already authored
+      at ``cols`` (or an empty one) keeps its claim; retained bytes of another or an unknown
+      width are dropped, because the program re-renders at this width from here on (#245);
+    * the geometry MARK (:func:`note_geometry`) starts here unless ``rows × cols`` is the geometry
+      the retained bytes are already marked with. Bytes retained from another height, or from
+      before any geometry was known, stay unmarked: the strict export refuses to render them.
+    """
+    if rows < 1 or cols < 1:
+        return
+    _LAST_ROWS[key] = rows
+    note_attach_width(key, cols)
+    note_geometry(key, rows, cols)
+
+
 def _key_from_path(p: Path) -> str:
     engine, _, native = p.name[: -len(_SCROLLBACK_SUFFIX)].partition("__")
     return f"{engine}:{native}" if native else engine
@@ -548,6 +659,7 @@ def _read_file_tail(path: Path, n: int) -> bytes:
 def _persist_append(key: str, data: bytes) -> None:
     """Append observed output to the key's on-disk scrollback (best-effort), head-trimming
     to the last `_MAX_BUF` bytes once it grows past the cap + slack."""
+    dropped = 0
     try:
         _ensure_scrollback_dir()
         path = _scrollback_path(key)
@@ -559,8 +671,13 @@ def _persist_append(key: str, data: bytes) -> None:
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_bytes(tail)
             tmp.replace(path)  # atomic swap so a reader never sees a half-written file
+            dropped = size - len(tail)
     except OSError:
         pass  # scrollback persistence is best-effort; never break the stream
+    if dropped and key in _GEOM_POS:
+        # The mirror lost its head: the geometry mark's position in it moves with the bytes.
+        _GEOM_POS[key] = max(0, _GEOM_POS[key] - dropped)
+        _persist_geom(key)
 
 
 def _ensure_loaded(key: str) -> None:
@@ -603,6 +720,14 @@ def _ensure_loaded(key: str) -> None:
     # deliver a still-pending seed to an already-painted, now-idle TUI — and, since #966, WHICH
     # rule stamped it (a pre-#966 "1" hydrates as "legacy").
     ready_source = None if key in _READY else _read_ready_source(key)
+    # The geometry mark (#2056), as a position in the mirror. The mirror's size is read BEFORE its
+    # bytes: an append racing this read can then only make the marked region look shorter.
+    geom_pos = _GEOM_POS.get(key)
+    geom = None
+    if geom_pos is None:
+        geom = _read_geom(key)
+        geom_pos = geom[2] if geom is not None else None
+    mirror_size = _mirror_size(key)
     try:
         # #652 T4: bounded tail read — the on-disk mirror can be ~2×`_MAX_BUF`, and
         # `read_bytes()[-_MAX_BUF:]` allocated the whole file (up to 16 MB) on the first
@@ -632,6 +757,16 @@ def _ensure_loaded(key: str) -> None:
             # `_MAX_BUF`. A fresh process (no entry) still seeds from the mirror tail.
             if key not in _TOTALS:
                 _TOTALS[key] = len(data)
+            # The ring is the mirror's tail now, so the mark is wherever the mirror says it is:
+            # the last `mirror_size - geom_pos` bytes are of the marked geometry.
+            marked = _GEOM_MARK.get(key) or geom
+            if marked is not None and geom_pos is not None:
+                since = _TOTALS[key] - max(0, mirror_size - geom_pos)
+                _GEOM_MARK[key] = (marked[0], marked[1], since)
+                _GEOM_POS[key] = geom_pos
+                if key not in _LAST_ROWS:
+                    # The height the session was last drained at. Nobody resized it since.
+                    _LAST_ROWS[key] = marked[0]
         _LOADED_FROM_DISK.add(key)
         if len(_BUFFERS) > _MAX_BUFFERS:
             _kick_cap_sweep()  # coalesced; hydrates burst over the cap between sweeps
@@ -658,7 +793,7 @@ def scrollback_cache_stats() -> dict[str, int]:
 # file but kept a sidecar (e.g. `_reset_ring` unlinks the mirror yet preserves `.modes`,
 # #397) is still fully cleared — keying off `.scrollback` alone left orphan sidecars that
 # replayed stale modes/width after a supposed clear (Hermes #409).
-_SIDECAR_SUFFIXES = (_SCROLLBACK_SUFFIX, ".cols", ".modes", ".visible")
+_SIDECAR_SUFFIXES = (_SCROLLBACK_SUFFIX, ".cols", ".modes", ".visible", ".geom")
 
 
 def _all_cached_keys() -> set[str]:
@@ -713,7 +848,13 @@ def clear_scrollback(keys: Iterable[str] | None = None) -> dict:
         else:
             freed += size
             cleared = True
-        for sidecar in (_cols_path(key), _modes_path(key), _ready_path(key), _visible_path(key)):
+        for sidecar in (
+            _cols_path(key),
+            _modes_path(key),
+            _ready_path(key),
+            _visible_path(key),
+            _geom_path(key),
+        ):
             try:
                 sidecar.unlink()
                 cleared = True
@@ -826,6 +967,10 @@ def _drop_buffer(key: str) -> None:
     with _RING_LOCK:
         _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
+    # The mark's offset is in the `_TOTALS` coordinate that just went: it is re-read from its
+    # sidecar with the mirror, on the next touch.
+    _GEOM_MARK.pop(key, None)
+    _GEOM_POS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
     _LAST_VISIBLE_OUTPUT_AT.pop(key, None)
     _VISIBLE_SIDECAR_MADE.discard(key)
@@ -861,6 +1006,9 @@ def _reset_ring(key: str) -> None:
         _scrollback_path(key).unlink()
     _LOADED_FROM_DISK.add(key)  # don't re-hydrate the now-removed file
     _RING_MIXED.discard(key)  # empty ring is single-width by construction
+    if key in _GEOM_POS:
+        _GEOM_POS[key] = 0  # the mirror is gone: whatever is written next is after the mark
+        _persist_geom(key)
     # NB: the private-mode set (#397) is deliberately NOT cleared here. A width reset drops
     # the width-fragile CONTENT but keeps session-level state (like `_TOTALS` above); the
     # agent does NOT re-emit its mode-set sequences on the SIGWINCH repaint, so wiping them
@@ -1283,9 +1431,9 @@ def live_tail_text(key: str, max_chars: int = 4000) -> str:
     return _stripped_tail_text(raw, max_chars)
 
 
-def _live_tail_raw(key: str) -> tuple[bytes, int | None, int | None]:
-    """The ring's tail as ``live_tail_text`` renders it: ``(raw, cols, rows)``. ``cols``/``rows``
-    are None when the frame cannot be trusted (mixed-width ring, unknown height)."""
+def _ring_tail(key: str) -> bytes:
+    """The tail of the ring the screen renderers replay, with the fragment of a control string
+    the cut opened dropped. ``b""`` when there is no observed output. Reads only."""
     _ensure_loaded(key)
     # Copy the slice under the lock so a concurrent `extend`/evict on the loop can't tear the
     # read. Sized for the renderer; the strip fallback re-slices its own (smaller) window.
@@ -1297,12 +1445,19 @@ def _live_tail_raw(key: str) -> tuple[bytes, int | None, int | None]:
     with _RING_LOCK:
         ring = _BUFFERS.get(key)
         if not ring:
-            return b"", None, None
+            return b""
         start = max(0, len(ring) - _SCREEN_TAIL_BYTES)
         open_control_string = vtscreen.starts_inside_control_string(ring, start)
         raw = bytes(ring[start:])
     if open_control_string:
         raw = vtscreen.drop_open_control_prefix(raw)
+    return raw
+
+
+def _live_tail_raw(key: str) -> tuple[bytes, int | None, int | None]:
+    """The ring's tail as ``live_tail_text`` renders it: ``(raw, cols, rows)``. ``cols``/``rows``
+    are None when the frame cannot be trusted (mixed-width ring, unknown height)."""
+    raw = _ring_tail(key)
     if not raw:
         return b"", None, None
     # `ring_cols` is None for a mixed-width ring — rendering absolute cursor moves against the
@@ -1335,6 +1490,155 @@ def live_tail_frame(key: str, max_chars: int = 4000) -> tuple[str, list[vtscreen
     if not cells:
         return "", None
     return "\n".join(c.text for c in cells)[-max_chars:], cells
+
+
+# ---- the strict screen export (#2056) ----------------------------------------------------------
+
+#: A bound on what one export renders and allocates (rows × cols). A geometry over it is refused
+#: BEFORE anything is rendered, whatever the screen holds. It says nothing about the size of the
+#: frame on any wire: the caller measures that.
+SCREEN_EXPORT_MAX_CELLS = 100_000
+
+
+class ScreenUnavailable(Exception):
+    """The current screen cannot be rendered and trusted. ``reason`` is a short word for a local
+    log; ``version`` is :func:`screen_version` as it was read before the ring was copied."""
+
+    def __init__(self, reason: str, version: tuple) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.version = version
+
+
+class ScreenExport(NamedTuple):
+    """The current screen as an UNTRIMMED grid: exactly ``rows`` strings of exactly ``cols``
+    characters, one per cell, blanks included, each cell at its own coordinate. Nothing in it is
+    redacted. ``version`` is :func:`screen_version` as it was read before the ring was copied."""
+
+    rows: int
+    cols: int
+    grid: tuple[str, ...]
+    version: tuple
+
+
+def _export_geometry(key: str) -> tuple[bool, int | None, int | None]:
+    """``(mixed, cols, rows)`` as OBSERVED. The height is the one a viewer or a resize reported in
+    this process; it is never inferred from the stream here (`_live_tail_raw` does that for its
+    readers), because a guessed height can scroll the top of a wrapped value off a grid the real
+    screen still shows in full. A viewer's attach or resize records it, and so does the headless
+    reader when it attaches (:func:`note_reader_geometry`)."""
+    return key in _RING_MIXED, _LAST_COLS.get(key), _LAST_ROWS.get(key)
+
+
+# A full-screen erase that leaves the cursor at home: after it the screen holds nothing that was
+# written before it, in the real terminal and in a replay alike.
+_ERASE_AND_HOME = re.compile(rb"\x1b\[H\x1b\[[02]?J|\x1b\[2J(?:\x1b\[3J)?\x1b\[H")
+
+
+def _coherent_tail(key: str, since: int) -> bytes | None:
+    """The tail :func:`_ring_tail` would render, when every byte of it was authored at the
+    marked geometry (absolute offset ``since`` on); ``b""`` for an empty ring.
+
+    When the tail reaches back before the mark, the bytes before it are of another geometry (or
+    of none that is known) and are never rendered at this one. The slice then starts at the
+    first full-screen erase-and-home AFTER the mark, if there is one: from there on the screen
+    holds only what was written at the marked geometry. Without one it is ``None``: the retained
+    screen is not coherent yet, and stays so until the old bytes have left the rendered tail.
+
+    `_TOTALS` is advanced after the ring during an append, so an offset computed here can only
+    be too low for a moment: a byte may be taken for older than it is, never for newer."""
+    with _RING_LOCK:
+        ring = _BUFFERS.get(key)
+        if not ring:
+            return b""
+        ring_start = _TOTALS.get(key, 0) - len(ring)  # absolute offset of ring[0]
+        start = max(0, len(ring) - _SCREEN_TAIL_BYTES)
+        if ring_start + start < since:
+            first = since - ring_start
+            anchor = _ERASE_AND_HOME.search(ring, first) if first < len(ring) else None
+            if anchor is None:
+                return None
+            start = anchor.start()
+        open_control_string = vtscreen.starts_inside_control_string(ring, start)
+        raw = bytes(ring[start:])
+    if open_control_string:
+        raw = vtscreen.drop_open_control_prefix(raw)
+    return raw
+
+
+def screen_version(key: str) -> tuple:
+    """A cheap token that changes whenever :func:`screen_export` could answer differently: the
+    ring's change counter (every append), its length (a reset, a hydrate) and the geometry.
+    Dictionary reads only: safe on the event loop."""
+    ring = _BUFFERS.get(key)
+    return (
+        session_input.current_screen_epoch(key),
+        len(ring) if ring is not None else -1,
+        *_export_geometry(key),
+        _GEOM_MARK.get(key),
+    )
+
+
+def screen_export(key: str) -> ScreenExport:
+    """The session's CURRENT screen as an untrimmed grid, or :class:`ScreenUnavailable` (#2056).
+
+    The accessor a paired instance's terminal view is built from. It is strict in the way
+    :func:`live_tail_frame` is, and it is NOT a variant of the forgiving :func:`live_tail_text`:
+    there is no escape-strip fallback, no frame from before a trailing full-screen erase and no
+    cut to a character budget. It refuses when
+
+    * there is no observed output (``no_output``);
+    * the ring holds bytes of more than one width (``mixed_width``);
+    * the width or the height is not known (``geometry``): the height must have been observed,
+      never inferred, and it must be the geometry the retained bytes are MARKED with
+      (:func:`note_geometry`);
+    * the tail it would render holds bytes from before that mark, authored at another geometry
+      or at an unknown one (``mixed_geometry``). A geometry recorded later never certifies them:
+      the export is back when they have left the rendered tail, or when the screen was erased
+      and homed after the mark, so that nothing of them is on it;
+    * the geometry is outside the renderer's bounds or over :data:`SCREEN_EXPORT_MAX_CELLS`
+      (``oversize``), decided BEFORE anything is rendered;
+    * the geometry changed while the ring was being read (``geometry_changed``);
+    * the renderer does not trust the frame (``untrusted``: a control it does not model exactly);
+    * the current grid is blank (``empty``), which is also what a trailing full-screen erase
+      leaves: the frame from before it is never shown in its place.
+
+    It READS ONLY: the ring is copied under ``_RING_LOCK`` as :func:`_live_tail_raw` copies it
+    (including the dropped open control string at the cut) and rendered outside the lock. It
+    attaches no client, sends no signal, writes nothing to the session and changes no geometry.
+    Blocking (a render is real CPU work): call it off the event loop.
+    """
+    _ensure_loaded(key)
+    version = screen_version(key)
+    geometry = _export_geometry(key)
+    mark = _GEOM_MARK.get(key)
+    mixed, cols, rows = geometry
+    if not _BUFFERS.get(key):
+        raise ScreenUnavailable("no_output", version)
+    if mixed:
+        raise ScreenUnavailable("mixed_width", version)
+    if not cols or not rows or mark is None or mark[:2] != (rows, cols):
+        raise ScreenUnavailable("geometry", version)
+    raw = _coherent_tail(key, mark[2])
+    if raw is None:
+        raise ScreenUnavailable("mixed_geometry", version)
+    if not raw:
+        raise ScreenUnavailable("no_output", version)
+    if (
+        not 1 <= rows <= vtscreen.MAX_ROWS
+        or not 1 <= cols <= vtscreen.MAX_COLS
+        or rows * cols > SCREEN_EXPORT_MAX_CELLS
+    ):
+        raise ScreenUnavailable("oversize", version)
+    if _export_geometry(key) != geometry or _GEOM_MARK.get(key) != mark:
+        # A resize landed between the two reads: the bytes may belong to either geometry.
+        raise ScreenUnavailable("geometry_changed", version)
+    grid = vtscreen.render_grid(raw, rows, cols)
+    if grid is None:
+        raise ScreenUnavailable("untrusted", version)
+    if not any(row.strip() for row in grid):
+        raise ScreenUnavailable("empty", version)
+    return ScreenExport(rows, cols, tuple(grid), version)
 
 
 def get_last_visible_output_at(key: str) -> float | None:

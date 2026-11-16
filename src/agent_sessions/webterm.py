@@ -896,6 +896,10 @@ async def run(
         # connect) — attach-aware so the persisted sidecar only ever claims a width the
         # retained ring was actually authored at (Hermes #360 round 3).
         scrollback.note_attach_width(buf_key, cols)
+        # This client's size is the geometry the session's bytes are authored at from here on
+        # (dtach relays it to the program). What the ring already holds keeps the geometry it
+        # was marked with (#2056).
+        scrollback.note_geometry(buf_key, rows, cols)
         # Re-emit the agent's active private modes (#397) BEFORE the scroll-up payload, so this
         # fresh xterm re-learns the mouse-reporting / alternate-scroll / bracketed-paste modes
         # the agent set ONCE at startup — long gone from the stream, and absent from an
@@ -1129,6 +1133,20 @@ async def run(
             paste_intake["pending"] = True
         _note_submit(buf_key, data)
 
+    async def _repaint_at_current_size() -> None:
+        """The forced repaint, with the geometry mark kept honest (#2056): while the pty is
+        shrunk the bytes are not of the recorded geometry, so the mark moves past them once the
+        size is restored. A nudge that was cut short may have left it shrunk: then nothing
+        retained is vouched for until the next reader or viewer records a size."""
+        try:
+            await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
+        except BaseException:
+            if buf_key:
+                scrollback.forget_geometry(buf_key)
+            raise
+        if buf_key:
+            scrollback.note_geometry_break(buf_key)
+
     def _schedule_trailing_nudge() -> None:
         # Debounce: a mobile resize burst (keyboard + address-bar animation) collapses
         # to exactly one trailing repaint after the geometry quiets. Cancelled (with the
@@ -1139,7 +1157,7 @@ async def run(
 
         async def _trail() -> None:
             await asyncio.sleep(_NUDGE_SETTLE_S)
-            await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
+            await _repaint_at_current_size()
 
         renudge["task"] = asyncio.create_task(_trail())
 
@@ -1236,6 +1254,7 @@ async def run(
                             # single-width claim stays truthful.
                             scrollback.note_cols(buf_key, new_cols)
                             scrollback._LAST_ROWS[buf_key] = new_rows
+                            scrollback.note_geometry(buf_key, new_rows, new_cols)
                         _set_winsize(master, new_rows, new_cols)
                         # TIOCSWINSZ on the master doesn't reliably deliver SIGWINCH to
                         # the dtach client here, so dtach never forwards the new size to
@@ -1281,7 +1300,7 @@ async def run(
             return
         if settle:
             await asyncio.sleep(settle)
-        await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
+        await _repaint_at_current_size()
 
     async def heartbeat() -> None:
         """Periodically send a ping frame to detect dead connections (#398)."""
