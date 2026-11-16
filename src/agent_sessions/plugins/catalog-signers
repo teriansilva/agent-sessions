@@ -1,0 +1,16 @@
+# Catalog signing trust root for agents content cuts (#2082).
+#
+# OpenSSH allowed_signers format. Principal `catalog@battlelab`, namespace `battlelab-plugins`.
+# A key listed here may sign AGENTS CONTENT CUTS ONLY (`plugin-feed.json`), checked by
+# `feed.verify` after the release key (`feed-signers`) and with the same sequence floor, rollback
+# and equivocation rules. Nothing else reads this file: not the gallery, not freshness statements,
+# not release tags. Every line carries `namespaces="battlelab-plugins"` so the key verifies nothing
+# outside that namespace even where this file is misused.
+#
+# Adding a line grants an unattended signer the authority to approve agent recipes, i.e. binaries
+# that hosts install and update on their own. Removing it revokes that for every build shipped
+# afterwards. Held by the relay's signer (battlelab-cloud#98). Public key material only.
+#
+# Ships EMPTY of keys until the operator's approval is recorded on #2082 and the key exists; until
+# then only release-signed cuts verify, exactly as before #2082. Recovery and rollout:
+# docs/invariants/agent-catalog.md.

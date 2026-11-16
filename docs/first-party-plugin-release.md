@@ -84,7 +84,11 @@ expiry in release notes before replacing the compatibility pair.
   `POST /api/plugins/feed/refresh`, install flow, existing attachments and API chat before closing.
 - Marcus owns renewal before the seven-day expiry: advance sequence and timestamps over reviewed
   recipes, unlock primary, sign/verify the pair, update release assets, and verify deployed refresh.
-  Record the next concrete deadline with the successful cut. No unattended signer is added.
+  Record the next concrete deadline with the successful cut. **Superseded by #2082 once it is
+  live:** an agents-only catalog key (`plugins/catalog-signers`, held by the relay's unattended
+  signer, battlelab-cloud#98) then cuts and renews agents cuts from `main`'s recipes. Until that
+  key exists the file ships empty and this manual procedure is the only path; it remains the
+  recovery path afterwards (a release-signed cut at a higher sequence).
 
 The separate #982 marketing release hold is unchanged.
 

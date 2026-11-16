@@ -346,3 +346,25 @@ def test_an_unsigned_tag_refuses_which_is_why_the_cutover_exists(tmp_path):
     r = _verify(repo, root, tag="v9.9.8")
     assert r.returncode != 0
     assert "no signature" in (r.stdout + r.stderr)
+
+
+@pytest.mark.skipif(
+    subprocess.run(["which", "ssh-keygen"], capture_output=True).returncode != 0,
+    reason="ssh-keygen absent",
+)
+def test_the_agents_only_catalog_key_never_verifies_a_release_tag(tmp_path):
+    """#2082: the catalog key signs agents cuts only. The tag root never lists it, the verifier
+    never reads `catalog-signers`, and a catalog line in its shipped shape (restricted to the
+    `battlelab-plugins` namespace) can't vouch for a tag even if it were pasted into a root."""
+    for path in (SIGNERS, REPO / "scripts/verify-release-tag"):
+        text = path.read_text()
+        assert "catalog@battlelab" not in text and "catalog-signers" not in text
+    release, catalog = _keygen(tmp_path / "release"), _keygen(tmp_path / "catalog")
+    root = tmp_path / "signers"
+    root.write_text(
+        f"release@agent-sessions {(tmp_path / 'release.pub').read_text().strip()}\n"
+        f'catalog@battlelab namespaces="battlelab-plugins" '
+        f"{(tmp_path / 'catalog.pub').read_text().strip()}\n"
+    )
+    assert _verify(_repo_with_signed_tag(tmp_path / "a", release), root).returncode == 0
+    assert _verify(_repo_with_signed_tag(tmp_path / "b", catalog), root).returncode != 0

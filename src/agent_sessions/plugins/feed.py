@@ -7,6 +7,9 @@ durable high-water mark, so racing refreshes cannot roll the feed backwards. No 
 A release-signed cut may be long-lived (#1730, up to `freshness.MAX_CONTENT_AGE`); a long cut is
 usable only with a current freshness statement that names it (`freshness.py`). A cut whose own
 window is at most `MAX_AGE` needs none, exactly as before. `fresh` is the one usability rule.
+
+A cut verifies against the release key (`SIGNERS`, `PRINCIPAL`) or, for agents cuts only, the
+catalog key (`CATALOG_SIGNERS`, `CATALOG_PRINCIPAL`, #2082). One sequence space, whichever signed.
 """
 
 from __future__ import annotations
@@ -31,6 +34,13 @@ CLOCK_SKEW = 300
 PRINCIPAL = "release@agent-sessions"
 NAMESPACE = "battlelab-plugins"
 SIGNERS = Path(__file__).with_name("feed-signers")
+# The unattended catalog key (#2082): agents cuts only, never the gallery, freshness or tags.
+CATALOG_PRINCIPAL = "catalog@battlelab"
+CATALOG_SIGNERS = Path(__file__).with_name("catalog-signers")
+# A cut only the catalog key vouches for may advance the accepted sequence by at most this much
+# (first use: may name at most this sequence). Recovery is a release-signed cut at a higher
+# sequence, so a stolen catalog key must not be able to sign one that can never be exceeded.
+CATALOG_MAX_STEP = 1000
 _SHA = re.compile(r"[0-9a-f]{64}")
 _PART = re.compile(r"[A-Za-z0-9@_.+-]{1,200}")
 
@@ -247,33 +257,55 @@ def parse(data: bytes, *, now: int | None = None, _historical: bool = False) -> 
     return Feed(doc["sequence"], issued, expires, entries, hashlib.sha256(data).hexdigest())
 
 
-def verify(data: bytes, signature: bytes) -> None:
+def _lists_a_key(path: Path) -> bool:
+    """Whether an allowed_signers file holds any entry. The shipped `catalog-signers` is empty
+    (#2082), so the catalog check is skipped rather than spawned to fail."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    return any(line.strip() and not line.lstrip().startswith("#") for line in lines)
+
+
+def _signed_by(signers: Path, principal: str, sig: Path, data: bytes) -> bool:
+    result = runner.run(
+        [
+            "/usr/bin/ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(signers),
+            "-I",
+            principal,
+            "-n",
+            NAMESPACE,
+            "-s",
+            str(sig),
+        ],
+        data=data,
+        timeout=10,
+        max_output=16384,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+    )
+    return result.code == 0
+
+
+def verify(data: bytes, signature: bytes) -> str:
+    """The release key, else (#2082) the agents-only catalog key; each only under its own
+    principal and file. Returns the principal that verified; the refusal reads the same whichever
+    was tried."""
     if not data or len(data) > MAX_BYTES or not 0 < len(signature) <= 16384:
         raise FeedError("invalid signature or feed size")
     with tempfile.TemporaryDirectory(prefix="battlelab-feed-") as temporary:
         sig = Path(temporary) / "feed.sig"
         sig.write_bytes(signature)
-        result = runner.run(
-            [
-                "/usr/bin/ssh-keygen",
-                "-Y",
-                "verify",
-                "-f",
-                str(SIGNERS),
-                "-I",
-                PRINCIPAL,
-                "-n",
-                NAMESPACE,
-                "-s",
-                str(sig),
-            ],
-            data=data,
-            timeout=10,
-            max_output=16384,
-            env={"PATH": "/usr/bin:/bin", "LANG": "C"},
-        )
-    if result.code != 0:
-        raise FeedError("the feed signature is not from a trusted plugin-feed signer")
+        if _signed_by(SIGNERS, PRINCIPAL, sig, data):
+            return PRINCIPAL
+        if _lists_a_key(CATALOG_SIGNERS) and _signed_by(
+            CATALOG_SIGNERS, CATALOG_PRINCIPAL, sig, data
+        ):
+            return CATALOG_PRINCIPAL
+    raise FeedError("the feed signature is not from a trusted plugin-feed signer")
 
 
 def accept(
@@ -283,14 +315,14 @@ def accept(
     statement: tuple[bytes, bytes, dict] | None = None,
     now: int | None = None,
 ) -> Feed:
-    """Accept a release-signed cut, and with it (#1730) the freshness statement that keeps a long
+    """Accept a signed cut (`verify`), and with it (#1730) the freshness statement that keeps a long
     cut usable: `(statement bytes, signature, the pointer that selected it)`. A long cut is
     refused without a statement naming exactly it; a statement naming another cut (the pointer
     moved before the cut did) refuses a long cut and is ignored for a short one. Nothing accepted
     earlier is replaced on any refusal."""
     from . import freshness, storage
 
-    verify(data, signature)
+    signer = verify(data, signature)
     snapshot = parse(data, now=now)
     vouched = None
     if statement is not None:
@@ -327,6 +359,11 @@ def accept(
                 raise FeedError("this sequence already identifies different feed bytes")
         if floor is not None:
             _above(snapshot, floor)
+        if signer == CATALOG_PRINCIPAL:
+            # Bounded against the effective floor (#2082); release-signed cuts stay unbounded.
+            accepted = max(old["sequence"] if old else 0, floor["sequence"] if floor else 0)
+            if snapshot.sequence > accepted + CATALOG_MAX_STEP:
+                raise FeedError("the catalog-signed feed sequence advances too far at once")
         evidence = _evidence(path)
         if vouched is not None:
             # Rollback, equivocation and damaged records refuse the WHOLE admission of a long
@@ -422,6 +459,7 @@ def _stored(record: dict, *, now: int | None = None, historical: bool = False) -
         ):
             raise FeedError("the stored feed is malformed; left untouched")
         data, signature = record["data"].encode("ascii"), record["signature"].encode("ascii")
+        # Already admitted: re-verified, never re-bounded against the floor it set.
         verify(data, signature)
         snapshot = parse(data, now=now, _historical=historical)
         if snapshot.sequence != record["sequence"] or snapshot.digest != record["digest"]:

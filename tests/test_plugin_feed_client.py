@@ -9,6 +9,7 @@ import test_plugin_feed
 from agent_sessions.plugins import feed, feed_client, storage
 
 signer = test_plugin_feed.signer
+catalog = test_plugin_feed.catalog
 
 
 def selected(data):
@@ -54,6 +55,19 @@ def test_fresh_and_legacy_cache_accept_same_verified_cut(signer, monkeypatch, pr
     base = f"https://github.com/{feed_client.REPOSITORY}/releases/download/v0.19.3/plugin-feed.json"
     assert urls == [feed_client.LATEST, base, base + ".sig"]
     assert feed.current().digest == value["digest"]
+
+
+@pytest.mark.parametrize("previous", [False, True])
+def test_fresh_and_legacy_cache_accept_a_catalog_signed_cut(signer, catalog, monkeypatch, previous):
+    """#2082: an upgraded client takes the agents-only catalog key's cut through the same path."""
+    monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
+    if previous:
+        old = feed.canonical(test_plugin_feed.document(1))
+        feed.accept(old, signer(old))  # the release-signed cut an existing host already holds
+    data = feed.canonical(test_plugin_feed.document(2))
+    transport(monkeypatch, data, catalog(data))
+    assert asyncio.run(feed_client.refresh()).sequence == 2
+    assert feed.current().digest == selected(data)["digest"]
 
 
 @pytest.mark.parametrize("stage", range(3))

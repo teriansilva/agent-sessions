@@ -472,3 +472,209 @@ def test_state_at_the_exact_serialized_limit_reads_back(signer, monkeypatch, ove
     assert storage.read(path, **options) == doc
     with pytest.raises(storage.StateError):
         storage.read(path, max_bytes=len(encoded) - 1)
+
+
+# ---- the agents-only catalog key (#2082) ---------------------------------------------------------
+
+#: The reviewed catalog keys, exactly as listed in the shipped `catalog-signers`. EMPTY until the
+#: operator's approval is recorded on #2082 and the key exists (battlelab-cloud#98): adding the key
+#: is one deliberate line here, beside the one line in the signers file.
+CATALOG_KEYS: list[str] = []
+SHIPPED_CATALOG_SIGNERS = feed.CATALOG_SIGNERS
+
+
+def _entries(path):
+    return [
+        line
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def _keypair(tmp_path, name):
+    key = tmp_path / name
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    return key
+
+
+def _sign_with(key, data, namespace=feed.NAMESPACE):
+    return subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", namespace],
+        input=data,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+
+@pytest.fixture
+def catalog(signer, tmp_path, monkeypatch):
+    """A catalog key listed, as shipped entries must be, in a scratch `catalog-signers`."""
+    key = _keypair(tmp_path, "catalog")
+    allowed = tmp_path / "catalog-signers"
+    allowed.write_text(
+        f'{feed.CATALOG_PRINCIPAL} namespaces="{feed.NAMESPACE}" '
+        + key.with_suffix(".pub").read_text()
+    )
+    monkeypatch.setattr(feed, "CATALOG_SIGNERS", allowed)
+
+    def sign(data, namespace=feed.NAMESPACE):
+        return _sign_with(key, data, namespace)
+
+    sign.key = key
+    return sign
+
+
+def _state():
+    """Every trust record's bytes (lock files carry none)."""
+    root = storage.root()
+    if not root.exists():
+        return {}
+    return {p.name: p.read_bytes() for p in root.iterdir() if p.is_file() and p.suffix != ".lock"}
+
+
+@pytest.mark.deploy_shape
+def test_shipped_catalog_signers_lists_exactly_the_reviewed_keys():
+    assert SHIPPED_CATALOG_SIGNERS.is_file()
+    entries = _entries(SHIPPED_CATALOG_SIGNERS)
+    assert entries == CATALOG_KEYS
+    for line in entries:  # agents cuts only, even where the file is misused
+        assert line.startswith(f'{feed.CATALOG_PRINCIPAL} namespaces="{feed.NAMESPACE}" ')
+    assert feed.CATALOG_PRINCIPAL == "catalog@battlelab"
+
+
+def test_a_catalog_signed_cut_is_accepted_and_reads_back_after_a_restart(catalog):
+    data = feed.canonical(document())
+    assert feed.accept(data, catalog(data), now=NOW).sequence == 1
+    assert feed.current(now=NOW).digest == hashlib.sha256(data).hexdigest()
+    # A legacy cache (no floor file yet) backfills its floor from catalog-signed evidence too.
+    (storage.root() / "feed-floor.json").unlink()
+    assert feed.historical().sequence == 1
+    assert storage.read(storage.root() / "feed-floor.json")["sequence"] == 1
+
+
+@pytest.mark.parametrize("client", ["shipped", "absent"])
+def test_an_older_client_refuses_a_catalog_cut_and_keeps_every_record(
+    catalog, signer, monkeypatch, tmp_path, client
+):
+    old = feed.canonical(document(1))
+    feed.accept(old, signer(old), now=NOW)
+    before = _state()
+    path = SHIPPED_CATALOG_SIGNERS if client == "shipped" else tmp_path / "absent"
+    monkeypatch.setattr(feed, "CATALOG_SIGNERS", path)
+    calls = []
+    original = runner.run
+    monkeypatch.setattr(runner, "run", lambda *a, **kw: calls.append(a) or original(*a, **kw))
+    new = feed.canonical(document(2))
+    with pytest.raises(feed.FeedError, match="not from a trusted plugin-feed signer"):
+        feed.accept(new, catalog(new), now=NOW)
+    assert len(calls) == 1  # an empty catalog-signers spawns no second check
+    assert _state() == before
+    assert feed.current(now=NOW).digest == hashlib.sha256(old).hexdigest()
+
+
+def test_both_signers_share_one_sequence_floor(catalog, signer):
+    two = feed.canonical(document(2))
+    feed.accept(two, signer(two), now=NOW)
+    three = feed.canonical(document(3))
+    feed.accept(three, catalog(three), now=NOW)
+    assert feed.current(now=NOW).digest == hashlib.sha256(three).hexdigest()
+    other_three = feed.canonical({**document(3), "expires_at": NOW + 1000})
+    for data, sign in [
+        (two, catalog),
+        (two, signer),
+        (feed.canonical(document(1)), catalog),
+        (other_three, catalog),
+        (other_three, signer),
+    ]:
+        before = _state()
+        with pytest.raises(feed.FeedError, match="backwards|different"):
+            feed.accept(data, sign(data), now=NOW)
+        assert _state() == before
+    feed.accept(three, catalog(three), now=NOW)  # the identical cut again is idempotent
+    # Recovery is by sequence: a higher release-signed cut supersedes the catalog key's.
+    four = feed.canonical(document(4))
+    assert feed.accept(four, signer(four), now=NOW).sequence == 4
+
+
+@pytest.mark.parametrize("misplacement", ["release-principal", "release-file", "namespace"])
+def test_the_catalog_key_verifies_only_under_its_own_principal_file_and_namespace(
+    catalog, monkeypatch, tmp_path, misplacement
+):
+    data = feed.canonical(document())
+    namespace = feed.NAMESPACE
+    pub = catalog.key.with_suffix(".pub").read_text()
+    if misplacement == "release-principal":
+        feed.CATALOG_SIGNERS.write_text(f"{feed.PRINCIPAL} {pub}")
+    elif misplacement == "release-file":
+        with feed.SIGNERS.open("a") as f:
+            f.write(f"{feed.CATALOG_PRINCIPAL} {pub}")
+        monkeypatch.setattr(feed, "CATALOG_SIGNERS", tmp_path / "absent")
+    else:
+        namespace = "battlelab-gallery"
+    with pytest.raises(feed.FeedError, match="signature"):
+        feed.accept(data, catalog(data, namespace), now=NOW)
+    assert not (storage.root() / "feed.json").exists()
+
+
+def test_the_catalog_key_signs_no_gallery_index_and_no_freshness_statement(
+    catalog, signer, monkeypatch, tmp_path
+):
+    from agent_sessions.gallery import contract, trust
+
+    # An unrestricted line: refusal must come from which file each verifier reads, not namespaces.
+    feed.CATALOG_SIGNERS.write_text(
+        f"{feed.CATALOG_PRINCIPAL} " + catalog.key.with_suffix(".pub").read_text()
+    )
+    fresh_key = _keypair(tmp_path, "freshness")
+    allowed = tmp_path / "freshness-signers"
+    allowed.write_text(freshness.PRINCIPAL + " " + fresh_key.with_suffix(".pub").read_text())
+    monkeypatch.setattr(freshness, "SIGNERS", allowed)
+    data = b'{"any":"bytes"}'
+    trust.verify(data, signer(data, contract.NAMESPACE))  # controls: each real signer passes
+    freshness.verify(data, _sign_with(fresh_key, data, freshness.NAMESPACE))
+    with pytest.raises(contract.GalleryError, match="trusted signer"):
+        trust.verify(data, catalog(data, contract.NAMESPACE))
+    with pytest.raises(freshness.FreshnessError, match="trusted freshness signer"):
+        freshness.verify(data, catalog(data, freshness.NAMESPACE))
+
+
+def test_verify_names_the_signer_that_vouched(catalog, signer):
+    data = feed.canonical(document())
+    assert feed.verify(data, signer(data)) == feed.PRINCIPAL
+    assert feed.verify(data, catalog(data)) == feed.CATALOG_PRINCIPAL
+
+
+@pytest.mark.parametrize("floor", [None, 7])
+def test_a_catalog_cut_advances_at_most_catalog_max_step(catalog, signer, floor):
+    """A stolen catalog key can't sign a sequence that recovery by a higher release-signed cut
+    could never exceed (#2082): the step is bounded; release cuts are not."""
+    if floor is not None:
+        start = feed.canonical(document(floor))
+        feed.accept(start, signer(start), now=NOW)
+    base = floor or 0
+    before = _state()
+    too_far = feed.canonical(document(base + feed.CATALOG_MAX_STEP + 1))
+    with pytest.raises(feed.FeedError, match="advances too far"):
+        feed.accept(too_far, catalog(too_far), now=NOW)
+    assert _state() == before
+    edge = feed.canonical(document(base + feed.CATALOG_MAX_STEP))
+    assert feed.accept(edge, catalog(edge), now=NOW).sequence == base + feed.CATALOG_MAX_STEP
+    # The admitted catalog cut re-reads from storage without re-applying the bound.
+    (storage.root() / "feed-floor.json").unlink()
+    assert feed.historical().digest == hashlib.sha256(edge).hexdigest()
+    assert feed.current(now=NOW).digest == hashlib.sha256(edge).hexdigest()
+    # Recovery: a release-signed cut far above the floor stays admissible.
+    far = feed.canonical(document(10**15))
+    assert feed.accept(far, signer(far), now=NOW).sequence == 10**15
+
+
+def test_the_catalog_step_is_measured_from_a_floor_ahead_of_its_record(catalog, signer):
+    """An interrupted advancement leaves the floor ahead of the record: the bound counts from
+    the higher of the two, the effective floor."""
+    one = feed.canonical(document(1))
+    feed.accept(one, signer(one), now=NOW)
+    ahead = feed.canonical(document(500))
+    with storage.locked("feed.json") as path:
+        storage.write(path.with_name("feed-floor.json"), feed._mark(feed.parse(ahead, now=NOW)))
+    edge = feed.canonical(document(500 + feed.CATALOG_MAX_STEP))
+    assert feed.accept(edge, catalog(edge), now=NOW).sequence == 500 + feed.CATALOG_MAX_STEP
