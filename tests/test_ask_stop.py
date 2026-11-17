@@ -27,7 +27,14 @@ import uuid
 import httpx
 import pytest
 
-from agent_sessions import actuator, ask_orchestrator, ask_store, memory_capture, session_input
+from agent_sessions import (
+    actuator,
+    ask_orchestrator,
+    ask_store,
+    memory_capture,
+    review,
+    session_input,
+)
 from test_ask_draft_turns import held, run  # noqa: F401 — fixtures are used by name
 from test_ask_nudge import target, writer  # noqa: F401
 from test_ask_orchestrator import (  # noqa: F401
@@ -431,8 +438,11 @@ def test_a_request_within_budget_goes_on_and_an_endpoints_own_context_refusal_is
 
 
 def test_a_long_turn_drops_old_results_on_the_wire_and_still_answers(app, ai, monkeypatch):
+    parts = iter(range(1_000))
+
     async def big(turn, args):
-        return {"text": "w" * 3_000}, {"length": 3_000}
+        # Each result says something new (a distinct part), so the loop guard (#2113) stays out.
+        return {"text": "w" * 3_000, "part": next(parts)}, {"length": 3_000}
 
     tool(monkeypatch, "look", "read", big)
     budget = len(json.dumps(ask_orchestrator.tool_specs())) + 14_000
@@ -950,6 +960,36 @@ def test_a_stop_during_a_no_tools_memory_write_keeps_the_write_and_its_step(
     (step,) = reloaded["tools"]
     assert (step["name"], step["effect"], step["n"]) == ("remember_hq_memory", True, 1)
     assert reloaded["steps"]["count"] == 1 and reloaded["status"] == "stopped"
+
+
+def test_stop_during_the_loop_guards_wrap_up_settles_stopped(ai, monkeypatch):
+    """#2113: Stop wins over the wrap-up request too — the turn settles `stopped`, no answer and
+    no `no_progress`, even though the guard had already closed the tools."""
+
+    async def scenario():
+        reached, go = asyncio.Event(), asyncio.Event()
+        script = ai(call("session_status", {"key": "claude:never-returned"}))  # refused, always
+        real = script.handler
+
+        async def handler(request):
+            if "tool_choice" in json.loads(request.content):  # the wrap-up, and only it
+                reached.set()
+                await go.wait()
+            return await real(request)
+
+        monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+        cid = ask_store.create()
+        tid, task = await begin(cid, "where is the epic")
+        await asyncio.wait_for(reached.wait(), 30)
+        assert await ask_orchestrator.stop(cid, tid) is True
+        turn = await asyncio.wait_for(task, 10)
+        go.set()
+        return cid, turn
+
+    cid, turn = run(scenario())
+    assert (turn["status"], turn["answer"]) == ("stopped", None)
+    assert not records_of(cid, "assistant")
+    assert all(r.get("code") != "no_progress" for r in records_of(cid, "status"))
 
 
 def test_stop_says_whether_the_named_turn_is_being_stopped(held, ai):

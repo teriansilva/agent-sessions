@@ -356,10 +356,24 @@ def test_every_request_offers_exactly_the_read_tools_and_the_guarded_prompt(app,
 # ---- bounds ----------------------------------------------------------------------------------
 
 
-def test_a_turn_of_forty_rounds_answers(app, ai):
-    """#2076: no round cap. Forty rounds of lookups, then the answer — never "ran out of
-    lookups", and no request is ever forced to answer with `tool_choice`."""
-    script = ai(*[call("list_projects", cid=f"r{i}") for i in range(40)], answer("done looking"))
+def _fresh_reads(monkeypatch, name: str = "read_more") -> list[int]:
+    """A read tool whose every call returns something new: a turn that keeps learning."""
+    ran: list[int] = []
+
+    async def read(turn, args):
+        ran.append(len(ran))
+        return {"rows": [f"row {len(ran)}"]}, {}
+
+    _fake_tool(monkeypatch, "read", read, name)
+    return ran
+
+
+def test_a_turn_of_forty_rounds_answers(app, ai, monkeypatch):
+    """#2076: no round cap. Forty rounds of lookups that each learn something, then the answer —
+    never "ran out of lookups", the loop guard (#2113) never fires, and no request is ever forced
+    to answer with `tool_choice`."""
+    _fresh_reads(monkeypatch)
+    script = ai(*[call("read_more", cid=f"r{i}") for i in range(40)], answer("done looking"))
     cid = app.new()
     turn = app.ask(cid, "projects?").json()["turn"]
     assert turn["status"] == "done" and turn["answer"] == "done looking"
@@ -367,6 +381,196 @@ def test_a_turn_of_forty_rounds_answers(app, ai):
     assert all("tool_choice" not in b for b in script.bodies)
     assert turn["steps"] == {"count": 40, "more": None, "incomplete": False}
     assert [t["n"] for t in turn["tools"]] == list(range(1, 41))
+
+
+# ---- the loop guard (#2113): no cap, a circle detector ---------------------------------------
+
+LONG = "epic federation " * 14
+
+
+def _refused_search() -> dict:
+    """The same call, refused every time — as the over-long search was on 2026-11-17."""
+    return call("session_status", {"key": "claude:not-a-key-this-turn-returned"})
+
+
+def test_identical_refused_calls_are_nudged_then_wrapped_up_with_an_answer(app, ai):
+    """The 2026-11-17 call: the same refused call, over and over. The first is a fresh attempt;
+    after NUDGE_AFTER REPEATS the model is told it is going in circles; after WRAP_AFTER it gets
+    one request with the tools closed, and its answer is stored as the turn's answer, marked
+    `no_progress`."""
+    n = ask_orchestrator.WRAP_AFTER + 1  # the first try, then WRAP_AFTER repeats
+    script = ai(*[_refused_search() for _ in range(n)], answer("I found 2059, not the epic."))
+    cid = app.new()
+    turn = app.ask(cid, "where is the federation epic?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "I found 2059, not the epic."
+    assert len(script.bodies) == n + 1  # n rounds, then the one wrap-up request
+    statuses = [r for r in ask_store.read(cid) if r["type"] == "status"]
+    assert statuses[-1]["status"] == "done" and statuses[-1]["code"] == "no_progress"
+
+    def notes(i: int) -> list[str]:
+        return [json.loads(m["content"]).get("hq_note", "") for m in script.tool_results(i)]
+
+    nudge = ask_orchestrator.NUDGE_AFTER + 1  # the request after the NUDGE_AFTER-th repeat
+    assert not any(notes(nudge - 1))
+    assert "without learning anything new" in notes(nudge)[-1]
+    # The repeat is named: from the second identical call on, its result says so.
+    assert "step 1" in json.loads(script.tool_results(2)[-1]["content"])["loop_guard"]
+    wrap = script.bodies[-1]
+    assert wrap["tool_choice"] == "none" and wrap["tools"]  # declared, closed
+    assert "tools are closed" in notes(len(script.bodies) - 1)[-1]
+    # Never a request forced before the wrap-up.
+    assert all("tool_choice" not in b for b in script.bodies[:-1])
+
+
+def test_a_wrap_up_without_an_answer_fails_the_turn_as_no_progress(app, ai):
+    """The wrap-up still calls tools (or says nothing): the turn fails, with the same code."""
+    script = ai(_refused_search())  # every request, the wrap-up's included
+    cid = app.new()
+    turn = app.ask(cid, "epic?").json()["turn"]
+    assert turn["status"] == "failed"
+    assert len(script.bodies) == ask_orchestrator.WRAP_AFTER + 2  # a try, the repeats, the wrap
+    statuses = [r for r in ask_store.read(cid) if r["type"] == "status"]
+    assert statuses[-1]["code"] == "no_progress"
+
+
+def test_one_round_that_learns_something_resets_the_count(app, ai, monkeypatch):
+    """Not a cap: rounds without progress must be CONSECUTIVE. Five idle rounds, one that learns,
+    five idle again — eleven rounds and the model's own answer, never a wrap-up."""
+    _fresh_reads(monkeypatch)
+    idle = [_refused_search() for _ in range(ask_orchestrator.WRAP_AFTER - 1)]
+    script = ai(*idle, call("read_more"), *idle, answer("done"))
+    cid = app.new()
+    turn = app.ask(cid, "q").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "done"
+    assert all("tool_choice" not in b for b in script.bodies)
+    statuses = [r for r in ask_store.read(cid) if r["type"] == "status"]
+    assert "code" not in statuses[-1]
+
+
+def test_the_same_read_with_the_same_result_is_not_progress(app, ai, monkeypatch):
+    """A read that answers the same thing every time teaches nothing after the first: it is
+    wrapped up like refusals are (a poll that SEES something new would be progress)."""
+
+    async def same(turn, args):
+        return {"projects": [{"name": "api"}]}, {}
+
+    _fake_tool(monkeypatch, "read", same, "read_same")
+    n = ask_orchestrator.WRAP_AFTER
+    script = ai(*[call("read_same", cid=f"p{i}") for i in range(n + 1)], answer("projects"))
+    cid = app.new()
+    turn = app.ask(cid, "projects?").json()["turn"]
+    # Round 1 learned the list; rounds 2..n+1 learned nothing; then the wrap-up answers.
+    assert turn["status"] == "done" and turn["answer"] == "projects"
+    assert len(script.bodies) == n + 2
+    assert script.bodies[-1]["tool_choice"] == "none"
+    assert "step 1" in json.loads(script.tool_results(2)[-1]["content"])["loop_guard"]
+
+
+def test_an_empty_result_teaches_nothing(app, ai):
+    """`list_projects` with no projects says nothing new from the first round on: the first call
+    is a fresh attempt, the rest are repeats."""
+    n = ask_orchestrator.WRAP_AFTER + 1
+    script = ai(*[call("list_projects", cid=f"p{i}") for i in range(n)], answer("none yet"))
+    cid = app.new()
+    turn = app.ask(cid, "projects?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "none yet"
+    assert len(script.bodies) == n + 1
+
+
+def test_a_step_with_an_effect_is_progress(app, ai, monkeypatch):
+    """A step that did (or may have done) something counts, whatever it returned."""
+
+    async def stage(turn, args):
+        return {"staged": True}, {}
+
+    _fake_tool(monkeypatch, "proposal", stage)
+    n = ask_orchestrator.WRAP_AFTER + 2
+    script = ai(*[call("propose_thing", cid=f"s{i}") for i in range(n)], answer("staged"))
+    cid = app.new()
+    turn = app.ask(cid, "stage them").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "staged"
+    assert all("tool_choice" not in b for b in script.bodies)
+
+
+def test_loop_units_ignore_echoed_arguments_and_refusals():
+    units = ask_orchestrator._loop_units
+    assert units(json.dumps({"error": "refused"})) is None
+    a = units(json.dumps({"query": "one", "items": [{"ref": "issue:1"}, {"ref": "issue:2"}]}))
+    b = units(
+        json.dumps({"query": "two, longer", "items": [{"ref": "issue:2"}, {"ref": "issue:1"}]})
+    )
+    assert a == b  # a new query and a new order are not new knowledge
+    assert units("plain text") == units("plain text") != units("other text")
+
+
+def test_the_same_items_with_fresh_metadata_are_not_progress():
+    """Hermes on #2113: a poll that returns the same issues with a new timestamp, request id or
+    page cursor has learned nothing — at the top level and inside each item."""
+    units = ask_orchestrator._loop_units
+    first = {
+        "fetched_at": 1,
+        "request_id": "r1",
+        "cursor": "a",
+        "items": [{"ref": "i:1", "age_s": 5}],
+    }
+    again = {
+        "fetched_at": 2,
+        "request_id": "r2",
+        "cursor": "b",
+        "items": [{"ref": "i:1", "age_s": 9}],
+    }
+    assert units(json.dumps(first)) == units(json.dumps(again))
+    changed = {**again, "items": [{"ref": "i:1", "state": "closed", "age_s": 9}]}
+    assert units(json.dumps(changed)) != units(json.dumps(first))
+
+
+def test_a_round_mixing_a_refusal_and_an_effect_is_progress(app, ai, monkeypatch):
+    """One refused call and one step with an effect in the same round: the effect counts."""
+
+    async def stage(turn, args):
+        return {"staged": True}, {}
+
+    _fake_tool(monkeypatch, "proposal", stage)
+    mixed = calls(("session_status", {"key": "claude:nope"}), ("propose_thing", {}))
+    n = ask_orchestrator.WRAP_AFTER + 2
+    script = ai(*[mixed for _ in range(n)], answer("ok"))
+    cid = app.new()
+    turn = app.ask(cid, "go").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "ok"
+    assert all("tool_choice" not in b for b in script.bodies)
+
+
+def test_fresh_attempts_get_more_rounds_than_repeats_but_not_forever():
+    """Ten refused sends to ten sessions are trying, not circling (the 2026-11-12 turn): a call
+    not made before breaks the repeat streak. Rounds with nothing new at all are still told after
+    NUDGE_AFTER_TRYING and wrapped up after WRAP_AFTER_TRYING — above the send budget."""
+    a = ask_orchestrator
+    assert a.WRAP_AFTER_TRYING > a.MAX_SENDS_PER_TURN
+    g = a._LoopGuard()
+    refused = json.dumps({"error": "refused: does not take input"})
+    verdicts = []
+    for i in range(a.WRAP_AFTER_TRYING):
+        g.observe(i + 1, "send_nudge", json.dumps({"key": f"s{i}"}), refused, False)
+        verdicts.append(g.end_round())
+    assert verdicts[: a.NUDGE_AFTER_TRYING - 1] == [None] * (a.NUDGE_AFTER_TRYING - 1)
+    assert verdicts[a.NUDGE_AFTER_TRYING - 1] == "nudge"
+    assert verdicts[-1] == "wrap" and "wrap" not in verdicts[:-1]
+    # One repeat among them does not start a wrap of its own: the try before it reset the streak.
+    g = a._LoopGuard()
+    g.observe(1, "t", "{}", refused, False)
+    assert g.end_round() is None and g.stale == 0
+
+
+def test_the_guards_memory_is_bounded_and_forgetting_only_delays_it(monkeypatch):
+    monkeypatch.setattr(ask_orchestrator, "LOOP_UNITS_MAX", 3)
+    g = ask_orchestrator._LoopGuard()
+    for i in range(10):
+        g.observe(i + 1, "t", json.dumps({"i": i}), json.dumps({"rows": [i]}), False)
+    assert len(g.seen) <= 3 and len(g.calls) <= 3
+    # Row 0 was forgotten: seeing it again counts as new (progress), never as a repeat.
+    g.end_round()
+    g.observe(11, "t", json.dumps({"i": 0}), json.dumps({"rows": [0]}), False)
+    assert g.end_round() is None and g.idle == 0
 
 
 def test_twenty_calls_in_one_round_all_run(app, ai):
@@ -623,12 +827,16 @@ def test_call_markup_quoted_without_a_tool_name_is_an_answer(app, ai):
     assert len(script.bodies) == 1
 
 
-def test_a_call_written_as_text_after_many_rounds_is_asked_again_not_out_of_rounds(app, ai):
+def test_a_call_written_as_text_after_many_rounds_is_asked_again_not_out_of_rounds(
+    app, ai, monkeypatch
+):
     """The live MiMo turn spent every round walking folders and then failed as "ran out of
     lookups" (#2076: that no longer exists). After any number of rounds a call that arrives as
-    text is asked again once, and the turn then answers."""
+    text is asked again once, and the turn then answers. (Each round learns something, so the
+    loop guard of #2113 stays out of it.)"""
+    _fresh_reads(monkeypatch)
     script = ai(
-        *[call("list_projects", cid=f"r{i}") for i in range(20)],
+        *[call("read_more", cid=f"r{i}") for i in range(20)],
         answer(LEAKED_XML_CALL),
         answer("here is what I found"),
     )

@@ -143,7 +143,9 @@ there and leaves it open on a wide screen. A `/hq` link, or an old `/ask` one, o
 with the sidebar open.
 
 - **HQ works until it has an answer, or until you stop it.** There is no limit on how many
-  things it may look up for one question. While it works, one row shows what it is doing
+  things it may look up for one question. If it starts going in circles — several rounds in a
+  row that turn up nothing new — it is told so, and soon after it answers with what it found and
+  what it could not find. While it works, one row shows what it is doing
   (*Searching your sessions and missions…*, *Reading a session's status…*), how many steps it
   has taken and for how long. Open the row to see every step: what it was, what it was about,
   what came back (*12 matches*, *refused: unknown key*) and how long it took; the step running

@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import json
 import logging
 import math
@@ -123,6 +124,48 @@ REQUEST_BUDGET_CHARS = 300_000
 #: What one image part counts as against the budget: its bytes are not text the model reads.
 IMAGE_PART_CHARS = 4_000
 DROPPED_RESULT = "[an earlier result, dropped to make room]"
+
+#: The loop guard (#2113). NOT a cap on steps or rounds (#2076 stays): it counts consecutive
+#: ROUNDS that brought nothing new, in two streaks. A turn that keeps learning runs as long as it
+#: needs to. A round that only REPEATS (calls the turn already made, or results with nothing new)
+#: extends the repeat streak: told so after `NUDGE_AFTER` of them, asked to answer with what it
+#: has, tools closed, after `WRAP_AFTER`. A round that TRIES something new (a call not made
+#: before) that is refused or teaches nothing breaks the repeat streak but not the second one:
+#: rounds without anything new at all are told so after `NUDGE_AFTER_TRYING` and wrapped up after
+#: `WRAP_AFTER_TRYING` — above `MAX_SENDS_PER_TURN`, so ten refused sends to ten sessions still
+#: reach the eleventh that takes one.
+NUDGE_AFTER = 3
+WRAP_AFTER = 6
+NUDGE_AFTER_TRYING = 9
+WRAP_AFTER_TRYING = 18
+#: Result fields that only echo the call's own arguments back: a new query is not new knowledge.
+LOOP_ECHO_FIELDS = frozenset({"query", "kind", "connector_index", "item_ref", "key", "args"})
+#: Fields, at any depth, that change on every read without saying anything new: clocks, ages,
+#: durations, request ids and paging. Dropped before a result is fingerprinted, so a poll that
+#: returns the same items with a fresh timestamp is not progress (Hermes on #2113).
+LOOP_VOLATILE_RE = re.compile(
+    r"(^|_)(ts|at|time|timestamp|now|age|ago|ms|elapsed|duration|took|latency|request_id|"
+    r"trace_id|etag|cursor|page|next|prev|offset|fetched|checked|polled|rounds|n)"
+    r"(_(s|ms|sec|secs|seconds|min|minutes))?$"
+)
+#: Fingerprints one turn remembers. Bounded memory, never bounded work: past it the oldest are
+#: forgotten, and a forgotten one seen again counts as NEW — the guard only fires later.
+LOOP_UNITS_MAX = 20_000
+LOOP_REPEAT_NOTE = (
+    "the same call at step {step} returned exactly this; repeating it changes nothing"
+)
+LOOP_NUDGE_NOTE = (
+    "You have made {rounds} rounds of tool calls without learning anything new. Change your "
+    "approach, or answer the Commander with what you have."
+)
+LOOP_WRAP_NOTE = (
+    "You have made {rounds} rounds of tool calls without learning anything new, so the tools are "
+    "closed for this turn. Answer the Commander now with what you found, and say plainly what you "
+    "could not find."
+)
+#: The turn's outcome when the guard wrapped it up: an answer (`done`) or none (`failed`).
+NO_PROGRESS = "no_progress"
+NO_PROGRESS_FAILED = "HQ went in circles and could not settle on an answer — ask again"
 #: How long the stop route waits for the turn to settle before it answers with the turn as it is
 #: (an effect in flight, a send's delivery, runs to its recorded outcome first).
 STOP_WAIT_S = 5.0
@@ -147,6 +190,129 @@ class TurnError(Exception):
 
 class _Stopped(Exception):
     """The Commander stopped this turn (#2076): raised at a safe point, settled as ``stopped``."""
+
+
+def _loop_units(content: str) -> set[str] | None:
+    """What one tool result says, as comparable units (#2113), or ``None`` for a refusal (which
+    never counts as learning anything). A JSON object gives one unit per element of each list
+    value and one per other key/value pair, except `LOOP_ECHO_FIELDS`; a list, one per element;
+    anything else, the whole text. Units are digests, so a turn's memory of them stays small."""
+    try:
+        value = json.loads(content)
+    except ValueError:
+        value = content
+    if isinstance(value, dict) and "error" in value:
+        return None
+    value = _without_volatile(value)
+    if isinstance(value, dict):
+        parts: list[object] = []
+        for k, v in value.items():
+            if k in LOOP_ECHO_FIELDS:
+                continue
+            if isinstance(v, list):
+                parts.extend((k, item) for item in v)
+            else:
+                parts.append((k, v))
+    elif isinstance(value, list):
+        parts = list(value)
+    else:
+        parts = [value]
+    return {
+        hashlib.blake2b(
+            json.dumps(p, sort_keys=True, ensure_ascii=False, default=str).encode(), digest_size=16
+        ).hexdigest()
+        for p in parts
+    }
+
+
+def _without_volatile(value: object) -> object:
+    """``value`` with every `LOOP_VOLATILE_RE` key removed, at any depth."""
+    if isinstance(value, dict):
+        return {
+            k: _without_volatile(v)
+            for k, v in value.items()
+            if not (isinstance(k, str) and LOOP_VOLATILE_RE.search(k))
+        }
+    if isinstance(value, list):
+        return [_without_volatile(v) for v in value]
+    return value
+
+
+@dataclass
+class _LoopGuard:
+    """Whether a turn is still learning anything (#2113). Fed every step's result; asked after
+    every round. Memory only — never stored."""
+
+    #: The units the turn's results have shown so far, oldest first (a dict as an ordered set),
+    #: at most `LOOP_UNITS_MAX`.
+    seen: dict[str, None] = field(default_factory=dict)
+    #: Each distinct call (name + canonical arguments) → (its last step, its last raw result).
+    calls: dict[str, tuple[int, str]] = field(default_factory=dict)
+    #: This round learned something (a new unit, or a step with an effect).
+    progressed: bool = False
+    #: This round made a call the turn had not made before.
+    tried: bool = False
+    #: Consecutive rounds of nothing but repeats.
+    stale: int = 0
+    #: Consecutive rounds that learned nothing, fresh attempts included.
+    idle: int = 0
+    #: The model was told this streak already.
+    nudged: bool = False
+
+    def observe(self, step: int, name: str, raw_args: str, result: str, effect: bool) -> str:
+        """Record one step; return the result for the model, with a note when it is an exact
+        repeat (same call, same result) of an earlier step."""
+        try:
+            canon = json.dumps(json.loads(raw_args or "{}"), sort_keys=True)
+        except ValueError:
+            canon = raw_args or ""
+        key = f"{name}\0{canon}"
+        before = self.calls.pop(key, None)
+        if before is None:
+            self.tried = True
+        self.calls[key] = (step, result)
+        while len(self.calls) > LOOP_UNITS_MAX:
+            del self.calls[next(iter(self.calls))]
+        units = _loop_units(result)
+        if effect or (units is not None and any(u not in self.seen for u in units)):
+            self.progressed = True
+        for u in units or ():
+            self.seen.pop(u, None)
+            self.seen[u] = None  # newest last
+        while len(self.seen) > LOOP_UNITS_MAX:
+            del self.seen[next(iter(self.seen))]
+        if before is None or before[1] != result:
+            return result
+        return _with_note(result, "loop_guard", LOOP_REPEAT_NOTE.format(step=before[0]))
+
+    def end_round(self) -> str | None:
+        """Close a round: ``"wrap"``, ``"nudge"`` (once per streak) or ``None``."""
+        if self.progressed:
+            self.stale = self.idle = 0
+            self.nudged = False
+        else:
+            self.idle += 1
+            self.stale = 0 if self.tried else self.stale + 1
+        self.progressed = self.tried = False
+        if self.stale >= WRAP_AFTER or self.idle >= WRAP_AFTER_TRYING:
+            return "wrap"
+        if not self.nudged and (self.stale >= NUDGE_AFTER or self.idle >= NUDGE_AFTER_TRYING):
+            self.nudged = True
+            return "nudge"
+        return None
+
+
+def _with_note(content: str, key: str, note: str) -> str:
+    """A tool result for the model with one more field: the server's own note to it."""
+    try:
+        value = json.loads(content)
+    except ValueError:
+        value = None
+    if isinstance(value, dict):
+        return json.dumps({**value, key: note}, ensure_ascii=False)
+    return json.dumps(
+        {"result": content if value is None else value, key: note}, ensure_ascii=False
+    )
 
 
 class _ToolRefused(Exception):
@@ -337,6 +503,8 @@ class _Turn:
     plain_stored: int = 0
     more: _More = field(default_factory=_More)
     live: dict | None = None
+    #: Whether the turn is still learning anything (#2113): not a cap, a circle detector.
+    loop: _LoopGuard = field(default_factory=_LoopGuard)
     #: Cards (proposal records, a nudge's own aside) this conversation holds, counted when the
     #: turn began and as its tools write them: a propose tool is refused at
     #: `ask_store.MAX_SESSION_PROPOSALS`, BEFORE it writes anything.
@@ -4320,6 +4488,7 @@ async def _step(turn: _Turn, round_no: int, n_in_round: int, call: dict) -> str:
         result, stored, meta, effect = await _call(turn, name, args)
     finally:
         turn.live = None
+    result = turn.loop.observe(n, name, args, result, effect)
     ms = int((time.monotonic() - began) * 1000)
     turn.steps = n
     record = None
@@ -4496,6 +4665,17 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 # `ask_operator` ends the turn: the operator holds the next move.
                 return _asked_records(turn)
             round_no += 1
+            # The loop guard (#2113): never a cap — only rounds that learned nothing count.
+            verdict = turn.loop.end_round()
+            idle = turn.loop.idle
+            if verdict == "wrap":
+                return await _wrap_up(turn, cfg, convo, question_at, fit, idle)
+            if verdict == "nudge":
+                # Told once per streak, inside the newest result: a user message right after a
+                # tool message is refused by some endpoints.
+                convo[-1]["content"] = _with_note(
+                    convo[-1]["content"], "hq_note", LOOP_NUDGE_NOTE.format(rounds=idle)
+                )
             continue
         if isinstance(content, str) and _leaked_calls(content):
             # Tool calls the endpoint returned as text it could not parse: not an answer, and
@@ -4513,6 +4693,56 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             # focused, whether the Commander's words mean the call is over (#1668).
             turn.end_call = await _stoppable(turn, _call_is_over(turn, cfg, content.strip()))
         return [_assistant(turn, content.strip()), _status(turn, "done")]
+
+
+async def _wrap_up(
+    turn: _Turn, cfg: dict, convo: list[dict], question_at: int, fit: _Fit, rounds: int
+) -> list[dict]:
+    """The turn went `rounds` rounds without learning anything (#2113): ONE last request, tools
+    closed (`tool_choice: none` — the tools stay declared, since the history holds calls to
+    them), asking for the answer it has. Stored like any answer, its `done` status marked
+    `no_progress`; no usable answer fails the turn with the same code."""
+
+    def failed() -> list[dict]:
+        return [_status(turn, "failed", NO_PROGRESS_FAILED, NO_PROGRESS)]
+
+    if turn.stop.is_set():
+        raise _Stopped
+    convo[-1]["content"] = _with_note(
+        convo[-1]["content"], "hq_note", LOOP_WRAP_NOTE.format(rounds=rounds)
+    )
+    tools = tool_specs(turn.via)
+    _fit(convo, question_at, tools, fit)
+    turn.progress({"type": "progress", "step": "thinking", "steps": turn.steps})
+    body: dict = {
+        "model": cfg["model"],
+        "messages": convo,
+        "temperature": 0,
+        "stream": False,
+        "tools": tools,
+        "tool_choice": "none",
+    }
+    try:
+        with hq_usage.hq_call():
+            r = await _stoppable(turn, review.post_chat_response(cfg, body))
+        if r.status_code != 200:
+            return failed()
+        choice = r.json()["choices"][0]
+        message = choice["message"]
+        content = message.get("content")
+    except (review.TransportTimeout, review.ReviewError):
+        return failed()
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return failed()
+    if (
+        choice.get("finish_reason") == "length"
+        or message.get("tool_calls")
+        or not isinstance(content, str)
+        or not content.strip()
+        or _leaked_calls(content)
+    ):
+        return failed()
+    return [_assistant(turn, content.strip()), _status(turn, "done", code=NO_PROGRESS)]
 
 
 #: The focused "is the call over?" judgement runs only on SHORT call utterances (#1668): goodbyes

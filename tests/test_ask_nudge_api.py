@@ -178,7 +178,8 @@ def test_refused_sends_do_not_spend_the_turns_budget(app, ai, api_session, fleet
     """The 2026-11-12 turn: refusals first, then the one session that can take a nudge."""
     fleet["cards"].append(_card(SHELL, "shell"))
     n = ask_orchestrator.MAX_SENDS_PER_TURN
-    refused = [call("send_nudge", {"key": SHELL, "text": "go"}, cid=f"r{i}") for i in range(n)]
+    # Each a fresh attempt (#2113: ten IDENTICAL refused sends would be a loop and wrapped up).
+    refused = [call("send_nudge", {"key": SHELL, "text": f"go {i}"}, cid=f"r{i}") for i in range(n)]
     script = ai(
         call("find_sessions", {"query": "stuck"}, cid="f"),
         *refused,
