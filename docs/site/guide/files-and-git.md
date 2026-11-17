@@ -53,6 +53,25 @@ as soon as one finishes.
 to **25 MB**. A larger file says so; open BattleLab on the box's own address to play or download it.
 A file under the limit can still time out on a slow link — the viewer says so and offers Retry.
 
+## Markdown files
+
+A Markdown file (`.md`, `.markdown`, `.mdown`, `.mkd`) opens on **Preview**: rendered the way a
+forge shows it, with headings, tables, task lists, footnotes, highlighted code and the HTML that
+READMEs commonly use (centred images, `<details>`, `<kbd>`). **Source** shows the text in the editor;
+**Edit** switches to Source, and Preview comes back once you are done editing.
+
+- **Images** stored next to the document load from the box, resolved against the document's own
+  folder. Images from other sites are **not** loaded. A placeholder names the site and links to it,
+  so opening a file never makes a request to a third party.
+- **Diagrams** in a ```` ```mermaid ```` block are drawn in the app's colours. A diagram that does
+  not parse shows its error and its source.
+- **Links** to the web open in a new tab, a link to another file opens that file in the viewer,
+  and `#section` links jump within the document.
+- Front matter (a leading `---` YAML block) shows as code at the top.
+
+Inline HTML is sanitised before it is shown, so scripts, event handlers, styles and frames are
+removed. Over Home Free, images come through the tunnel and follow the 25 MB limit above.
+
 ## Uploading files
 
 **Upload into this folder**, in the FILES panel's header, offers **Files…** and **Folder…**; a

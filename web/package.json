@@ -38,10 +38,13 @@
     "@xterm/xterm": "^5.5.0",
     "@xyflow/react": "^12.10.2",
     "lucide-react": "^0.460.0",
+    "mermaid": "11.17.2",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "10.1.0",
     "react-router-dom": "^7.15.1",
+    "rehype-raw": "7.0.0",
+    "rehype-sanitize": "6.0.0",
     "remark-gfm": "4.0.1"
   },
   "devDependencies": {

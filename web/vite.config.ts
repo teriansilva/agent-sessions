@@ -22,6 +22,55 @@ function shareViewerWithoutManifest(): Plugin {
   };
 }
 import { VitePWA } from "vite-plugin-pwa";
+import { existsSync, readFileSync } from "node:fs";
+import {
+  isLazyOnlyChunk,
+  LAZY_CHUNK_DIR,
+  lazyOnlyPackages,
+  type Lockfile,
+} from "./src/pwaLazyChunks";
+
+// #2114: packages only a lazy feature (Mermaid) needs. Their chunks are written under
+// LAZY_CHUNK_DIR, which the precache ignores (src/pwaLazyChunks.ts says why).
+/** #2114: fails the BUILD if a lazy-only package's code lands in a precached chunk, or if the
+ *  service worker's manifest names anything under LAZY_CHUNK_DIR. Checked on the built output (the
+ *  real chunk graph and the real sw.js), because a config that only looks right is how the whole of
+ *  Mermaid would silently ride along in every install. */
+function lazyChunksStayOutOfPrecache(): Plugin {
+  let outDir = "dist";
+  return {
+    name: "lazy-chunks-stay-out-of-precache",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    generateBundle(_options, bundle) {
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== "chunk") continue;
+        const lazyCode = chunk.moduleIds.some((id) => id.replace(/\\/g, "/").includes("/node_modules/mermaid/"));
+        if (lazyCode && !chunk.fileName.startsWith(`${LAZY_CHUNK_DIR}/`)) {
+          this.error(`${chunk.fileName} holds Mermaid code but is outside ${LAZY_CHUNK_DIR}/, so it would be precached`);
+        }
+      }
+    },
+    closeBundle: {
+      order: "post",
+      sequential: true,
+      handler() {
+        const sw = new URL(`./${outDir}/sw.js`, import.meta.url);
+        if (!existsSync(sw)) return;
+        const text = readFileSync(sw, "utf8");
+        if (text.includes(`${LAZY_CHUNK_DIR}/`)) {
+          throw new Error(`sw.js precaches ${LAZY_CHUNK_DIR}/ — the globIgnores entry is not applied`);
+        }
+      },
+    },
+  };
+}
+
+const LAZY_ONLY = lazyOnlyPackages(
+  JSON.parse(readFileSync(new URL("./package-lock.json", import.meta.url), "utf8")) as Lockfile,
+);
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -67,6 +116,12 @@ export default defineConfig({
         // above the artifact, framed in a sandbox from ~/.
         artifact: "artifact.html",
       },
+      output: {
+        chunkFileNames: (chunk) =>
+          isLazyOnlyChunk(chunk.moduleIds, LAZY_ONLY)
+            ? `${LAZY_CHUNK_DIR}/[name]-[hash].js`
+            : "assets/[name]-[hash].js",
+      },
     },
   },
   plugins: [
@@ -94,6 +149,8 @@ export default defineConfig({
         // No webm/mp4/jpg: the HQ contact loops and posters (#1525) are never precached, so only the
         // chosen contact's loop loads, on first open (src/components/hq/contacts.test.ts pins it).
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+        // #2114: Mermaid's chunks load on first use, never at install (src/pwaLazyChunks.ts).
+        globIgnores: [`${LAZY_CHUNK_DIR}/**`],
       },
       manifest: {
         name: "BattleLab",
@@ -127,5 +184,6 @@ export default defineConfig({
       },
     }),
     shareViewerWithoutManifest(),
+    lazyChunksStayOutOfPrecache(),
   ],
 });

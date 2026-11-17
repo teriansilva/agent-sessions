@@ -20,11 +20,15 @@ import type {
 } from "../../types/api";
 import type { CodeEditorHandle } from "./editor/CodeEditor";
 import { languageLabel } from "./editor/languages";
+import { isMarkdownPath } from "./markdown/markdownView";
 import { MediaPreview, NotPreviewable } from "./MediaPreview";
 import styles from "./filePanel.module.css";
 
 // The editor is its own chunk: a session that never opens a file never downloads CodeMirror.
 const CodeEditor = lazy(() => import("./editor/CodeEditor"));
+// So is the Markdown preview (#2114), and Mermaid is a further chunk inside it, loaded only when a
+// document has a diagram.
+const MarkdownDocument = lazy(() => import("./markdown/MarkdownDocument"));
 
 type SaveState =
   | { kind: "idle" }
@@ -235,9 +239,9 @@ export function FileViewerModal({
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
-  // An SVG's Preview | Source choice, tied to the path it was made for so another file opens on
-  // its preview again (#1530).
-  const [svgViewState, setSvgViewState] = useState<{
+  // An SVG's or a Markdown file's Preview | Source choice, tied to the path it was made for so
+  // another file opens on its preview again (#1530, #2114).
+  const [docViewState, setDocViewState] = useState<{
     path: string;
     view: "preview" | "source";
   }>({ path, view: "preview" });
@@ -611,9 +615,12 @@ export function FileViewerModal({
   // and it must never be offered as editable source (Hermes, PR #1533).
   const svgText =
     okFile !== null && !okFile.binary && mediaKind === "image" && okFile.mime === "image/svg+xml";
-  const svgView = svgViewState.path === path ? svgViewState.view : "preview";
   const textFile =
     okFile && !okFile.binary && (mediaKind === null || svgText) ? okFile : null;
+  // #2114: a Markdown file is text that also has a rendered view, like an SVG: it opens on Preview,
+  // Source is the editor (kept mounted, so a draft survives the toggle), and EDIT goes to Source.
+  const mdText = textFile !== null && mediaKind === null && isMarkdownPath(path);
+  const docView = docViewState.path === path ? docViewState.view : "preview";
   const lines = textFile ? (textFile.content ?? "").split("\n") : [];
   const editable = Boolean(textFile?.editable && version);
   const readonlyReason = textFile && !editable ? textFile.readonly_reason : null;
@@ -633,7 +640,9 @@ export function FileViewerModal({
         ? "Go back to Mine first — Diff would drop the version on disk you are comparing"
         : null;
   const showMedia =
-    mode === "content" && okFile !== null && mediaKind !== null && (!svgText || (svgView === "preview" && !editing));
+    mode === "content" && okFile !== null && mediaKind !== null && (!svgText || (docView === "preview" && !editing));
+  const showMarkdown = mode === "content" && mdText && docView === "preview" && !editing;
+  const showPreview = showMedia || showMarkdown;
   const showModeBar = (showDiff && showContent) || (mode === "content" && textFile !== null);
   const saving = save.kind === "saving";
 
@@ -704,25 +713,29 @@ export function FileViewerModal({
                 </button>
               </>
             )}
-            {mode === "content" && svgText && (
-              <span className={styles.modeSeg} role="group" aria-label="SVG view">
+            {mode === "content" && (svgText || mdText) && (
+              <span
+                className={styles.modeSeg}
+                role="group"
+                aria-label={svgText ? "SVG view" : "Markdown view"}
+              >
                 <button
                   type="button"
-                  className={`${styles.modeBtn} ${showMedia ? styles.modeBtnOn : ""}`}
-                  aria-pressed={showMedia}
+                  className={`${styles.modeBtn} ${showPreview ? styles.modeBtnOn : ""}`}
+                  aria-pressed={showPreview}
                   disabled={editing}
                   title={editing ? "Finish editing first" : undefined}
-                  onClick={() => setSvgViewState({ path, view: "preview" })}
-                  data-svg-preview=""
+                  onClick={() => setDocViewState({ path, view: "preview" })}
+                  {...(svgText ? { "data-svg-preview": "" } : { "data-md-view": "preview" })}
                 >
                   Preview
                 </button>
                 <button
                   type="button"
-                  className={`${styles.modeBtn} ${!showMedia ? styles.modeBtnOn : ""}`}
-                  aria-pressed={!showMedia}
-                  onClick={() => setSvgViewState({ path, view: "source" })}
-                  data-svg-source=""
+                  className={`${styles.modeBtn} ${!showPreview ? styles.modeBtnOn : ""}`}
+                  aria-pressed={!showPreview}
+                  onClick={() => setDocViewState({ path, view: "source" })}
+                  {...(svgText ? { "data-svg-source": "" } : { "data-md-view": "source" })}
                 >
                   Source
                 </button>
@@ -758,7 +771,7 @@ export function FileViewerModal({
                     editable ? "Edit this file" : `Read-only — ${readonlyReason ?? "not editable"}`
                   }
                   onClick={() => {
-                    if (svgText) setSvgViewState({ path, view: "source" });
+                    if (svgText || mdText) setDocViewState({ path, view: "source" });
                     startEditing();
                   }}
                   data-edit-toggle=""
@@ -807,6 +820,12 @@ export function FileViewerModal({
           </div>
         )}
 
+        {showMarkdown && textFile?.truncated && (
+          <div className={styles.banner} data-md-truncated="">
+            <span className={styles.bannerTag}>Truncated</span>
+            <p className={styles.bannerText}>Preview shows the first 1 MB of this file.</p>
+          </div>
+        )}
         {mode === "content" && readonlyReason && (
           <div className={styles.banner} data-readonly-reason="">
             <span className={styles.bannerTag}>Read-only</span>
@@ -959,7 +978,7 @@ export function FileViewerModal({
         )}
 
         <div
-          className={`${styles.viewerBody} ${(mode === "content" && textFile) || showMedia ? styles.viewerBodyEditor : ""}`}
+          className={`${styles.viewerBody} ${(mode === "content" && textFile && !showMarkdown) || showMedia ? styles.viewerBodyEditor : ""}`}
         >
           {mode === "diff" && diff.kind === "loading" && (
             <div className={styles.state} role="status">
@@ -1085,8 +1104,24 @@ export function FileViewerModal({
           {mode === "content" && okFile && okFile.binary && mediaKind === null && (
             <NotPreviewable path={path} name={name} size={okFile.size} mime={okFile.mime} />
           )}
+          {showMarkdown && textFile && (
+            <Suspense
+              fallback={
+                <div className={styles.state} role="status">
+                  <span className={styles.stateTag}>Preview // Loading</span>
+                  Rendering the document…
+                </div>
+              }
+            >
+              <MarkdownDocument
+                path={path}
+                text={textFile.content ?? ""}
+                onOpenPath={onOpenPath ? openPath : undefined}
+              />
+            </Suspense>
+          )}
           {mode === "content" && textFile && (
-            <div className={styles.editorHost} hidden={showMedia}>
+            <div className={styles.editorHost} hidden={showPreview}>
               {/* The plain renderer stands in while the editor chunk downloads, so the file is
                   readable immediately rather than after a spinner. */}
               <Suspense
@@ -1117,7 +1152,7 @@ export function FileViewerModal({
           )}
         </div>
 
-        <div className={styles.viewerFoot}>
+        <div className={styles.viewerFoot} data-viewer-foot="">
           {/* The footer describes the mode you are actually looking at. It used to report the
               file's line count and size while the diff was on screen, which is a different fact
               about a different thing. */}
