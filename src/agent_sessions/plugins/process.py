@@ -281,6 +281,26 @@ def _stop(unit: str) -> bool:
         return False
 
 
+def control_group(unit: str) -> str | None:
+    """The cgroup path of a temporary operation's unit (#2106), or None when it has none.
+
+    Read only: a loopback sign-in callback is delivered to a port a process in THIS cgroup listens
+    on. The unit name is server-minted (`unit_name`) and never input."""
+    try:
+        result = subprocess.run(  # noqa: S603 — fixed systemctl argv and a server-minted unit
+            ["/usr/bin/systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    group = result.stdout.strip()
+    return group if result.returncode == 0 and group.startswith("/") else None
+
+
 def unit_name(operation_id: str) -> str:
     if str(uuid.UUID(operation_id)) != operation_id:
         raise ProcessError("invalid temporary operation identity")
@@ -297,6 +317,9 @@ class Pty:
     fd: int
     output: int = 0
     input: int = 0
+    #: The transient systemd unit the command runs in (#2106: a loopback callback is delivered
+    #: only to a port a process in THIS unit listens on).
+    unit: str | None = None
 
     def resize(self, rows: int, cols: int) -> None:
         if (
@@ -459,7 +482,7 @@ async def spawn(
         os.close(slave)
         slave = -1
         async with asyncio.timeout(seconds):
-            yield Pty(proc, master)
+            yield Pty(proc, master, unit=unit)
     finally:
         if launch_guard is not None:
             launch_guard.release()

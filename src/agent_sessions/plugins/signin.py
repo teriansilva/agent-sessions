@@ -19,7 +19,7 @@ import json
 
 from fastapi import WebSocket
 
-from . import manager, process, storage
+from . import manager, process, signin_callback, storage
 
 GRACE_SECONDS = 300  # within the unit's own lifetime (process.SIGNIN_SECONDS), which still applies
 MAX_DETACHED = 256 * 1024  # output produced while no socket is attached
@@ -46,6 +46,7 @@ class _Live:
         self.offered: list[tuple[WebSocket, asyncio.Future]] = []  # every socket ever offered
         self.closing = asyncio.Event()  # the operator closed it while no socket could say so
         self.ended = asyncio.Event()  # the outcome is durable
+        self.unit: str | None = None  # the vendor command's systemd unit, once spawned (#2106)
 
     async def deliver(self, data: bytes) -> None:
         if self.socket is not None:
@@ -73,6 +74,23 @@ async def close(operation_id: str, *, timeout: float = 10) -> bool:
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(live.ended.wait(), timeout)
     return True
+
+
+async def deliver_callback(live: _Live | None, url: object) -> int:
+    """Hand a pasted loopback callback to a running sign-in (#2106); return the HTTP status.
+
+    `signin_callback.CallbackError` when no sign-in is running or the address is not one it waits
+    on. Shared by the plugin and the account sign-in."""
+    # Closing (an explicit cancel under way) is as final as ended: nothing is handed to a sign-in
+    # that is being torn down.
+    if live is None or live.unit is None or live.ended.is_set() or live.closing.is_set():
+        raise signin_callback.CallbackError("this sign-in is not running; start a new attempt")
+    return await asyncio.to_thread(signin_callback.deliver, live.unit, url)
+
+
+async def callback(operation_id: str, url: object) -> int:
+    """A plugin sign-in's loopback callback (#2106). Process-local, like `close`."""
+    return await deliver_callback(_LIVE.get(operation_id), url)
 
 
 async def _attach(live: _Live, ws: WebSocket) -> None:
@@ -247,6 +265,7 @@ async def serve(ws: WebSocket, operation_id: str) -> None:
         prov = manager.provider(item["plugin_id"], gen)
         cwd = manager.workspace(item["plugin_id"], item["request"]["generation_id"])
         async with process.spawn(prov, "signin", cwd=cwd, operation_id=operation_id) as terminal:
+            live.unit = terminal.unit
             state, error = await _drive(live, terminal, ws)
     except process.CleanupError:
         state, error = "cleanup_pending", "temporary process cleanup is pending"

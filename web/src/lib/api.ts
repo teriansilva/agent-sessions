@@ -968,6 +968,12 @@ async function pluginCatalog(path: string, refresh = false): Promise<PluginCatal
   return value;
 }
 
+/** A loopback sign-in callback was delivered (#2106): only the listener's HTTP status comes back. */
+export interface SignInCallback {
+  delivered: true;
+  status: number;
+}
+
 function pluginPost<T>(path: string, body: unknown): Promise<T> {
   return mutateJson<T>("POST", path, body);
 }
@@ -1284,6 +1290,9 @@ export const api = {
     pluginPost<PluginOperation>("/api/plugins/install", body),
   pluginOperation: (id: string) => getJsonWithDetail<PluginOperation>(`/api/plugins/operations/${enc(id)}`),
   pluginCancel: (id: string) => pluginPost<PluginOperation>(`/api/plugins/operations/${enc(id)}/cancel`, {}),
+  /** #2106: the address a loopback sign-in left the browser on, delivered from the BattleLab host. */
+  pluginSigninCallback: (id: string, url: string) =>
+    pluginPost<SignInCallback>(`/api/plugins/operations/${enc(id)}/signin/callback`, { url }),
   pluginRecover: () => pluginPost<PluginCatalog>("/api/plugins/recover", {}),
   pluginSignin: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/signin", body),
   pluginVerify: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/verify", { ...body, confirm_effects: true }),
@@ -1504,6 +1513,8 @@ export const api = {
     mutateJson<{ signed_in: boolean | null }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/status`),
   cancelAgentAccountSignin: (engine: string, account: string) =>
     mutateJson<{ closed: boolean }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/signin/cancel`),
+  agentAccountSigninCallback: (engine: string, account: string, url: string) =>
+    mutateJson<SignInCallback>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/signin/callback`, { url }),
   /** Cross-engine handoff prepare (#597): build the seed for a source session in `mode`
    *  and return {handle, preview, meta}. Side-effect-free — cancel by letting the
    *  short-TTL handle expire. An "ai" request degrades to the quick tail server-side when

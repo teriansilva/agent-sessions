@@ -107,6 +107,7 @@ async function mock(page: Page, listed: boolean) {
     }
     if (path.endsWith("/status")) return r.fulfill({ json: { signed_in: false } });
     if (path.endsWith("/signin/cancel")) return r.fulfill({ json: { closed: true } });
+    if (path.endsWith("/signin/callback")) return r.fulfill({ json: { delivered: true, status: 200 } });
     if (req.method() === "POST" && path === `/api/agent-accounts/${CLAUDE.id}`) {
       const added = { id: "a-33333333", label: (body as { label: string }).label, created_at: 3, problems: [] };
       state.accounts.push(added);
@@ -215,11 +216,19 @@ test("adding an account opens the vendor's sign-in on that account's socket; clo
   await s.getByRole("button", { name: "Add account" }).click();
   expect(calls.find((c) => c.method === "POST" && c.path === `/api/agent-accounts/${CLAUDE.id}`)?.body).toEqual({ label: "Max 3" });
   const row = s.getByTestId("account-a-33333333");
-  await expect(row.getByLabel("Temporary vendor sign-in terminal")).toBeVisible();
+  const output = row.getByRole("log", { name: "Sign-in output" });
+  await expect(output).toContainText("Paste code here if prompted");
   await expect.poll(() => sockets).toEqual([`/ws/agent-accounts/${CLAUDE.id}/a-33333333/signin`]);
   await expect(row.getByRole("link", { name: /Open the sign-in link · claude\.ai/ })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Copy link" })).toBeVisible();
+  // #2106: a loopback address pasted here is delivered to THIS account's sign-in.
+  const callback = "http://127.0.0.1:35067/callback?code=c&state=s";
+  await row.getByLabel("Code from the sign-in page").fill(callback);
+  await row.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => calls.find((c) => c.path.endsWith("/signin/callback"))).toEqual(
+    { method: "POST", path: `/api/agent-accounts/${CLAUDE.id}/a-33333333/signin/callback`, body: { url: callback } });
   await row.getByRole("button", { name: "Close sign-in" }).click();
-  await expect(row.getByLabel("Temporary vendor sign-in terminal")).toHaveCount(0);
+  await expect(output).toHaveCount(0);
   await expect.poll(() => calls.some((c) => c.path === `/api/agent-accounts/${CLAUDE.id}/a-33333333/signin/cancel`)).toBe(true);
   await assertNoHorizontalOverflow(s, "after sign-in");
 });

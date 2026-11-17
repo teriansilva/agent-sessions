@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import socket
 import subprocess
 import sys
 import tarfile
@@ -67,6 +68,7 @@ MUTATIONS = [
         "remove",
         "reload",
         "operations/none/cancel",
+        "operations/none/signin/callback",
     )
 ] + [
     ("PATCH", "/api/plugins/fixture/generations/none/endpoint"),
@@ -887,3 +889,68 @@ def test_activation_preview_is_read_only_behind_login_and_activate_refuses_below
     refused = client.post("/api/plugins/activate", headers=headers, json=body)
     assert refused.status_code == 409 and "Fixture — API" in refused.json()["detail"]
     assert manager.snapshot()["plugins"]["fixture"]["active"] is None
+
+
+@pytest.fixture
+def loopback_candidate(recipe, monkeypatch):
+    """A vendor CLI whose sign-in finishes on a loopback callback, like `copilot login` (#2106)."""
+    recipe["manifest"]["signin"] = {"kind": "cli-subcommand", "subcommand": "login"}
+    script = (
+        f"#!{sys.executable}\nimport http.server\n"
+        "class H(http.server.BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n"
+        "        print('CALLBACK '+self.path, flush=True); self.server.done=True\n"
+        "    def log_message(self,*a): pass\n"
+        "s=http.server.HTTPServer(('127.0.0.1',0),H); s.done=False\n"
+        "print('LISTEN %d' % s.server_address[1], flush=True)\n"
+        "while not s.done: s.handle_request()\n"
+    ).encode()
+    data = test_plugin_artifacts.archive([("bin/fixture", script, tarfile.REGTYPE)])
+    digest = hashlib.sha256(data).hexdigest()
+    recipe["manifest"]["install"]["digest"] = "sha256:" + digest
+    recipe["recipe"]["artifacts"][0]["sha256"] = digest
+    monkeypatch.setattr(manager.artifacts, "fetch", lambda *_: data)
+    return installed(recipe)
+
+
+def test_a_loopback_callback_is_delivered_to_the_signin_and_nowhere_else(
+    api, loopback_candidate, user_manager
+):
+    """#2106: the address the operator's browser landed on reaches the CLI's own listener; a
+    port any other process listens on is refused, and so is a callback with no sign-in running."""
+    client, headers, _ = api
+    foreign = socket.socket()
+    foreign.bind(("127.0.0.1", 0))
+    foreign.listen()
+    with client:
+        rid, url = _start_signin(client, headers, loopback_candidate)
+        route = f"/api/plugins/operations/{rid}/signin/callback"
+        assert client.post(route, json={"url": "x"}).status_code == 401
+        with client.websocket_connect(url, headers=headers) as ws:
+            port = int(_read_until(ws, b"LISTEN ").split(b"LISTEN ")[1].split()[0])
+            refused = client.post(
+                route,
+                json={"url": f"http://127.0.0.1:{foreign.getsockname()[1]}/callback?code=1"},
+                headers=headers,
+            )
+            assert refused.status_code == 422, refused.text
+            assert "listening" in refused.json()["detail"]
+            res = client.post(
+                route,
+                json={"url": f"http://127.0.0.1:{port}/callback?code=c0de&state=s"},
+                headers=headers,
+            )
+            assert res.status_code == 200, res.text
+            assert res.json() == {"delivered": True, "status": 200}
+            assert "c0de" not in res.text  # the one-use code is never echoed
+            _read_until(ws, b"CALLBACK /callback?code=c0de&state=s")
+            # The CLI exits on its own once it has its callback; the server then closes 1000.
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    ws.receive_bytes()
+            assert closed.value.code == 1000
+        _state_becomes(rid, "complete")
+        late = client.post(route, json={"url": f"http://127.0.0.1:{port}/cb"}, headers=headers)
+        assert late.status_code == 422
+    foreign.close()

@@ -10,7 +10,7 @@ import { useTermSize } from "../../theme/termSizeStore";
 import { useTermFont } from "../../theme/termFontStore";
 import { useTermScheme } from "../../theme/termSchemeStore";
 import { xtermThemeFor } from "../../theme/termSchemes";
-import { lastUrl, safeSignInUrl } from "./signInLinks";
+import { expectsLoopbackCallback, isLoopbackAddress, lastUrl, linkSegments, safeSignInUrl, screenLines } from "./signInLinks";
 import type { SignInTarget } from "./signInTarget";
 import button from "../ui/actionButton.module.css";
 import s from "./PluginSetup.module.css";
@@ -26,7 +26,14 @@ import s from "./PluginSetup.module.css";
  *  owner re-read the operation): the vendor's own reason for a failed sign-in ("Login failed: …")
  *  is the only diagnosis there is, and BattleLab keeps no copy of it. The last http(s) link the
  *  vendor printed is offered as a button, and a one-line field types a pasted code into the
- *  terminal: a 400-character OAuth URL wraps across five rows and is easy to break by hand. */
+ *  terminal: a 400-character OAuth URL wraps across five rows and is easy to break by hand.
+ *
+ *  #2106: the screen is SHOWN as plain text. xterm still emulates the PTY (it is what resolves
+ *  cursor moves and redraws into a screen), but stays hidden unless the operator asks for the
+ *  terminal; the text view renders its buffer as wrapped lines with links. The link has Copy beside
+ *  Open. A sign-in that finishes on a LOOPBACK callback (Copilot, Codex, Gemini) leaves the
+ *  operator's browser on an unreachable 127.0.0.1 page: its address, pasted here, is delivered from
+ *  the BattleLab host to the sign-in's own listener (`target.callback`). */
 /** Close codes shared with `plugins/signin.py` and `agent_account_signin.py`. */
 const SERVER_ENDED = 4409; // the sign-in ended (or could not start); read the operation
 const CLOSED = 1000; // the vendor's command completed
@@ -40,6 +47,9 @@ const GRACE_MS = 300_000;
 export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEnded: () => void }) {
   const { socketPath } = target;
   const cancel = useRef(target.cancel);
+  const callback = useRef(target.callback);
+  const sendRaw = useRef<(data: string) => boolean>(() => false);
+  const copyField = useRef<HTMLInputElement>(null);
   const node = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const sendLine = useRef<(text: string) => boolean>(() => false);
@@ -49,12 +59,18 @@ export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEn
   const [ended, setEnded] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [line, setLine] = useState("");
+  const [lines, setLines] = useState<string[]>([]);
+  const [showTerminal, setShowTerminal] = useState(false);
+  // Which link was copied, and how: a new link is a new thing to copy.
+  const [copied, setCopied] = useState<{ link: string; how: "ok" | "manual" } | null>(null);
+  const [address, setAddress] = useState("");
+  const [relay, setRelay] = useState<{ state: "idle" | "sending" | "sent" | "error"; message: string }>({ state: "idle", message: "" });
   const { theme } = useTheme();
   const { scheme } = useTermScheme();
   const { size } = useTermSize();
   const { family } = useTermFont();
   const initial = useRef({ theme, scheme, size, family });
-  useEffect(() => { close.current = onEnded; cancel.current = target.cancel; initial.current = { theme, scheme, size, family }; });
+  useEffect(() => { close.current = onEnded; cancel.current = target.cancel; callback.current = target.callback; initial.current = { theme, scheme, size, family }; });
   useEffect(() => {
     let socket: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -118,15 +134,18 @@ export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEn
       const scan = () => {
         clearTimeout(scanTimer);
         scanTimer = setTimeout(() => {
-          if (alive && term) setLink(lastUrl(term.buffer.active));
+          if (!alive || !term) return;
+          setLink(lastUrl(term.buffer.active));
+          setLines(screenLines(term.buffer.active));
         }, 100);
       };
       const end = () => {
         finished = true;
+        clearTimeout(scanTimer);
         lostAt = null;
         setReconnecting(false);
         // Keep the last screen: the vendor's exit message is the only record of why it ended.
-        term?.write("\r\n\x1b[2m— sign-in ended —\x1b[0m\r\n");
+        term?.write("\r\n\x1b[2m— sign-in ended —\x1b[0m\r\n", scan);
         setEnded(true);
         close.current();
       };
@@ -170,6 +189,7 @@ export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEn
         return true;
       };
       sendLine.current = text => send(text + "\r");
+      sendRaw.current = send;
       term.onData(data => { send(data); });
       observer = new ResizeObserver(resize);
       observer.observe(host);
@@ -178,6 +198,7 @@ export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEn
     return () => {
       alive = false;
       sendLine.current = () => false;
+      sendRaw.current = () => false;
       clearTimeout(start); clearTimeout(fitTimer); clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", reconnect);
       window.removeEventListener("online", reconnect);
@@ -203,25 +224,104 @@ export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEn
     terminal.current.options.fontFamily = family;
     refitSoon.current();
   }, [theme, scheme, size, family]);
+  useEffect(() => { if (showTerminal) refitSoon.current(); }, [showTerminal]);
+  const copy = copied && copied.link === link ? copied.how : "idle";
+  useEffect(() => {
+    if (copy === "manual") copyField.current?.select();
+    if (copy !== "ok") return;
+    const timer = setTimeout(() => setCopied(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copy]);
+  const loopback = expectsLoopbackCallback(lines);
+  const copyLink = async () => {
+    if (!link) return;
+    try {
+      // Absent on a plain-http origin: that throws here too, and the link is offered selected.
+      await navigator.clipboard.writeText(link);
+      setCopied({ link, how: "ok" });
+    } catch {
+      setCopied({ link, how: "manual" });
+    }
+  };
+  const deliver = async (pasted: string) => {
+    setRelay({ state: "sending", message: "" });
+    try {
+      await callback.current(pasted.trim());
+      setRelay({ state: "sent", message: "" });
+      setAddress("");
+      setLine("");
+    } catch (err) {
+      setRelay({ state: "error", message: err instanceof Error && err.message ? err.message : "The address could not be delivered." });
+    }
+  };
+  const submitAddress = (e: FormEvent) => {
+    e.preventDefault();
+    if (address.trim() && relay.state !== "sending") void deliver(address);
+  };
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const text = line.trim();
+    // The address a loopback sign-in left the browser on is never typed into the vendor's prompt.
+    if (isLoopbackAddress(text)) { void deliver(text); return; }
     if (text && sendLine.current(text)) setLine("");
   };
+  const keys: [string, string, string][] = [["↑", "Arrow up", "\x1b[A"], ["↓", "Arrow down", "\x1b[B"], ["Enter", "Enter", "\r"], ["Esc", "Escape", "\x1b"]];
+  const codeEntry = <>
+    <form className={s.row} onSubmit={submit}>
+      <label className={s.field}><span>Code from the sign-in page</span>
+        <input className={s.input} value={line} onChange={e => setLine(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} />
+      </label>
+      <button className={button.ghost} type="submit" disabled={!line.trim()}>Send to sign-in</button>
+    </form>
+    <div className={s.keys} role="group" aria-label="Keys for the sign-in's menus">
+      {keys.map(([glyph, name, seq]) => <button key={name} className={button.ghost} type="button" aria-label={name} onClick={() => sendRaw.current(seq)}>{glyph}</button>)}
+    </div>
+  </>;
   return <div className={s.stack}>
     {link && <div className={s.row}>
       <a className={button.primary} href={link} target="_blank" rel="noopener noreferrer">
         Open the sign-in link · {new URL(link).host}
       </a>
+      <button className={button.ghost} type="button" onClick={() => void copyLink()}>{copy === "ok" ? "✓ Copied" : "Copy link"}</button>
     </div>}
-    <div ref={node} className={s.terminal} aria-label="Temporary vendor sign-in terminal" />
+    {link && copy === "manual" && <label className={s.field}><span>Copy the sign-in link from here</span>
+      <input ref={copyField} className={s.input} readOnly value={link} onFocus={e => e.currentTarget.select()} />
+    </label>}
+    <div className={s.output}>
+      <div className={s.outputHead}>
+        <span>What the sign-in says</span>
+        <button className={s.textButton} type="button" aria-pressed={showTerminal} onClick={() => setShowTerminal(v => !v)}>
+          {showTerminal ? "Show as text" : "Show as terminal"}
+        </button>
+      </div>
+      {!showTerminal && <div className={s.outputText} role="log" aria-label="Sign-in output" data-testid="signin-output">
+        {lines.length === 0 ? <p className={s.quiet}>Starting the sign-in…</p>
+          : lines.map((text, i) => <p key={i}>{text === "" ? "\u00a0" : linkSegments(text).map((part, j) => part.href
+            ? <a key={j} href={part.href} target="_blank" rel="noopener noreferrer">{part.text}</a>
+            : <span key={j}>{part.text}</span>)}</p>)}
+      </div>}
+      <div ref={node} className={showTerminal ? s.terminal : s.terminalHidden} aria-hidden={!showTerminal} aria-label="Temporary vendor sign-in terminal" />
+    </div>
     {reconnecting && !ended && <p className={s.note} role="status" data-testid="signin-reconnecting">Connection lost. Reconnecting to the sign-in…</p>}
     {ended ? <p className={s.note} role="status">The sign-in command ended. Its last screen stays above; start a new attempt to try again.</p>
-      : <form className={s.row} onSubmit={submit}>
-        <label className={s.field}><span>Code from the sign-in page</span>
-          <input className={s.input} value={line} onChange={e => setLine(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} />
-        </label>
-        <button className={button.ghost} type="submit" disabled={!line.trim()}>Send to sign-in</button>
-      </form>}
+      : <>
+        {loopback && <>
+          <div className={s.info} data-testid="signin-loopback">
+            <b>This sign-in finishes on your BattleLab machine</b>
+            After you approve, your browser opens a <code>127.0.0.1</code> or <code>localhost</code> page that can’t be reached. That’s expected. Copy that page’s address from the address bar and paste it here: BattleLab hands it to the sign-in.
+          </div>
+          <form className={s.row} onSubmit={submitAddress}>
+            <label className={s.field}><span>Address your browser ended on</span>
+              <input className={s.input} value={address} onChange={e => setAddress(e.target.value)} placeholder="http://127.0.0.1:…/callback?code=…" autoComplete="off" autoCapitalize="off" spellCheck={false} inputMode="url" />
+            </label>
+            <button className={button.primary} type="submit" disabled={!address.trim() || relay.state === "sending"}>Finish sign-in</button>
+          </form>
+        </>}
+        {relay.state === "sent" && <p className={s.info} role="status">Handed to the sign-in. Waiting for it to finish…</p>}
+        {relay.state === "error" && <p className={`${s.note} ${s.error}`} role="alert">{relay.message}</p>}
+        {loopback
+          ? <details className={s.details}><summary>Got a code instead, or a menu to answer?</summary><div className={s.stack}>{codeEntry}</div></details>
+          : codeEntry}
+      </>}
   </div>;
 }

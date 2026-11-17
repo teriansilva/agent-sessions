@@ -37,6 +37,11 @@ async def close(engine: str, account_id: str, *, timeout: float = 10) -> bool:
     return True
 
 
+async def callback(engine: str, account_id: str, url: object) -> int:
+    """Hand a pasted loopback callback to this account's running sign-in (#2106)."""
+    return await signin.deliver_callback(_LIVE.get((engine, account_id)), url)
+
+
 def running(engine: str, account_id: str) -> bool:
     return (engine, account_id) in _LIVE
 
@@ -64,6 +69,7 @@ async def serve(ws: WebSocket, prov, account_id: str) -> str:
         async with process.spawn(
             prov, "account-signin", cwd=account.home, account=account
         ) as terminal:
+            live.unit = terminal.unit
             state, _error = await signin._drive(live, terminal, ws)
     except process.CleanupError:
         state = "cleanup_pending"

@@ -12,6 +12,8 @@
 * ``POST   /api/agent-accounts/{engine}/{account}/status`` — ask the vendor's status command
   whether it is signed in (a subprocess: a POST, like the usage refresh).
 * ``POST   /api/agent-accounts/{engine}/{account}/signin/cancel`` — end a running sign-in.
+* ``POST   /api/agent-accounts/{engine}/{account}/signin/callback`` — deliver a loopback
+  sign-in's callback address from this host (#2106).
 * ``WS     /ws/agent-accounts/{engine}/{account}/signin`` — the vendor's own sign-in, on a PTY
   that is no session (`agent_account_signin`).
 
@@ -29,6 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from .. import agent_account_signin, agent_account_store
 from ..auth import origin_matches, session_uid
 from ..engines import registry
+from ..plugins import signin_callback
 
 MAX_BODY = 4096
 
@@ -126,6 +129,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
     async def cancel_signin(engine: str, account: str):
         prov = _provider(engine)
         return {"closed": await agent_account_signin.close(prov.engine_id, account)}
+
+    @app.post("/api/agent-accounts/{engine}/{account}/signin/callback", dependencies=write)
+    async def signin_callback_route(engine: str, account: str, request: Request):
+        # #2106: deliver a loopback sign-in's callback address to this account's running sign-in.
+        prov = _provider(engine)
+        body = await _body(request, required={"url"})
+        try:
+            status = await agent_account_signin.callback(prov.engine_id, account, body["url"])
+        except signin_callback.CallbackError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"delivered": True, "status": status}
 
     @app.websocket("/ws/agent-accounts/{engine}/{account}/signin")
     async def account_signin_socket(ws: WebSocket, engine: str, account: str):

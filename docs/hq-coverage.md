@@ -292,6 +292,7 @@ PATCH  /api/agent-accounts/{engine}/{account}                                   
 DELETE /api/agent-accounts/{engine}/{account}                                      P2
 POST   /api/agent-accounts/{engine}/{account}/status                               P2  # external: the vendor's status command
 POST   /api/agent-accounts/{engine}/{account}/signin/cancel                        never  # ends an interactive vendor login
+POST   /api/agent-accounts/{engine}/{account}/signin/callback                      never  # carries a one-use OAuth code from the operator's browser (#2106)
 GET    /api/agents/catalog                                                        P6
 PATCH  /api/agents/catalog/preferences                                            P6
 POST   /api/agents/catalog/refresh                                                P6
@@ -519,6 +520,7 @@ POST   /api/plugins/feed/refresh                                                
 POST   /api/plugins/install                                                       never  # runs fetched code / vendor login
 GET    /api/plugins/operations/{operation_id}                                     P6
 POST   /api/plugins/operations/{operation_id}/cancel                              P6
+POST   /api/plugins/operations/{operation_id}/signin/callback                     never  # carries a one-use OAuth code from the operator's browser (#2106)
 POST   /api/plugins/recover                                                       P6
 POST   /api/plugins/reload                                                        P6
 POST   /api/plugins/remove                                                        P6

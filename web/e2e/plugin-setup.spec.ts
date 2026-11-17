@@ -241,6 +241,8 @@ test("the sign-in terminal forwards a pasted vendor code as terminal input", asy
   await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
   await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
   await expect.poll(() => m.sockets.length).toBe(1);
+  // #2106: the terminal is behind "Show as terminal"; the text view is the default.
+  await page.getByRole("button", { name: "Show as terminal" }).click();
   await page.getByLabel("Temporary vendor sign-in terminal").click();
   await page.evaluate(() => navigator.clipboard.writeText("oauth-code-123"));
   await page.keyboard.press("Control+V");
@@ -278,9 +280,10 @@ test("a failed sign-in keeps the vendor's last screen, opens its link and sends 
   await page.getByRole("button", { name: "Send to sign-in" }).click();
   await expect.poll(() => received.join("")).toBe("abc123#state\r");
   // The vendor's own reason stays on screen after the command ends.
-  const terminal = page.getByLabel("Temporary vendor sign-in terminal");
+  const output = page.getByRole("log", { name: "Sign-in output" });
   await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toBeVisible();
-  await expect(terminal).toContainText("Login failed: Request failed with status code 400");
+  await expect(output).toContainText("Login failed: Request failed with status code 400");
+  await expect(output).toContainText("— sign-in ended —");
   await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeEnabled();
 });
 
@@ -303,9 +306,7 @@ test("a sign-in survives a lost connection: the terminal reattaches and keeps it
   });
   await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
   await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
-  const terminal = page.getByLabel("Temporary vendor sign-in terminal");
-  // xterm pauses rendering (and its accessible rows) while off-screen.
-  await terminal.scrollIntoViewIfNeeded();
+  const terminal = page.getByRole("log", { name: "Sign-in output" });
   await expect(terminal).toContainText("paste the code");
   await expect(terminal).toContainText("Printed while you were away.");
   expect(received).toHaveLength(2);
@@ -922,4 +923,119 @@ test("a disabled agent's page leads back to Enable for that generation (#1416 re
   await enable.click();
   expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
   await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+});
+
+// #2106: Copilot's `copilot login` (and Codex, Gemini) finishes on a LOOPBACK callback on the
+// BattleLab host. The browser lands on its own unreachable 127.0.0.1; the operator pastes that
+// address and BattleLab delivers it. Also: Copy link beside Open, and the output as plain text.
+const LOOPBACK_URL = "https://github.com/login/oauth/authorize?client_id=Iv1.b507a08c87ecfe98&redirect_uri=http%3A%2F%2F127.0.0.1%3A35067%2Fcallback&state=M5TE5B3lQvjjOux6mxXvQw&code_challenge=" + "q".repeat(120);
+const CALLBACK = "http://127.0.0.1:35067/callback?browser_session_id=8e44e9&code=68da887864236bdb3620&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth&state=M5TE5B3lQvjjOux6mxXvQw";
+
+async function loopbackSignin(page: Page) {
+  const m = await fixture(page, true);
+  const typed: string[] = [];
+  const callbacks: { path: string; url: unknown }[] = [];
+  let refuse = "";
+  await page.route("**/api/plugins/operations/*/signin/callback", r => {
+    const url = (r.request().postDataJSON() as { url: unknown }).url;
+    callbacks.push({ path: new URL(r.request().url()).pathname, url });
+    if (refuse) return r.fulfill({ status: 422, json: { detail: refuse } });
+    return r.fulfill({ json: { delivered: true, status: 200 } });
+  });
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    m.data.operations.find(o => ws.url().endsWith(o.id))!.state = "running";
+    // The colours and cursor moves a CLI prints are the emulator's business, never the text's.
+    ws.send(Buffer.from(`\x1b[1mSigning in to GitHub.com...\x1b[0m\r\n\r\nOpen this URL to authorize GitHub Copilot CLI:\r\n${LOOPBACK_URL}\r\n\x1b[2KWaiting for authorization...`));
+    ws.onMessage(msg => { if (typeof msg !== "string") typed.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  return { m, typed, callbacks, refuseNext: (detail: string) => { refuse = detail; } };
+}
+
+test("a loopback sign-in reads as text and finishes from the pasted address (#2106)", async ({ page }, testInfo) => {
+  const { typed, callbacks, refuseNext } = await loopbackSignin(page);
+  const output = page.getByRole("log", { name: "Sign-in output" });
+  await expect(output).toContainText("Signing in to GitHub.com...");
+  await expect(output).toContainText("Waiting for authorization...");
+  await expect(output).not.toContainText("[1m");
+  // The whole OAuth URL is one link, inside the pane at any width.
+  const inline = output.getByRole("link", { name: /github\.com\/login\/oauth/ });
+  await expect(inline).toHaveAttribute("href", LOOPBACK_URL);
+  const [pane, view] = [await output.boundingBox(), page.viewportSize()!];
+  expect(pane!.x + pane!.width).toBeLessThanOrEqual(view.width + 1);
+  // The raw terminal is hidden, not gone.
+  await expect(page.getByLabel("Temporary vendor sign-in terminal")).toBeHidden();
+
+  await expect(page.getByTestId("signin-loopback")).toContainText("finishes on your BattleLab machine");
+  const field = page.getByLabel("Address your browser ended on");
+  const finish = page.getByRole("button", { name: "Finish sign-in" });
+  for (const target of [field, finish]) expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await page.screenshot({ path: testInfo.outputPath("signin-loopback.png"), fullPage: true });
+
+  refuseNext("nothing in this sign-in is listening on port 35068; paste the exact address of the page that could not be reached");
+  await field.fill(CALLBACK.replace("35067", "35068"));
+  await finish.click();
+  await expect(page.getByRole("alert")).toContainText("listening on port 35068");
+  refuseNext("");
+  await field.fill(CALLBACK);
+  await finish.click();
+  await expect(page.getByRole("status").filter({ hasText: "Handed to the sign-in" })).toBeVisible();
+  expect(callbacks.at(-1)).toEqual({ path: expect.stringMatching(/^\/api\/plugins\/operations\/[^/]+\/signin\/callback$/), url: CALLBACK });
+  // Nothing of the address was typed into the vendor's prompt.
+  expect(typed.join("")).not.toContain("127.0.0.1");
+});
+
+test("Copy link copies the sign-in link, and offers it selected where the clipboard is refused (#2106)", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loopbackSignin(page);
+  const open = page.getByRole("link", { name: /Open the sign-in link · github\.com/ });
+  await expect(open).toHaveAttribute("href", LOOPBACK_URL);
+  const copy = page.getByRole("button", { name: "Copy link" });
+  expect((await copy.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await copy.click();
+  await expect(page.getByRole("button", { name: "✓ Copied" })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(LOOPBACK_URL);
+
+  // A plain-http origin has no async clipboard: the link is offered selected instead.
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true }));
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible({ timeout: 5000 });
+  await page.getByRole("button", { name: "Copy link" }).click();
+  const manual = page.getByLabel("Copy the sign-in link from here");
+  await expect(manual).toHaveValue(LOOPBACK_URL);
+  await expect(manual).toBeFocused();
+});
+
+test("a code pasted into the code field still reaches the vendor; a pasted loopback address is delivered instead (#2106)", async ({ page }) => {
+  const m = await fixture(page, true);
+  const typed: string[] = [];
+  const callbacks: unknown[] = [];
+  await page.route("**/api/plugins/operations/*/signin/callback", r => {
+    callbacks.push((r.request().postDataJSON() as { url: unknown }).url);
+    return r.fulfill({ json: { delivered: true, status: 200 } });
+  });
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    m.data.operations.find(o => ws.url().endsWith(o.id))!.state = "running";
+    ws.send(Buffer.from("? Select a provider\r\n> Anthropic\r\n  OpenAI\r\n"));
+    ws.onMessage(msg => { if (typeof msg !== "string") typed.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect(page.getByRole("log", { name: "Sign-in output" })).toContainText("Select a provider");
+  // A menu is answered with keys, not by typing escape sequences.
+  await page.getByRole("button", { name: "Arrow down" }).click();
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect.poll(() => typed.join("")).toBe("\x1b[B\r");
+  const code = page.getByLabel("Code from the sign-in page");
+  await code.fill("abc123");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => typed.join("")).toBe("\x1b[B\rabc123\r");
+  await code.fill("http://localhost:1455/auth/callback?code=xyz&state=s");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => callbacks).toEqual(["http://localhost:1455/auth/callback?code=xyz&state=s"]);
+  expect(typed.join("")).toBe("\x1b[B\rabc123\r");
+  // The terminal is one tap away for a full-screen menu.
+  await page.getByRole("button", { name: "Show as terminal" }).click();
+  await expect(page.getByLabel("Temporary vendor sign-in terminal")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show as text" })).toHaveAttribute("aria-pressed", "true");
 });

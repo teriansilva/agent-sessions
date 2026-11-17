@@ -122,6 +122,7 @@ HTTP_MODULES = frozenset(
         "voice_setup",
         "connector_http",  # #1750 HQ connectors: the one connector transport
         "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
+        "signin_callback",  # #2106 a loopback sign-in's callback, to the sign-in's own listener
     }
 )
 
@@ -191,6 +192,11 @@ POST_SITES = {
     # (`kimi web`), host and path constants, only the port taken from its banner. It carries no
     # prompt; kimi's own handler asks the vendor. One site: a second read beside it is a mismatch.
     ("agent_usage", "_kimi_usage_get"): 1,
+    # LOOPBACK SIGN-IN CALLBACK (#2106): the address a vendor's OAuth redirect left the operator's
+    # browser on, re-requested from this host. One GET, loopback only, and only to a port a process
+    # in the sign-in's OWN systemd unit is listening on (cgroup -> fds -> /proc/net/tcp). No prompt,
+    # no redirects, body discarded. One site: a second request beside it is a mismatch.
+    ("signin_callback", "_get"): 1,
     # CALLING HQ (#1397): the operator-configured, OpenAI-compatible STT/TTS endpoints. One
     # streamed send per call through `_request`: transcription, synthesis and the model/voice
     # lists all pass it, so the destination check (no link-local/metadata, no redirects, no

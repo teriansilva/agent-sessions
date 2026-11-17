@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from .. import __version__, agent_catalog, agent_catalog_refresh, chat_config, prefs, update
 from ..auth import origin_matches, session_uid
 from ..engines import registry
-from ..plugins import feed, jobs, manager, provenance, signin, storage
+from ..plugins import feed, jobs, manager, provenance, signin, signin_callback, storage
 from .chat import test_endpoint_draft
 
 MAX_BODY = feed.MAX_BYTES
@@ -232,6 +232,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
         if await signin.close(operation_id):
             return _operation(await _call(manager.operation, operation_id))
         return _operation(await _call(manager.cancel_ready, operation_id))
+
+    @app.post("/api/plugins/operations/{operation_id}/signin/callback", dependencies=write)
+    async def plugin_signin_callback(operation_id: str, request: Request):
+        # #2106: the address a loopback sign-in's redirect left the operator's browser on,
+        # delivered from this host to a port the sign-in's own unit listens on. Never logged.
+        body = await _body(request, required={"url"})
+        try:
+            status = await signin.callback(operation_id, body["url"])
+        except signin_callback.CallbackError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"delivered": True, "status": status}
 
     @app.post("/api/plugins/recover", dependencies=write)
     async def plugin_recover(request: Request):

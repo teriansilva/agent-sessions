@@ -316,7 +316,8 @@ test("a live inline sign-in is never closed silently: Close and closing setup as
   await flow.getByRole("button", { name: "Review installation" }).click();
   await flow.getByRole("button", { name: "Install", exact: true }).click();
   await flow.getByRole("button", { name: "Start sign-in" }).click();
-  const terminal = flow.getByLabel("Temporary vendor sign-in terminal");
+  // #2106: the sign-in shows as text; its terminal sits behind "Show as terminal".
+  const terminal = flow.getByRole("log", { name: "Sign-in output" });
   await expect(terminal).toBeVisible();
   await expect.poll(() => m.sockets.opened).toBe(1);
 

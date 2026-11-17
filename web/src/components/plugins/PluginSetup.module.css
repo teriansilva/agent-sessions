@@ -27,6 +27,22 @@ textarea.input { min-height: 180px; resize: vertical; }
 .checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
 .checks li { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 8px 0; min-width: 0; overflow-wrap: anywhere; }
 .checks small { display: block; color: var(--text-2); margin-top: 4px; }
+/* The sign-in's output as readable text (#2106): the hidden xterm is the emulator, this is its
+   screen. Body font, wrapped, links break anywhere so a 400-character OAuth URL never overflows. */
+.output { position: relative; display: grid; gap: 8px; min-width: 0; }
+.outputHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; font: 600 var(--fs-label) var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); }
+.textButton { min-height: 44px; padding: 0 4px; background: none; border: 0; color: var(--accent-text); font: 500 var(--fs-meta) var(--font-mono); letter-spacing: .04em; text-transform: none; text-decoration: underline; cursor: pointer; }
+.textButton:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.outputText { max-height: 320px; overflow: auto; padding: 12px 14px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); line-height: 1.55; overflow-wrap: anywhere; }
+.outputText p { margin: 0 0 4px; white-space: pre-wrap; }
+.outputText a { color: var(--accent-text); word-break: break-all; }
+.quiet { color: var(--text-2); }
+/* Kept laid out (xterm measures its cells) but off-screen and out of the accessibility tree. */
+.terminalHidden { position: absolute; left: -10000px; top: 0; width: 760px; height: 320px; overflow: hidden; visibility: hidden; }
+.info { margin: 0; padding: 12px 14px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.info b { display: block; margin-bottom: 4px; }
+.keys { display: flex; flex-wrap: wrap; gap: 8px; }
+.keys > button { min-width: 56px; }
 .terminal { height: 320px; max-width: 100%; min-width: 0; overflow: hidden; background: var(--term-bg); border: 1px solid var(--border); padding: 8px; }
 .filter[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
 @media (max-width: 800px) {
