@@ -171,6 +171,20 @@ def test_a_removed_account_refuses_its_sessions_and_keeps_its_home(pool):
         store.for_launch(pool, [f"{ENGINE}:s"], new=False)
 
 
+def test_re_adding_a_removed_label_does_not_restore_its_sessions(pool):
+    """Hermes on #2074: removal is final. A re-added label is a new account with a new id, so the
+    removed account's sessions still refuse, and the refusal promises no recovery."""
+    acc = store.add(pool, "Max 2")["id"]
+    store.set_new_sessions(pool, acc)
+    store.for_launch(pool, [f"{ENGINE}:s"], new=True)
+    store.remove(pool, acc)
+    again = store.add(pool, "Max 2")["id"]
+    assert again != acc
+    with pytest.raises(store.AccountRefused) as refused:
+        store.for_launch(pool, [f"{ENGINE}:s"], new=False)
+    assert "add it back" not in refused.value.detail
+
+
 def test_a_broken_home_refuses_the_launch(pool):
     acc = store.add(pool, "Max 2")["id"]
     store.set_new_sessions(pool, acc)

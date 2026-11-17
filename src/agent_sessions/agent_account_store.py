@@ -276,7 +276,9 @@ def reorder(prov, order: object) -> None:
 
 def remove(prov, account_id: str) -> None:
     """Forget an account. Its home stays on disk, and sessions assigned to it refuse to launch
-    rather than start on another login. A new-session pick of it falls back to the default."""
+    rather than start on another login, for good: `add` never adopts an existing home or id, so a
+    re-added label is a new account those sessions never resolve to. A new-session pick of it
+    falls back to the default."""
     _recipe_for(prov)
 
     def change(doc):
@@ -353,9 +355,7 @@ def for_launch(
     pool = doc["engines"].get(engine) or {"accounts": []}
     acc = next((a for a in pool["accounts"] if a["id"] == account_id), None)
     if acc is None:
-        raise AccountRefused(
-            "this session's account was removed; add it back or start a new session"
-        )
+        raise AccountRefused("this session's account was removed; start a new session")
     home = agent_accounts.home(engine, account_id)
     found = agent_accounts.problems(rec, home, agent_accounts.default_home(rec, base_env))
     if found:

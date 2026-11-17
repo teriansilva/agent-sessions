@@ -229,6 +229,24 @@ export interface CompactInfo {
   runner: { job: string; started_at: number | null } | null;
 }
 
+/** One account in an agent's pool (#1820). `problems` names entries of its home that make it
+ *  unusable; empty means sound. */
+export interface AgentAccount {
+  id: string;
+  label: string;
+  created_at?: number | null;
+  problems?: string[];
+}
+export interface AgentAccountPool {
+  engine: string;
+  /** "default" (the login the CLI already has) or an account id. */
+  new_sessions?: string;
+  max_accounts?: number;
+  accounts: AgentAccount[];
+  /** Set when the account store could not be read; nothing else is then known. */
+  error?: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   /** The parsed response body, when the server sent one.
@@ -1398,6 +1416,25 @@ export const api = {
     mutateJson<AgentUsageResponse>("POST", "/api/agents/usage/refresh"),
   setAgentBudgets: (patch: Partial<AgentBudgets>) =>
     patchJson<AgentUsageResponse>("/api/agents/budgets", patch),
+  /** Agent accounts (#1820): every agent that holds several logins, with its pool. Labels, ids
+   *  and health only, never a path or anything a vendor CLI wrote. */
+  agentAccounts: () => getJson<{ agents?: AgentAccountPool[] }>("/api/agent-accounts"),
+  addAgentAccount: (engine: string, label: string) =>
+    mutateJson<AgentAccount>("POST", `/api/agent-accounts/${enc(engine)}`, { label }),
+  renameAgentAccount: (engine: string, account: string, label: string) =>
+    mutateJson<AgentAccountPool>("PATCH", `/api/agent-accounts/${enc(engine)}/${enc(account)}`, { label }),
+  removeAgentAccount: (engine: string, account: string) =>
+    mutateJson<AgentAccountPool>("DELETE", `/api/agent-accounts/${enc(engine)}/${enc(account)}`),
+  reorderAgentAccounts: (engine: string, order: string[]) =>
+    mutateJson<AgentAccountPool>("PUT", `/api/agent-accounts/${enc(engine)}/order`, { order }),
+  /** What NEW sessions of this agent start on: an account id, or "default". */
+  setAgentAccountForNew: (engine: string, account: string) =>
+    mutateJson<AgentAccountPool>("PUT", `/api/agent-accounts/${enc(engine)}/new-sessions`, { account }),
+  /** Asks the vendor's own status command (a subprocess): true, false, or null for unknown. */
+  agentAccountStatus: (engine: string, account: string) =>
+    mutateJson<{ signed_in: boolean | null }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/status`),
+  cancelAgentAccountSignin: (engine: string, account: string) =>
+    mutateJson<{ closed: boolean }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/signin/cancel`),
   /** Cross-engine handoff prepare (#597): build the seed for a source session in `mode`
    *  and return {handle, preview, meta}. Side-effect-free — cancel by letting the
    *  short-TTL handle expire. An "ai" request degrades to the quick tail server-side when

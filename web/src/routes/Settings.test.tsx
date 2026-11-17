@@ -36,6 +36,7 @@ vi.mock("../lib/api", async () => {
       setAccent: vi.fn(),
       engines: vi.fn(),
       engineDetail: vi.fn(),
+      agentAccounts: vi.fn(),
       plugins: vi.fn().mockResolvedValue({ feed: { state: "missing", error: null }, catalog: [], plugins: [], operations: [], roster_generation: 1 }),
       agentUsage: vi.fn(),
       agentUsageRefresh: vi.fn(),
@@ -227,6 +228,7 @@ beforeEach(() => {
   });
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
   vi.mocked(api.engineDetail).mockImplementation(async (id: string) => detailFor(id) as never);
+  vi.mocked(api.agentAccounts).mockResolvedValue({ agents: [] });
   vi.mocked(api.config).mockResolvedValue({
     csrf: "t",
     new_session_engines: [],

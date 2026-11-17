@@ -7,6 +7,7 @@ import { AgentEndpointCard } from "../settings/AgentEndpointCard";
 import { manifestVersion, olderThanInstalled, setupChanges, staleAgainst, updateEligible } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
+import { pluginSignIn } from "./signInTarget";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, SETUP_STEP, SETUP_STEP_SIGNIN, setupPath, sourceLabel, verifiedGeneration } from "./model";
 import { api } from "../../lib/api";
 import type { PluginActivationPreview, PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../../types/plugins";
@@ -544,7 +545,7 @@ export function AgentSetupFlow({
             {connected && <button className={button.ghost} onClick={() => { setConnected(null); }}>Close sign-in terminal</button>}
             {operation?.state === "ready" && !connected && <button className={button.ghost} disabled={busy} onClick={() => void run(async current => accept(await current(api.pluginCancel(operation.id))))}>Cancel sign-in attempt</button>}
           </div> : <p>This manifest has no separate sign-in command. Verification checks the vendor account already configured on this host.</p>}
-          {connected && <SignInTerminal key={connected} operation={connected} onEnded={() => { setSigninEnded(connected); void readOperation(); }} />}
+          {connected && <SignInTerminal key={connected} target={pluginSignIn(connected)} onEnded={() => { setSigninEnded(connected); void readOperation(); }} />}
         </>}
         <button className={button.primary} disabled={busy || unresolved || signinLive} onClick={() => setStep(3)}>Continue to verification</button>
       </>}

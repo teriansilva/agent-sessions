@@ -29,6 +29,7 @@ vi.mock("../lib/api", async () => {
       engines: vi.fn(),
       plugins: vi.fn().mockResolvedValue({ feed: { state: "missing", error: null }, catalog: [], plugins: [], operations: [], roster_generation: 1 }),
       engineDetail: vi.fn(),
+      agentAccounts: vi.fn(),
       agentUsage: vi.fn(),
       agentUsageRefresh: vi.fn(),
       setAgentBudgets: vi.fn(),
@@ -114,6 +115,7 @@ beforeEach(() => {
     agents: [],
   });
   vi.mocked(api.engineDetail).mockResolvedValue(DETAIL);
+  vi.mocked(api.agentAccounts).mockResolvedValue({ agents: [] });
   vi.mocked(api.agentEndpoint).mockResolvedValue(ENDPOINT);
 });
 

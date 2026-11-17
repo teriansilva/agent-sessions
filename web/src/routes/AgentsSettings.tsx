@@ -20,6 +20,7 @@ import { CatalogOnly, RosterList, StatusWord } from "../components/agents/Roster
 import rr from "../components/agents/Roster.module.css";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import { SessionDefaults } from "../components/agents/SessionDefaults";
+import { AgentAccounts } from "../components/agents/AgentAccounts";
 import { ModelGrades } from "../components/specialists/ModelGrades";
 import {
   type CSSProperties,
@@ -699,6 +700,28 @@ type DetailState =
   | { for: string; kind: "missing" }
   | { for: string; kind: "failed" };
 
+/** The Accounts section, present only when the server lists this agent's pool (#1820). */
+function AccountsSection({ engine, label }: { engine: string; label: string }) {
+  const [listed, setListed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api
+      .agentAccounts()
+      .then((r) => alive && setListed(!!r.agents?.some((x) => x.engine === engine)))
+      .catch(() => alive && setListed(false));
+    return () => {
+      alive = false;
+    };
+  }, [engine]);
+  if (!listed) return null;
+  return (
+    <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-accounts-h">
+      <h2 id="agent-accounts-h">Accounts</h2>
+      <AgentAccounts engine={engine} label={label} />
+    </section>
+  );
+}
+
 export function AgentDetail({ id }: { id: string }) {
   useEngineRoster();
   const catalog = usePluginCatalog();
@@ -909,6 +932,12 @@ export function AgentDetail({ id }: { id: string }) {
         )}
         <BudgetError b={b} />
       </section>
+
+      {d.kind === "agent" && d.runtime === "pty" && (
+        // Several logins of this agent (#1820). Renders nothing until the agent is proven to hold
+        // them (its manifest names an account kind), so the heading lives inside the section.
+        <AccountsSection engine={d.id} label={d.label} />
+      )}
 
       {d.model_select?.supported && (
         <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-models-h">

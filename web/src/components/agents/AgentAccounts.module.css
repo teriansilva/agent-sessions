@@ -1,0 +1,35 @@
+/* Settings → Agents → agent → Accounts (#1820 P1b). Status colour means state only (design §3):
+   the dot is the only round thing, and buttons keep the shared 44px targets. */
+.lede { margin: 0; color: var(--text-2); line-height: 1.5; max-width: 72ch; }
+
+.pick { display: grid; gap: 2px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.pick legend { padding: 0 0 6px; font: 600 var(--fs-label) var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
+
+.list { list-style: none; margin: 0; padding: 0; display: grid; min-width: 0; }
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 16px;
+  align-items: start;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+.who { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.name { font-weight: 600; color: var(--text); }
+.meta { margin: 0; font: var(--fs-micro) var(--font-mono); color: var(--text-2); line-height: 1.5; }
+.state { display: inline-flex; align-items: center; gap: 8px; font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--status-unknown); }
+.up { background: var(--status-up); }
+.down { background: var(--status-down); }
+.unknown { background: var(--status-unknown); }
+.problems { margin: 0; padding-left: 18px; color: var(--danger-text); font: var(--fs-micro) var(--font-mono); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.danger { border-color: var(--status-down); }
+.signin { grid-column: 1 / -1; display: grid; gap: 10px; min-width: 0; }
+.row > :global(p) { grid-column: 1 / -1; margin: 0; }
+
+@media (max-width: 800px) {
+  .row { grid-template-columns: minmax(0, 1fr); }
+  .actions { justify-content: flex-start; }
+}

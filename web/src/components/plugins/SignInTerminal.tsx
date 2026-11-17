@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { api } from "../../lib/api";
 import { openAppSocket } from "../../lib/termSocket";
 import { isPasteShortcut } from "../../lib/termKeys";
 import { useTheme } from "../../theme/themeStore";
@@ -12,6 +11,7 @@ import { useTermFont } from "../../theme/termFontStore";
 import { useTermScheme } from "../../theme/termSchemeStore";
 import { xtermThemeFor } from "../../theme/termSchemes";
 import { lastUrl, safeSignInUrl } from "./signInLinks";
+import type { SignInTarget } from "./signInTarget";
 import button from "../ui/actionButton.module.css";
 import s from "./PluginSetup.module.css";
 
@@ -27,7 +27,7 @@ import s from "./PluginSetup.module.css";
  *  is the only diagnosis there is, and BattleLab keeps no copy of it. The last http(s) link the
  *  vendor printed is offered as a button, and a one-line field types a pasted code into the
  *  terminal: a 400-character OAuth URL wraps across five rows and is easy to break by hand. */
-/** Close codes shared with `plugins/signin.py`. */
+/** Close codes shared with `plugins/signin.py` and `agent_account_signin.py`. */
 const SERVER_ENDED = 4409; // the sign-in ended (or could not start); read the operation
 const CLOSED = 1000; // the vendor's command completed
 const REFUSED = 4403; // not authenticated
@@ -37,7 +37,9 @@ const ENDED = new Set([SERVER_ENDED, CLOSED, REFUSED, 1005]);
 /** The server keeps a lost sign-in this long (`GRACE_SECONDS`); past it, reconnecting is moot. */
 const GRACE_MS = 300_000;
 
-export function SignInTerminal({ operation, onEnded }: { operation: string; onEnded: () => void }) {
+export function SignInTerminal({ target, onEnded }: { target: SignInTarget; onEnded: () => void }) {
+  const { socketPath } = target;
+  const cancel = useRef(target.cancel);
   const node = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const sendLine = useRef<(text: string) => boolean>(() => false);
@@ -52,7 +54,7 @@ export function SignInTerminal({ operation, onEnded }: { operation: string; onEn
   const { size } = useTermSize();
   const { family } = useTermFont();
   const initial = useRef({ theme, scheme, size, family });
-  useEffect(() => { close.current = onEnded; initial.current = { theme, scheme, size, family }; });
+  useEffect(() => { close.current = onEnded; cancel.current = target.cancel; initial.current = { theme, scheme, size, family }; });
   useEffect(() => {
     let socket: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -100,7 +102,7 @@ export function SignInTerminal({ operation, onEnded }: { operation: string; onEn
       // Ctrl+V to its own clipboard command; the native paste above handles it.
       term.attachCustomKeyEventHandler(e => isPasteShortcut(e, isMac) ? false : true);
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${protocol}//${location.host}/ws/plugins/signin/${encodeURIComponent(operation)}`;
+      const url = `${protocol}//${location.host}${socketPath}`;
       const resize = () => {
         clearTimeout(fitTimer);
         fitTimer = setTimeout(() => {
@@ -186,14 +188,14 @@ export function SignInTerminal({ operation, onEnded }: { operation: string; onEn
       // first mount must leave the one-use operation ready) or one that already ended.
       if (connected && !finished) {
         socket?.close(CLOSED_BY_OPERATOR, "closed");
-        void api.pluginCancel(operation).catch(() => {});
+        void cancel.current().catch(() => {});
       }
       observer?.disconnect(); term?.dispose();
       host?.removeEventListener("paste", onHostPaste, true);
       terminal.current = null;
       refitSoon.current = () => {};
     };
-  }, [operation]);
+  }, [socketPath]);
   useEffect(() => {
     if (!terminal.current) return;
     terminal.current.options.theme = xtermThemeFor(scheme, theme);
