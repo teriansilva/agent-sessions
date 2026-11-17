@@ -64,7 +64,8 @@ def test_registry_covers_every_system_prompt():
     # hq_notify (HQ's one line about a notification, guarded: the persona speaks first)
     # #1740 P2 mission_debrief (the finished mission's "what was done", from its records).
     # #2028 ask_route (HQ's question router on an endpoint without tools, guarded).
-    assert len(prompts.REGISTRY) == 46
+    # #1997 session_clusters (HQ groups a project's sessions by topic, guarded).
+    assert len(prompts.REGISTRY) == 47
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -74,6 +75,9 @@ def test_registry_covers_every_system_prompt():
     # `mission_question` earns it because its output becomes the OPERATOR'S choices: text that
     # shapes what a mission offers to do next shapes what the operator authorises (#892).
     assert [p.id for p in prompts.REGISTRY if p.guarded] == [
+        # `session_clusters` (#1997) reads session titles and summaries, written about agent
+        # output, and its titles reach the operator and (through the cluster tool) other agents.
+        "session_clusters",
         # `ask_orchestrator` (#1443) reads agents' screens and transcripts through its tools on
         # every turn: session content is always in front of it.
         "ask_orchestrator",
@@ -125,6 +129,7 @@ EXPECTED_DEFAULT_SHA = {
     "session_recap": "7438fbcf5328734f",
     "handoff_brief": "6229dae66d00c62f",
     "auto_sort": "e7dcb9cc74f397aa",
+    "session_clusters": "bd2b2428631c010a",  # #1997: group a project's sessions by topic
     "template_suggest": "5242b5733770c518",
     "template_write": "e10cb48cfb9a0319",
     "chat_agent": "21d3108b920e805c",  # #1209: the API agent (no tools)

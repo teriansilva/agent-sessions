@@ -2115,6 +2115,73 @@ def set_session_review(patch: dict, path: Path | None = None) -> dict:
     return _mutate("session_review", merge, path)
 
 
+# --- Session clusters (#1997) --------------------------------------------------------------------
+# HQ groups each project's sessions by topic. Holds no secret: the sweep reuses the ai_review
+# endpoint. `agent_tool` is read when a session is launched, like the HQ report switch.
+CLUSTERS_INTERVALS: tuple[int, ...] = (15, 30, 60, 240)
+_CLUSTERS_DEFAULTS: dict[str, object] = {
+    # Group sessions, show the tree, the row chip and the map's Cluster grouping. Off stops the
+    # sweep and hides them; the stored clusters are kept, so turning it back on restores them.
+    "enabled": True,
+    # Offer agents the cluster tool (their group's members and its board).
+    "agent_tool": True,
+    # Minutes between sweeps.
+    "interval_minutes": 30,
+}
+
+
+def get_clusters(path: Path | None = None) -> dict:
+    """The stored `clusters` block with defaults applied. Read-lenient: never throws."""
+    raw = _load(path or _default_path()).get("clusters")
+    return _merge_clusters(dict(_CLUSTERS_DEFAULTS), raw)
+
+
+def _merge_clusters(base: dict, raw: object) -> dict:
+    if isinstance(raw, dict):
+        for key in ("enabled", "agent_tool"):
+            if isinstance(raw.get(key), bool):
+                base[key] = raw[key]
+        v = raw.get("interval_minutes")
+        if isinstance(v, int) and not isinstance(v, bool) and v in CLUSTERS_INTERVALS:
+            base["interval_minutes"] = v
+    return base
+
+
+def public_clusters(path: Path | None = None) -> dict:
+    """Client-safe view: the block plus `configured` (the reused ai_review endpoint's readiness),
+    so the UI can say why nothing is being grouped."""
+    out = get_clusters(path)
+    out["configured"] = bool(public_ai_review(path)["configured"])
+    return out
+
+
+def validate_clusters_patch(patch: object) -> str | None:
+    """Write-strict: a 422 reason, or None. Unknown keys are refused so a typo cannot no-op."""
+    if not isinstance(patch, dict):
+        return "clusters must be an object"
+    unknown = set(patch) - set(_CLUSTERS_DEFAULTS)
+    if unknown:
+        return f"unknown clusters fields: {sorted(unknown)}"
+    for key in ("enabled", "agent_tool"):
+        if key in patch and not isinstance(patch[key], bool):
+            return f"clusters.{key} must be a boolean"
+    if "interval_minutes" in patch:
+        v = patch["interval_minutes"]
+        if not isinstance(v, int) or isinstance(v, bool) or v not in CLUSTERS_INTERVALS:
+            return f"clusters.interval_minutes must be one of {list(CLUSTERS_INTERVALS)}"
+    return None
+
+
+def set_clusters(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block under the prefs lock (`_mutate`) and return the result."""
+
+    def merge(stored: object) -> dict:
+        current = _merge_clusters(dict(_CLUSTERS_DEFAULTS), stored)
+        return _merge_clusters(current, patch)
+
+    return _mutate("clusters", merge, path)
+
+
 # --- Pulse orchestrator (#726 Phase 1) -------------------------------------------------
 # Pulse gains agency: it decides what each session needs and — at the operator's autonomy
 # tier — drives them. Reuses the `ai_review` gateway like `pulse`/`auto_sort`, so it holds no

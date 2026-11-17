@@ -39,6 +39,7 @@ from . import (
     ask_proposals,
     automation_loop,
     autosort_loop,
+    clusters_loop,
     engines,
     feed_alerts,
     grants,
@@ -99,6 +100,7 @@ from .routes import ask as ask_routes
 from .routes import auth as auth_routes
 from .routes import automations as automations_routes
 from .routes import chat as chat_routes
+from .routes import clusters as clusters_routes
 from .routes import federation as federation_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
@@ -389,6 +391,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Periodic AI auto-sort (#424 Phase 6): same reaper pattern, gated on the
         # `auto_sort` opt-in + the env kill-switch, re-read per sweep.
         autosort_task = asyncio.create_task(autosort_loop.run())
+        # HQ's session clustering (#1997): same reaper pattern, gated on the `clusters` prefs and
+        # a configured endpoint, re-read per sweep.
+        clusters_task = asyncio.create_task(clusters_loop.run())
         # Periodic Pulse overview scan (#441 Phase 3): same reaper pattern, gated on the
         # `pulse.auto_enabled` opt-in + the env kill-switch + change-detection, re-read per
         # sweep. Skips when a manual scan holds the single-flight; an unchanged set is a no-op.
@@ -581,6 +586,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 artifacts_task,
                 review_task,
                 autosort_task,
+                clusters_task,
                 pulse_task,
                 orchestrator_task,
                 supervisor_task,
@@ -825,6 +831,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     ask_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # HQ's Dispatches (#1837): the lines HQ wrote about notifications, read only.
     hq_dispatches_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    clusters_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Calling HQ (#1397): speech endpoints, the call admission and the call socket. A call is an
     # HQ conversation spoken aloud, so it gets the same registry snapshot HQ turns get.
     voice_routes.register(

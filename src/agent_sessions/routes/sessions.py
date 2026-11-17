@@ -37,6 +37,7 @@ from .. import (
     runtime_cleanup,
     scanner,
     session_capacity,
+    session_clusters,
     shares,
     transcript,
     transcript_owner,
@@ -499,6 +500,37 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         key = row["id"]
         row["mission"] = index.get(key) or index.get(engines.physical_key(key, aliases))
 
+    def _cluster_doc() -> dict | None | bool:
+        """The cluster store for this request (#1997): the document, ``None`` when it could not be
+        read, or ``False`` when session clusters are turned off. Read ONCE per request, like the
+        mission index, and fail-soft for the same reason: it decides what is displayed only."""
+        if not prefs.get_clusters()["enabled"]:
+            return False
+        try:
+            return session_clusters.read_checked()
+        except session_clusters.ClustersUnreadable:
+            return None
+
+    def _stamp_cluster(row: dict, doc: dict | None | bool, aliases: dict) -> None:
+        """``row["cluster"]``: the topic cluster's ``{id, title, kept}``, or ``None``.
+
+        Left ABSENT when the answer is unknown: the cluster store could not be read, or the
+        mission stamp is absent (a mission-held session has no cluster, so without the missions
+        store "no mission" cannot be told from "unknown"). ``None`` when clusters are off."""
+        if doc is False:
+            row["cluster"] = None
+            return
+        if doc is None or "mission" not in row:
+            return
+        key = row["id"]
+        cid = session_clusters.effective_cluster(
+            doc,
+            (key, engines.physical_key(key, aliases)),
+            session_clusters.project_id_of(row["project"]),
+            mission=row["mission"] is not None,
+        )
+        row["cluster"] = session_clusters.cluster_ref(doc, cid) if cid is not None else None
+
     def _dashboard_sync(live_limit: int, recent_limit: int) -> dict:
         """The BattleLab dashboard's session reads (#1123), from ONE scoped row set.
 
@@ -516,7 +548,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         from .. import orchestrator, pulse
 
-        rows, _memberships, _pinned, _aliases, running_ok, working_ok = _scoped_rows(archived=False)
+        rows, _memberships, _pinned, _aliases, running_ok, working_ok, _clusters = _scoped_rows(
+            archived=False
+        )
         now = time.time()
 
         def _project(r: dict) -> dict:
@@ -619,7 +653,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except OSError:
             log.warning("session limit: the running sessions could not be read", exc_info=True)
             return out | {"readable": False, "running": None, "others": 0, "sessions": []}
-        scoped, _memberships, _pinned, aliases, _ok, _wok = _scoped_rows(
+        scoped, _memberships, _pinned, aliases, _ok, _wok, _clusters = _scoped_rows(
             archived=False, snapshot=None
         )
         stems = {session_capacity.stem(k) for k in keys}
@@ -665,6 +699,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project: str | None = Query(None),
         engine: str | None = Query(None),
         mission: str | None = Query(None),
+        cluster: str | None = Query(None),
         snapshot: str | None = Query(None),
         running: str | None = Query(None, pattern="^(live|working)$"),
     ) -> JSONResponse:
@@ -685,6 +720,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 project=project,
                 engine=engine,
                 mission=mission,
+                cluster=cluster,
                 snapshot=snapshot,
                 running=running,
             )
@@ -697,12 +733,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     def _scoped_rows(
         *, archived: bool, snapshot: str | None = None
-    ) -> tuple[list[dict], dict[str, dict] | None, dict[str, str], dict, bool, bool]:
+    ) -> tuple[
+        list[dict], dict[str, dict] | None, dict[str, str], dict, bool, bool, dict | None | bool
+    ]:
         """The list's rows AFTER its scope (#567), with the mission and running stamps — the one
         set every count that links to the session list is computed over (#1123: a dashboard
         count equals its destination). Returns ``(rows, memberships, pinned, aliases,
-        running_ok)``; ``running_ok`` is False when the runtime probe failed, in which case every
-        row reads as not running and a count built on it must say it could not read.
+        running_ok, working_ok, clusters_doc)``; ``running_ok`` is False when the runtime probe
+        failed, in which case every row reads as not running and a count built on it must say it
+        could not read. ``clusters_doc`` is :func:`_cluster_doc`'s answer for this request.
         Blocking."""
         meta_index = metadata.load()
         use_ai_title = prefs.renames_sessions()
@@ -782,6 +821,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         memberships = _membership_index()
         for r in scoped:
             _stamp_mission(r, memberships, aliases)
+        # The topic cluster (#1997), after the mission stamp it depends on.
+        clusters_doc = _cluster_doc()
+        for r in scoped:
+            _stamp_cluster(r, clusters_doc, aliases)
         # Running (#1085): stamped before filtering so `live_total` describes the filtered set,
         # not the page — the footer's count, like `total`, is about the list, not the window.
         running_ok, working_ok = _stamp_activity(scoped, aliases)
@@ -792,7 +835,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         notes = _agent_notes()
         for r in scoped:
             r["agent_report"] = notes.get(engines.physical_key(r["id"], aliases))
-        return scoped, memberships, pinned, aliases, running_ok, working_ok
+        return scoped, memberships, pinned, aliases, running_ok, working_ok, clusters_doc
 
     def _list_sessions_sync(
         *,
@@ -803,10 +846,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project: str | None,
         engine: str | None,
         mission: str | None = None,
+        cluster: str | None = None,
         snapshot: str | None = None,
         running: str | None = None,
     ) -> dict:
-        scoped, memberships, pinned, aliases, running_ok, _working_ok = _scoped_rows(
+        scoped, memberships, pinned, aliases, running_ok, _working_ok, clusters_doc = _scoped_rows(
             archived=archived, snapshot=snapshot
         )
         project_index = projects.load()
@@ -870,17 +914,45 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 if ref is None:
                     no_mission += 1
                     continue
-                by_mission.setdefault(ref["id"], {**ref, "count": 0})["count"] += 1
+                entry = by_mission.setdefault(ref["id"], {**ref, "count": 0, "by_project": {}})
+                entry["count"] += 1
+                # Per project (#1997): the Projects & clusters tree lists a mission under each
+                # project it has sessions in, with that project's count.
+                pid = session_clusters.project_id_of(r["project"])
+                entry["by_project"][pid] = entry["by_project"].get(pid, 0) + 1
             facets["missions"] = sorted(
                 by_mission.values(), key=lambda m: (m["title"].casefold(), m["id"])
             )
             facets["no_mission"] = no_mission
+        # Cluster facets (#1997): every stored cluster with its count over the same unfiltered
+        # scoped set (an operator cluster may be empty). Omitted when the answer is unknown (the
+        # cluster or missions store could not be read) or clusters are off.
+        clusters_known = isinstance(clusters_doc, dict) and memberships is not None
+        if clusters_known:
+            cluster_counts: dict[str, int] = {}
+            for r in scoped:
+                ref = r.get("cluster")
+                if ref is not None:
+                    cluster_counts[ref["id"]] = cluster_counts.get(ref["id"], 0) + 1
+            facets["clusters"] = sorted(
+                (
+                    {
+                        **session_clusters.cluster_ref(clusters_doc, cid),
+                        "project_id": c["project_id"],
+                        "count": cluster_counts.get(cid, 0),
+                    }
+                    for cid, c in clusters_doc["clusters"].items()
+                ),
+                key=lambda c: (c["title"].casefold(), c["id"]),
+            )
         # Normalize filters; empty / whitespace-only means "no filter".
         q_norm = (q or "").strip().casefold()
         project_f = (project or "").strip() or None
         engine_f = (engine or "").strip() or None
         # `none` = held by no mission. A mission id is `msn_<hex>`, so it cannot collide.
         mission_f = (mission or "").strip() or None
+        # `none` = in no cluster and held by no mission. A cluster id is `tc_<hex>`.
+        cluster_f = (cluster or "").strip() or None
         if running is not None and not running_ok:
             # A running filter the runtime probe cannot answer (#1123): every row would read as
             # "not running", so the filtered list would claim nothing is running. Say so instead.
@@ -904,6 +976,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "live_total": 0,
                 "facets": facets,
                 "mission_filter_unavailable": True,
+                **pinned,
+            }
+        if cluster_f is not None and not clusters_known:
+            # A cluster filter that cannot be answered (the store is unreadable, the mission
+            # stamp it depends on is unknown, or clusters are off): same reasoning as above.
+            return {
+                "sessions": [],
+                "next_offset": None,
+                "total": 0,
+                "live_total": 0,
+                "facets": facets,
+                "cluster_filter_unavailable": True,
                 **pinned,
             }
 
@@ -940,6 +1024,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     if held is not None:
                         return False
                 elif held is None or held["id"] != mission_f:
+                    return False
+            if cluster_f is not None:
+                ref = r.get("cluster")
+                if cluster_f == "none":
+                    if ref is not None or r.get("mission") is not None:
+                        return False
+                elif ref is None or ref["id"] != cluster_f:
                     return False
             return True
 
@@ -1096,6 +1187,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # The pane reads the same membership the list does (#948), so the header and the
             # sidebar row can never disagree about which mission holds this session.
             _stamp_mission(row, _membership_index(), aliases)
+            _stamp_cluster(row, _cluster_doc(), aliases)
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
             _stamp_activity([row], aliases)
             row["memory_pressure"] = _memory_pressures().get(row["id"])

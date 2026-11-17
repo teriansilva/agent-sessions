@@ -110,8 +110,21 @@ def test_mission_facets_cover_the_unfiltered_set(auth_cfg, held):
     d = c.get(f"/api/sessions?mission={beta['id']}&q=zzz-nothing&limit=50").json()
     assert d["total"] == 0
     assert d["facets"]["missions"] == [
-        {"id": alpha["id"], "title": "Alpha mission", "state": alpha["state"], "count": 2},
-        {"id": beta["id"], "title": "Beta mission", "state": beta["state"], "count": 1},
+        {
+            "id": alpha["id"],
+            "title": "Alpha mission",
+            "state": alpha["state"],
+            "count": 2,
+            # Per project (#1997); these sessions are in unadopted folders, so Default.
+            "by_project": {"__default__": 2},
+        },
+        {
+            "id": beta["id"],
+            "title": "Beta mission",
+            "state": beta["state"],
+            "count": 1,
+            "by_project": {"__default__": 1},
+        },
     ]
     assert d["facets"]["no_mission"] == 1
     assert "mission_filter_unavailable" not in d

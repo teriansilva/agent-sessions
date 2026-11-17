@@ -32,6 +32,7 @@ EXPECTED_SITES = {
     ("ask_memory.py", "memory_answer"),
     ("probes.py", "chat_agent"),  # #1259 candidate endpoint verification; same sole transport
     ("autosort.py", "auto_sort"),
+    ("clusters_loop.py", "session_clusters"),  # #1997: HQ's clustering sweep
     ("template_suggest.py", "template_suggest"),
     ("template_suggest.py", "template_write"),
     ("handoff.py", "handoff_brief"),

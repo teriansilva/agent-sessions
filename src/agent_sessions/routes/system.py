@@ -171,6 +171,7 @@ def _preflight_prefs(payload: dict) -> None:
         ("auto_sort", prefs.validate_auto_sort_patch),
         ("pulse", prefs.validate_pulse_patch),
         ("session_review", prefs.validate_session_review_patch),
+        ("clusters", prefs.validate_clusters_patch),
         ("orchestrator", prefs.validate_orchestrator_patch),
     ):
         if key in payload:
@@ -835,6 +836,8 @@ def register(
                 # ai_review endpoint readiness (depth ≥ medium synthesis needs it).
                 "pulse": prefs.public_pulse(),
                 "session_review": prefs.get_session_review(),
+                # Session clusters (#1997): on/off, the agent tool, the sweep interval; no secret.
+                "clusters": prefs.public_clusters(),
                 # Pulse orchestrator config (#726) — opt-in; holds no secret of its own,
                 # `configured` mirrors the reused ai_review endpoint readiness. Carries
                 # `auto_verbs_ceiling` so the UI can SHOW that choose/answer/dispatch always
@@ -1152,6 +1155,13 @@ def register(
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
             out["session_review"] = prefs.set_session_review(payload["session_review"])
+        if "clusters" in payload:
+            # Session clusters (#1997): on/off, the agent tool, the sweep interval. No secret.
+            err = prefs.validate_clusters_patch(payload["clusters"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_clusters(payload["clusters"])
+            out["clusters"] = prefs.public_clusters()
         if "orchestrator" in payload:
             # Pulse orchestrator config (#726): tier + threshold + cadence + prompts,
             # server-validated. `allowed_verbs` is checked against the AUTO_VERBS_V1 ceiling

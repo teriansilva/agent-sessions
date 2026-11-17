@@ -39,6 +39,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Tag / clear tag | POST …/tag | P1 W |
 | Colour (API-only today) | POST …/color | P1 W |
 | Move to project / unassign | PATCH …/metadata | P1 W |
+| Session clusters (#1997): list; create, rename, keep / let HQ rename, merge, dissolve; move a session to a cluster / back to HQ's choice; re-cluster now | GET/POST /api/clusters, PATCH/DELETE /api/clusters/{id}, POST …/merge, PUT /api/sessions/{sid}/cluster, POST /api/clusters/recluster | P2 R/W (HQ's tools and cards land with #1997 P5) |
 | Archive / unarchive | POST …/archive, …/unarchive | P1 W |
 | Archive sessions older than N | POST /api/sessions/archive-older | P1 W (partly done when `skipped`) |
 | Close an API session (stop worker); discard a pending start | POST /api/structured/sessions/{key}/stop | P1 W |
@@ -146,6 +147,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
+| Session clusters: on/off, the agent tool, the re-cluster interval (#1997) | POST /api/prefs `clusters` | P2 W, both directions (none widens autonomy or bypass: the agent tool reads its own group and posts notes, it cannot act on a session) |
 | Orchestrator: thresholds, interval, notify, stale hours, nudge text | POST /api/prefs `orchestrator.*` | P2 W |
 | Orchestrator **on**, autonomy **up**, AI directions auto-send **on**, allowed verbs widened | POST /api/prefs `orchestrator`, PATCH /api/automation/{scope} | **never** (widens autonomy); turning any of them **down or off** is P2 W |
 | Pulse: auto scan, interval, window, depth | POST /api/prefs `pulse` | P2 W |
@@ -343,6 +345,12 @@ GET    /api/chat/{sid}                                                          
 POST   /api/chat/{sid}/messages                                                   P7
 POST   /api/chat/{sid}/turns/{turn_id}/proposals/{proposal_id}/decide             P7
 POST   /api/chat/{sid}/turns/{turn_id}/retry                                      P7
+GET    /api/clusters                                                              P2  # read; HQ tools land with #1997 P5
+POST   /api/clusters                                                              P2  # create, on a card (#1997 P5)
+POST   /api/clusters/recluster                                                    P2  # re-cluster now (external: AI), on a card (#1997 P5)
+PATCH  /api/clusters/{cid}                                                        P2  # rename / keep / let HQ rename, on a card (#1997 P5)
+DELETE /api/clusters/{cid}                                                        P2  # dissolve, on a card (#1997 P5)
+POST   /api/clusters/{cid}/merge                                                  P2  # on a card (#1997 P5)
 GET    /api/config                                                                n/a  # app shell read
 GET    /api/connectors                                                            have
 POST   /api/connectors/instances                                                  never
@@ -598,6 +606,7 @@ GET    /api/sessions/capacity                                                   
 POST   /api/sessions/archive-older                                                P1
 GET    /api/sessions/{sid}                                                        P1
 POST   /api/sessions/{sid}/archive                                                P1
+PUT    /api/sessions/{sid}/cluster                                                P2  # move to a cluster / back to HQ's choice, on a card (#1997 P5)
 POST   /api/sessions/{sid}/color                                                  P1
 GET    /api/sessions/{sid}/draft                                                  P7  # drafts
 PUT    /api/sessions/{sid}/draft                                                  P7  # drafts
@@ -769,6 +778,7 @@ ai_review.thinking              P2
 analytics_consent               never  # consent is the operator's own act
 api_look                        P2
 auto_sort                       P2
+clusters                        P2  # session clusters on/off, the agent tool, the interval; both directions (#1997)
 compose_default                 P2
 default_project                 n/a  # legacy onboarding prefill
 default_project_id              P1
