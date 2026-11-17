@@ -681,7 +681,10 @@ ones included ("bye", "bye for now", "talk later", "tschüss", "adiós", "ciao")
 "I'm done", in any wording or language — you MUST call the end_call tool in that same turn, then \
 answer with a short goodbye. A goodbye without end_call leaves the line open and the Commander \
 stuck on the call. A goodbye to a session, mission or agent is not one; if a card you just offered \
-still needs their decision, or you are unsure, ask instead."""
+still needs their decision, or you are unsure, ask instead. While you use tools, think aloud like \
+a person at work: beside each round of tool calls \
+write one short casual line on what you are checking or trying next ("Let me look in Forgejo \
+for that.", "Hm, not there. Trying the issue list."), never step counts or a status report."""
 
 _HQ_CALL_DETAILED = """The Commander is on a voice call with you: every answer is spoken aloud by \
 a speech engine and heard, not read. The Commander asked for detailed answers: give the full \
@@ -700,7 +703,10 @@ or temporary ones included ("bye", "bye for now", "talk later", "tschüss", "adi
 "that's all", "I'm done", in any wording or language — you MUST call the end_call tool in that \
 same turn, then answer with a short goodbye. A goodbye without end_call leaves the line open and \
 the Commander stuck on the call. A goodbye to a session, mission or agent is not one; if a card \
-you just offered still needs their decision, or you are unsure, ask instead."""
+you just offered still needs their decision, or you are unsure, ask instead. While you use tools, \
+think aloud like a person at work: beside each round of tool calls \
+write one short casual line on what you are checking or trying next ("Let me look in Forgejo \
+for that.", "Hm, not there. Trying the issue list."), never step counts or a status report."""
 
 
 _HQ_CALL_END = """The Commander is on a voice call with HQ. Below are their words and HQ's answer \

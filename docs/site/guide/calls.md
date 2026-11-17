@@ -81,6 +81,9 @@ enter that server's key again or remove it.
 - **Trail off and HQ waits.** If you stop in the middle of a thought, HQ gives you about three
   seconds before it answers on Natural and Patient; a finished sentence is answered after the
   setting's pause. Quick answers at once either way.
+- **HQ thinks out loud while it works.** On a longer question it says what it is doing in its own
+  short words ("Let me look in Forgejo for that." … "Hm, not there, trying the issue list.")
+  instead of a stock "Still on it". If the model writes nothing, the stock lines stay.
 - **Say "stop" to stop what HQ is doing.** While HQ works on an answer the call screen shows
   what it is doing and a **Stop** button above the call controls. Tapping it, or saying nothing
   but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;

@@ -163,6 +163,10 @@ LOOP_WRAP_NOTE = (
     "closed for this turn. Answer the Commander now with what you found, and say plainly what you "
     "could not find."
 )
+#: An aside on a call (#2113 P2): the model's own words beside a round's tool calls, said aloud
+#: while it works. One line, at most this long, AFTER the store's whole text boundary.
+ASIDE_MAX = 160
+_ASIDE_MARKUP_RE = re.compile(r"[*`#>_~|\[\]]+")
 #: The turn's outcome when the guard wrapped it up: an answer (`done`) or none (`failed`).
 NO_PROGRESS = "no_progress"
 NO_PROGRESS_FAILED = "HQ went in circles and could not settle on an answer — ask again"
@@ -300,6 +304,30 @@ class _LoopGuard:
             self.nudged = True
             return "nudge"
         return None
+
+
+def aside_text(text: object) -> str | None:
+    """What HQ may SAY of the text it wrote beside a round's tool calls (#2113 P2), or ``None``.
+
+    The WHOLE text goes through the store's text boundary first (`ask_store.guard_text`: known
+    secrets redacted, credential-shaped text withheld): only then is it cut to its first line and
+    `ASIDE_MAX` characters, so a cut can never leave the prefix of a secret. Fails closed — no
+    redaction, or withheld, says nothing. Blocking (it may read the secret store)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        guarded = ask_store.guard_text(text, ask_store.TEXT_MAX)
+    except ask_store.StoreRefused:
+        return None
+    if not guarded or ask_store.WITHHELD in guarded:
+        return None
+    line = next((ln.strip() for ln in guarded.splitlines() if ln.strip()), "")
+    line = " ".join(_ASIDE_MARKUP_RE.sub(" ", line).split())
+    if len(line) > ASIDE_MAX:
+        cut = line[:ASIDE_MAX]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        line = cut[: end + 1] if end >= ASIDE_MAX // 4 else cut.rsplit(" ", 1)[0] + "…"
+    return line or None
 
 
 def _with_note(content: str, key: str, note: str) -> str:
@@ -4653,6 +4681,12 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             replay = content if isinstance(content, str) else None
             if replay is not None and _leaked_calls(replay):
                 replay = None
+            if turn.via == "call" and replay:
+                # Thinking out loud (#2113 P2): its own words about what it is doing, for the
+                # call to say while it works. Never a progress STEP (the screen's row ignores it).
+                aside = await asyncio.to_thread(aside_text, replay)
+                if aside:
+                    turn.progress({"type": "aside", "text": aside})
             convo.append({"role": "assistant", "content": replay, "tool_calls": clean})
             for n, call in enumerate(clean):
                 if turn.asked is not None:

@@ -30,6 +30,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -144,6 +145,11 @@ PROGRESS_EVERY_S = 25.0
 STALL_S = 90.0
 STALL_EVERY_S = 45.0
 PROGRESS_TICK_S = 1.0
+#: HQ thinking out loud (#2113 P2): its own aside about what it is doing replaces the fixed line
+#: when the model wrote one. Said once HQ has been quiet this long within the turn…
+ASIDE_QUIET_S = 4.0
+#: …and never sooner than this after the previous status line, so it does not chatter.
+ASIDE_GAP_S = 8.0
 #: `pulse_chat`'s sub-steps (the find pipeline, also the no-tools fallback): looking through
 #: sessions.
 FIND_STEPS = frozenset({"catalog", "content"})
@@ -1632,6 +1638,13 @@ class Call:
         work = self.work
         if work is None:
             return
+        if ev.get("type") == "aside":
+            # The model's own words beside its tool calls (#2113 P2), already through the store's
+            # text boundary: the newest waits to be said, an older unsaid one is dropped.
+            text = ev.get("text")
+            if isinstance(text, str) and text.strip():
+                work["aside"] = text.strip()
+            return
         step = ev.get("step")
         now = time.monotonic()
         if step == "thinking":
@@ -1656,19 +1669,39 @@ class Call:
             # another behind it — at most one is ever waiting.
             return
         now = time.monotonic()
+        quiet = now - max(self.hq_quiet_at, work["since"])
+        aside = work.get("aside")
+        if aside:
+            # Its own words first (#2113 P2): a waiting aside is the only line said, once HQ has
+            # been quiet ASIDE_QUIET_S and ASIDE_GAP_S after the last status line.
+            if quiet < ASIDE_QUIET_S or now - work.get("said_at", -math.inf) < ASIDE_GAP_S:
+                return
+            work["aside"] = None
+            await self._say_status(work, aside, now)
+            return
         if not work["updates"]:
             need = FIRST_PROGRESS_S
         else:
             # The stall line comes at the usual pace; only the lines after it slow down.
             need = STALL_EVERY_S if work.get("stalled") else PROGRESS_EVERY_S
         # Quiet from before this turn doesn't count: the question was just asked (#1827).
-        if now - max(self.hq_quiet_at, work["since"]) < need:
+        if quiet < need:
             return
-        work["updates"] += 1
         work["stalled"] = work["phase"] == "model" and now - work["phase_since"] >= STALL_S
+        work["updates"] += 1  # counted first: `progress_line` reads this line's number
+        await self._say_status(work, progress_line(work, now), now, counted=True)
+
+    async def _say_status(
+        self, work: dict, text: str, now: float, *, counted: bool = False
+    ) -> None:
+        """One status line while the turn runs: a fixed line or HQ's own aside (#2113 P2). It
+        counts toward the fixed lines' cadence either way."""
+        if not counted:
+            work["updates"] += 1
+        work["said_at"] = now
         sid = uuid.uuid4().hex[:12]
         work["unsaid"] = sid  # BEFORE the send: its `said` can come back while it is in flight
-        if await self.say(progress_line(work, now), kind="progress", sid=sid, heard=False) is None:
+        if await self.say(text, kind="progress", sid=sid, heard=False) is None:
             work["unsaid"] = None
 
     async def _run_turn(
@@ -1726,6 +1759,8 @@ class Call:
                         )
                         continue
                     self._track(ev)
+                    if ev.get("type") == "aside":
+                        continue  # said aloud by `progress_tick`, never a step on the screen
                     if ev.get("step") == "tool_done":
                         continue  # a finished step: the next event says what runs now
                     step = ev.get("tool") or ev.get("step")

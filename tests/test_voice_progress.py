@@ -2,11 +2,16 @@
 
 While an HQ turn runs on a call, HQ says a short FIXED status line whenever it has been quiet too
 long: first after FIRST_PROGRESS_S, then every PROGRESS_EVERY_S, and every STALL_EVERY_S once the
-model has kept it waiting STALL_S. Each line is short, casual and FIXED, picked from the turn's
+model has kept it waiting STALL_S. Each FIXED line is short and casual, picked from the turn's
 real state only — whether a read tool runs (by tool NAME), how many status lines the turn has said,
-whether the model has stalled — never model text, tool arguments or tool output, and never a
-duration or a step count. A status line's playback is no sign of the
-operator, so a forgotten call is still asked and hung up (#1668).
+whether the model has stalled — never tool arguments or tool output, and never a duration or a
+step count. A status line's playback is no sign of the operator, so a forgotten call is still
+asked and hung up (#1668).
+
+#2113 P2 — HQ thinks out loud: when the model wrote its own short aside beside a round of tool
+calls (through the store's text boundary, `ask_orchestrator.aside_text`), that aside is said
+INSTEAD of the fixed line, after ASIDE_QUIET_S of quiet and never within ASIDE_GAP_S of the last
+status line. With no aside the fixed lines are unchanged.
 """
 
 from __future__ import annotations
@@ -555,5 +560,125 @@ def test_a_barge_in_over_a_status_line_does_not_silence_the_rest_of_the_turn(mon
         release.set()
         await r.call.turn_task
         assert r.call.state == "listening"
+
+    run(go())
+
+
+# --- HQ's own asides (#2113 P2) ------------------------------------------------------------------
+
+
+def _aside(r: Rig, text: str) -> None:
+    r.call._track({"type": "aside", "text": text})
+
+
+def test_an_aside_is_said_in_place_of_the_fixed_line(monkeypatch):
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    work = thinking(r, clock)
+
+    async def go():
+        _aside(r, "Let me look in Forgejo for that.")
+        clock.now += voice_calls.ASIDE_QUIET_S - 0.5
+        await r.call.progress_tick()
+        assert progress_says(r) == []
+        clock.now += 0.5
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == ["Let me look in Forgejo for that."]
+        assert work["aside"] is None and work["updates"] == 1
+        await r.call.progress_tick()  # said once
+        assert len(progress_says(r)) == 1
+
+    run(go())
+
+
+def test_an_aside_does_not_change_what_the_turn_is_doing(monkeypatch):
+    """The aside is words to say, not a step: the phase and tool the fixed lines read stay."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    work = thinking(r, clock, phase="tool", tool="session_status")
+    _aside(r, "Checking that session.")
+    assert (work["phase"], work["tool"]) == ("tool", "session_status")
+    _aside(r, "   ")  # nothing to say: ignored
+    assert work["aside"] == "Checking that session."
+
+
+def test_asides_never_come_closer_together_than_the_gap(monkeypatch):
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+
+    async def go():
+        _aside(r, "Let me look.")
+        clock.now += voice_calls.ASIDE_QUIET_S
+        await r.call.progress_tick()
+        (first,) = progress_says(r)
+        await r.call.on_worker_event({"t": "said", "id": first["id"]})  # its audio went out
+        r.call.hq_quiet_at = clock.now  # the line has played
+        _aside(r, "Hm, not there. Trying the issue list.")
+        clock.now += voice_calls.ASIDE_QUIET_S  # quiet enough, but within the gap
+        await r.call.progress_tick()
+        assert len(progress_says(r)) == 1
+        clock.now += voice_calls.ASIDE_GAP_S - voice_calls.ASIDE_QUIET_S
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == [
+            "Let me look.",
+            "Hm, not there. Trying the issue list.",
+        ]
+
+    run(go())
+
+
+def test_only_the_newest_unsaid_aside_is_said(monkeypatch):
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+
+    async def go():
+        _aside(r, "Let me look in Forgejo.")
+        _aside(r, "Not there, trying the epic list.")
+        clock.now += voice_calls.ASIDE_QUIET_S
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == ["Not there, trying the epic list."]
+
+    run(go())
+
+
+def test_after_an_aside_the_fixed_lines_carry_on_at_their_pace(monkeypatch):
+    """No new aside: the fixed cadence resumes, counting the aside as a status line said."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+
+    async def go():
+        _aside(r, "Let me look.")
+        clock.now += voice_calls.ASIDE_QUIET_S
+        await r.call.progress_tick()
+        (first,) = progress_says(r)
+        await r.call.on_worker_event({"t": "said", "id": first["id"]})  # its audio went out
+        r.call.hq_quiet_at = clock.now
+        clock.now += voice_calls.PROGRESS_EVERY_S - 1
+        await r.call.progress_tick()
+        assert len(progress_says(r)) == 1
+        clock.now += 1
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)][1] in voice_calls.STILL_WORKING
+
+    run(go())
+
+
+def test_an_aside_waits_while_the_commander_speaks(monkeypatch):
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+
+    async def go():
+        _aside(r, "Let me look.")
+        r.call.user_speaking = True
+        clock.now += voice_calls.ASIDE_QUIET_S + 5
+        await r.call.progress_tick()
+        assert progress_says(r) == []
+        r.call.user_speaking = False
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == ["Let me look."]
 
     run(go())
