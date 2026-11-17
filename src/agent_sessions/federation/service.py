@@ -21,9 +21,12 @@ Trust is decided here and nowhere else: a ``peer`` channel is built only for a k
 :func:`self.store.trusted_key` returns, and a ``pair`` channel only for a live, unused invite. Until
 then the other side has received handshake frames and nothing else.
 
-Pairing stores a peer only when BOTH operators confirmed the same short code. If the channel
-drops between the two stores, one side trusts and the other does not: the untrusting side refuses
-the next handshake, and the operator revokes and pairs again. Pairing alone shares nothing.
+Pairing stores a peer only when BOTH operators confirmed the same short code. The second
+confirmation is a call to the other side, which stores the peer before it answers; an answer that
+is lost (the channel closed or timed out) leaves this side ``settling`` instead of failing. It
+stores the peer only on proof that the other side did: that side's PEER channel (it dials only
+peers it trusts), inbound or answering a probe, authenticated by the key this operator confirmed.
+Without proof it fails after :data:`SETTLING_S`. Pairing alone shares nothing.
 """
 
 from __future__ import annotations
@@ -66,6 +69,15 @@ PAIRINGS_MAX = 8
 HANDSHAKES_IN_FLIGHT_MAX = 8
 #: How long a finished pairing stays listed, so both UIs can show how it ended.
 PAIRING_LINGER_S = 120
+#: How long a pairing whose last confirmation went unanswered waits for proof that the other
+#: instance stored it (module docstring). The other side dials a newly trusted peer at once.
+SETTLING_S = 120.0
+#: The first wait between probes of a settling pairing; it doubles up to :data:`PROBE_MAX_S`.
+PROBE_EVERY_S = 2.0
+PROBE_MAX_S = 15.0
+PROBE_CALL_S = 10.0
+#: Answers to ``pair.confirm`` that do not say whether the other side stored the peer.
+UNANSWERED = frozenset({"closed", "timeout"})
 SAS_INFO = b"battlelab-fed sas v1"
 DIAL_TICK_S = 5.0
 BACKOFF_MIN_S = 1.0
@@ -75,6 +87,10 @@ DIAL_OPEN_TIMEOUT_S = 10.0
 LOCK_FILE = "owner.lock"
 
 PAIRING_STATES = ("dialing", "confirm", "done", "denied", "failed", "expired")
+UNPROVEN = (
+    "the other instance did not answer the confirmation. If it lists this instance as paired, "
+    "revoke it there and pair again"
+)
 
 
 class FederationError(Exception):
@@ -179,6 +195,12 @@ class Pairing:
     fence: int = 0
     #: The trust write, once claimed. Owned by the service, not by whoever triggered it.
     commit: asyncio.Task | None = None
+    #: The local ``pair.confirm`` call is under way: its outcome, not the channel closing,
+    #: decides how the pairing ends.
+    confirming: bool = False
+    #: ``settling`` only: when it fails without proof, and the probe asking for that proof.
+    settle_until: float = 0.0
+    probe: asyncio.Task | None = None
 
     @property
     def open(self) -> bool:
@@ -187,8 +209,9 @@ class Pairing:
         return self.state in ("dialing", "confirm")
 
     def public(self) -> dict:
-        # ``committing`` lasts for one store write and is shown as the state it came from.
-        state = "confirm" if self.state == "committing" else self.state
+        # ``committing`` lasts for one store write and ``settling`` until the other side is heard
+        # from: both are shown as the state they came from (this operator already confirmed).
+        state = "confirm" if self.state in ("committing", "settling") else self.state
         return {
             "id": self.id,
             "role": self.role,
@@ -383,7 +406,7 @@ def _current_task() -> asyncio.Task | None:
 
 
 def _open_pairings(pairings: dict) -> int:
-    return sum(1 for p in pairings.values() if p.open or p.state == "committing")
+    return sum(1 for p in pairings.values() if p.open or p.state in ("committing", "settling"))
 
 
 class Federation:
@@ -546,6 +569,8 @@ class Federation:
         for pairing in list(self._pairings.values()):
             if pairing.open and now >= pairing.expires_at:
                 self._end_pairing(pairing, "expired", "the pairing timed out")
+            elif pairing.state == "settling" and now >= pairing.settle_until:
+                self._end_settling(pairing, "failed", UNPROVEN)
             elif pairing.settled.is_set() and now - pairing.ended_at > PAIRING_LINGER_S:
                 del self._pairings[pairing.id]
 
@@ -709,15 +734,36 @@ class Federation:
             if not pairing.local_confirmed:
                 pairing.fence = fence
             pairing.local_confirmed = True
+            pairing.confirming = True
             try:
                 await pairing.channel.call("pair.confirm")
-            except ch.CallError:
-                self._end_pairing(pairing, "failed", "the other instance went away")
+            except ch.CallError as exc:
+                pairing.confirming = False
+                if pairing.state == "done":
+                    return pairing.public()  # the other side's confirmation got there first
+                if exc.code in UNANSWERED and self._begin_settling(pairing):
+                    # The other side may have stored the peer before its answer was lost.
+                    return pairing.public()
+                self._end_pairing(pairing, "failed", "the other instance did not complete it")
                 raise FederationError(
-                    "peer_gone", "the other instance went away; pair again", status=409
+                    "peer_gone",
+                    "the other instance did not complete the pairing; pair again",
+                    status=409,
                 ) from None
+            except BaseException:
+                pairing.confirming = False
+                self._end_if_dropped(pairing)
+                raise
+            pairing.confirming = False
             await self._maybe_finish(pairing)
+            self._end_if_dropped(pairing)
         return pairing.public()
+
+    def _end_if_dropped(self, pairing: Pairing) -> None:
+        """A pairing whose channel closed while its confirmation was under way: `_run_pairing`
+        left it to `confirm`, and nothing else ends it."""
+        if pairing.open and pairing.channel is not None and pairing.channel.closed:
+            self._end_pairing(pairing, "failed", "the other instance closed the pairing")
 
     async def deny(self, pairing_id: str) -> dict:
         """Decline a pairing. The answer is the pairing's REAL outcome: ``denied`` only when
@@ -728,6 +774,10 @@ class Federation:
         pairing = self._pairing(pairing_id)
         if pairing.state == "committing":
             await pairing.settled.wait()
+            return pairing.public()
+        if pairing.state == "settling":
+            # Nothing is stored here from now on, whatever the other side did.
+            self._end_settling(pairing, "denied")
             return pairing.public()
         if pairing.open:
             channel = pairing.channel
@@ -740,11 +790,12 @@ class Federation:
         return pairing.public()
 
     async def _maybe_finish(self, pairing: Pairing) -> None:
-        """Store trust once both operators confirmed. THE one place trust is written for a
-        pairing. Everything that could end the pairing (a denial from either side, the
-        deadline, a dropped channel) is decided BEFORE the write, in the same step that claims
-        it: the state moves to ``committing`` with nothing awaited in between, and from then on
-        `_end_pairing` leaves the pairing alone. So a pairing either ends without trust, or
+        """Store trust once both operators confirmed. With `_complete_by_proof`, the only caller
+        of `_start_commit`, THE one place a pairing claims its trust write. Everything that
+        could end the pairing (a denial from either side, the deadline, a dropped channel) is
+        decided BEFORE the write, in the same step that claims it: the state moves to
+        ``committing`` with nothing awaited in between, and from then on `_end_pairing` leaves
+        the pairing alone. So a pairing either ends without trust, or
         commits and ends ``done``; never both."""
         if pairing.state == "committing" and pairing.commit is not None:
             await asyncio.shield(pairing.commit)  # the other confirmation's caller: same outcome
@@ -753,6 +804,12 @@ class Federation:
             return
         if not (pairing.local_confirmed and pairing.remote_confirmed):
             return
+        self._start_commit(pairing)
+        await asyncio.shield(pairing.commit)
+
+    def _start_commit(self, pairing: Pairing) -> None:
+        """Claim the trust write: ``committing``, then the write in its own task. Nothing may be
+        awaited between the caller's last check and this call."""
         pairing.state = "committing"
         # The write belongs to the service, not to this caller. The caller is often a verb
         # handler, which the channel cancels when it closes; a cancelled caller must not leave
@@ -762,7 +819,108 @@ class Federation:
         pairing.commit = self._spawn(self._commit(pairing))
         self._commits.add(pairing.commit)
         pairing.commit.add_done_callback(self._commits.discard)
-        await asyncio.shield(pairing.commit)
+
+    # ── settling: the last confirmation went unanswered ──────────────
+    def _begin_settling(self, pairing: Pairing) -> bool:
+        """Wait for proof instead of failing. Only for a pairing still open that THIS operator
+        confirmed; its expiry timer is replaced by the settling deadline."""
+        if pairing.state != "confirm" or not pairing.local_confirmed:
+            return False
+        pairing.state = "settling"
+        pairing.settle_until = time.time() + SETTLING_S
+        if pairing.timer is not None:
+            pairing.timer.cancel()
+        pairing.timer = asyncio.get_running_loop().call_later(
+            SETTLING_S + 0.05, self._settling_due, pairing
+        )
+        pairing.probe = self._spawn(self._probe(pairing))
+        return True
+
+    def _settling_due(self, pairing: Pairing) -> None:
+        if pairing.state == "settling" and time.time() >= pairing.settle_until:
+            self._end_settling(pairing, "failed", UNPROVEN)
+
+    def _end_settling(self, pairing: Pairing, state: str, error: str = "") -> None:
+        if pairing.state != "settling":
+            return
+        pairing.state = state
+        probe = pairing.probe
+        if probe is not None and not probe.done() and probe is not _current_task():
+            probe.cancel()
+        self._settle(pairing, error)
+
+    def _settling_for(self, remote_key: bytes) -> Pairing | None:
+        return next(
+            (
+                p
+                for p in self._pairings.values()
+                if p.remote_key == remote_key and p.state in ("settling", "committing")
+            ),
+            None,
+        )
+
+    async def _complete_by_proof(self, pairing: Pairing) -> bool:
+        """The other instance proved it stores this peer (it ran a PEER channel with the key
+        this operator confirmed). Store it here too, through the same fenced write. True when
+        the pairing ended ``done``."""
+        if pairing.state == "settling":
+            if time.time() >= pairing.settle_until:
+                self._end_settling(pairing, "failed", UNPROVEN)
+                return False
+            # It trusts this instance, so both operators confirmed on its side.
+            pairing.remote_confirmed = True
+            probe = pairing.probe
+            if probe is not None and not probe.done() and probe is not _current_task():
+                probe.cancel()
+            self._start_commit(pairing)
+        if pairing.state == "committing" and pairing.commit is not None:
+            await asyncio.shield(pairing.commit)
+        return pairing.state == "done"
+
+    async def _probe(self, pairing: Pairing) -> None:
+        """Ask the other instance, over a PEER handshake, whether it stores this pairing. It
+        answers a call only on a channel for a key it trusts. Needed when it cannot reach this
+        instance (a dial is one way); runs until proof, the deadline or the pairing ending."""
+        wait = PROBE_EVERY_S
+        while pairing.state == "settling":
+            for endpoint in ep.ordered(pairing.remote_endpoints):
+                if pairing.state != "settling":
+                    return
+                if await self._probe_once(pairing, endpoint):
+                    await self._complete_by_proof(pairing)
+                    return
+            await asyncio.sleep(max(0.0, min(wait, pairing.settle_until - time.time())))
+            wait = min(wait * 2, PROBE_MAX_S)
+
+    async def _probe_once(self, pairing: Pairing, endpoint: dict) -> bool:
+        transport = None
+        try:
+            transport = await self._dial(endpoint)
+            est = await ch.initiate(
+                transport, self._key(), mode=ch.MODE_PEER, expect_static=pairing.remote_key
+            )
+        except asyncio.CancelledError:
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    await transport.close()
+            raise
+        except Exception:  # unreachable, refused, or not trusted there (yet)
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    await transport.close()
+            return False
+        # No verbs: this side does not trust the other one yet, so it answers nothing.
+        channel = ch.Channel(transport, est, verbs={}, context=None)
+        runner = asyncio.create_task(channel.run())
+        try:
+            await channel.call("peer.ping", timeout=PROBE_CALL_S)
+            return True
+        except ch.CallError:
+            return False
+        finally:
+            channel.close("probe")
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await runner
 
     async def _commit(self, pairing: Pairing) -> None:
         """The trust write of a ``committing`` pairing, and its settlement from the real
@@ -825,7 +983,7 @@ class Federation:
         if not self.owner:
             return False
         self._sweep()
-        if self._invites:
+        if self._invites or any(p.state == "settling" for p in self._pairings.values()):
             return True
         try:
             return self.store.any_trusted()
@@ -871,6 +1029,12 @@ class Federation:
                 return
             if est.mode == ch.MODE_PEER:
                 peer = await asyncio.to_thread(self.store.trusted_key, est.remote_static)
+                if peer is None:
+                    # A settling pairing with this key: the other side dials only peers it
+                    # trusts, so this connection is the proof the pairing waited for.
+                    pairing = self._settling_for(est.remote_static)
+                    if pairing is not None and await self._complete_by_proof(pairing):
+                        peer = await asyncio.to_thread(self.store.trusted_key, est.remote_static)
                 if peer is None:
                     return  # unknown or revoked key: not one application frame
                 await self._run_peer(transport, est, peer)
@@ -969,7 +1133,8 @@ class Federation:
             channel.close()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await runner
-            self._end_pairing(pairing, "failed", "the other instance closed the pairing")
+            if not pairing.confirming:  # else `confirm` decides, from the call's outcome
+                self._end_pairing(pairing, "failed", "the other instance closed the pairing")
 
     # ── peer channels ─────────────────────────────────────────────────
     def _adopt(self, peer_id: str, channel: ch.Channel) -> bool:

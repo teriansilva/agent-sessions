@@ -138,11 +138,23 @@ async def _pair_hello(channel: ch.Channel, args: dict) -> dict:
 
 
 async def _pair_confirm(channel: ch.Channel, args: dict) -> dict:
+    """The other operator confirmed. The answer says whether the peer is stored HERE, because the
+    caller stores it only on ``ok``: ``{}`` when stored or still waiting for this operator, an
+    error when this side ended without storing it. None of these codes is ``closed`` or
+    ``timeout``, which the caller reads as "no answer" (``service.UNANSWERED``)."""
     fed, pairing = channel.context
+    if pairing.state in ("committing", "done"):
+        # Both confirmations crossed: this side's own call was answered first.
+        await fed._maybe_finish(pairing)  # waits for a write under way
+        if pairing.state == "done":
+            return {}
+        raise ch.VerbError("not_stored")
     if fed._expire_due(pairing):
-        raise ch.VerbError("closed")
+        raise ch.VerbError("ended")
     pairing.remote_confirmed = True
     await fed._maybe_finish(pairing)
+    if pairing.local_confirmed and pairing.state != "done":
+        raise ch.VerbError("not_stored")  # both confirmed and the write here failed
     return {}
 
 

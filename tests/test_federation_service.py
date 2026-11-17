@@ -1119,3 +1119,199 @@ def test_the_peer_cap_counts_a_revoked_peer_that_is_trusted_again(tmp_path):
     st.trust(keys[1], name="renamed", endpoints=[])  # an already trusted peer still updates
     st.revoke(identity.peer_id(keys[2]))
     assert st.trust(keys[0], name="first", endpoints=[]).trusted  # room again
+
+
+# ── a lost answer to the last confirmation ────────────────────
+
+
+def _lose_the_answer(fed, *, store_first: bool):
+    """``fed`` handles ``pair.confirm`` and its channel drops before the answer leaves: after
+    the trust write (``store_first``), or before anything was stored."""
+    original = fed._maybe_finish
+
+    async def lossy(pairing):
+        if store_first:
+            await original(pairing)
+        pairing.channel.close("network")
+
+    fed._maybe_finish = lossy
+
+
+async def _accepted_then_inviter_confirms(net, a, b, *, store_first: bool, down=()):
+    """The order of the 2026-11-17 failure: the ACCEPTOR (b) confirms first, then the inviter
+    (a), whose call is the one that loses its answer. ``down``: instances no NEW dial reaches
+    from then on (the pairing channel is already open)."""
+    mine, theirs = await _pair(net, a, b)
+    await b.confirm(theirs)
+    net.down.update(down)
+    _lose_the_answer(b, store_first=store_first)
+    answer = await a.confirm(mine)
+    return mine, theirs, answer
+
+
+@pytest.mark.parametrize("proof", ["the other side dials in", "this side probes"])
+def test_a_lost_confirmation_answer_still_pairs_both_sides(tmp_path, proof):
+    """The other side stored the peer and its answer was lost. This side does not fail (it once
+    did, leaving the other side trusting an instance that refuses it): it waits, shown as
+    waiting, and stores the peer on proof the other side did. Either direction is proof, since
+    an instance may be reachable only one way."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        # "dials in": a's probe cannot reach b, so only b's dial can prove it. "probes": b
+        # cannot reach a, so only a's probe can.
+        down = ("beta",) if proof == "the other side dials in" else ("alpha",)
+        mine, theirs, answer = await _accepted_then_inviter_confirms(
+            net, a, b, store_first=True, down=down
+        )
+        assert answer["state"] == "confirm" and answer["local_confirmed"] is True  # "waiting"
+        assert a._pairings[mine].state == "settling"
+        assert peers_of(b)[a.peer_id]["state"] == "trusted"
+        assert peers_of(a) == {}  # nothing stored before the proof
+        b.start()  # b's dialer reaches out to its new peer
+        await until(lambda: pairing_of(a, mine)["state"] == "done")
+        assert peers_of(a)[b.peer_id]["state"] == "trusted"
+        assert peers_of(a)[b.peer_id]["name"] == "beta"
+        assert a._pairings[mine].probe.done()
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_lost_answer_without_proof_fails_and_stores_nothing(tmp_path, monkeypatch):
+    """The answer was lost and the other side stored nothing: no proof can come, the probe
+    finds no channel, and the pairing fails at the deadline saying what to check."""
+    monkeypatch.setattr(service, "SETTLING_S", 0.6)
+    monkeypatch.setattr(service, "PROBE_EVERY_S", 0.05)
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs, answer = await _accepted_then_inviter_confirms(net, a, b, store_first=False)
+        assert a._pairings[mine].state == "settling"
+        await until(lambda: pairing_of(a, mine)["state"] == "failed")
+        assert "revoke it there" in pairing_of(a, mine)["error"]
+        assert a.store.list_peers() == [] and b.store.list_peers() == []
+        assert not a.accepting()  # the door the settling pairing held open is shut again
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_denial_while_settling_is_final(tmp_path):
+    """The operator declines while the pairing waits: a proof arriving afterwards stores
+    nothing here."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs, _ = await _accepted_then_inviter_confirms(
+            net, a, b, store_first=True, down=("alpha", "beta")
+        )
+        assert (await a.deny(mine))["state"] == "denied"
+        net.down.clear()
+        b.start()
+        await asyncio.sleep(0.3)
+        assert pairing_of(a, mine)["state"] == "denied"
+        assert a.store.trusted_key(b.public_key) is None
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_failed_trust_write_tells_the_caller_not_to_store(tmp_path, monkeypatch):
+    """The side answering the last confirmation could not store the peer. Its answer says so,
+    so the caller fails at once and stores nothing (it used to store on a plain ``ok``)."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs = await _pair(net, a, b)
+        await b.confirm(theirs)
+
+        def refuse(*args, **kwargs):
+            raise store.Conflict()
+
+        monkeypatch.setattr(b.store, "trust", refuse)
+        with pytest.raises(service.FederationError) as err:
+            await a.confirm(mine)
+        assert err.value.code == "peer_gone"
+        assert pairing_of(a, mine)["state"] == "failed"
+        assert a.store.list_peers() == [] and b.store.list_peers() == []
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_confirmations_that_cross_both_store_and_neither_reports_an_error(tmp_path):
+    """Both operators confirm at once: each side's call may find the other side already done.
+    That is an ``ok``, not an error shown next to a stored peer."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs = await _pair(net, a, b)
+        mine_answer, theirs_answer = await asyncio.gather(a.confirm(mine), b.confirm(theirs))
+        await until(lambda: pairing_of(a, mine)["state"] == "done")
+        await until(lambda: pairing_of(b, theirs)["state"] == "done")
+        assert peers_of(a)[b.peer_id]["state"] == "trusted"
+        assert peers_of(b)[a.peer_id]["state"] == "trusted"
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_confirmation_that_times_out_settles_like_a_closed_channel(tmp_path):
+    """The other kind of lost answer: the channel stays up, the other side stored the peer and
+    never answers in time. ``timeout`` is "no answer" too, so this side settles and pairs on
+    the proof."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs = await _pair(net, a, b)
+        await b.confirm(theirs)
+        original = b._maybe_finish
+
+        async def slow(pairing):
+            await original(pairing)  # stored on b
+            await asyncio.sleep(5)  # and the answer comes too late
+
+        b._maybe_finish = slow
+        channel = a._pairings[mine].channel
+        call = channel.call
+        channel.call = lambda verb, args=None, **kw: call(verb, args, timeout=0.3)
+        net.down.add("beta")  # only b's dial can prove it
+        answer = await a.confirm(mine)
+        assert answer["state"] == "confirm" and a._pairings[mine].state == "settling"
+        b.start()
+        await until(lambda: pairing_of(a, mine)["state"] == "done")
+        assert peers_of(a)[b.peer_id]["state"] == "trusted"
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_revoke_while_settling_is_never_undone_by_the_proof(tmp_path):
+    """The settling pairing stores through the same fenced write: a revoke of the key made
+    while it waits (here by another process over the same store) makes the proof store
+    nothing, and the row stays revoked."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        mine, theirs, _ = await _accepted_then_inviter_confirms(
+            net, a, b, store_first=True, down=("beta",)
+        )
+        assert a._pairings[mine].state == "settling" and a._pairings[mine].fence == 0
+        other = store.Store(a.dir)
+        other.trust(b.public_key, name="beta", endpoints=[])
+        other.revoke(b.peer_id)
+        b.start()
+        await until(lambda: pairing_of(a, mine)["state"] == "failed")
+        assert peers_of(a)[b.peer_id]["state"] == "revoked"
+        assert a.store.trusted_key(b.public_key) is None
+        await _stop(a, b)
+
+    run(go())
