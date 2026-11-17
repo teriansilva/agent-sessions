@@ -1910,9 +1910,10 @@ def _fail_owned_generation(
 
     Under the session lock, and only while ``worker_id`` still owns the launch view (and, for a
     skip start, the start state): close admission for that generation, stop THAT generation's
-    worker only, then — as the waiting create/start always did — discharge an unused creation's
-    reservation, or fail the start; finally record `failed` + reason. A replacement generation,
-    a Discard or a settled view makes this a no-op that touches nothing (False)."""
+    worker only, then — as the waiting create/start always did — discharge an unused creation's or
+    skip-start's reservation (#2096) and, for a skip start, mark the start `failed`; finally record
+    `failed` + reason. A replacement generation, a Discard or a settled view makes this a no-op
+    that touches nothing (False)."""
     with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
         record = native_state.read_session(session_id)
         if record is None or not _owns_launch(record, worker_id, kind):
@@ -1921,9 +1922,8 @@ def _fail_owned_generation(
             record["closed"] = True
         native_state.write_session(session_id, record)
         contained = _stop_generation_locked(session_id, record, worker_id)
-        if contained == "gone" and kind == "create" and not record.get("workers"):
-            _discharge_if_unused(engine_id, session_id, record)
         if contained == "gone" and not record.get("workers"):
+            _discharge_if_unused(engine_id, session_id, record)
             # Nothing of this session runs (proved under its lock): its specialist slot is free.
             _release_specialist_slot(record)
         if kind == "start":
@@ -1973,6 +1973,68 @@ def _starting_launches() -> tuple[list[tuple[str, str, str, str]], int]:
         kind = "start" if record["request"].get("bypass") else "create"
         found.append((engine, session_id, view["gen"], kind))
     return found, unreadable
+
+
+def _stranded_failed_starts() -> tuple[list[tuple[str, str]], int]:
+    """Candidate (engine, session id) pairs for already-settled failed skip-starts (#2096) that
+    still hold an unbound reservation in `native_ownership`, plus unreadable count.
+
+    Discovery only: `_recover_failed_start` re-reads and revalidates the record inside
+    `session_lock` before discharging so a concurrent `Start again` keeps its reservation."""
+    found, unreadable = [], 0
+    paths = sorted(native_state.root().glob("*.json"))
+    for path in paths:
+        try:
+            record = native_state.read(path)
+        except (OSError, ValueError, native_state.StateError):
+            unreadable += 1
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("request"), dict):
+            continue
+        if not record["request"].get("bypass"):
+            continue
+        if (record.get("start") or {}).get("state") != FAILED:
+            continue
+        view = launch_view(record)
+        if view is None or view["state"] != FAILED:
+            continue
+        if record.get("workers") or record.get("native_id") is not None:
+            continue
+        session_key = str(record.get("session_key", ""))
+        engine, _, session_id = session_key.partition(":")
+        if not engine or session_id != path.stem:
+            continue
+        try:
+            intent = native_ownership.lookup(session_key)
+        except native_ownership.OwnershipError:
+            unreadable += 1
+            continue
+        if intent is not None and intent.native_id is None:
+            found.append((engine, session_id))
+    return found, unreadable
+
+
+def _recover_failed_start(engine_id: str, session_id: str) -> bool:
+    """Discharge an unbound reservation left by an already-settled failed skip-start (#2096).
+
+    Re-reads and revalidates the record INSIDE `session_lock` before calling
+    `_discharge_if_unused`, so a concurrent `Start again` that moved `start` or `launch` out of
+    `failed` (or added a worker) after the scan is untouched."""
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        record = native_state.read_session(session_id)
+        if not isinstance(record, dict) or not isinstance(record.get("request"), dict):
+            return False
+        if not record["request"].get("bypass"):
+            return False
+        if (record.get("start") or {}).get("state") != FAILED:
+            return False
+        view = launch_view(record)
+        if view is None or view["state"] != FAILED:
+            return False
+        if record.get("workers") or record.get("native_id") is not None:
+            return False
+        _discharge_if_unused(engine_id, session_id, record)
+        return True
 
 
 def _invocation_live(worker_id: str) -> bool:
@@ -2037,6 +2099,15 @@ async def reconcile_launches(*, periodic: bool = False) -> None:
         except Exception:  # noqa: BLE001 — the state directory itself: the next pass lists again
             log.warning("launch reconciliation could not list API sessions", exc_info=True)
             found, unreadable = [], 1
+        try:
+            stranded, stranded_unreadable = await asyncio.to_thread(_stranded_failed_starts)
+            unreadable += stranded_unreadable
+        except Exception:  # noqa: BLE001 — the state directory itself: the next pass lists again
+            log.warning(
+                "launch reconciliation could not list stranded failed starts", exc_info=True
+            )
+            stranded = []
+            unreadable += 1
         for engine_id, session_id, worker_id, kind in found:
             _owned_task(
                 _retrying(
@@ -2046,6 +2117,21 @@ async def reconcile_launches(*, periodic: bool = False) -> None:
                 "launch reconciliation for an API session",
                 gen=worker_id,
             )
+        for engine_id, session_id in stranded:
+            try:
+                await _retrying(
+                    lambda e=engine_id, s=session_id: asyncio.to_thread(
+                        _recover_failed_start, e, s
+                    ),
+                    "failed-start reservation recovery",
+                )
+            except Exception:  # noqa: BLE001 — retain reservation for a later periodic pass
+                log.warning(
+                    "failed-start reservation recovery failed for %s:%s",
+                    engine_id,
+                    session_id,
+                    exc_info=True,
+                )
         if unreadable:
             log.warning("launch reconciliation could not read %d API session(s)", unreadable)
         if not periodic:

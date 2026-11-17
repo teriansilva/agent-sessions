@@ -489,6 +489,14 @@ def test_a_failed_skip_start_reads_failed_and_starts_again(
     assert snap["start_failed"] is True and snap["start_failed_reason"] == snap["launch"]["reason"]
     assert snap["pending_start"] is True  # the pane offers Start again + Discard
     assert native_state.read_session(key.partition(":")[2])["start"]["state"] == "failed"
+    # #2096: a failed skip-start whose worker is proved gone with no turn discharges its
+    # reservation so console launches for the shared store are not held behind 4502.
+    assert native_ownership.lookup(key) is None
+    from agent_sessions import engines
+
+    prov = engines.get("codex")
+    assert prov.snapshot_session_ids(str(project)) is not None
+    native_ownership.check_console(prov)
     monkeypatch.setattr(host, "launch", real)
     assert client.post(f"/api/structured/sessions/{key}/start").status_code == 200
     snap = _poll(
@@ -497,6 +505,8 @@ def test_a_failed_skip_start_reads_failed_and_starts_again(
     )
     assert snap["launch"]["state"] == "ready" and snap["pending_start"] is False
     assert "start_failed" not in snap
+    assert native_ownership.lookup(key).state == "bound"
+    client.post(f"/api/structured/sessions/{key}/stop")
 
 
 def test_a_start_refused_before_any_worker_exists_is_recorded(
@@ -700,12 +710,258 @@ async def test_restart_settles_a_worker_that_exited_starting_as_failed(
         "reason": native_runtime.RESTARTED,
     }
     assert record["workers"] == []
+    # #2096: both guarded create and skip-start discharge an unbound, zero-turn reservation
+    # once the exited worker is proved gone.
+    assert native_ownership.lookup(key) is None
     if bypass:
         assert record["start"]["state"] == "failed"
     else:
-        # A creation that never bound and never ran: its reservation is discharged.
-        assert record["closed"] is True and native_ownership.lookup(key) is None
+        assert record["closed"] is True
     _release(project)
+
+
+@pytest.mark.anyio
+async def test_reconcile_launches_recovers_a_settled_failed_skip_start_and_is_idempotent(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """#2096: an already-settled `start.failed` + `launch.failed` record that still holds an
+    unbound reservation from before #2096 is recovered by `reconcile_launches` under
+    `session_lock`, unblocking console launches while still allowing `Start again`."""
+    from agent_sessions import engines
+
+    real = _break_launches(host, monkeypatch)
+    real_discharge = native_runtime._discharge_if_unused
+    op = ident()
+    key = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op, bypass=True)
+    )["session_key"]
+    # Simulate a pre-#2096 failed start: suppress `_discharge_if_unused` during the failure so the
+    # record settles to `start.failed` + `launch.failed` with its pending reservation stranded.
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", lambda *a, **kw: None)
+    await runtime.start_session(key, wait_ready=False)
+    await _waiters()
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", real_discharge)
+    monkeypatch.setattr(host, "launch", real)
+
+    record = native_state.read_session(op)
+    assert record["start"]["state"] == "failed" and record["launch"]["state"] == "failed"
+    assert record["workers"] == [] and record["native_id"] is None
+    assert (
+        native_ownership.lookup(key) is not None and native_ownership.lookup(key).state == "pending"
+    )
+    prov = engines.get("codex")
+    with pytest.raises(native_ownership.OwnershipError) as exc_info:
+        prov.snapshot_session_ids(str(project))
+    assert exc_info.value.code == "pending"
+
+    # Startup reconciliation discovers the stranded failed start and discharges it under the lock.
+    await native_runtime.reconcile_launches()
+    assert native_ownership.lookup(key) is None
+    assert prov.snapshot_session_ids(str(project)) is not None
+    native_ownership.check_console(prov)
+
+    # Repeated reconciliation is an idempotent no-op.
+    assert native_runtime._stranded_failed_starts() == ([], 0)
+    await native_runtime.reconcile_launches()
+    assert native_ownership.lookup(key) is None
+
+    # And `Start again` re-reserves cleanly and brings the session up.
+    await runtime.start_session(key, wait_ready=False)
+    await _waiters()
+    assert native_state.read_session(op)["launch"]["state"] == "ready"
+    assert native_ownership.lookup(key).state == "bound"
+    await runtime.stop(key)
+
+
+@pytest.mark.anyio
+async def test_failed_start_recovery_revalidates_under_session_lock_against_concurrent_retry(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """#2096 (Hermes review): if `_stranded_failed_starts` scans a failed record and a concurrent
+    `Start again` moves the session out of `failed` before `_recover_failed_start` acquires
+    `session_lock`, re-reading the record inside the lock leaves the replacement untouched."""
+    real = _break_launches(host, monkeypatch)
+    real_discharge = native_runtime._discharge_if_unused
+    op = ident()
+    key = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op, bypass=True)
+    )["session_key"]
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", lambda *a, **kw: None)
+    await runtime.start_session(key, wait_ready=False)
+    await _waiters()
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", real_discharge)
+    monkeypatch.setattr(host, "launch", real)
+
+    # 1. The scan observes the stranded failed record.
+    stranded, unreadable = native_runtime._stranded_failed_starts()
+    assert (ENGINES["codex"], op) in stranded and unreadable == 0
+
+    # 2. A concurrent `Start again` runs before `_recover_failed_start` acquires the lock.
+    _hold(project)
+    await runtime.start_session(key, wait_ready=False)
+    assert native_state.read_session(op)["start"]["state"] == "starting"
+    assert native_ownership.lookup(key) is not None
+
+    # 3. Recovery now runs with the stale scan entry, re-reads inside `session_lock`, and skips.
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op) is False
+    assert native_ownership.lookup(key) is not None
+
+    _release(project)
+    await _waiters()
+    assert native_state.read_session(op)["launch"]["state"] == "ready"
+    assert native_ownership.lookup(key).state == "bound"
+    await runtime.stop(key)
+
+
+@pytest.mark.anyio
+async def test_failed_skip_start_retains_reservation_on_every_unsafe_condition(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """#2096 negative matrix: unknown containment, a remaining worker, a bound native_id, a
+    claimed submit turn, or an unreadable journal must each retain the ownership reservation."""
+    from agent_sessions import native_journal
+
+    _break_launches(host, monkeypatch)
+
+    # (a) Unknown containment: `_stop_generation_locked` returns `"unknown"` and leaves the worker.
+    op_a = ident()
+    key_a = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op_a, bypass=True)
+    )["session_key"]
+    # Clean up op_a so the source store has no pending reservation for the next sub-cases.
+    real_stop_gen = native_runtime._stop_generation_locked
+    op_a_id = key_a.partition(":")[2]
+    monkeypatch.setattr(
+        native_runtime,
+        "_stop_generation_locked",
+        lambda s, r, w: "unknown" if s == op_a_id else real_stop_gen(s, r, w),
+    )
+    await runtime.start_session(key_a, wait_ready=False)
+    await _waiters()
+    assert native_state.read_session(op_a)["start"]["state"] == "failed"
+    assert native_ownership.lookup(key_a) is not None
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op_a) is False
+    assert native_ownership.lookup(key_a) is not None
+
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", real_stop_gen)
+    await runtime.stop(key_a)
+    assert native_ownership.lookup(key_a) is None
+
+    # (b) Another remaining worker in `record["workers"]` even when this generation is `"gone"`.
+    op_b = ident()
+    key_b = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op_b, bypass=True)
+    )["session_key"]
+    other_worker = ident()
+
+    def stop_leaving_other(session_id, record, worker_id):
+        res = real_stop_gen(session_id, record, worker_id)
+        record["workers"] = [other_worker]
+        native_state.write_session(session_id, record)
+        return res
+
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", stop_leaving_other)
+    await runtime.start_session(key_b, wait_ready=False)
+    await _waiters()
+    assert native_ownership.lookup(key_b) is not None
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op_b) is False
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", real_stop_gen)
+    with native_state.session_lock(op_b):
+        rec_b = native_state.read_session(op_b)
+        rec_b["workers"] = []
+        native_state.write_session(op_b, rec_b)
+        native_runtime._discharge_if_unused(ENGINES["codex"], op_b, rec_b)
+    assert native_ownership.lookup(key_b) is None
+
+    # (c) Bound `native_id`: a session whose `native_id` is already set keeps its reservation.
+    op_c = ident()
+    key_c = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op_c, bypass=True)
+    )["session_key"]
+
+    def stop_with_bound_id(session_id, record, worker_id):
+        res = real_stop_gen(session_id, record, worker_id)
+        record["native_id"] = ident()
+        native_state.write_session(session_id, record)
+        return res
+
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", stop_with_bound_id)
+    await runtime.start_session(key_c, wait_ready=False)
+    await _waiters()
+    assert native_ownership.lookup(key_c) is not None
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op_c) is False
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", real_stop_gen)
+    with native_state.session_lock(op_c):
+        rec_c = native_state.read_session(op_c)
+        rec_c["native_id"] = None
+        native_state.write_session(op_c, rec_c)
+        native_runtime._discharge_if_unused(ENGINES["codex"], op_c, rec_c)
+    assert native_ownership.lookup(key_c) is None
+
+    # (d) Journal holds a `submit` claim: reservation is retained.
+    from agent_sessions import native_ipc
+
+    op_d = ident()
+    key_d = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op_d, bypass=True)
+    )["session_key"]
+    prov_api = native_runtime._api_provider(ENGINES["codex"])
+    jroot = native_runtime._journal_root(prov_api)
+    binding_d = native_ipc.Binding(
+        session_key=key_d,
+        worker_id=ident(),
+        connection_id=ident(),
+        adapter="codex-app-server",
+    )
+    native_journal.claim(
+        jroot,
+        {
+            **binding_d.envelope("request"),
+            "request_id": ident(),
+            "action": "submit",
+            "params": {
+                "operation_id": ident(),
+                "expected_revision": 1,
+                "text": "hi",
+                "context": {},
+            },
+        },
+    )
+    await runtime.start_session(key_d, wait_ready=False)
+    await _waiters()
+    assert native_ownership.lookup(key_d) is not None
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op_d) is True
+    assert native_ownership.lookup(key_d) is not None  # still retained because of the submit claim
+    with native_runtime.storage.locked("launch", wait=30):
+        native_ownership.discharge(
+            key_d,
+            operation_id=op_d,
+            owner_token=native_state.read_session(op_d)["owner_token"],
+        )
+
+    # (e) Unreadable journal: reservation is retained (fail closed).
+    op_e = ident()
+    key_e = (
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=op_e, bypass=True)
+    )["session_key"]
+
+    def stop_corrupting_journal(session_id, record, worker_id):
+        res = real_stop_gen(session_id, record, worker_id)
+        (jroot / f"{session_id}.jsonl").write_text("{corrupt-jsonl\n")
+        return res
+
+    monkeypatch.setattr(native_runtime, "_stop_generation_locked", stop_corrupting_journal)
+    await runtime.start_session(key_e, wait_ready=False)
+    await _waiters()
+    assert native_ownership.lookup(key_e) is not None
+    assert native_runtime._recover_failed_start(ENGINES["codex"], op_e) is True
+    assert native_ownership.lookup(key_e) is not None  # retained on unreadable journal
 
 
 @pytest.mark.anyio
@@ -821,3 +1077,91 @@ async def test_shutdown_waits_for_a_launch_thread_and_the_next_start_settles_it(
     await _waiters()
     assert native_state.read_session(op)["launch"]["state"] == "ready"
     await runtime.stop(f"{ENGINES['codex']}:{op}")
+
+
+@pytest.mark.anyio
+async def test_failing_stranded_candidate_does_not_terminate_reconciliation(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """#2096 (Hermes PR review): a stranded failed-start candidate whose recovery exhausts its
+    retry budget during `reconcile_launches(periodic=True)` must not terminate the periodic
+    scanner or prevent an unrelated `starting` launch in the same pass from settling; once the
+    transient failure clears, the next periodic pass recovers and discharges the reservation."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(native_runtime, "_sleep", fake_sleep, raising=False)
+
+    # 1. Create a stranded failed-start candidate (`launch.state == "failed"`, `workers == []`,
+    #    `native_id is None`, pending reservation in `ownership.db`).
+    real_launch = _break_launches(host, monkeypatch)
+    stranded_op = ident()
+    stranded_key = (
+        await runtime.create_session(
+            ENGINES["codex"], str(project), operation_id=stranded_op, bypass=True
+        )
+    )["session_key"]
+    real_discharge = native_runtime._discharge_if_unused
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", lambda *_a, **_kw: False)
+    await runtime.start_session(stranded_key, wait_ready=False)
+    await _waiters()
+    monkeypatch.setattr(native_runtime, "_discharge_if_unused", real_discharge)
+    monkeypatch.setattr(host, "launch", real_launch)
+    assert native_ownership.lookup(stranded_key) is not None
+
+    # 2. Create an unrelated `starting` launch in the same pass (as after a restart).
+    starting_op, starting_key, _starting_gen = await _starting_after_shutdown(project)
+
+    # 3. Fault-inject `_recover_failed_start` for `stranded_op` so it fails through the entire
+    #    first pass's retry budget (`_RETRY_DELAYS`), then succeeds on the second periodic pass.
+    real_recover = native_runtime._recover_failed_start
+    fail_stranded = {"on": True, "attempts": 0, "passes": 0}
+
+    def flaky_recover(engine_id: str, session_id: str) -> bool:
+        if session_id == stranded_op and fail_stranded["on"]:
+            fail_stranded["attempts"] += 1
+            raise native_state.StateError("session lock unavailable during recovery")
+        fail_stranded["passes"] += 1
+        return real_recover(engine_id, session_id)
+
+    monkeypatch.setattr(native_runtime, "_recover_failed_start", flaky_recover)
+
+    periodic = asyncio.create_task(native_runtime.reconcile_launches(periodic=True))
+    try:
+        # Wait until the first pass has exhausted all retry attempts on `stranded_op` and entered
+        # the periodic `RECONCILE_INTERVAL` sleep — proving `periodic` survived!
+        await _until(
+            lambda: asyncio.sleep(0.02, native_runtime.RECONCILE_INTERVAL in slept),
+            bool,
+        )
+        assert (
+            not periodic.done()
+        ), "reconcile_launches(periodic=True) must survive recovery failure"
+        assert fail_stranded["attempts"] >= len(native_runtime.LAUNCH_RETRY_DELAYS) + 1
+        assert native_ownership.lookup(stranded_key) is not None  # retained for the next pass
+
+        # The unrelated `starting` launch received its owner in pass 1 and settles to `ready`.
+        _release(project)
+        await _until(
+            lambda: asyncio.to_thread(native_state.read_session, starting_op),
+            lambda r: r["launch"]["state"] == "ready",
+        )
+
+        # Clear the outage; the next periodic pass recovers and discharges `stranded_key`.
+        fail_stranded["on"] = False
+        await _until(
+            lambda: asyncio.to_thread(native_ownership.lookup, stranded_key),
+            lambda row: row is None,
+        )
+        assert fail_stranded["passes"] >= 1
+    finally:
+        periodic.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await periodic
+    await _waiters()
+    await runtime.stop(starting_key)
