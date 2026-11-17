@@ -154,7 +154,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "103da07c5acb60e1",  # #1960; #1950: propose_mission
+    "ask_orchestrator": "0a93acd0d128c68f",  # #1960; #1950: propose_mission, procedures
     "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
@@ -223,6 +223,10 @@ def test_hq_prompt_creates_the_draft_and_keeps_new_mission_as_the_fallback():
         "choose New mission",
         "nothing runs until Begin",
         "You cannot approve or start missions",
+        # The second live run (#1950): the procedure is applied on the card, and HQ continues.
+        "list_procedures",
+        "procedure_index",
+        "a turn of your own naming the new mission",
     ):
         assert needle in text, needle
 

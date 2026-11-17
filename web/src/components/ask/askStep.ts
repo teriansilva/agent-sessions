@@ -48,6 +48,7 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   propose_hq_memory_change: { label: "Preparing the memory change for you to confirm" },
   // #1611: the Library.
   list_playbooks: { label: "Listing your playbooks", noun: ["playbook", "playbooks"] },
+  list_procedures: { label: "Listing the project's procedures", noun: ["procedure", "procedures"] },
   playbook_detail: { label: "Reading a playbook" },
   playbook_schema: { label: "Reading the playbook format" },
   list_skills: { label: "Listing your skills", noun: ["skill", "skills"] },

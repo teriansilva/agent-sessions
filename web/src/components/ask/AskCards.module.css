@@ -461,6 +461,10 @@
   text-transform: uppercase;
   color: var(--accent-text);
 }
+/* A card's Open mission (#1950): the same link, pushed to the end of its row. */
+.missionLink {
+  margin-left: auto;
+}
 .libraryLink:focus-visible {
   outline: 2px solid var(--accent-text);
   outline-offset: 2px;

@@ -2725,6 +2725,155 @@ test("the folder radio group is one Tab stop and arrow keys move and select (#15
   expect(screen.getByRole("radio", { name: "/srv/c" })).toHaveFocus();
 });
 
+test("a turn whose card was tapped while it answered reads the conversation again, so HQ's continuation shows (#1950)", async () => {
+  // The server settles the question and has already started HQ's continuation (`continued`):
+  // without a re-read nothing is pending on this page, and the operator sees HQ stop.
+  let asked: string | null = null;
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => {
+    asked = body.turnId;
+    return { ...turnOf(body.text, body.turnId, { answer: "Confirm the card." }), continued: true };
+  });
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    conversation(
+      id,
+      asked === null
+        ? []
+        : [
+            turnOf("plan it", asked, { answer: "Confirm the card." }),
+            {
+              ...turnOf("[BattleLab note]", "t-cont", { answer: "The team card is ready." }),
+              via: "card",
+            },
+          ],
+    ),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "plan it");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  const turns = await screen.findByTestId("ask-turns");
+  expect(await within(turns).findByTestId("ask-continuation")).toHaveTextContent(
+    "After your confirm",
+  );
+  expect(await within(turns).findByText("The team card is ready.")).toBeInTheDocument();
+  expect(within(turns).queryByText("[BattleLab note]")).toBeNull();
+});
+
+test("a draft-mission card read done reads the conversation once more, so a continuation that starts a moment later shows (#1950)", async () => {
+  // Another tab, or a reload: the card's own turn settled with the card done, and HQ's
+  // continuation is appended just after this read. Nothing is pending on this page.
+  const done = opTurn(
+    opCard({
+      op: "mission.create",
+      label: "Create a draft mission",
+      verb: "Create draft",
+      state: "done",
+      summary: "Draft mission created.",
+      can_confirm: false,
+      can_dismiss: false,
+    }),
+  );
+  withConversation([done]);
+  vi.mocked(api.askConversation)
+    .mockResolvedValueOnce(conversation(CID, [done]))
+    .mockResolvedValue(
+      conversation(CID, [
+        done,
+        {
+          ...turnOf("[BattleLab note]", "t-cont", { answer: "The team card is ready." }),
+          via: "card",
+        },
+      ]),
+    );
+  await mountAt(<AskConsole configured />);
+  const turns = await screen.findByTestId("ask-turns");
+  expect(
+    await within(turns).findByText("The team card is ready.", undefined, { timeout: 5000 }),
+  ).toBeInTheDocument();
+  expect(within(turns).getByTestId("ask-continuation")).toHaveTextContent("After your confirm");
+});
+
+test("a turn that settles holding a done draft-mission card reads once more for HQ's continuation (#1950)", async () => {
+  // The card was tapped while its own turn still answered: done first, the turn settles later,
+  // and only then does HQ's continuation start.
+  const card = opCard({
+    op: "mission.create",
+    label: "Create a draft mission",
+    verb: "Create draft",
+    state: "done",
+    summary: "Draft mission created.",
+    can_confirm: false,
+    can_dismiss: false,
+  });
+  const pending = { ...opTurn(card), status: "pending" as const, answer: null };
+  const settled = opTurn(card);
+  const cont = {
+    ...turnOf("[BattleLab note]", "t-cont", { answer: "The team card is ready." }),
+    via: "card",
+  };
+  withConversation([pending]);
+  vi.mocked(api.askConversation)
+    .mockResolvedValueOnce(conversation(CID, [pending]))
+    .mockResolvedValueOnce(conversation(CID, [pending]))
+    .mockResolvedValueOnce(conversation(CID, [settled]))
+    .mockResolvedValue(conversation(CID, [settled, cont]));
+  await mountAt(<AskConsole configured />);
+  const turns = await screen.findByTestId("ask-turns");
+  expect(
+    await within(turns).findByText("The team card is ready.", undefined, { timeout: 12000 }),
+  ).toBeInTheDocument();
+}, 20000);
+
+test("a continuation that starts late is still read, and an idle draft card stops the extra reads (#1950)", async () => {
+  // The settled turn with its done draft card is read again until the continuation is the
+  // newest turn: here it lands only on the fourth read. With none coming, the reads stop.
+  const card = opCard({
+    op: "mission.create",
+    label: "Create a draft mission",
+    verb: "Create draft",
+    state: "done",
+    summary: "Draft mission created.",
+    can_confirm: false,
+    can_dismiss: false,
+  });
+  const settled = opTurn(card);
+  const cont = {
+    ...turnOf("[BattleLab note]", "t-cont", { answer: "The team card is ready." }),
+    via: "card",
+  };
+  withConversation([settled]);
+  vi.mocked(api.askConversation)
+    .mockResolvedValueOnce(conversation(CID, [settled]))
+    .mockResolvedValueOnce(conversation(CID, [settled]))
+    .mockResolvedValueOnce(conversation(CID, [settled]))
+    .mockResolvedValue(conversation(CID, [settled, cont]));
+  await mountAt(<AskConsole configured />);
+  const turns = await screen.findByTestId("ask-turns");
+  expect(
+    await within(turns).findByText("The team card is ready.", undefined, { timeout: 12000 }),
+  ).toBeInTheDocument();
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 2600));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+}, 25000);
+
+test("a done draft card whose continuation never comes is read again a bounded number of times (#1950)", async () => {
+  const settled = opTurn(
+    opCard({
+      op: "mission.create",
+      state: "done",
+      summary: "Draft mission created.",
+      can_confirm: false,
+      can_dismiss: false,
+    }),
+  );
+  withConversation([settled]);
+  await mountAt(<AskConsole configured />);
+  await screen.findByTestId("ask-operation");
+  await new Promise((r) => setTimeout(r, 11000));
+  // The first read, then CONTINUE_RECHECKS (4) more, and no others.
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(5);
+}, 25000);
+
 // ---- Stop (#2076) ------------------------------------------------------------------------------
 
 /** A question that never settles on its own: the stream stays open until `finish` is called. */
@@ -2843,3 +2992,24 @@ test("a running turn read back shows its process row and the server's live count
   expect(within(row).getByTestId("ask-process-tally")).toHaveTextContent(/^240 steps · 1 m 0\d s$/);
   expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
 });
+
+test("a stopped turn holding a done draft card is not read again for a continuation (#1950, #2076)", async () => {
+  const stopped = {
+    ...opTurn(
+      opCard({
+        op: "mission.create",
+        state: "done",
+        summary: "Draft mission created.",
+        can_confirm: false,
+        can_dismiss: false,
+      }),
+    ),
+    status: "stopped" as const,
+    answer: null,
+  };
+  withConversation([stopped]);
+  await mountAt(<AskConsole configured />);
+  await screen.findByTestId("ask-operation");
+  await new Promise((r) => setTimeout(r, 4500));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(1);
+}, 15000);

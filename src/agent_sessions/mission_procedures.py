@@ -302,11 +302,26 @@ def _listing(
     exactly the ones the operator's `{index, listing}` was chosen against, and a re-applied
     deployment with other targets is a different listing."""
     scope = missions.procedure_scope(mission_id)
-    primary = scope["project_id"]
+    out, record, bundle = _project_listing(scope["project_id"], project_id)
+    return {"mission_id": mission_id, **out}, record, bundle
+
+
+def project_listing(project_id: str) -> dict:
+    """The procedures a NEW mission in ``project_id`` could apply, by index, with the digest of
+    exactly this list (#1950: HQ's draft-mission card picks one before the mission exists).
+
+    The same builder as a mission's own listing, with that project as the primary: the digest
+    binds the project, never a mission, so the listing a draft created in this project reads
+    afterwards has the same digest while nothing about the deployment moved. BLOCKING."""
+    return _project_listing(project_id, None)[0]
+
+
+def _project_listing(
+    primary: str | None, project_id: str | None = None
+) -> tuple[dict, dict | None, dict | None]:
     # A project OTHER than the mission's needs the mission to have its own (its primary) first.
     pid = (project_id or primary) if primary else None
     out: dict = {
-        "mission_id": mission_id,
         "project_id": pid,
         "primary_project_id": primary,
         "playbook": None,

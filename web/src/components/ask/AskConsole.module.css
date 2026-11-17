@@ -42,6 +42,27 @@
   border-left: 3px solid var(--hud);
   background: color-mix(in srgb, var(--hud) 6%, transparent);
 }
+/* HQ continuing after a confirmed card (#1950): not the Commander's words, so a slim rule-led line
+ * in --text-2 (AA on both themes), never the "You" bubble's HUD accent. */
+.continuation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-2);
+  min-height: 28px;
+  margin: 2px 0 var(--sp-2);
+  padding: 4px 10px;
+  border-left: 3px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.continuation b {
+  font-weight: 600;
+  color: var(--text-1);
+}
 /* An answer: a framed plate (the chamfered edge, the rail along its top) — the transmission. */
 .answer {
   composes: nj-frame-sm from global;

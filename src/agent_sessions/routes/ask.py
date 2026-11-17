@@ -219,7 +219,7 @@ def _ndjson(ev: dict) -> str:
     return json.dumps(ev) + "\n"
 
 
-def _conversation_body(cid: str, records: list[dict]) -> dict:
+def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None) -> dict:
     title = ""
     for r in records:
         if r.get("type") == "user" and isinstance(r.get("text"), str):
@@ -241,9 +241,10 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
     return {
         "id": cid,
         "title": title,
-        # A turn running here carries the server's live step totals (#2076), not the store's.
+        # A turn running here carries the server's live step totals (#2076), not the store's;
+        # the card states were read before the records (#1950, `cards`).
         "turns": ask_orchestrator.with_running(
-            ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid), cid
+            ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid, cards), cid
         ),
         "running": ask_orchestrator.running(cid),
         # #1443 Phase 4: what the follower wrote, in order; the client shows each session's newest
@@ -306,13 +307,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     async def get_conversation(cid: str, _: str = Depends(logged_in)) -> JSONResponse:
         if not ask_store.valid_cid(cid):
             return _missing(cid)
+        # The card states FIRST (#1950): a card read `done` then has, in the records read after
+        # it, the turn its tap started — a client never sees "done, and HQ stopped".
+        cards = await asyncio.to_thread(ask_proposals.views, cid)
         try:
             records = await ask_orchestrator.read_conversation(cid)
         except ask_store.ConversationNotFound:
             return _missing(cid)
         except ask_store.StoreRefused as e:
             return _refused(e)
-        body = await asyncio.to_thread(_conversation_body, cid, records)
+        body = await asyncio.to_thread(_conversation_body, cid, records, cards)
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/ask/conversations/{cid}")

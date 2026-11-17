@@ -31,6 +31,8 @@ import type {
 
 import { FolderPickerModal } from "../FolderPickerModal";
 import { LibraryContent, OpenInLibrary } from "./LibraryContent";
+import { Link } from "react-router-dom";
+import { MISSION_ID_RE, missionLink } from "../../lib/missionLink";
 import { Led, type LedTone, Stamp } from "../hud/Meters";
 import c from "./AskCards.module.css";
 import type { FollowRow } from "./askUpdates";
@@ -865,6 +867,7 @@ export function OperationCard({
           >
             Dismiss
           </button>
+          <OpenMission card={p} />
         </div>
       ) : (
         <div className={c.outcome} role="status" data-testid="ask-operation-outcome">
@@ -874,6 +877,7 @@ export function OperationCard({
           {(p.state === "done" || p.state === "unconfirmed") && p.library ? (
             <OpenInLibrary saved={p.library} />
           ) : null}
+          <OpenMission card={p} />
           {p.state === "unsettled" && p.can_confirm ? (
             <button
               type="button"
@@ -1056,5 +1060,23 @@ export function MessageCard({
         </div>
       )}
     </div>
+  );
+}
+
+/** The way into the mission a card names (#1950): a team card's mission, or the draft a mission
+ *  card created. Built from the SERVER's id (`card.mission`), shape-checked as the console's deep
+ *  link is — never from the card's text. Nothing to open (no id yet, or a malformed one): nothing. */
+function OpenMission({ card }: { card: AskOperationCard }) {
+  const id = card.mission?.id;
+  if (!id || !MISSION_ID_RE.test(id)) return null;
+  return (
+    <Link
+      className={`${c.libraryLink} ${c.missionLink}`}
+      to={missionLink(id)}
+      aria-label={`Open mission ${card.title}`}
+      data-testid="ask-operation-mission"
+    >
+      Open mission
+    </Link>
   );
 }

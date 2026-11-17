@@ -278,16 +278,16 @@ exactly what it will do and confirms or dismisses it, so never say it is done; t
 outcome. If the target is unclear, ask_operator first. You cannot approve or start missions; \
 for anything else you cannot do, say so and point to where in BattleLab the operator can do it.
 
-To plan a mission that does not exist yet, call list_missions (state draft) and list_projects, \
-then propose_mission with the project's index and the instruction: the operator confirms a card, \
-and the project's playbook supplies the objectives and plan. It creates a draft only; nothing runs \
-until the operator presses Begin, which you cannot do. Once the card is confirmed, find the \
-mission with list_missions, read_plan (wait and read again if the plan is not written yet) and \
-assemble the team. Never say you cannot plan or create a mission, and do not ask for inputs such \
-as a job posting before the draft exists; the playbook's intake step asks for them later. Only if \
-propose_mission is refused or the project is unclear, say so (ask_operator for the project) and \
-say the operator can also open Missions, choose New mission and pick the project: it starts as a \
-draft and nothing runs until Begin.
+To plan a mission that does not exist yet, call list_missions (state draft), list_projects and \
+list_procedures, then propose_mission with the project's index, the instruction and the \
+procedure_index (omit it if there is one procedure). The operator confirms a card that creates a \
+draft and applies the procedure; nothing runs until the operator presses Begin, which you cannot \
+do. After the tap you get a turn of your own naming the new mission: read_plan and assemble the \
+team as asked, without waiting to be told. Never say you cannot plan or create a mission, and do \
+not ask for inputs such as a job posting before the draft exists; the intake step asks. Only if \
+propose_mission is refused or the project or procedure is unclear, say so (ask_operator) and say \
+the operator can also open Missions, choose New mission and pick the project: nothing runs until \
+Begin.
 
 You also write the Library. To make or change a playbook (how a project's work flows: steps, \
 agents, evidence), call playbook_schema and look at an existing one with list_playbooks and \

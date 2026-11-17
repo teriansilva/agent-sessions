@@ -291,7 +291,9 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "set_override": "proposal",
         "clear_override": "proposal",
         "propose_session": "proposal",
-        # #1950: a DRAFT mission from a project and an instruction; Begin stays the operator's.
+        # #1950: a DRAFT mission from a project, an instruction and the project's deployed
+        # procedure (read by index); Begin stays the operator's.
+        "list_procedures": "read",
         "propose_mission": "proposal",
         # #1554: usage, the fleet and the allowlisted settings view — all read-only.
         "agent_usage": "read",

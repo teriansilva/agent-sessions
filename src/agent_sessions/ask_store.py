@@ -112,8 +112,10 @@ STEP_NUMBER_MAX = 10**12
 #: Tool names one `steps_more` summary may count, each way (run, refused).
 STEPS_MORE_NAMES_MAX = 128
 #: How a question may arrive besides typing (#1397). `call` = spoken on an in-app call; the
-#: phone and WhatsApp channels (#1397 P5) add theirs here when they exist.
-VIAS = frozenset({"call"})
+#: phone and WhatsApp channels (#1397 P5) add theirs here when they exist. `card` = not a question
+#: at all: the server's continuation after a confirmed draft-mission card (#1950,
+#: `ask_orchestrator.continue_after_card`), its text server-written.
+VIAS = frozenset({"call", "card"})
 
 RECORD_TYPES = frozenset(
     {
@@ -1175,6 +1177,13 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         ):
             raise ValueError("malformed committed destination")
         out["committed"] = {k: committed[k] for k in ("id", "rev", "digest")}
+    # The draft a mission card created (#1950): the id its route returned, for the card's link and
+    # HQ's continuation. A mission id, never anything else.
+    mid = e.get("mission_id")
+    if mid is not None:
+        if not (isinstance(mid, str) and missions.MISSION_ID_RE.match(mid)):
+            raise ValueError("malformed mission id")
+        out["mission_id"] = mid
     return out
 
 

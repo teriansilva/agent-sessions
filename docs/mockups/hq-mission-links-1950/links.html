@@ -1,0 +1,107 @@
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1950 · HQ plans a mission in one message</title>
+<link rel="stylesheet" href="../../../web/src/tokens.css">
+<link rel="stylesheet" href="../../../web/src/components/hud/nightjar.css">
+<style>
+*{box-sizing:border-box}
+:root{--font-mono:"Liberation Mono",monospace;--font-display:"Liberation Mono",monospace}
+body{margin:0;padding:24px;background:var(--bg-0);color:var(--text-1);font:14px/1.5 "Liberation Sans",sans-serif}
+h1{font:700 18px "Liberation Mono",monospace;margin:0 0 4px}
+.sub{margin:0 0 20px;color:var(--text-2);font-size:13px;max-width:1300px}
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;align-items:start}
+body.mobile .board{grid-template-columns:1fr}
+body.mobile{padding:12px}
+.label{margin:0 0 8px;color:var(--text-2);font:11px "Liberation Mono",monospace;letter-spacing:.08em}
+.panel{border:1px solid var(--border);background:var(--bg-1);padding:12px}
+.ann{margin:8px 0 0;color:var(--text-2);font-size:12px}
+/* the thread */
+.you{border:1px solid var(--line);border-left:3px solid var(--hud);background:color-mix(in srgb,var(--hud) 6%,transparent);padding:8px 10px;margin-bottom:10px}
+.eh{font:10px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-2);margin-bottom:4px}
+.t{font-size:13px;line-height:1.55}
+.cont{display:flex;align-items:center;gap:8px;margin:2px 0 10px;padding:6px 10px;border-left:3px solid var(--line-strong);color:var(--text-2);font:10px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;min-height:28px}
+.cont b{color:var(--text-1);font-weight:600}
+.ans{--nj-face:var(--bg-2);--nj-edge:var(--line-strong);padding:8px 10px;margin-bottom:10px}
+.spk{display:flex;align-items:center;gap:8px;font:600 10px var(--font-display);letter-spacing:.16em;text-transform:uppercase;color:var(--text-2);margin-bottom:6px}
+.av{width:22px;height:22px;background:var(--surface-3);border:1px solid var(--line-strong)}
+.grp{font:10px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-2);margin:12px 0 0}
+.match{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:8px 0 0 10px;padding-left:10px;border-left:1px solid var(--line-strong)}
+.mb{flex:1 1 160px;min-width:0}
+.why{font-size:11px;color:var(--text-2);margin-top:2px}
+.ghost{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;border:1px solid var(--line-strong);background:transparent;color:var(--text-1);font:600 11px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;margin-left:auto;text-decoration:none}
+/* a card */
+.card{--nj-face:var(--bg-2);--nj-edge:var(--line-strong);margin-top:12px}
+.ch{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font:600 11px var(--font-display);letter-spacing:.16em;text-transform:uppercase;color:var(--hud-text,var(--accent-text))}
+.ch::before{content:"";width:18px;height:8px;background:repeating-linear-gradient(-45deg,var(--hud) 0 3px,transparent 3px 6px)}
+.ch .st{margin-left:auto;font:600 10px var(--font-mono);letter-spacing:.14em}
+.cb{padding:8px 12px}
+.row{display:grid;grid-template-columns:72px 1fr;gap:8px;font-size:12px;padding:2px 0}
+.row .k{font:10px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-2);padding-top:2px}
+.ct{font-size:13px;font-weight:600;line-height:1.5;margin-top:6px}
+.acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px;border-top:1px solid var(--line)}
+.cta{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;background:var(--accent);color:var(--on-accent,#111);border:0;font:600 11px var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+.btn{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;border:1px solid var(--line-strong);background:transparent;color:var(--text-1);font:600 11px var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+.link{display:inline-flex;align-items:center;min-height:44px;font:10px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-text);text-decoration:underline;text-underline-offset:3px}
+.acts .link{margin-left:auto}
+.out{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:8px 12px;border-top:1px solid var(--line)}
+.led{width:8px;height:8px;border-radius:50%;background:var(--status-up);box-shadow:0 0 6px var(--status-up)}
+.ow{font:600 10px var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ok-text)}
+.od{flex:1 1 140px;min-width:0;font-size:11px;color:var(--text-2)}
+.new{outline:2px dashed var(--accent);outline-offset:3px}
+.key{display:inline-block;margin-left:6px;padding:0 4px;font:600 9px var(--font-mono);color:var(--accent-text);border:1px solid var(--accent);vertical-align:middle;letter-spacing:.08em}
+</style>
+<body>
+<script src="head.js"></script>
+<h1>#1950 · HQ plans a mission in one message: the procedure, the continuation, the links</h1>
+<p class="sub">Synthetic mission, no personal content. Dashed outlines mark what is new (annotations only). Every link is built by the client from a mission id the server returned on the card or the answer (<code>missionLink(id)</code>, the console's one deep link); no URL comes from model text.</p>
+<div class="board">
+
+<div><div class="label">1 · ONE MESSAGE → THE DRAFT CARD NOW APPLIES THE PROCEDURE</div>
+<div class="panel">
+ <div class="you"><div class="eh">You</div><div class="t">Plan an application mission for Synthetic Applications with its application playbook. Show me the team, start nothing.</div></div>
+ <div class="ans nj-frame-sm"><div class="spk"><span class="av"></span>General Kenji Mori</div>
+  <div class="t">The card is ready: a draft in Synthetic Applications with the playbook's procedure "Application". Confirm it and I'll read the plan and propose the team. Nothing runs until you press Begin.</div>
+  <div class="card nj-frame-sm"><div class="ch">Proposal · mission<span class="st">PENDING</span></div>
+   <div class="cb"><div class="row"><span class="k">Action</span><span>Create a draft mission</span></div><div class="row"><span class="k">Target</span><span>Synthetic Applications</span></div>
+    <div class="ct new">Creates a draft mission: "Apply for the job". Applies the procedure "Application" from the project's deployed playbook, so the plan gets its steps and roles. Nothing runs until you press Begin.</div></div>
+   <div class="acts"><button class="cta">Create draft</button><button class="btn">Dismiss</button></div>
+  </div>
+ </div>
+ <p class="ann">The card names the procedure it applies (the only one, or the one HQ was told; ambiguous → HQ asks). The false "objectives and plan are written from the project's playbook" line is gone.</p>
+</div></div>
+
+<div><div class="label">2 · CONFIRMED → OPEN MISSION, AND HQ CONTINUES BY ITSELF</div>
+<div class="panel">
+ <div class="card nj-frame-sm" style="margin-top:0"><div class="ch">Proposal · mission<span class="st">DONE</span></div>
+  <div class="cb"><div class="row"><span class="k">Action</span><span>Create a draft mission</span></div><div class="row"><span class="k">Target</span><span>Synthetic Applications</span></div></div>
+  <div class="out"><span class="led"></span><span class="ow">Done</span><span class="od">Draft mission created (Apply for the job) with the procedure "Application" as plan revision 1. Nothing runs until you press Begin.</span><a class="link new" href="#">Open mission</a></div>
+ </div>
+ <div class="cont new" style="margin-top:12px">↳ <b>After your confirm</b> · HQ continues</div>
+ <div class="ans nj-frame-sm"><div class="spk"><span class="av"></span>General Kenji Mori</div>
+  <div class="t">The plan has 10 steps; 6 are agent steps with a role. Confirm the card and the cheapest qualifying specialist goes on each.</div>
+  <div class="grp new">Missions</div>
+  <div class="match"><div class="mb"><div class="t">Apply for the job</div><div class="why">draft</div></div><a class="ghost" href="#">Open mission</a></div>
+  <div class="card nj-frame-sm"><div class="ch">Proposal · team<span class="st">PENDING</span></div>
+   <div class="cb"><div class="row"><span class="k">Action</span><span>Assemble the team</span></div><div class="row"><span class="k">Target</span><span>Apply for the job</span></div>
+    <div class="ct">Picks a specialist for every agent step that has none, the cheapest that qualifies (plan revision 1). It writes a new plan revision and launches nothing.</div></div>
+   <div class="acts"><button class="cta">Assemble</button><button class="btn">Dismiss</button><a class="link new" href="#">Open mission</a></div>
+  </div>
+ </div>
+ <p class="ann">The continuation is not the Commander typing, so it is a slim line, never a "You" bubble. It runs once per confirmed draft card, only when no newer turn exists, and it can read and propose cards; it cannot send, nudge or remember.</p>
+</div></div>
+
+<div><div class="label">3 · TEAM CONFIRMED · THE DOWNGRADE STILL REFUSED · LINKS IN ANSWERS</div>
+<div class="panel">
+ <div class="card nj-frame-sm" style="margin-top:0"><div class="ch">Proposal · team<span class="st">DONE</span></div>
+  <div class="cb"><div class="row"><span class="k">Action</span><span>Assemble the team</span></div><div class="row"><span class="k">Target</span><span>Apply for the job</span></div></div>
+  <div class="out"><span class="led"></span><span class="ow">Done</span><span class="od">Saved as plan revision 2.</span><a class="link new" href="#">Open mission</a></div>
+ </div>
+ <div class="you" style="margin-top:12px"><div class="eh">You</div><div class="t">Put the review on sonnet.</div></div>
+ <div class="ans nj-frame-sm"><div class="spk"><span class="av"></span>General Kenji Mori</div>
+  <div class="t">I can't: sonnet is Specialist, below Senior, which application-review needs (grade_below_min). Nothing was written; the review stays on application-reviewer with opus.</div>
+  <div class="grp new">Missions</div>
+  <div class="match"><div class="mb"><div class="t">Apply for the job</div><div class="why">draft</div></div><a class="ghost" href="#">Open mission</a></div>
+ </div>
+ <p class="ann">An answer lists the missions its tools looked at one by one (mission_status, read_plan, read_pool, a team proposal, a draft HQ created) and the rows of list_missions / find_sessions the answer names, each with the server's title. The Missions group is the existing #1069 row.</p>
+</div></div>
+
+</div>
+</body></html>

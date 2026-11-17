@@ -162,10 +162,16 @@ export interface AskTurn {
   at: number | null;
   /** Files shared with the question (#1707). */
   attachments: AskAttachment[];
+  /** The server's continuation after a confirmed card (#1950): its question is the server's
+   *  note, not the Commander's words, so it renders as a slim line, never a "You" bubble. */
+  continuation?: boolean;
 }
 
 /** How often a turn this page is not streaming is read again until it settles. */
 const POLL_MS = 2000;
+/** How many times a settled turn holding a done draft-mission card is read again, POLL_MS apart,
+ *  for HQ's continuation to appear (#1950). */
+const CONTINUE_RECHECKS = 4;
 /** How often a conversation with an undecided or in-flight card is read again, so a decision
  *  taken elsewhere (Needs you, another tab) or a proposal's expiry reaches the card. */
 export const CARD_POLL_MS = 15_000;
@@ -214,6 +220,7 @@ function fromServer(t: AskConversationTurn): AskTurn {
     at: typeof t.asked_at === "number" ? t.asked_at : null,
     contact: t.contact ?? "off",
     attachments: t.attachments ?? [],
+    continuation: t.via === "card",
   };
 }
 
@@ -401,6 +408,10 @@ export function AskConsole({
   // A session just started or a nudge just delivered: keep reading for a while, so the follow it
   // earns arrives.
   const startedSeen = useRef(new Map<string, string>());
+  /** HQ's continuation after a draft-mission card (#1950): how often each `card:phase` was read
+   *  again (`CONTINUE_RECHECKS`). */
+  const continueSeen = useRef(new Map<string, number>());
+  const [recheck, setRecheck] = useState(0);
   const [reconciling, setReconciling] = useState(false);
   const reconcileTimer = useRef<number | null>(null);
   const reconcile = useCallback(() => {
@@ -563,6 +574,27 @@ export function AskConsole({
             earned = true;
         }
       if (earned) reconcile();
+      // HQ continues by itself after a confirmed draft-mission card (#1950), and that turn can
+      // start a moment AFTER the card reads done: a tap while the card's own turn was still
+      // answering continues once that turn settles. Seen with nothing pending, this page would
+      // stop reading and HQ would look stopped, so it reads again: once when such a card on the
+      // newest turn turns done, and, once that turn has settled, until the continuation is the
+      // newest turn — at most CONTINUE_RECHECKS times (no continuation may be coming at all).
+      const newest = (c.turns ?? [])[(c.turns ?? []).length - 1];
+      const phase = newest?.status === "pending" ? "pending" : "settled";
+      // A turn the Commander stopped (#2076) owes no continuation: nothing to read again for.
+      const most = newest?.status === "stopped" ? 0 : phase === "pending" ? 1 : CONTINUE_RECHECKS;
+      let again = false;
+      for (const p of newest?.proposals ?? []) {
+        if (p.kind !== "operation" || p.op !== "mission.create" || p.state !== "done") continue;
+        const key = `${p.action_id}:${phase}`;
+        const n = continueSeen.current.get(key) ?? 0;
+        if (n < most) {
+          continueSeen.current.set(key, n + 1);
+          again = true;
+        }
+      }
+      if (again) setRecheck((n) => n + 1);
     } catch (e) {
       // No such conversation (#1776): the page says so — unknown, expired and deleted alike.
       if (fresh() && e instanceof ApiError && e.status === 404) {
@@ -721,6 +753,14 @@ export function AskConsole({
       void load(cidRef.current);
     }
   }, [visible, load]);
+
+  // The one extra read a done draft-mission card asks for (`load`, #1950).
+  useEffect(() => {
+    const id = cidRef.current;
+    if (!recheck || !id) return;
+    const timer = window.setTimeout(() => void load(id), POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [recheck, load]);
 
   // A turn still running on the server that this page is not streaming (a reload, a dropped
   // connection, another tab) is read again until it settles.
@@ -917,7 +957,9 @@ export function AskConsole({
             ),
           );
           if (!title) setTitle(settled.question);
-          if (loadedFor.current !== id) void load(id);
+          // HQ continued by itself after a card tapped during this turn (#1950): its new turn
+          // already exists, and nothing else here is pending to make the page read again.
+          if (loadedFor.current !== id || settled.continued) void load(id);
         }
         void refreshList();
         return sent();
@@ -1446,18 +1488,28 @@ export function AskConsole({
           >
             {turns.map((t) => (
               <div key={t.id} data-testid="ask-turn">
-                <article
-                  className={`${styles.event} ${a.you}`}
-                  aria-label="You"
-                >
-                  <div className={`${styles.eventHead} ${a.label}`}>You</div>
-                  <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
-                  <AttachmentList
-                    cid={cid ?? null}
-                    attachments={t.attachments}
-                    expanded={t.pending || t.live === true}
-                  />
-                </article>
+                {t.continuation ? (
+                  /* HQ continuing after a confirmed card (#1950): the server's note, never the
+                     Commander's words — a slim line in fixed copy, never a "You" bubble. */
+                  <div className={a.continuation} data-testid="ask-continuation">
+                    <span aria-hidden="true">↳</span>
+                    <b>After your confirm</b>
+                    <span>· HQ continues</span>
+                  </div>
+                ) : (
+                  <article
+                    className={`${styles.event} ${a.you}`}
+                    aria-label="You"
+                  >
+                    <div className={`${styles.eventHead} ${a.label}`}>You</div>
+                    <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
+                    <AttachmentList
+                      cid={cid ?? null}
+                      attachments={t.attachments}
+                      expanded={t.pending || t.live === true}
+                    />
+                  </article>
+                )}
                 <article
                   className={`${styles.event} ${a.answer}`}
                   aria-label={`Answer from ${speakerName(t.contact)}`}

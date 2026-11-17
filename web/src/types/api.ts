@@ -1211,6 +1211,9 @@ export interface AskOperationCard {
   /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
    *  empty id (a new automation, whose id the route chose) opens the list. */
   library?: { kind: "playbook" | "skill" | "automation" | "secret"; id: string };
+  /** The mission this card names (#1950): a team card's mission, or the draft a mission card
+   *  created. The server's own id; the card's Open mission link is built from it (`missionLink`). */
+  mission?: { id: string };
 }
 
 /** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an
@@ -1337,6 +1340,13 @@ export interface AskConversationTurn {
   contact?: string;
   /** Files shared with the question (#1707) — their descriptors, as stored. */
   attachments?: AskAttachment[];
+  /** How the turn began (#1397, #1950): absent = typed, `call` = spoken on a call, `card` = the
+   *  server's continuation after a confirmed draft-mission card — not the Commander's words. */
+  via?: "call" | "card" | null;
+  /** On a settled view only, never stored (#1950): this turn's draft card was tapped while it
+   *  was still answering, and the server has just started HQ's continuation, so the client reads
+   *  the conversation again at once instead of waiting for nothing. */
+  continued?: boolean;
 }
 
 /** A file shared in the HQ chat (#1707). The bytes live on the server; this is what the

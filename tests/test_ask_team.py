@@ -199,11 +199,20 @@ def test_hq_creates_a_draft_mission_then_assembles_its_team_in_one_conversation(
     assert r.status_code == 200, r.text
     (card,) = _mission_cards(live, cid)
     assert card["title"] == "Marcus Privat" and "press Begin" in card["text"]
+    assert "no deployed playbook" in card["text"]  # this project has none: no procedure
     assert len(missions.safe_list_missions()["missions"]) == 1, "staging creates nothing"
     d = live.decide(card["action_id"], {"decision": "confirm"})
     assert d.status_code in (200, 202), d.text
     settled = live.settled(cid)
     assert settled["state"] == "done", (settled.get("summary"), settled.get("reason"))
+    # HQ continues once by itself (#1950): wait for that server-started turn to settle first.
+    end = time.monotonic() + 20
+    while time.monotonic() < end:
+        turns = live.get(cid)["turns"]
+        if len(turns) == 2 and turns[1]["status"] != "pending":
+            break
+        time.sleep(0.05)
+    assert [t["via"] for t in live.get(cid)["turns"]] == [None, "card"]
     (new,) = [m for m in missions.safe_list_missions()["missions"] if m["title"] != "Apply"]
     assert new["state"] == "draft" and new["project_id"] == pid
     assert new["instruction"] == "Apply for the job"

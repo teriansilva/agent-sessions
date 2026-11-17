@@ -373,6 +373,9 @@ class Operation:
     #: ``route``: ``async (cid, target, fields, facts, app, operator) → {"state", "outcome"}``.
     #: Idempotent: an ``unsettled`` card is confirmed again and the runner resumes.
     run: Callable | None = None
+    #: A ``done`` card starts ONE continuation turn in its conversation (#1950: HQ continues after
+    #: the draft-mission card, `ask_orchestrator.continue_after_card`). Off for every other card.
+    follow_up: bool = False
 
 
 class _Moved(Exception):
@@ -873,7 +876,7 @@ async def facts_for(
     if op.group == "mission":  # a draft mission's project (#1950): its name, not archived
         from . import ask_mission
 
-        return await ask_mission.facts(target, app, operator)
+        return await ask_mission.facts(target, fields, app, operator)
     if op.group == "memory":
         from . import ask_memory
 
@@ -952,6 +955,11 @@ def changed(before: dict, now: dict | None) -> str:
         return "it was switched on" if now.get("enabled") else "it was switched off"
     if "revision" in before and before["revision"] != now.get("revision"):
         return "it was saved elsewhere after HQ read it"
+    # A draft mission's procedure (#1950): the deployed playbook's listing it was chosen from.
+    if ("listing" in before and before["listing"] != now.get("listing")) or (
+        "flow" in before and before["flow"] != now.get("flow")
+    ):
+        return "the project's deployed playbook changed"
     if "scope" in before and before["scope"] != now.get("scope"):
         return "what it would do changed"
     return ""
@@ -961,7 +969,7 @@ def gate_fields(op: Operation, raw: dict) -> dict:
     """The operation's typed fields, each through its gate. Fields it doesn't take are refused."""
     out: dict = {}
     for name in op.fields:
-        if name in ("project_id", "project_name"):
+        if name in ("project_id", "project_name", "procedure"):
             continue  # resolved by the tool from this turn's list, never model text
         if name not in raw:
             raise Refused(f"{op.action} needs {name}")
@@ -1084,7 +1092,28 @@ def view(row: dict) -> dict:
         out["library"] = {"kind": op.group, "id": _saved_id(op, row)}
     if op is not None and op.group == "secret" and state in (DONE, UNCONFIRMED):
         out["library"] = {"kind": "secret", "id": str(row.get("target") or "")}
+    mission = _mission_of(op, row)
+    if mission:
+        # The way into the mission a card names (#1950): its id is the server's own, never model
+        # text, and the client builds the link (`missionLink`).
+        out["mission"] = {"id": mission}
     return out
+
+
+def _mission_of(op: Operation | None, row: dict) -> str:
+    """The mission a card names: a team card's target, or the draft a mission card created (the
+    id its route returned, kept on the entry). ``""`` when there is none (yet)."""
+    from . import missions
+
+    if op is None:
+        return ""
+    if op.group == "team":
+        mid = row.get("target")
+    elif op.group == "mission":
+        mid = row.get("mission_id")
+    else:
+        return ""
+    return mid if isinstance(mid, str) and missions.MISSION_ID_RE.match(mid) else ""
 
 
 #: What an interrupted move that had noted its commit says (#1786): it resumes, never replays.
@@ -1167,6 +1196,12 @@ async def stage(
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
     if expected is not None and changed(expected, facts):
+        if op.group == "mission":  # the procedure HQ validated is not the one the card would show
+            raise Refused(
+                "refused: the project's procedures changed while the card was prepared; read "
+                "them again with list_procedures. Nothing was written",
+                "stale",
+            )
         raise Refused("refused: that note changed after HQ read it; search again", "not_available")
     shown = facts.get("title") or facts.get("name") or title
     pid = uuid.uuid4().hex
@@ -1461,6 +1496,14 @@ async def _run(
                 "outcome": "It stopped unexpectedly. It may have run; check the target. It is "
                 "not retried.",
             }
+        if op.follow_up and outcome.get("state") == DONE:
+            # HQ continues (#1950): started BEFORE the card reads done, so a client that sees the
+            # card settle also sees the new turn and keeps reading. Never raises.
+            from . import ask_orchestrator
+
+            await ask_orchestrator.continue_after_card(
+                cid, {**row, **outcome}, op, operator=operator, app=app
+            )
         with contextlib.suppress(Exception):
             await asyncio.to_thread(
                 ask_proposals._update, cid, pid, settled_at=time.time(), **outcome
