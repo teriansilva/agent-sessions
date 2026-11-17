@@ -33,22 +33,62 @@ npm test          # vitest component/unit tests
 npm run lint      # eslint
 npm run build     # tsc + Vite production build
 npm run test:e2e  # Playwright (desktop + emulated mobile); installs chromium on first run
+
+# What CI will select for your change (offline; prints the test files / specs)
+python3 .forgejo/scripts/pr_scope.py --files $(git diff --name-only origin/main)
+python3 .forgejo/scripts/e2e_scope.py --files $(git diff --name-only origin/main)
 ```
 
-Run all of the above locally before opening a PR — CI runs the same checks. The `e2e_install`
-deselect is a local-iteration convenience only; CI runs the full suite for any change under
-`src/`, `tests/`, `scripts/`, `deploy/`, `.forgejo/` or to packaging and the installer scripts, so
-land nothing that hasn't passed a plain `pytest` at least once.
+Run the tests your change touches locally before opening a PR. The `e2e_install` deselect is a
+local-iteration convenience only. Land nothing that hasn't passed the tests CI selected for it.
 
-**What CI runs is scoped to the diff (#1244).** A PR that touches none of those paths (web, docs,
-landing only) runs just the test files that mention a path it changes. Several tests pin files
-under `web/` and `docs/`, so this is never zero by design. It also skips the installer contract,
-the deploy-shape smoke and `installer-smoke` (the last only for docs/landing-only changes).
-`.forgejo/scripts/pr_scope.py` decides, and any doubt means the full suite. **A red check stops its
-siblings:** the long steps (pytest, the e2e shards, app-mode e2e) run under
-`.forgejo/scripts/sibling_watch.py`. When another check for the same commit has failed, it stops
-them within ~30 s and says so (`aborted: sibling "…" failed`), so a red commit stops holding
-runners. An aborted check did not fail on its own: fix the sibling it names.
+**What CI runs is scoped to the diff (#1244, #2072).** Each check picks the tests the change can
+affect; any doubt means the full suite.
+
+**Forcing the full suites on a PR:**
+- **Add the `ci:full` label before you push:** every later push of the PR runs both suites in full.
+- **On a PR that has already run scoped:** dispatch `pr-validate` and `web-ci` on the PR's branch
+  (Actions → the workflow → Run workflow, or `POST …/actions/workflows/<file>/dispatches` with
+  `{"ref": "<branch>"}`). A dispatched run is always full, and its checks report on the same
+  commit, so the PR's combined status includes them.
+- **Adding the label alone doesn't re-run anything:** label events don't trigger CI, because
+  agents change status labels constantly.
+
+- **pytest** (`.forgejo/scripts/pr_scope.py`):
+  - **Full suite** for packaging, deploy, CI and test-harness paths (`pyproject.toml`, `uv.lock`,
+    the installer scripts, `deploy/`, `scripts/`, `.forgejo/`, `conftest.py` and other test
+    helpers), or more than 25 changed backend files.
+  - **A changed backend module** runs the test files whose module-level imports reach it, plus
+    one hop of function-level imports, plus the tests that name it. `main.py` runs every test
+    that imports it.
+  - **The whole-tree tests always run** on a backend change: route inventories, ratchets, and
+    anything that walks `src/`.
+  - **A changed test file** runs itself.
+  - **Web, docs and landing changes** run the tests that mention their paths.
+  - **The installer contract and deploy-shape smoke** run on any backend change.
+- **Playwright** (`.forgejo/scripts/e2e_scope.py`):
+  - **Full suite** when the harness, the build or the app shell changes (`package*.json`, the Vite
+    and Playwright configs, `src/app/`, `src/theme/`, `index.css`, `tokens.css`, `main.tsx`, the
+    shared e2e fixtures).
+  - **Otherwise** only the specs that address what the change renders: its testids and those of
+    the components above it (up to the app shell), the page it is an entry of, or, failing both,
+    the route it renders under.
+  - **Shards with no specs** pass in seconds.
+- **Every push to main runs both full suites.** That is the backstop for anything a scoped PR run
+  didn't select.
+- **A few failures are rechecked before red** (`.forgejo/scripts/recheck.py`). When at most 5
+  tests fail, they run again alone, with one worker and no retries. Both runs are judged from a
+  per-test report (pytest's `recheck_report` plugin, Playwright's JSON reporter), never from the
+  exit code:
+  - **if each one ran and passed** (a skip doesn't count), the check is green and each is named in
+    a `Passed only on a serial recheck` warning. A test that keeps appearing there is flaky; fix it.
+  - **if not**, the check is red.
+  - **Never rechecked:** a crashed xdist or Playwright worker, a collection or internal error, a
+    run-level Playwright error, or an abort.
+- **A red check stops its siblings:** the long steps (pytest, the e2e shards, app-mode e2e) run
+  under `.forgejo/scripts/sibling_watch.py`. When another check for the same commit has failed, it
+  stops them within ~30 s and says so (`aborted: sibling "…" failed`), so a red commit stops
+  holding runners. An aborted check didn't fail on its own: fix the sibling it names.
 
 Test-suite policies worth knowing:
 

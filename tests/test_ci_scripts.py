@@ -35,15 +35,22 @@ scope = _load("pr_scope")
 watch = _load("sibling_watch")
 
 
+@pytest.fixture(autouse=True)
+def _not_in_a_ci_event(monkeypatch):
+    """The suite itself runs in CI, where the runner sets GITHUB_EVENT_NAME (`push` on main)."""
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+
+
 # --- pr_scope --------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        "src/agent_sessions/main.py",
-        "tests/test_api.py",
         "pyproject.toml",
+        "src/agent_sessions/__init__.py",
+        "tests/conftest.py",
+        "tests/fixtures/sample.json",
         "uv.lock",
         "install.sh",
         "uninstall.sh",
@@ -405,6 +412,8 @@ def test_a_newline_in_a_changed_filename_cannot_scope_away_the_suite(monkeypatch
     evil = "src/x\nmode=none\ntests="
 
     def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/labels"):
+            return _Resp(b"[]")
         page = int(req.full_url.rsplit("page=", 1)[1])
         return _Resp(json.dumps([{"filename": evil}] if page == 1 else []).encode())
 
@@ -419,7 +428,8 @@ def test_a_newline_in_a_changed_filename_cannot_scope_away_the_suite(monkeypatch
         monkeypatch.setenv(k, v)
     assert scope.main() == 0
     text = out.read_text()
-    assert len(text.splitlines()) == 3, text  # exactly mode / tests / reason — nothing injected
+    # Exactly mode / tests / backend / reason — nothing injected.
+    assert len(text.splitlines()) == 4, text
     parsed = _runner_parse(text)
     assert parsed["mode"] == "full"
     assert parsed["tests"] == ""
@@ -438,8 +448,12 @@ def test_output_values_are_one_control_free_line():
 
 
 def test_only_plain_test_paths_can_be_selected(tmp_path):
+    # An unsafe name never reaches the word-split argv — and is never silently dropped either:
+    # a selection that skips a selected test is not a selection (#2072, Hermes 8260).
     d = _tests(tmp_path, {"test_ok.py": '"web"', "test_has space.py": '"web"'})
-    assert scope.select_tests(["web/src/a.tsx"], d) == ["tests/test_ok.py"]
+    assert scope.decide(["web/src/a.tsx"], d)[:2] == ("full", [])
+    d2 = _tests(tmp_path / "b", {"test_ok.py": '"web"'})
+    assert scope.decide(["web/src/a.tsx"], d2)[1] == ["tests/test_ok.py"]
 
 
 def test_paging_does_not_trust_a_short_page(monkeypatch):
@@ -447,7 +461,7 @@ def test_paging_does_not_trust_a_short_page(monkeypatch):
     pages = {
         1: [{"filename": f"web/a{i}.ts"} for i in range(10)],
         2: [{"filename": f"web/b{i}.ts"} for i in range(10)],
-        3: [{"filename": "src/late.py"}],
+        3: [{"filename": "pyproject.toml"}],  # still a full-suite path (#2072 narrowed src/)
     }
 
     def fake_urlopen(req, timeout):
@@ -456,7 +470,7 @@ def test_paging_does_not_trust_a_short_page(monkeypatch):
 
     monkeypatch.setattr(scope.urllib.request, "urlopen", fake_urlopen)
     files = scope.changed_files("https://x/api", "7", "tok")
-    assert len(files) == 21 and files[-1] == "src/late.py"
+    assert len(files) == 21 and files[-1] == "pyproject.toml"
     assert scope.decide(files, Path("unused"))[0] == "full"
 
 
@@ -467,3 +481,129 @@ def test_a_crafted_check_name_cannot_inject_a_runner_command(monkeypatch, capfd)
     lines = capfd.readouterr().out.splitlines()
     assert not any(line.startswith("::add-mask::") for line in lines)
     assert any("aborted: sibling" in line for line in lines)
+
+
+# --- #2072: backend scoping by the import graph ----------------------------------------------
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A package with a chain, a lazy import, a route module and main; tests of each kind."""
+    files = {
+        "src/agent_sessions/__init__.py": "",
+        "src/agent_sessions/store.py": "X = 1\n",
+        "src/agent_sessions/service.py": "from agent_sessions import store\n",
+        "src/agent_sessions/api.py": "from . import service\n",
+        "src/agent_sessions/late.py": "def f():\n    from agent_sessions import api\n",
+        "src/agent_sessions/later.py": "def g():\n    from agent_sessions import late\n",
+        "src/agent_sessions/routes/__init__.py": "",
+        "src/agent_sessions/routes/widgets.py": "from agent_sessions import store\n",
+        "src/agent_sessions/main.py": (
+            "from agent_sessions.routes import widgets\nfrom . import api\n"
+        ),
+        "src/agent_sessions/templates/page.html": "<p>",
+        "src/agent_sessions/static/unnamed.css": "p{}",
+        "tests/test_store.py": "from agent_sessions import store\n",
+        "tests/test_service.py": "from agent_sessions.service import store\n",
+        "tests/test_api.py": "import agent_sessions.api\n",
+        "tests/test_late.py": "from agent_sessions import late\n",
+        "tests/test_later.py": "from agent_sessions import later\n",
+        "tests/test_app.py": "from agent_sessions.main import create_app\n",
+        "tests/test_widgets_http.py": "from agent_sessions.main import x\nget('/widgets')\n",
+        "tests/test_tree.py": 'SRC = ROOT / "src"\nfor p in SRC.rglob("*.py"): pass\n',
+        "tests/test_page.py": "render('page.html')\n",
+        "tests/test_unrelated.py": "def test_x(): pass\n",
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    return tmp_path / "tests"
+
+
+def test_a_backend_module_selects_its_import_reach_and_the_whole_tree_tests(tmp_path):
+    tests = _repo(tmp_path)
+    mode, picked, _ = scope.decide(["src/agent_sessions/store.py"], tests)
+    assert mode == "subset"
+    # store ← service ← api (module level, to a fixed point), ← late (one lazy hop) — not later
+    # (a second lazy hop), not main's importers. Plus routes/widgets' test (module level) and the
+    # whole-tree test.
+    assert picked == [
+        "tests/test_api.py",
+        "tests/test_late.py",
+        "tests/test_service.py",
+        "tests/test_store.py",
+        "tests/test_tree.py",
+    ]
+
+
+def test_a_route_module_reaches_the_http_tests_naming_it(tmp_path):
+    tests = _repo(tmp_path)
+    picked = scope.decide(["src/agent_sessions/routes/widgets.py"], tests)[1]
+    assert "tests/test_widgets_http.py" in picked  # imports only main, names the route
+    assert "tests/test_app.py" not in picked
+    assert "tests/test_unrelated.py" not in picked
+
+
+def test_main_selects_every_test_importing_it(tmp_path):
+    tests = _repo(tmp_path)
+    picked = scope.decide(["src/agent_sessions/main.py"], tests)[1]
+    assert {"tests/test_app.py", "tests/test_widgets_http.py", "tests/test_tree.py"} <= set(picked)
+    assert "tests/test_store.py" not in picked
+
+
+def test_backend_data_files_and_changed_tests(tmp_path):
+    tests = _repo(tmp_path)
+    assert scope.decide(["src/agent_sessions/templates/page.html"], tests)[1] == [
+        "tests/test_page.py",
+        "tests/test_tree.py",
+    ]
+    # A data file no test names: everything rather than nothing.
+    assert scope.decide(["src/agent_sessions/static/unnamed.css"], tests)[0] == "full"
+    # A changed test file runs itself (and is not a backend change).
+    assert scope.decide(["tests/test_unrelated.py"], tests)[1] == ["tests/test_unrelated.py"]
+
+
+def test_the_backend_full_triggers(tmp_path):
+    tests = _repo(tmp_path)
+    many = [f"src/agent_sessions/m{i}.py" for i in range(26)]
+    assert scope.decide(many, tests)[0] == "full"
+    assert scope.decide(["src/agent_sessions/store.py"], tests, ["ci:full"])[0] == "full"
+    assert scope.decide(["tests/conftest.py"], tests)[0] == "full"
+    # The appmode suite is pr-validate-neutral.
+    assert scope.decide(["tests/appmode/seed.py"], tests)[0] == "none"
+
+
+def test_the_output_says_whether_a_backend_file_changed(monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    scope.main(["--files", "docs/site/guide/projects.md"])
+    assert "backend=0\n" in out.read_text()
+    out.unlink()
+    scope.main(["--files", "src/agent_sessions/prefs.py"])
+    text = out.read_text()
+    assert "backend=1\n" in text and "mode=subset\n" in text
+
+
+def test_the_real_tree_narrows_a_route_change():
+    repo = Path(__file__).resolve().parents[1]
+    mode, picked, reason = scope.decide(["src/agent_sessions/routes/artifacts.py"], repo / "tests")
+    assert mode == "subset", reason
+    assert "tests/test_artifacts.py" in picked and "tests/test_hq_coverage.py" in picked
+    total = len(list((repo / "tests").rglob("test_*.py")))
+    assert len(picked) < total * 0.6, (len(picked), total)
+
+
+def test_a_push_to_main_is_the_full_backstop(monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert scope.main([]) == 0
+    text = out.read_text()
+    assert "mode=full\n" in text and "backend=1\n" in text
+
+
+def test_a_test_name_that_cannot_be_passed_safely_runs_everything(tmp_path):
+    tests = _repo(tmp_path)
+    (tests / "test_store extra.py").write_text("from agent_sessions import store\n")
+    mode, picked, reason = scope.decide(["src/agent_sessions/store.py"], tests)
+    assert (mode, picked) == ("full", []), reason
