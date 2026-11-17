@@ -144,7 +144,7 @@ At runtime the Home Free agent holds one **outbound-only** WebSocket to the rela
 long-term Ed25519 identity key, and redials with exponential backoff when the connection drops.
 No inbound port is ever opened.
 
-To connect, you open the public viewer page (`https://battlelab.superstatus.io/connect`), enter
+To connect, you open the public viewer page (`https://battlelabos.com/connect`), enter
 the console name + access key, and the browser and the agent run an end-to-end encrypted
 handshake **through** the relay (X25519 ephemeral keys + HKDF-SHA256 with the access key as PSK,
 AES-256-GCM transport with strictly-increasing counters — full wire spec in
@@ -170,8 +170,10 @@ BattleLab's public instance.
 
 The hosted pieces are deliberately small and stateless with respect to your data:
 
-- **`battlelab.superstatus.io`** — the landing page, `install.sh`/`uninstall.sh`, and the
-  `/connect` viewer page (a static shell that runs the E2E crypto in your browser via WebCrypto).
+- **`battlelabos.com`** — the landing page, `install.sh`/`uninstall.sh`, and the `/connect`
+  viewer page (a static shell that runs the E2E crypto in your browser via WebCrypto).
+  `battlelab.superstatus.io` is the older address of the same site; its `/connect` keeps working
+  for installs that printed it.
 - **`relay.battlelab.superstatus.io`** — the blind relay: pairs a console name with viewers and
   forwards encrypted frames. It stores no session content and cannot decrypt any.
 - **The public GitHub mirror** (`AGENT_SESSIONS_REPO` default) — the source releases and the

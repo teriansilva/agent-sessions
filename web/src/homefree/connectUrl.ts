@@ -9,6 +9,18 @@
  *  or the hash is carried into the app's address bar: the shell reads no credential from the URL,
  *  but a stray credential-shaped parameter must never outlive the connect. */
 
+/** The public connect page's hosts: canonically battlelabos.com, and still battlelab.superstatus.io
+ *  (plus its subdomains), which installs before the move printed. On these the page prefills and
+ *  locks the public relay and restores a saved session with it. Exact names only: a look-alike such
+ *  as `battlelabos.com.example` or `evilbattlelabos.com` is not public. */
+export function isPublicConnectHost(hostname: string): boolean {
+  return (
+    hostname === "battlelabos.com" ||
+    hostname === "battlelab.superstatus.io" ||
+    hostname.endsWith(".battlelab.superstatus.io")
+  );
+}
+
 /** Query keys that are route state: `m` is the mission (`/mission?m=<id>`). */
 export const ROUTE_QUERY_KEYS: readonly string[] = ["m"];
 

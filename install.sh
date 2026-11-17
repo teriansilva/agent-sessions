@@ -246,7 +246,7 @@ HOMEFREE_AGENT_RE='^[^[:space:]]*python[0-9.]*[[:space:]].*-m[[:space:]]+agent_s
 # `AGENT_SESSIONS_REMOTE=stream` install is turnkey. Both are overridable via env for
 # self-hosters running their own relay / connect page.
 HOMEFREE_RELAY_URL="${AGENT_SESSIONS_RELAY_URL:-wss://relay.battlelab.superstatus.io/relay/ws}"
-HOMEFREE_CONNECT_URL="${AGENT_SESSIONS_CONNECT_URL:-https://battlelab.superstatus.io/connect}"
+HOMEFREE_CONNECT_URL="${AGENT_SESSIONS_CONNECT_URL:-https://battlelabos.com/connect}"
 
 log()  { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }

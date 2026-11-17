@@ -1,7 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { connectedUrl } from "./connectUrl";
+import { connectedUrl, isPublicConnectHost } from "./connectUrl";
 
 const at = (pathname: string, search = "") => ({ pathname, search });
+
+describe("isPublicConnectHost", () => {
+  it("treats battlelabos.com as the public connect page, so the relay is prefilled and locked", () => {
+    expect(isPublicConnectHost("battlelabos.com")).toBe(true);
+  });
+
+  it("keeps the older battlelab.superstatus.io address and its subdomains public", () => {
+    expect(isPublicConnectHost("battlelab.superstatus.io")).toBe(true);
+    expect(isPublicConnectHost("staging.battlelab.superstatus.io")).toBe(true);
+  });
+
+  it("matches exact names only: look-alikes and unrelated hosts are not public", () => {
+    for (const host of [
+      "battlelabos.com.example",
+      "evilbattlelabos.com",
+      "battlelab.superstatus.io.example",
+      "evilbattlelab.superstatus.io",
+      "localhost",
+      "127.0.0.1",
+      "box.home.lan",
+    ]) {
+      expect(isPublicConnectHost(host), host).toBe(false);
+    }
+  });
+});
 
 describe("connectedUrl (#1735)", () => {
   it("keeps a deep /connect/ route, so the app opens where the operator reloaded", () => {

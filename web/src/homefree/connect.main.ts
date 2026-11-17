@@ -26,7 +26,7 @@ import {
 } from "./connect";
 import { type MountedApp, mountApp, renderRealApp } from "./appMount";
 import { CONNECT_STEPS, connectSteps, errorState, renderConnectState } from "./connectState";
-import { connectedUrl } from "./connectUrl";
+import { connectedUrl, isPublicConnectHost } from "./connectUrl";
 import {
   type RelayLink,
   armRelay,
@@ -111,10 +111,7 @@ function nowMs(): number {
 }
 
 function isPublicDeploy(): boolean {
-  return (
-    location.hostname === "battlelab.superstatus.io" ||
-    location.hostname.endsWith(".battlelab.superstatus.io")
-  );
+  return isPublicConnectHost(location.hostname);
 }
 
 // The theme (#1596): the device's stored BattleLab choice, else its colour scheme. The motion mode

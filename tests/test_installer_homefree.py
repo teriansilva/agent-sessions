@@ -161,7 +161,7 @@ def test_stream_mode_defaults_to_battlelab_relay(tmp_path):
     unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
     assert "wss://relay.battlelab.superstatus.io/relay/ws" in unit
     assert "REPLACE-WITH-YOUR-RELAY" not in unit
-    assert "https://battlelab.superstatus.io/connect" in r.stdout
+    assert "https://battlelabos.com/connect" in r.stdout
 
 
 def test_stream_credentials_tty_output_uses_real_escape_bytes(tmp_path):
@@ -170,7 +170,7 @@ def test_stream_credentials_tty_output_uses_real_escape_bytes(tmp_path):
     assert "\\033[" not in r.stdout
     assert "\x1b[1mConnect at:" in r.stdout
     assert "\x1b[1;31m* SECURITY:" in r.stdout
-    assert "https://battlelab.superstatus.io/connect" in r.stdout
+    assert "https://battlelabos.com/connect" in r.stdout
 
 
 def test_structural_invariants():

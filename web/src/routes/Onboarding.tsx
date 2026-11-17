@@ -94,7 +94,7 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/homefree.svg"),
     title: "Home Free — from anywhere",
-    body: "Your deck can stream through our blind relay — open battlelab.superstatus.io/connect in any browser and enter the console name + access key from your install. End-to-end encrypted; sessions run up to 4 hours.",
+    body: "Your deck can stream through our blind relay — open battlelabos.com/connect in any browser and enter the console name + access key from your install. End-to-end encrypted; sessions run up to 4 hours.",
   },
   {
     img: publicAsset("onboarding/settings.svg"),

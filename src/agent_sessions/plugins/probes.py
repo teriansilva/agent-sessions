@@ -22,6 +22,18 @@ from ..engines import base, registry
 from . import manager, process
 
 _VERSION = re.compile(r"(?<![A-Za-z0-9])v?[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][A-Za-z0-9.-]+)?")
+#: Terminal escapes (CSI, OSC, two-byte ESC). The version runs under a pty, and a CLI that colours
+#: its output (opencode 2.2.7: ``\x1b[2mv\x1b[0m\x1b[1m2.2.7``) would otherwise put an escape's
+#: final letter right before the digits, so the lookbehind skips ``2.2.7`` and matches ``2.7``.
+_ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+
+
+def reported_version(text: str) -> str | None:
+    """The version a CLI reported, from its raw (possibly coloured) output, or None."""
+    found = _VERSION.search(_ESCAPES.sub("", text))
+    if found is None or len(found[0]) > 64:
+        return None
+    return found[0]
 
 
 @contextlib.contextmanager
@@ -122,10 +134,10 @@ async def _version(prov, item, cwd: Path) -> str:
             if len(output) > 65536:
                 raise process.ProcessError("version output exceeded its limit")
         code = await terminal.proc.wait()
-    found = _VERSION.search(output.decode("utf-8", "replace"))
-    if code != 0 or found is None or len(found[0]) > 64:
+    version = reported_version(output.decode("utf-8", "replace"))
+    if code != 0 or version is None:
         raise process.ProcessError("the version command did not report a version")
-    return found[0]
+    return version
 
 
 async def _api_source(prov) -> dict:

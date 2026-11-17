@@ -2,7 +2,8 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 // Standalone build of the Home Free connect page for public hosting at
-// battlelab.superstatus.io/connect/ — deployed to the landing edge, NOT served by the app.
+// battlelabos.com/connect/ (and the older battlelab.superstatus.io/connect/) — deployed to the
+// landing edge, NOT served by the app.
 //
 // This intentionally excludes VitePWA: /connect/ must be plain static HTML + hashed assets, with
 // no service worker under the landing origin. Public assets stay enabled because app-mode

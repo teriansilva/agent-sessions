@@ -16,7 +16,7 @@ import test_plugin_process
 import test_plugins
 from agent_sessions import chat_config, review, transcript
 from agent_sessions.engines import registry
-from agent_sessions.plugins import jobs, manager, storage
+from agent_sessions.plugins import jobs, manager, probes, storage
 from agent_sessions.scanner import Session
 from test_plugin_manager import request_id
 
@@ -308,3 +308,29 @@ def test_a_stopped_check_names_only_battlelabs_own_reason():
     assert probes._stop_reason(TimeoutError()) == "the agent did not answer in time"
     assert probes._stop_reason(RuntimeError("vendor said: secret-token")) is None
     assert probes._stop_reason(OSError("/home/x/.claude")) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # opencode 2.2.7's real `--version` under a pty: the `v` and the digits are separately
+        # coloured, so an escape's final `m` sits right before `2.2.7` (it used to read `2.7`).
+        ("\x1b[1mopencode\x1b[0m \x1b[2mv\x1b[0m\x1b[1m2.2.7\x1b[0m\r\n", "v2.2.7"),
+        ("opencode v2.2.7\n", "v2.2.7"),
+        ("1.19.5\n", "1.19.5"),
+        ("\x1b]0;title\x07codex-cli 0.167.2\n", "0.167.2"),
+        ("\x1b[32m2.1.317 (Claude Code)\x1b[0m", "2.1.317"),
+        ("no version here", None),
+    ],
+)
+def test_the_reported_version_ignores_terminal_colours(raw, expected):
+    assert probes.reported_version(raw) == expected
+
+
+def test_a_coloured_report_is_recorded_as_the_whole_version():
+    """What enabling compares against API-client floors (#1852): `2.7` would read as below a
+    2.2.7 floor and refuse every enable of a correctly installed opencode 2."""
+    from agent_sessions import native_runtime
+
+    raw = "\x1b[1mopencode\x1b[0m \x1b[2mv\x1b[0m\x1b[1m2.2.7\x1b[0m\r\n"
+    assert native_runtime.parse_version(probes.reported_version(raw)) == (2, 2, 7)
