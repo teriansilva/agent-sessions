@@ -9,7 +9,11 @@ export type ApprovalReason = {
   new?: unknown;
 };
 
-export type ApprovalRow = { key: string; text: string; bound?: string };
+/** One step of a rework edge's span (#2033): the target and every step after it, listed before
+ *  the tap, each with where it sits relative to the edge and its bound (server text). */
+export type ApprovalSpanStep = { step: string; text: string; role: string; bound: string };
+
+export type ApprovalRow = { key: string; text: string; bound?: string; span?: ApprovalSpanStep[] };
 
 export type ApprovalLines = {
   groups: { objective: string; project: string; rows: ApprovalRow[] }[];

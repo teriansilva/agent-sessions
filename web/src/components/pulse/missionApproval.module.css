@@ -95,6 +95,37 @@
   padding: 0 var(--sp-1);
   color: var(--warn-text);
 }
+/* #2033: a rework edge's span, one row per step, under its rework line. */
+.span {
+  grid-column: 2 / -1;
+  list-style: none;
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 2px solid var(--line-strong);
+  min-width: 0;
+}
+.spanStep {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--sp-3);
+  align-items: baseline;
+  padding: 2px 0 2px 10px;
+  min-width: 0;
+}
+.sid {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.role {
+  margin-left: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
 .cover {
   margin: 0;
   padding: var(--sp-2) 10px;
@@ -213,8 +244,12 @@
   .pin {
     grid-template-columns: minmax(0, 1fr);
   }
-  .chg {
+  .chg,
+  .span {
     grid-column: 1 / -1;
+  }
+  .spanStep {
+    grid-template-columns: minmax(0, 1fr);
   }
   .b {
     white-space: normal;

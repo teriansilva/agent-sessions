@@ -1631,8 +1631,9 @@ _SCHEMA += ";\n".join(STEP_HOLDS_DDL) + ";\n"
 #: probe's fact identity) at most one. `reopened` reset the span's evidence for a new episode;
 #: `exhausted` (round `max_rounds + 1`) reopened nothing and owes ONE question (`question_at`, the
 #: question's event `question_seq`), announced once (`notice_at`) and retracted once it no longer
-#: holds (`notice_closed_at`). `granted_json` lists the steps a reopen lets run again: those of the
-#: approved span (`mission_approval._rework_span`, target through source) that had run before it.
+#: holds (`notice_closed_at`). `granted_json` lists the steps a reopen lets run again: those of its
+#: span (`rework_reset_steps`, the target and every step after it: the span an approval pins too,
+#: #2033) that had run before it.
 #: Each consumes it with its first run that names it (`mission_step_runs.rework_ref`, written by
 #: the claim). Cascades with the mission.
 REWORK_DDL: tuple[str, ...] = (
@@ -10582,7 +10583,7 @@ def claim_step(
                 # approval; one beyond it is a question, never a launch (the operator may still
                 # start it, by their own tap).
                 # Pins that can't say fail CLOSED: the first run only, no rework beyond it.
-                bound = _approved_runs_tx(con, mission_id, approval_id, step_id) or 1
+                bound = _approved_runs_tx(con, mission_id, approval_id, step_id, doc) or 1
                 if bound is not None:
                     # Every episode but a refused one (it started nothing) spends an instance, as
                     # the once-only guard and the reopen's consumption count them: a `failed`
@@ -11317,9 +11318,13 @@ def open_reopens(mission_id: str, doc: dict, *, path: Path | None = None) -> dic
         con.close()
 
 
-def _approved_runs_tx(con, mission_id: str, approval_id: str, step_id: str) -> int | None:
-    """How many runs of `step_id` the approval covers: 1, plus `max_rounds` per pinned rework edge
-    whose span holds it (`mission_approval._session_bounds`). None when the pins can't say."""
+def _approved_runs_tx(
+    con, mission_id: str, approval_id: str, step_id: str, doc: dict
+) -> int | None:
+    """How many runs of `step_id` the approval covers on plan `doc`: THE bound
+    (`mission_approval.covered_runs`, which the card reads too). None when the pins can't say."""
+    from . import mission_approval
+
     row = con.execute(
         "SELECT pins_json FROM mission_plan_approvals WHERE mission_id=? AND id=?",
         (mission_id, approval_id),
@@ -11328,13 +11333,9 @@ def _approved_runs_tx(con, mission_id: str, approval_id: str, step_id: str) -> i
         return None
     try:
         pins = json.loads(row["pins_json"])
-        if not any(s.get("id") == step_id for s in pins.get("steps") or []):
-            return None
-        return 1 + sum(
-            int(e["max_rounds"]) for e in pins.get("rework") or [] if step_id in e["steps"]
-        )
-    except (TypeError, ValueError, KeyError, AttributeError):
+    except (TypeError, ValueError):
         return None
+    return mission_approval.covered_runs(pins, doc, step_id)
 
 
 def _step_held_tx(con, mission_id: str, step_id: str) -> bool:
@@ -11609,11 +11610,11 @@ def consume_rework(
             edge, doc, rnd = got["edge"], got["doc"], int(got["round"])
             max_rounds, outcome = int(got["max_rounds"]), got["outcome"]
             granted: dict[str, int] = {}
-            yours: list[str] = []
             if outcome == "reopened":
-                from .mission_approval import _rework_span
-
-                approved = set(_rework_span(doc, edge_from, edge["to"]))
+                # THE GRANT IS THE SPAN (#2033, the operator's decision): every step the round
+                # resets (`rework_reset_steps`, the ONE definition an approval pins, so the claim's
+                # bound and the card count the same steps) that had run before it. A step that
+                # never ran collects nothing: its first run is no rework.
                 for sid in rework_reset_steps(doc, edge_from, edge["to"]):
                     ran = con.execute(
                         "SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "
@@ -11621,9 +11622,6 @@ def consume_rework(
                         (mission_id, sid),
                     ).fetchone()
                     if not ran:
-                        continue  # never ran: its first run is no rework
-                    if sid not in approved:
-                        yours.append(sid)
                         continue
                     # The episode it has now: its NEW episode is any later one (the fence).
                     granted[sid] = int(
@@ -11678,12 +11676,6 @@ def consume_rework(
             text = (
                 f"{edge_from} asked for changes: rework round {rnd} of {max_rounds}, "
                 f"{edge['to']} runs again as a new episode"
-                + (
-                    f"; {', '.join(yours)} must be started again by you (outside the steps the "
-                    "rework edge re-runs)"
-                    if yours
-                    else ""
-                )
                 if outcome == "reopened"
                 else f"{edge_from} asked for changes a {_ordinal(rnd)} time; the plan allows "
                 f"{max_rounds} rework round{'s' if max_rounds != 1 else ''}, so nothing was "

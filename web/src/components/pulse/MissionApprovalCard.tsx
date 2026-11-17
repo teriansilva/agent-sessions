@@ -110,6 +110,24 @@ function Lines({ lines }: { lines: ApprovalLines }) {
                 <span className={styles.k}>{r.key}</span>
                 <span className={styles.v}>{r.text}</span>
                 <span className={styles.b}>{r.bound ?? ""}</span>
+                {r.span?.length ? (
+                  // #2033: every step a rework round may run again, listed before the tap.
+                  <ol
+                    className={styles.span}
+                    aria-label="Steps a rework round may run again"
+                    data-testid="approval-rework-span"
+                  >
+                    {r.span.map((x) => (
+                      <li key={x.step} className={styles.spanStep}>
+                        <span>
+                          <span className={styles.sid}>{x.text}</span>
+                          <span className={styles.role}>{x.role}</span>
+                        </span>
+                        <span className={styles.b}>{x.bound}</span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
               </li>
             ))}
           </ul>

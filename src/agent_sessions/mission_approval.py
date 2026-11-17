@@ -52,6 +52,7 @@ CODES: tuple[str, ...] = (
     "deployment_changed",
     "project_unavailable",
     "equipment_changed",
+    "rework_span_changed",
     "approval_revoked",
     "approval_expired",
 )
@@ -194,14 +195,23 @@ def context_for(doc: dict) -> team.Context:
 # ---- the pins ------------------------------------------------------------------------------------
 
 
-def _rework_span(doc: dict, src: str, to: str) -> list[str]:
-    """The steps a rework edge `src → to` may run again: `to`, `src`, and every step between them
-    (after `to`, before `src`), in plan order."""
-    before = team.order_relation(doc)
+def rework_pins(doc: dict) -> list[dict]:
+    """Per rework edge of `doc`, what an approval of it pins: the edge, its `max_rounds`, and the
+    steps a round may run again (#2033, the operator's decision): its RESET SPAN, the target and
+    every step after it, parallel branches included (D-P6-14, `missions.rework_reset_steps`, the
+    ONE definition). The pins record it; the card's "up to 1 + N", the claim's bound
+    (`covered_runs`) and the reopen's grant (`missions.consume_rework`) all read that one span."""
+    from . import missions
+
     return [
-        s["id"]
+        {
+            "from": s["id"],
+            "to": s["rework"]["to"],
+            "max_rounds": s["rework"]["max_rounds"],
+            "steps": missions.rework_reset_steps(doc, s["id"], s["rework"]["to"]),
+        }
         for s in doc["steps"]
-        if s["id"] in (src, to) or (to in before.get(s["id"], ()) and s["id"] in before[src])
+        if s.get("rework")
     ]
 
 
@@ -285,16 +295,7 @@ def pins(doc: dict, revision: int, ctx: team.Context, facts: Facts) -> dict:
                 "equipment_changed", f"project {pid}'s equipment can't be read; try again"
             )
         equipment[pid] = items
-    rework = [
-        {
-            "from": s["id"],
-            "to": s["rework"]["to"],
-            "max_rounds": s["rework"]["max_rounds"],
-            "steps": _rework_span(doc, s["id"], s["rework"]["to"]),
-        }
-        for s in doc["steps"]
-        if s.get("rework")
-    ]
+    rework = rework_pins(doc)
     return {
         "format": PINS_FORMAT,
         "revision": revision,
@@ -519,6 +520,73 @@ def effect_reasons(approval: dict, doc: dict, step: str) -> list[dict]:
     )
 
 
+def _names(steps: list[str]) -> str:
+    return ", ".join(x.split(".", 1)[-1] for x in steps) or "none"
+
+
+def _rework_reasons(p: dict, doc: dict) -> list[dict]:
+    """A pinned rework edge whose span is not the one definition's (`rework_pins`) for this plan.
+    The plan revision is pinned, so only a change of the definition moves it: an approval given
+    before #2033 pinned target through source. It is refused, never read with its old meaning
+    and never widened: the operator re-approves on the card that lists the new span. Pins that
+    can't be read are a change too (fail closed)."""
+    expected = rework_pins(doc)
+    unreadable = [_r("rework_span_changed", "the rework edges this approval pinned can't be read")]
+    try:
+        raw = list(p.get("rework") or [])
+        if raw == expected:
+            return []
+        out = _span_diff({e["from"]: e for e in raw}, {e["from"]: e for e in expected})
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return unreadable  # damaged at any depth: still a change, never a raise
+    # THE WHOLE LIST must be the definition's (independent review of #2033): the per-edge diff
+    # keys on the source, so an edge pinned twice compares one copy while `_session_bounds` adds
+    # up every copy. A list that differs is never in force, whatever the diff names.
+    return out or [
+        _r(
+            "rework_span_changed",
+            "this approval lists the plan's rework edges differently (an edge twice, or out of "
+            "order); approve again",
+        )
+    ]
+
+
+def _span_diff(pinned: dict, now: dict) -> list[dict]:
+    out = []
+    for src in sorted(set(pinned) | set(now)):
+        was, has = pinned.get(src), now.get(src)
+        if was == has:
+            continue
+        name = src.split(".", 1)[-1]
+        if was is None or has is None:
+            out.append(
+                _r(
+                    "rework_span_changed",
+                    f"the rework edge on {name} is {'new' if was is None else 'gone'} since you "
+                    "approved",
+                    step=src,
+                )
+            )
+            continue
+        old, new = list(was.get("steps") or []), list(has["steps"])
+        if old == new:
+            out.append(_r("rework_span_changed", f"the rework edge on {name} changed", step=src))
+            continue
+        to = has["to"].split(".", 1)[-1]
+        out.append(
+            _r(
+                "rework_span_changed",
+                f"{name} → {to} now re-runs {to} and every step after it; your approval covered "
+                f"{'fewer' if set(old) < set(new) else 'other steps'}. Approve again to let HQ "
+                "re-run them",
+                step=src,
+                old=_names(old),
+                new=_names(new),
+            )
+        )
+    return out
+
+
 def recheck(
     approval: dict,
     doc: dict,
@@ -574,6 +642,9 @@ def recheck(
         )
     for spin in steps:
         reasons.extend(_step_reasons(spin, doc, ctx, alternate=alternate))
+    # The rework spans (#2033): approval-wide, whatever `step` narrows, since they decide how
+    # many runs of every step the approval covers.
+    reasons.extend(_rework_reasons(p, doc))
     return {"ok": not reasons, "reasons": reasons}
 
 
@@ -589,6 +660,7 @@ _CLASS_TEXT = {
     # Not a pin (#1951 §4): the claim's refusal past the approved rework bound, recorded through
     # the same one-per-change decision by the runner.
     "bound_reached": "the runs your approval covers for it are used",
+    "rework_span_changed": "the steps a rework round re-runs changed since you approved",
 }
 _CHANGED_TEXT = "the plan changed since you approved it"
 
@@ -630,13 +702,45 @@ def change_digest(
 
 
 def _session_bounds(p: dict) -> dict[str, int]:
-    """Step id → the most sessions it may run under the approval (1 + rounds per rework edge)."""
+    """Step id → the most sessions it may run under the approval: 1, plus `max_rounds` of every
+    pinned rework edge whose span holds it. THE one bound (#2033): the card's per-step "up to",
+    its rework list and its total, and the claim's `bound_reached` (`covered_runs`) all read it."""
     out = {s["id"]: 1 for s in p["steps"]}
     for edge in p["rework"]:
         for sid in edge["steps"]:
             if sid in out:
-                out[sid] += edge["max_rounds"]
+                out[sid] += int(edge["max_rounds"])
     return out
+
+
+def covered_runs(p: dict, doc: dict, step: str) -> int | None:
+    """How many runs of `step` the approval with pins `p` covers on plan `doc` (the claim's
+    bound, `missions.claim_step`): `_session_bounds`, or None when the pins can't say. A pinned
+    rework span that is not the one definition's (an approval given before #2033) says nothing:
+    the claim then fails closed to the first run, even when no admission re-checked it."""
+    try:
+        if _rework_reasons(p, doc):
+            return None
+        return _session_bounds(p).get(step)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
+def _span_role(doc: dict, edge: dict, sid: str) -> str:
+    """Where `sid` sits in a rework edge's span, in the server's words."""
+    from . import missions
+
+    src, to = edge["from"], edge["to"]
+    to_name, src_name = to.split(".", 1)[-1], src.split(".", 1)[-1]
+    if sid == to:
+        return "rework target" + (" and asks for changes" if sid == src else "")
+    if sid == src:
+        return "asks for changes"
+    if src in missions._descendants(doc, sid):
+        return f"between {to_name} and {src_name}"
+    if sid in missions._descendants(doc, src):
+        return f"after {src_name}"
+    return f"parallel branch after {to_name}"
 
 
 def lines(p: dict, doc: dict, ctx: team.Context) -> dict:
@@ -704,13 +808,34 @@ def lines(p: dict, doc: dict, ctx: team.Context) -> dict:
         for edge in p["rework"]:
             if edge["from"].split(".")[0] != o["id"]:
                 continue
-            names = ", ".join(e.split(".", 1)[1] for e in edge["steps"])
+            to = edge["to"].split(".", 1)[1]
+            n = len(edge["steps"])
             rows.append(
                 {
                     "key": "rework",
-                    "text": f"{edge['from'].split('.', 1)[1]} → {edge['to'].split('.', 1)[1]}, "
-                    f"at most {edge['max_rounds']} rounds: {names} may each run up to "
-                    f"1 + {edge['max_rounds']} times",
+                    "text": f"{edge['from'].split('.', 1)[1]} → {to}, at most "
+                    f"{edge['max_rounds']} rounds. A round resets {to} and every step after it, "
+                    "and HQ may run its agent steps again:",
+                    "bound": f"{n} step{'s' if n != 1 else ''}",
+                    # #2033: the span, listed before the tap. Each step's bound is THE bound
+                    # (`_session_bounds`), the same as its own row and the claim's.
+                    "span": [
+                        {
+                            "step": sid,
+                            "text": sid.split(".", 1)[-1],
+                            "role": _span_role(doc, edge, sid),
+                            "bound": (
+                                (
+                                    "1 session"
+                                    if bounds[sid] == 1
+                                    else f"up to 1 + {bounds[sid] - 1}"
+                                )
+                                if sid in bounds
+                                else "not a session HQ starts"
+                            ),
+                        }
+                        for sid in edge["steps"]
+                    ],
                 }
             )
         groups.append({"objective": o["id"], "project": o["project"], "rows": rows})

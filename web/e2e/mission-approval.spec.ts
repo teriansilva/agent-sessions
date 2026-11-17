@@ -15,7 +15,7 @@ const SCOPE = `sha256:${"4be0c2f9".repeat(8)}`;
 const AID = `apr-${"a".repeat(20)}`;
 const CID = `con-${"c".repeat(20)}`;
 
-const LINES = {
+const BASE_LINES = {
   groups: [
     {
       objective: "o1",
@@ -46,8 +46,40 @@ const LINES = {
   agent_steps: 7,
 };
 
+/** #2033: the plan forks after cv (cover_letter beside documents → review), so the rework edge's
+ *  span, its reset span, holds a parallel branch and the steps after the source. */
+const SPAN = [
+  ["cv", "rework target", "up to 1 + 3"],
+  ["cover_letter", "parallel branch after cv", "up to 1 + 3"],
+  ["documents", "between cv and review", "up to 1 + 3"],
+  ["review", "asks for changes", "up to 1 + 3"],
+  ["pull_request", "after review", "up to 1 + 3"],
+  ["approve", "after review", "not a session HQ starts"],
+  ["submit", "after review", "not a session HQ starts"],
+  ["record", "after review", "up to 1 + 3"],
+];
+const SPAN_LINES = {
+  ...BASE_LINES,
+  groups: [
+    {
+      ...BASE_LINES.groups[0],
+      rows: [
+        ...BASE_LINES.groups[0].rows,
+        {
+          key: "rework",
+          text: "review → cv, at most 3 rounds. A round resets cv and every step after it, and HQ may run its agent steps again:",
+          bound: "8 steps",
+          span: SPAN.map(([text, role, bound]) => ({ step: `o1.${text}`, text, role, bound })),
+        },
+      ],
+    },
+  ],
+  bounds: "Up to 25 sessions in all, up to 2 at once (pool limit 6). One session per step run.",
+};
+
 type Reason = { code: string; text: string; step?: string; old?: unknown; new?: unknown };
 type Server = {
+  lines?: Record<string, unknown>;
   approved: boolean;
   stale: Reason[];
   cardReasons: Reason[];
@@ -55,6 +87,7 @@ type Server = {
 };
 
 function view(s: Server) {
+  const LINES = s.lines ?? BASE_LINES;
   const approval = s.approved
     ? {
         id: AID,
@@ -298,4 +331,58 @@ test("give a standing consent, then revoke it", async ({ page }, info) => {
   await expect(state).toContainText("approval_revoked");
   expect(writes[1]).toEqual({ url: "consent/revoke", body: { consent_id: CID } });
   await shot(page, "consent-revoked", info.project.name);
+});
+
+test("the card lists every step a rework round re-runs before the tap", async ({ page }, info) => {
+  // #2033: the approved span is the reset span (the target and every step after it, parallel
+  // branches included), and the operator sees each step of it before approving.
+  const s: Server = { lines: SPAN_LINES, approved: false, stale: [], cardReasons: [], consent: null };
+  const writes = await stub(page, s);
+  const card = await open(page);
+  const list = card.getByRole("list", { name: "Steps a rework round may run again" });
+  await expect(list).toBeVisible();
+  const items = list.getByRole("listitem");
+  await expect(items).toHaveCount(SPAN.length);
+  const box = (await card.boundingBox())!;
+  for (const [i, [text, role, bound]] of SPAN.entries()) {
+    const item = items.nth(i);
+    await expect(item).toContainText(text);
+    await expect(item).toContainText(role);
+    await expect(item).toContainText(bound);
+    // Readable where it is: inside the card, never clipped off its edge on a phone.
+    const b = (await item.boundingBox())!;
+    expect(b.width).toBeGreaterThan(0);
+    expect(b.x).toBeGreaterThanOrEqual(box.x - 1);
+    expect(b.x + b.width).toBeLessThanOrEqual(box.x + box.width + 1);
+  }
+  await expect(card).toContainText("Up to 25 sessions in all");
+  // Listed BEFORE the tap: the whole list sits above the button that approves it.
+  const approve = card.getByRole("button", { name: "Approve plan" });
+  const last = (await items.nth(SPAN.length - 1).boundingBox())!;
+  expect(last.y + last.height).toBeLessThanOrEqual((await approve.boundingBox())!.y);
+  await shot(page, "rework-span", info.project.name);
+  await approve.click();
+  await expect(card.getByTestId("approval-state")).toHaveText("APPROVED");
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body).toMatchObject({ revision: 3, digest: DIGEST });
+});
+
+test("an approval given under the old span is stale until approved again", async ({ page }) => {
+  const changed = {
+    code: "rework_span_changed",
+    text: "review → cv now re-runs cv and every step after it; your approval covered fewer. Approve again to let HQ re-run them",
+    step: "o1.review",
+    old: "cv, documents, review",
+    new: "cv, cover_letter, documents, review, pull_request, approve, submit, record",
+  };
+  const s: Server = { lines: SPAN_LINES, approved: true, stale: [changed], cardReasons: [], consent: null };
+  const writes = await stub(page, s);
+  const card = await open(page);
+  await expect(card.getByTestId("approval-state")).toHaveText("STALE");
+  const stale = card.getByTestId("approval-stale");
+  await expect(stale).toContainText("rework_span_changed");
+  await expect(stale.locator("s")).toHaveText("cv, documents, review");
+  await expect(card.getByRole("list", { name: "Steps a rework round may run again" })).toBeVisible();
+  await card.getByRole("button", { name: "Approve again" }).click();
+  expect(writes.map((w) => w.url)).toEqual(["approve"]);
 });

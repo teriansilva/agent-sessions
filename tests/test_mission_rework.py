@@ -126,9 +126,28 @@ def _consume(mid: str, doc: dict, episode: int) -> dict | None:
     return missions.consume_rework(mid, edge_from=SRC, source_episode=episode, observation_id=oid)
 
 
-def _at_review(state: str = "running"):
+def _doc_rounds(rounds: int) -> dict:
+    """The application flow with the review's rework edge at `rounds` (the fixture's says 3), so
+    a test of the bound pins what the PLAN says: a pin at other rounds is refused (#2033) and the
+    claim falls closed to one run, which would pass a bound test without testing the bound."""
+    from mission_team_fixture import FLOW, document
+    from test_mission_steps import _assignment
+
+    assert FLOW.count("max_rounds = 3") == 1, "the fixture flow's rework edge moved"
+    # The edge lives in the procedure and is projected onto the step, so the plan is built from
+    # the flow (a step edited on its own no longer matches its procedure step).
+    doc = document(FLOW.replace("max_rounds = 3", f"max_rounds = {rounds}"))
+    for s in doc["steps"]:
+        if s["actor"] == "agent":
+            s["envelope"]["assignment"] = _assignment()
+    doc = plan_doc.validate_document(doc)
+    assert _step(doc, SRC)["rework"]["max_rounds"] == rounds
+    return doc
+
+
+def _at_review(state: str = "running", *, doc: dict | None = None):
     """A mission whose posting, cv, cover letter and documents are met and whose review runs."""
-    mid, doc = _mission(met=("o1.intake",), state="planned")
+    mid, doc = _mission(doc=doc, met=("o1.intake",), state="planned")
     _set_rows(mid, doc, ("o1.posting", TO, "o1.cover_letter", "o1.documents"), "met")
     _run(mid, TO, 1, "done")
     _run(mid, SRC, 1, state)
@@ -457,12 +476,12 @@ async def test_past_the_bound_exactly_one_question_and_nothing_reopened():
 
 def test_beyond_the_approved_bound_a_launch_nobody_tapped_is_refused():
     """1 + max_rounds runs of each step in the edge's span; the operator's own Start is not
-    bounded."""
-    mid, doc = _mission(met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter"))
-    pins = {
-        "steps": [{"id": "o1.documents"}],
-        "rework": [{"from": SRC, "to": TO, "max_rounds": 1, "steps": [TO, "o1.documents", SRC]}],
-    }
+    bounded. The plan's edge says ONE round (`_doc_rounds`), so the pins are the plan's and the
+    bound under test is 1 + 1 = 2, not the fail-closed 1 of a refused pin."""
+    mid, doc = _mission(
+        doc=_doc_rounds(1), met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter")
+    )
+    pins = {"steps": [{"id": "o1.documents"}], "rework": _rework_pins(mid)}
     import json
 
     con = missions._ready(None)
@@ -476,6 +495,7 @@ def test_beyond_the_approved_bound_a_launch_nobody_tapped_is_refused():
         con.commit()
     finally:
         con.close()
+    assert _bound(mid, "apr-b", "o1.documents") == 2
     _run(mid, "o1.documents", 1, "done")
     _run(mid, "o1.documents", 2, "stopped")
 
@@ -833,16 +853,37 @@ async def test_the_exhausted_question_raises_one_notification_retracted_when_it_
     assert missions.reworks(mid)[-1]["notice_closed_at"] is not None
 
 
-def _pin(mid: str, steps: tuple[str, ...], *, rounds: int = 3) -> str:
-    """An approval in force pinning `steps` and the review's rework edge (cv through review)."""
+def _rework_pins(mid: str) -> list[dict]:
+    """The plan's rework pins as an approval records them (`mission_approval.rework_pins`, the
+    reset span, #2033). Never with other rounds: such a pin is refused and bounds nothing, so a
+    test wanting another bound changes the PLAN (`_doc_rounds`), and one wanting a stale pin says
+    so with `_pin(rework=...)`."""
+    from agent_sessions import mission_approval
+
+    return mission_approval.rework_pins(missions.plan_revision(mid)["document"])
+
+
+def _bound(mid: str, aid: str, step: str) -> int | None:
+    """The runs of `step` the approval covers, as the claim reads it (`_approved_runs_tx`); None
+    is the fail-closed answer of pins that can't say."""
+    con = missions._ready(None)
+    try:
+        return missions._approved_runs_tx(
+            con, mid, aid, step, missions.plan_revision(mid)["document"]
+        )
+    finally:
+        con.close()
+
+
+def _pin(mid: str, steps: tuple[str, ...], *, rework=None) -> str:
+    """An approval in force pinning `steps` and the review's rework edge (its reset span, as
+    `pins` records it; `rework` overrides the edges, e.g. an approval given before #2033)."""
     import json
 
     aid = f"apr-{uuid.uuid4().hex[:20]}"
     pins = {
         "steps": [{"id": s} for s in steps],
-        "rework": [
-            {"from": SRC, "to": TO, "max_rounds": rounds, "steps": [TO, "o1.documents", SRC]}
-        ],
+        "rework": _rework_pins(mid) if rework is None else rework,
     }
     con = missions._ready(None)
     try:
@@ -949,8 +990,11 @@ def test_the_servers_words_never_advise_what_it_would_refuse():
     )
     assert f"start {TO}" not in text
     assert f"start {SRC} again yourself" in text
-    mid, doc = _mission(met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter"))
-    aid = _pin(mid, ("o1.documents",), rounds=1)
+    mid, doc = _mission(
+        doc=_doc_rounds(1), met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter")
+    )
+    aid = _pin(mid, ("o1.documents",))
+    assert _bound(mid, aid, "o1.documents") == 2  # 1 + the plan's one round, not fail-closed
     _run(mid, "o1.documents", 1, "done")
     _run(mid, "o1.documents", 2, "stopped")
     con = missions._ready(None)
@@ -978,8 +1022,11 @@ async def test_bound_reached_is_one_decision_and_one_notice_and_is_not_offered_a
     from test_mission_runner import _bell
 
     bell = _bell(monkeypatch)
-    mid, doc = _mission(met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter"))
-    aid = _pin(mid, ("o1.documents",), rounds=1)
+    mid, doc = _mission(
+        doc=_doc_rounds(1), met=("o1.intake", "o1.posting", "o1.cv", "o1.cover_letter")
+    )
+    aid = _pin(mid, ("o1.documents",))
+    assert _bound(mid, aid, "o1.documents") == 2  # 1 + the plan's one round, not fail-closed
     _run(mid, "o1.documents", 1, "done", approval_id=aid, authority="approval")
     _run(mid, "o1.documents", 2, "stopped")  # the operator's own run counts toward the bound
     con = missions._ready(None)
@@ -1105,15 +1152,17 @@ def _parallel_mission():
     return mid, doc
 
 
-def test_a_reopen_grants_a_further_run_only_inside_the_approved_span():
-    """Finding 1 (a): the reopen resets every step after the target (D-P6-14), but HQ may re-run
-    only the steps the approval pinned for the edge (target through source). A reset step outside
-    them is the operator's to start: quietly `already_ran` (the board says so), never a
-    misleading "the runs your approval covers are used" refusal, and the timeline names it."""
+def test_a_reopen_grants_every_reset_step_that_ran_parallel_branches_included():
+    """#2033 (the operator's decision, D-P6-14): the approved span IS the reset span. A parallel
+    branch after the target (cover_letter: after cv, not before review) is reset, granted a
+    further run and started by HQ under the approval, with no tap; and it is fenced like the
+    target, so a fresh read of its old output can't settle it before its new run (#2035)."""
     from agent_sessions import mission_approval
 
     mid, doc = _parallel_mission()
-    assert "o1.cover_letter" not in mission_approval._rework_span(doc, SRC, TO)
+    span = missions.rework_reset_steps(doc, SRC, TO)
+    assert "o1.cover_letter" in span and "o1.record" in span
+    assert mission_approval.rework_pins(doc)[0]["steps"] == span
     agents = tuple(s["id"] for s in doc["steps"] if s["actor"] == "agent")
     aid = _pin(mid, agents)
     for sid in (TO, "o1.cover_letter", "o1.documents"):
@@ -1122,17 +1171,21 @@ def test_a_reopen_grants_a_further_run_only_inside_the_approved_span():
     _running(mid)
     rec = _consume(mid, doc, 1)
     assert rec["outcome"] == "reopened"
-    assert missions.rework_granted(rec) == [TO, "o1.documents", SRC]
-    rows = {o["key"]: o for o in missions.objectives(mid)}
+    # Every reset step that had run; pull_request and record never ran, so collect nothing.
+    assert missions.rework_granted(rec) == [TO, "o1.cover_letter", "o1.documents", SRC]
     letter = _step(doc, "o1.cover_letter")["evidence"][0]
-    assert rows[letter]["state"] == "pending", "a step after the target was not reset"
-    assert "o1.cover_letter" not in missions.open_reopens(mid, doc)
+    assert {o["key"]: o for o in missions.objectives(mid)}[letter]["state"] == "pending"
+    assert missions.open_reopens(mid, doc)["o1.cover_letter"] == f"{SRC}#1"
+    got = missions.observe_objective(mid, letter, observed=True, value=True, detail="written")
+    assert got["state"] == "pending", "the parallel branch's old output skipped its new run"
+    assert got["observed"]["awaits_rework_run"] == "o1.cover_letter"
     c = _claim(mid, TO, "approval", aid)
     _land(mid, c["plan_id"], "done")
     _set_rows(mid, doc, (TO,), "met")
-    assert _code(lambda: _claim(mid, "o1.cover_letter", "approval", aid)) == "already_ran"
+    letter_run = _claim(mid, "o1.cover_letter", "approval", aid)
+    assert letter_run["run"]["rework_ref"] == f"{SRC}#1"
     texts = [e["text"] for e in missions.get_mission(mid, events_limit=200)["events"]]
-    assert any("o1.cover_letter must be started again by you" in t for t in texts)
+    assert not any("must be started again by you" in (t or "") for t in texts)
 
 
 @pytest.mark.anyio
@@ -1349,16 +1402,14 @@ async def test_a_session_that_is_not_this_steps_to_stop_consumes_nothing(monkeyp
 
 
 def test_the_bound_counts_only_the_edges_whose_span_holds_the_step():
-    """1 + the rounds of each pinned edge whose span holds the step; another edge adds nothing."""
+    """1 + the rounds of each pinned edge whose span holds the step: cv's edge spans cv and every
+    step after it (#2033), so cover_letter (before cv, not after it) gets its first run only."""
     import json
 
     mid, _doc = _at_review()
     pins = {
-        "steps": [{"id": TO}, {"id": "o1.cover_letter"}],
-        "rework": [
-            {"from": SRC, "to": TO, "max_rounds": 3, "steps": [TO, "o1.documents", SRC]},
-            {"from": "o1.x", "to": "o1.y", "max_rounds": 5, "steps": ["o1.y", "o1.x"]},
-        ],
+        "steps": [{"id": TO}, {"id": "o1.cover_letter"}, {"id": "o1.record"}],
+        "rework": _rework_pins(mid),
     }
     con = missions._ready(None)
     try:
@@ -1368,8 +1419,10 @@ def test_the_bound_counts_only_the_edges_whose_span_holds_the_step():
             "VALUES ('apr-two', ?, 1, 'd', ?, 'o', 'r', 1)",
             (mid, json.dumps(pins)),
         )
-        assert missions._approved_runs_tx(con, mid, "apr-two", TO) == 4
-        assert missions._approved_runs_tx(con, mid, "apr-two", "o1.cover_letter") == 1
+        doc = missions.plan_revision(mid)["document"]
+        assert missions._approved_runs_tx(con, mid, "apr-two", TO, doc) == 4
+        assert missions._approved_runs_tx(con, mid, "apr-two", "o1.record", doc) == 4
+        assert missions._approved_runs_tx(con, mid, "apr-two", "o1.cover_letter", doc) == 1
     finally:
         con.close()
 
@@ -1377,8 +1430,9 @@ def test_the_bound_counts_only_the_edges_whose_span_holds_the_step():
 def test_a_failed_episode_spends_an_instance_of_the_approved_bound():
     """Hermes 8181/8183/8185: a `failed` episode may already have created a session or attempted
     its effects, so it counts against the approval's 1 + N like every run but a refused one."""
-    mid, doc = _at_review()
-    aid = _pin(mid, (TO, "o1.cover_letter", "o1.documents", SRC), rounds=1)
+    mid, doc = _at_review(doc=_doc_rounds(1))
+    aid = _pin(mid, (TO, "o1.cover_letter", "o1.documents", SRC))
+    assert _bound(mid, aid, TO) == 2  # 1 + the plan's one round, not fail-closed
     _run(mid, TO, 2, "failed")  # the operator's own episode, which failed
     _consume(mid, doc, 1)
     assert _code(lambda: _claim(mid, TO, "approval", aid)) == "bound_reached"
@@ -1744,3 +1798,76 @@ def test_pins_that_cannot_be_read_bound_a_step_to_its_first_run():
         con.close()
     _consume(mid, doc, 1)
     assert _code(lambda: _claim(mid, TO, "approval", aid)) == "bound_reached"
+
+
+# ---- #2033: the approved span is the reset span, one definition -------------------------------
+
+
+def test_the_reopen_grant_reads_the_one_span_definition(monkeypatch):
+    """The grant is every step of `missions.rework_reset_steps` that had run: change that one
+    definition and the grant follows it (documents ran, but is outside the span asked here)."""
+    mid, doc = _at_review()
+    _run(mid, "o1.documents", 1, "done")
+    monkeypatch.setattr(missions, "rework_reset_steps", lambda d, f, t: [t, f])
+    rec = _consume(mid, doc, 1)
+    assert missions.rework_granted(rec) == [TO, SRC]
+
+
+def test_the_grant_and_the_claim_bound_cover_the_same_steps():
+    """Every step a reopen grants is one the approval's bound gives a further run, and the
+    claim admits it: pins, grant and bound agree on the steps HQ may re-run."""
+    from agent_sessions import mission_approval
+
+    mid, doc = _parallel_mission()
+    agents = tuple(s["id"] for s in doc["steps"] if s["actor"] == "agent")
+    aid = _pin(mid, agents)
+    pins = {"steps": [{"id": s} for s in agents], "rework": _rework_pins(mid)}
+    for sid in (TO, "o1.cover_letter", "o1.documents"):
+        _run(mid, sid, 1, "done")
+    _run(mid, SRC, 1)
+    _running(mid)
+    granted = missions.rework_granted(_consume(mid, doc, 1))
+    bounds = mission_approval._session_bounds(pins)
+    ran = {TO, "o1.cover_letter", "o1.documents", SRC}
+    assert granted == [s for s in mission_approval.rework_pins(doc)[0]["steps"] if s in ran]
+    assert all(bounds[s] == 4 for s in granted)
+    con = missions._ready(None)
+    try:
+        for s in granted:
+            assert missions._approved_runs_tx(con, mid, aid, s, doc) == bounds[s]
+    finally:
+        con.close()
+
+
+def test_an_approval_pinned_under_the_old_span_bounds_the_claim_to_the_first_run():
+    """Defence in depth behind the admission's re-check: the claim's own bound reads the pins
+    through `covered_runs`, which refuses a span the definition does not give. An approval given
+    before #2033 (cv through review) therefore covers no rework run at the claim, so a reopen is
+    no licence for a launch nobody tapped for; the operator's own Start still runs it."""
+    mid, doc = _at_review()
+    old = [{"from": SRC, "to": TO, "max_rounds": 3, "steps": [TO, "o1.documents", SRC]}]
+    aid = _pin(mid, (TO, "o1.cover_letter", "o1.documents", SRC), rework=old)
+    _consume(mid, doc, 1)
+    assert _code(lambda: _claim(mid, TO, "approval", aid)) == "bound_reached"
+    assert _claim(mid, TO, "operator", None)["run"]["rework_ref"] == f"{SRC}#1"
+
+
+def test_a_widened_span_leaves_holds_to_the_operator():
+    """Hermes on #2033: widening the span widens nothing else. A held step of the span (a parallel
+    branch HQ could otherwise start) is still asked about before HQ starts it; the operator's own
+    Start runs it."""
+    mid, doc = _parallel_mission()
+    agents = tuple(s["id"] for s in doc["steps"] if s["actor"] == "agent")
+    aid = _pin(mid, agents)
+    for sid in ("o1.posting", TO, "o1.cover_letter", "o1.documents"):
+        _run(mid, sid, 1, "done")
+    _run(mid, SRC, 1)
+    _running(mid)
+    rec = _consume(mid, doc, 1)
+    assert "o1.cover_letter" in missions.rework_granted(rec)
+    missions.set_step_hold(mid, "o1.cover_letter", hold=True)
+    c = _claim(mid, TO, "approval", aid)
+    _land(mid, c["plan_id"], "done")
+    _set_rows(mid, doc, (TO,), "met")
+    assert _code(lambda: _claim(mid, "o1.cover_letter", "approval", aid)) == "held"
+    assert _claim(mid, "o1.cover_letter", "operator", None)["run"]["rework_ref"] == f"{SRC}#1"

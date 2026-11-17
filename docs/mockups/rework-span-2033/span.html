@@ -1,0 +1,80 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#2033 · a rework edge's approved span is its reset span</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#2033 · the approval lists every step a rework round re-runs</h1>
+<p class="sub">Operator decision on #2033 (D-P6-14): a rework edge's approved span is its reset span, which is the target and every step after it, parallel branches included. The same synthetic mission as #1951's mockups. Its plan forks after <b>cv</b>: <b>cover_letter</b> runs beside <b>documents → review</b>, and <b>pull_request → record</b> follow. Every line is server text. The client renders it and decides nothing.</p>
+<div class="board">
+
+<div><div class="label">1 · BEFORE (MAIN TODAY): TARGET THROUGH SOURCE ONLY, IN ONE SENTENCE</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="rev">revision 6 · not approved</span></div>
+  <div class="sect"><p class="sh">Objective o1 · Synthetic Project</p>
+   <ul class="pins">
+    <li class="pin"><span class="k">o1.posting</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.cv</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.cover_letter</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.documents</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.review</span><span class="v"><b>application-reviewer</b> v1 · claude-api · opus · Senior (needs Senior)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.pull_request</span><span class="v"><b>career-archivist</b> v2 · claude-api · haiku (override) · Intern (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.record</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">rework</span><span class="v">review → cv, at most 3 rounds: cv, documents and review may each run up to 1 + 3 times</span><span class="b"></span></li>
+   </ul></div>
+  <div class="sect"><p class="sh">Bounds</p><p class="tsum">Up to 16 sessions in all, up to 2 at once (pool limit 6). One session per step run.</p></div>
+  <p class="ann" style="margin:0">A round still resets cover_letter, pull_request and record, but HQ may not run them again. A mission inside its approved rounds then waits for your tap.</p>
+ </div>
+</section></div>
+
+<div><div class="label">2 · AFTER: THE RESET SPAN, LISTED STEP BY STEP BEFORE YOU APPROVE</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="rev">revision 6 · not approved</span></div>
+  <p class="tsum">Approving is the tap. HQ may then launch exactly these specialists on exactly these steps, at revision 6, and nothing else. Every launch and every gate checks this list again; any change asks you again.</p>
+  <div class="sect"><p class="sh">Objective o1 · Synthetic Project</p>
+   <ul class="pins">
+    <li class="pin"><span class="k">o1.posting</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">1 session</span></li>
+    <li class="pin"><span class="k">o1.cv</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin diff"><span class="k">o1.cover_letter</span><span class="v"><b>cv-writer</b> v3 · claude-api · sonnet · Specialist (needs Specialist)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.documents</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">o1.review</span><span class="v"><b>application-reviewer</b> v1 · claude-api · opus · Senior (needs Senior)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin diff"><span class="k">o1.pull_request</span><span class="v"><b>career-archivist</b> v2 · claude-api · haiku (override) · Intern (needs Intern)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin diff"><span class="k">o1.record</span><span class="v"><b>career-archivist</b> v2 · claude-api · sonnet · Specialist (needs Intern)</span><span class="b">up to 1 + 3</span></li>
+    <li class="pin"><span class="k">rework</span><span class="v">review → cv, at most 3 rounds. A round resets cv and every step after it, and HQ may run its agent steps again:</span><span class="b">8 steps</span>
+     <ol class="span" aria-label="Steps a rework round may run again">
+      <li><span><span class="sid">cv</span><span class="role">rework target</span></span><span class="b">up to 1 + 3</span></li>
+      <li><span><span class="sid">cover_letter</span><span class="role">parallel branch after cv</span></span><span class="b">up to 1 + 3</span></li>
+      <li><span><span class="sid">documents</span><span class="role">between cv and review</span></span><span class="b">up to 1 + 3</span></li>
+      <li><span><span class="sid">review</span><span class="role">asks for changes</span></span><span class="b">up to 1 + 3</span></li>
+      <li><span><span class="sid">pull_request</span><span class="role">after review</span></span><span class="b">up to 1 + 3</span></li>
+      <li><span><span class="sid">approve</span><span class="role">after review</span></span><span class="b">not a session HQ starts</span></li>
+      <li><span><span class="sid">submit</span><span class="role">after review</span></span><span class="b">not a session HQ starts</span></li>
+      <li><span><span class="sid">record</span><span class="role">after review</span></span><span class="b">up to 1 + 3</span></li>
+     </ol></li>
+   </ul></div>
+  <div class="sect"><p class="sh">Bounds</p><p class="tsum">Up to 25 sessions in all, up to 2 at once (pool limit 6). One session per step run.</p></div>
+  <p class="cover"><b>Not covered.</b> The floor (anything irreversible, outward, money or credentials) still asks you, every time. The playbook's own gates, <b>approve</b> and <b>submit</b>, still wait for you. HQ never approves a gate, a tool request or a floor item.</p>
+  <div class="foot"><span class="digest">digest sha256:4b1e09c2d7f0…7c2d</span><button class="nj-plate btn primary">Approve plan</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">3 · AN APPROVAL GIVEN BEFORE THIS CHANGE: STALE, NOT WIDENED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="stamp warn">STALE</span><span class="rev">revision 6 · approved 13 Nov 10:42</span></div>
+  <p class="alert"><b>PLAN CHANGED</b>Plan changed since you approved it: review it again. New launches and gates are refused until you do; nothing is remapped.</p>
+  <ul class="pins">
+   <li class="pin bad"><span class="k">o1.review</span><span class="v">review → cv now re-runs cv and every step after it; your approval covered fewer. Approve again to let HQ re-run them.</span><span class="b code">rework_span_changed</span>
+    <p class="chg"><s>cv, documents, review</s><span class="arrow">→</span>cv, cover_letter, documents, review, pull_request, approve, submit, record</p></li>
+  </ul>
+  <p class="ann" style="margin:0">An existing approval never gains authority by itself: it stays refused until you tap again on the card below, which lists every step.</p>
+  <div class="foot"><span class="digest">approved sha256:9f3c41d07ab2…e1a4</span><button class="nj-plate btn ghost">Revoke approval</button><button class="nj-plate btn primary">Approve again</button></div>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

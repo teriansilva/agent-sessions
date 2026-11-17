@@ -107,7 +107,16 @@ def test_the_approval_pins_the_acceptance_team_at_its_versions_and_models():
             "from": "o1.review",
             "to": "o1.cv",
             "max_rounds": 3,
-            "steps": ["o1.cv", "o1.documents", "o1.review"],
+            # #2033: the reset span (the target and every step after it), not cv through review.
+            "steps": [
+                "o1.cv",
+                "o1.documents",
+                "o1.review",
+                "o1.pull_request",
+                "o1.approve",
+                "o1.submit",
+                "o1.record",
+            ],
         }
     ]
 
@@ -146,7 +155,10 @@ def test_the_card_says_the_bounds_and_what_is_not_covered():
     assert rows["o1.review"]["text"].startswith(
         "application-reviewer v1 · claude-api · opus · Senior (needs Senior)"
     )
-    assert out["bounds"].startswith("Up to 16 sessions in all")
+    # posting and cover_letter 1 each; cv, documents, review, pull_request, record 1 + 3 each.
+    assert rows["o1.record"]["bound"] == "up to 1 + 3"
+    assert rows["o1.cover_letter"]["bound"] == "1 session"
+    assert out["bounds"].startswith("Up to 22 sessions in all")
     assert "approve, submit" in out["not_covered"]
     assert "HQ never approves a gate" in out["not_covered"]
 
@@ -332,7 +344,7 @@ def test_a_revoked_approval_refuses():
 
 
 def test_every_code_is_in_the_closed_set_and_qualify_codes_map_into_it():
-    assert len(set(appr.CODES)) == 14
+    assert len(set(appr.CODES)) == 15
     assert set(appr._QUALIFY_MAP) == set(team.CODES) - {"not_distinct"}
     assert set(appr._QUALIFY_MAP.values()) <= set(appr.CODES)
 
@@ -929,3 +941,288 @@ def test_a_refusal_notice_is_retracted_when_its_approval_stops_being_in_force(ap
     assert _notices() == {live}, "a refusal under the approval in force was retracted"
     mission_runner.retract_sync(app["mid"], step_id="o1.cv")  # the step started
     assert _notices() == set()
+
+
+# ---- #2033: a rework edge's approved span is its reset span ----------------------------------
+
+
+def forked(ctx=None) -> dict:
+    """The flow with a parallel branch AFTER the target: cover_letter comes after cv (not before
+    review), and documents after cv only."""
+    import mission_team_fixture as mtf
+
+    flow = mtf.FLOW
+    i = flow.index('id = "cover_letter"')
+    j = flow.index('after = ["posting"]', i)
+    flow = flow[:j] + 'after = ["cv"]' + flow[j + len('after = ["posting"]') :]
+    flow = flow.replace('after = ["cv", "cover_letter"]', 'after = ["cv"]')
+    doc = mtf.document(flow)
+    ctx = ctx or context()
+    out = team.assemble(doc, team.assignments_of(doc), ctx)
+    for s in doc["steps"]:
+        if s["id"] in out["assignments"]:
+            s["envelope"]["assignment"] = out["assignments"][s["id"]]
+    return doc
+
+
+SPAN = [
+    "o1.cv",
+    "o1.cover_letter",
+    "o1.documents",
+    "o1.review",
+    "o1.pull_request",
+    "o1.approve",
+    "o1.submit",
+    "o1.record",
+]
+
+
+def _old_span(doc: dict, src: str, to: str) -> list[str]:
+    """The definition before #2033: `to`, `src` and the steps between them only."""
+    before = team.order_relation(doc)
+    return [
+        s["id"]
+        for s in doc["steps"]
+        if s["id"] in (src, to) or (to in before.get(s["id"], ()) and s["id"] in before[src])
+    ]
+
+
+def _bound_text(n: int) -> str:
+    return "1 session" if n == 1 else f"up to 1 + {n - 1}"
+
+
+def test_the_pins_record_the_reset_span_parallel_branches_included():
+    doc = forked()
+    p = approved(doc)["pins"]
+    assert p["rework"][0]["steps"] == SPAN == missions.rework_reset_steps(doc, "o1.review", "o1.cv")
+    assert "o1.cover_letter" not in _old_span(doc, "o1.review", "o1.cv")
+
+
+def test_the_card_lists_every_step_of_the_span_before_the_tap():
+    """The rework row carries the span, step by step, with where each sits and its bound."""
+    doc = forked()
+    out = appr.lines(approved(doc)["pins"], doc, context())
+    row = next(r for r in out["groups"][0]["rows"] if r["key"] == "rework")
+    assert row["bound"] == "8 steps"
+    assert "resets cv and every step after it" in row["text"]
+    got = {i["step"]: (i["text"], i["role"], i["bound"]) for i in row["span"]}
+    assert list(got) == SPAN
+    assert got["o1.cv"] == ("cv", "rework target", "up to 1 + 3")
+    assert got["o1.cover_letter"] == ("cover_letter", "parallel branch after cv", "up to 1 + 3")
+    assert got["o1.documents"] == ("documents", "between cv and review", "up to 1 + 3")
+    assert got["o1.review"] == ("review", "asks for changes", "up to 1 + 3")
+    assert got["o1.record"] == ("record", "after review", "up to 1 + 3")
+    # An operator step is reset too, but HQ never starts it: no session is counted for it.
+    assert got["o1.approve"] == ("approve", "after review", "not a session HQ starts")
+    # posting 1; cv, cover_letter, documents, review, pull_request, record 1 + 3 each.
+    assert out["bounds"].startswith("Up to 25 sessions in all")
+
+
+def test_pins_card_line_and_claim_bound_are_one_bound():
+    """The card's step rows, its span list and the claim's bound (`covered_runs`) all say what
+    `_session_bounds` says, for every agent step."""
+    doc = forked()
+    p = approved(doc)["pins"]
+    bounds = appr._session_bounds(p)
+    out = appr.lines(p, doc, context())
+    rows = {r["key"]: r for r in out["groups"][0]["rows"]}
+    span = {i["step"]: i["bound"] for i in rows["rework"]["span"]}
+    for sid in AGENT_STEPS:
+        assert appr.covered_runs(p, doc, sid) == bounds[sid]
+        assert rows[sid]["bound"] == _bound_text(bounds[sid])
+        if sid in span:
+            assert span[sid] == rows[sid]["bound"]
+    assert out["bounds"].startswith(f"Up to {sum(bounds.values())} sessions")
+
+
+def test_the_one_span_definition_governs_the_pins_the_card_and_the_claim(monkeypatch):
+    """Change the ONE definition (`missions.rework_reset_steps`) and the pins, the card's list and
+    totals and the claim's bound all follow it; pins recorded under the other definition then
+    cover nothing beyond the first run (fail closed) until approved again."""
+    doc = forked()
+    before = approved(doc)["pins"]
+    monkeypatch.setattr(missions, "rework_reset_steps", lambda d, f, t: [t, f])
+    p = approved(doc)["pins"]
+    assert p["rework"][0]["steps"] == ["o1.cv", "o1.review"]
+    out = appr.lines(p, doc, context())
+    row = next(r for r in out["groups"][0]["rows"] if r["key"] == "rework")
+    assert [i["step"] for i in row["span"]] == ["o1.cv", "o1.review"]
+    assert out["bounds"].startswith("Up to 13 sessions in all")
+    assert appr.covered_runs(p, doc, "o1.cover_letter") == 1
+    assert appr.covered_runs(p, doc, "o1.review") == 4
+    assert appr.covered_runs(before, doc, "o1.review") is None
+
+
+def test_an_approval_pinned_under_the_old_span_is_stale_never_widened():
+    """Approval rows are immutable: one given before #2033 pinned target through source. The
+    re-check refuses it (`rework_span_changed`, old → new) for every step, whatever it narrows
+    to, and its pins bound the claim to the first run, so it never gains authority by itself."""
+    doc = forked()
+    a = approved(doc)
+    a["pins"]["rework"][0]["steps"] = _old_span(doc, "o1.review", "o1.cv")
+    check = appr.recheck(a, doc, 1, context(), facts())
+    assert codes(check) == ["rework_span_changed"]
+    r = check["reasons"][0]
+    assert r["step"] == "o1.review"
+    assert r["old"] == "cv, documents, review"
+    assert r["new"] == "cv, cover_letter, documents, review, pull_request, approve, submit, record"
+    for step in ("o1.posting", "o1.approve", "o1.cover_letter"):
+        assert codes(appr.recheck(a, doc, 1, context(), facts(), step=step)) == [
+            "rework_span_changed"
+        ]
+    assert appr.class_text(check["reasons"]) == (
+        "the steps a rework round re-runs changed since you approved"
+    )
+    assert appr.covered_runs(a["pins"], doc, "o1.cv") is None
+    consent = {
+        "id": "con-" + "0" * 20,
+        "approval_id": a["id"],
+        "revoked_at": None,
+        "expires_at": 10**12,
+    }
+    assert appr.consent_verdict(consent, a, check)["state"] == "void"
+
+
+def test_unreadable_rework_pins_are_a_change():
+    doc = assembled()
+    a = approved(doc)
+    a["pins"]["rework"] = [{"no": "from"}]
+    assert codes(appr.recheck(a, doc, 1, context(), facts())) == ["rework_span_changed"]
+    assert appr.covered_runs(a["pins"], doc, "o1.cv") is None
+
+
+def test_an_old_approval_asks_for_a_new_tap_and_then_launches(live, monkeypatch):
+    """End to end on the routes: an approval (and its standing consent) given under the old span
+    is stale on the card and refused at launch, even for a step outside any rework span; the
+    card offers the new span at a new digest, and approving it again admits."""
+    with monkeypatch.context() as m:
+        m.setattr(missions, "rework_reset_steps", lambda d, f, t: _old_span(d, f, t))
+        assert _approve(live).status_code == 200
+        old = _card(live)
+        cid = _consent_post(live).json()["id"]
+        assert appr.admit(live["mid"], "o1.posting", "launch")["ok"]
+    card = _card(live)
+    assert card["approval"]["state"] == "stale"
+    assert [r["code"] for r in card["approval"]["reasons"]] == ["rework_span_changed"]
+    assert card["consent"]["state"] == "void" and card["consent_offer"] is None
+    out = appr.admit(live["mid"], "o1.posting", "launch")
+    assert not out["ok"] and codes(out) == ["rework_span_changed"]
+    assert codes(harness_trigger(live["mid"], cid)) == ["rework_span_changed"]
+    assert card["card"]["digest"] != old["approval"]["digest"]
+    # The tap the card showed before is refused: the operator approves what is listed NOW.
+    r = _approve(live, digest=old["approval"]["digest"])
+    assert r.status_code == 409 and r.json()["code"] == "digest_changed"
+    assert _approve(live).status_code == 200
+    assert _card(live)["approval"]["state"] == "in_force"
+    assert appr.admit(live["mid"], "o1.posting", "launch")["ok"]
+
+
+def overlapping(ctx=None) -> dict:
+    """Two rework edges whose spans overlap: review → cv (3 rounds) and pull_request → documents
+    (2 rounds). documents onwards sit in both."""
+    import mission_team_fixture as mtf
+
+    flow = mtf.FLOW.replace(
+        'after = ["review"]\n[[steps.checklist]]\nkey = "pr_ready"',
+        'after = ["review"]\nrework = { to = "documents", when = "pr_ready", max_rounds = 2 }\n'
+        '[[steps.checklist]]\nkey = "pr_ready"',
+    )
+    assert flow != mtf.FLOW
+    doc = mtf.document(flow)
+    ctx = ctx or context()
+    out = team.assemble(doc, team.assignments_of(doc), ctx)
+    for s in doc["steps"]:
+        if s["id"] in out["assignments"]:
+            s["envelope"]["assignment"] = out["assignments"][s["id"]]
+    return doc
+
+
+def test_overlapping_edges_add_up_to_one_bound_on_every_line():
+    """A step in two spans runs up to 1 + both edges' rounds: its own row, EACH edge's list and
+    the claim's bound say the same number, never an edge's rounds alone."""
+    doc = overlapping()
+    p = approved(doc)["pins"]
+    assert [e["from"] for e in p["rework"]] == ["o1.review", "o1.pull_request"]
+    bounds = appr._session_bounds(p)
+    assert bounds["o1.cv"] == 4 and bounds["o1.documents"] == 6 and bounds["o1.record"] == 6
+    assert bounds["o1.posting"] == 1 and bounds["o1.cover_letter"] == 1
+    out = appr.lines(p, doc, context())
+    rows = out["groups"][0]["rows"]
+    steps = {r["key"]: r for r in rows if r["key"].startswith("o1.")}
+    lists = [r["span"] for r in rows if r["key"] == "rework"]
+    assert len(lists) == 2
+    for span in lists:
+        for item in span:
+            if item["step"] in steps:
+                assert item["bound"] == steps[item["step"]]["bound"]
+                assert appr.covered_runs(p, doc, item["step"]) == bounds[item["step"]]
+    assert next(i for i in lists[0] if i["step"] == "o1.documents")["bound"] == "up to 1 + 5"
+    assert next(i for i in lists[1] if i["step"] == "o1.documents")["role"] == "rework target"
+    assert out["bounds"].startswith(f"Up to {sum(bounds.values())} sessions in all")
+
+
+@pytest.mark.parametrize(
+    "rework",
+    [
+        [],  # pinned before the plan had its edge: the edge is new since
+        [{"from": "o1.review", "to": "o1.cv", "max_rounds": 3, "steps": 5}],
+        [{"from": "o1.review", "to": "o1.cv", "max_rounds": 3, "steps": [["x"]]}],
+    ],
+)
+def test_a_new_edge_or_damaged_span_pins_refuse_and_never_raise(rework):
+    """Independent review of #2033: an edge the approval never pinned is a change, and pins
+    damaged below the top level are refused with the closed code, never an exception."""
+    doc = assembled()
+    a = approved(doc)
+    a["pins"]["rework"] = rework
+    assert codes(appr.recheck(a, doc, 1, context(), facts())) == ["rework_span_changed"]
+    assert appr.covered_runs(a["pins"], doc, "o1.cv") is None
+
+
+def test_an_edge_gone_from_the_plan_is_a_change():
+    doc = assembled()
+    a = approved(doc)
+    gone = {"from": "o1.record", "to": "o1.posting", "max_rounds": 1, "steps": []}
+    a["pins"]["rework"].append(gone)
+    check = appr.recheck(a, doc, 1, context(), facts())
+    assert codes(check) == ["rework_span_changed"] and check["reasons"][0]["step"] == "o1.record"
+
+
+def test_an_edge_pinned_twice_refuses_and_bounds_nothing():
+    """Independent review of #2033: `_session_bounds` adds up every pinned copy of an edge, so a
+    re-check that compared only one copy would let damaged pins raise the claim's bound. The
+    whole list must be the definition's."""
+    doc = forked()
+    a = approved(doc)
+    good = a["pins"]["rework"][0]
+    a["pins"]["rework"] = [dict(good, max_rounds=99), good]
+    assert codes(appr.recheck(a, doc, 1, context(), facts())) == ["rework_span_changed"]
+    assert appr.covered_runs(a["pins"], doc, "o1.cv") is None
+    a["pins"]["rework"] = [good, good]
+    check = appr.recheck(a, doc, 1, context(), facts())
+    assert codes(check) == ["rework_span_changed"]
+    # Said as what it is, not as pins that can't be read.
+    assert check["reasons"][0]["text"].startswith(
+        "this approval lists the plan's rework edges differently"
+    )
+
+
+def test_covered_runs_says_nothing_when_the_step_pins_cannot_be_read():
+    """Independent review of #2033 (mutant d3): `covered_runs` fails closed on pins whose step
+    rows can't be read, even when the rework list is the definition's — None, never a raise."""
+    doc = assembled()
+    p = {"steps": [{"no": "id"}], "rework": appr.rework_pins(doc)}
+    assert appr.covered_runs(p, doc, "o1.cv") is None
+
+
+def test_a_pinned_max_rounds_other_than_the_plans_refuses():
+    doc = forked()
+    a = approved(doc)
+    a["pins"]["rework"][0]["max_rounds"] = 9
+    check = appr.recheck(a, doc, 1, context(), facts())
+    assert codes(check) == ["rework_span_changed"]
+    # Named on its edge by the per-edge diff (which compares the whole edge, `max_rounds`
+    # included), not only caught by the whole-list fallback.
+    assert check["reasons"][0]["step"] == "o1.review"
+    assert check["reasons"][0]["text"] == "the rework edge on review changed"
+    assert appr.covered_runs(a["pins"], doc, "o1.cv") is None
