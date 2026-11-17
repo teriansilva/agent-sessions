@@ -1,0 +1,279 @@
+/* Share with a peer… (#2055): the dialog. It sits on the shared HudDialog chrome and its opt-in
+ * `.pinned` sheet (a scrolling body over a pinned action row on a phone). Tokens only.
+ *
+ * Colour: the chosen tile is the accent (a choice, not a state) and carries a filled radio mark,
+ * so the choice is never colour alone. Green is only a connected peer; Revoke is the one red. */
+
+.dialog {
+  width: min(600px, 100%);
+}
+/* The §8 floor: the close is the dialog's dismiss on a phone too. */
+.dialog .close {
+  width: 44px;
+  height: 44px;
+}
+.from {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Wide screens: the action row sits under the form and ABOVE the list of existing shares (the
+ * approved board), while it stays the dialog's last element in the DOM so a phone can pin it. */
+.actions {
+  order: 1;
+}
+.listSection {
+  order: 2;
+}
+
+.label {
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+.first {
+  margin-top: 0;
+}
+
+.tagBox {
+  flex: none;
+  padding: 1px 6px;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.later {
+  letter-spacing: 0.08em;
+}
+
+.tiles {
+  display: grid;
+  gap: var(--sp-2);
+}
+.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.tile {
+  appearance: none;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tile::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-2);
+  border-radius: 50%; /* the radio dot: the one round thing here */
+}
+.tile:hover:not(:disabled),
+.tile:focus-visible {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.tile:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tile[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+.tile[aria-checked="true"]::before {
+  border-color: var(--hud);
+  background: var(--hud);
+  box-shadow: inset 0 0 0 2.5px var(--bg-2);
+}
+.tile:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.tileBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tileName {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.tileDesc {
+  font-size: var(--fs-meta);
+  line-height: 1.35;
+  color: var(--text-2);
+}
+.state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 60%;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  text-align: right;
+}
+.wordOk {
+  color: var(--ok-text);
+}
+
+.expiry {
+  max-width: 100%;
+}
+.help {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.disclosure {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 4%, var(--bg-1));
+  border-left: 3px solid var(--line-strong);
+}
+.disclosure span {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--text-2);
+}
+/* A share that was made: said in neutral ink with the ok rule (a result, not an alarm). */
+.done {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-up) 8%, var(--bg-2));
+  border-left: 3px solid var(--status-up);
+}
+
+.none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.noneHead {
+  margin: 0;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+}
+/* A link-style action at the 44 px floor. */
+.linkAction {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--hud);
+  text-underline-offset: 3px;
+}
+.linkAction:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+.listSection {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+/* A grant row: who or what · level · until · Revoke. Shared with Settings → Peers. */
+.grants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.grants > .grant:last-child {
+  border-bottom: 0;
+}
+.grantMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+}
+.grantTitle {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.grantMeta {
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.revoke {
+  flex: none;
+}
+
+@media (max-width: 800px) {
+  .three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .expiry {
+    display: flex;
+    width: 100%;
+  }
+  .expiry > button {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+  }
+  .grant {
+    flex-wrap: wrap;
+  }
+  .revoke {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+  /* The sheet's body ends with room above the pinned row. */
+  .body {
+    padding-bottom: var(--sp-3);
+  }
+  .actions {
+    padding-top: var(--sp-3);
+  }
+}
+@media (pointer: coarse) {
+  .expiry > button {
+    min-height: 44px;
+  }
+  .revoke {
+    min-height: 44px;
+  }
+}

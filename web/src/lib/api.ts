@@ -33,7 +33,17 @@ import type {
   ShareList,
   ShareMode,
 } from "./shareFormat";
-import type { CreatedInvite, FederationPairing, FederationState } from "./federation";
+import type {
+  CreatedInvite,
+  FederationGrant,
+  FederationGrantList,
+  FederationPairing,
+  FederationState,
+  RemoteEventPage,
+  RemoteHistoryPage,
+  RemoteShare,
+  RemoteSnapshot,
+} from "./federation";
 import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -743,6 +753,8 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
 }
 
 const enc = encodeURIComponent;
+/** A read whose answer must never be kept by the browser: a peer's content (#2055). */
+const NO_STORE: RequestInit = { cache: "no-store" };
 
 /** `?project=&session=&…` for `GET /api/artifacts`, empty filters left out. */
 export function artifactQueryString(q: ArtifactQuery): string {
@@ -1112,6 +1124,63 @@ export const api = {
     mutateJson<FederationState>(
       "POST",
       `/api/federation/peers/${encodeURIComponent(peerId)}/revoke`,
+    ),
+  // Sharing a session with a peer (#2054, #2055). The owner's side: grants. A refused write
+  // carries the server's `detail` as the error's message.
+  federationGrants: (session: string) =>
+    getJsonWithDetail<FederationGrantList>(`/api/federation/grants?session=${enc(session)}`),
+  /** The live grants to ONE peer, each with its session's title (Settings → Peers). */
+  federationGrantsToPeer: (peerId: string) =>
+    getJsonWithDetail<FederationGrantList>(`/api/federation/grants?peer=${enc(peerId)}`),
+  createFederationGrant: (body: { session_key: string; peer_id: string; expires_in: number }) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>("POST", "/api/federation/grants", {
+      ...body,
+      level: "view",
+    }),
+  /** A new expiry, counted from now. `revision` is the grant's current one (409 when it moved). */
+  changeFederationGrant: (grantId: string, expires_in: number, revision: number) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>(
+      "PATCH",
+      `/api/federation/grants/${enc(grantId)}`,
+      { expires_in, revision },
+    ),
+  revokeFederationGrant: (grantId: string) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>(
+      "POST",
+      `/api/federation/grants/${enc(grantId)}/revoke`,
+    ),
+  // The receiving side: reads only. Each read is answered by the owning instance for that call;
+  // 503 = it is not connected, 404 = the share ended. Nothing here is cached by this client.
+  federationRemote: (signal?: AbortSignal) =>
+    getJsonWithDetail<{ remote: RemoteShare[] }>("/api/federation/remote", signal),
+  federationRemoteSnapshot: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<RemoteSnapshot>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/snapshot`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteEvents: (
+    peerId: string,
+    grantId: string,
+    after: number,
+    wait: number,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteEventPage>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/events?after=${after}&wait=${wait}`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteHistory: (
+    peerId: string,
+    grantId: string,
+    before: string,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteHistoryPage>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/history?before=${enc(before)}`,
+      signal,
+      NO_STORE,
     ),
   // Reply links (#1956): one finished reply, sealed. `createReplyShare` is the only answer that
   // carries the key, so the link is shown once.

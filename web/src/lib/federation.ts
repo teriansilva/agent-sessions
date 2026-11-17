@@ -3,6 +3,7 @@
  *  in is a function of plain data and is unit-tested (`federation.test.ts`).
  *
  *  The server contract is docs/invariants/federation.md. */
+import type { PublicTurn } from "../share/publicApi";
 import { ago } from "./shareFormat";
 
 /** How an instance can be reached. The read carries the KIND only, never an address. */
@@ -263,3 +264,394 @@ export function pollInterval(inviteOpen: boolean, tracked: readonly TrackedPairi
     ? POLL_ACTIVE_MS
     : POLL_IDLE_MS;
 }
+
+// ---- sharing a session with a peer (#2054, #2055) ---------------------------------------------
+
+/** A grant as the operator API shows it (`grants.public` plus the peer's name). */
+export interface FederationGrant {
+  grant_id: string;
+  session_key: string;
+  peer_id: string;
+  peer_name: string;
+  level: string;
+  expires_at: number;
+  revision: number;
+  state: string;
+  created_at: number;
+  ended_at: number | null;
+  end_reason: string | null;
+  /** The session's title: only on the per-peer list (`?peer=`), which has no pane around it. */
+  title?: string;
+}
+
+export interface FederationGrantList {
+  grants: FederationGrant[];
+  generation: number;
+  levels: string[];
+  default_expires_in: Record<string, number>;
+  max_expires_in: number;
+}
+
+/** One session a peer shares with this instance: everything `GET /api/federation/remote` knows
+ *  of it. There is no summary, no activity time and no working state, so no row shows one. */
+export interface RemoteShare {
+  key: string;
+  peer_id: string;
+  peer_name: string;
+  connected: boolean;
+  grant_id: string;
+  engine: string;
+  native_id: string;
+  title: string;
+  level: string;
+  expires_at: number;
+  revision: number;
+  seen_at: number;
+}
+
+/** The expiry choices of the dialog, in days. Seven is the server's default too. */
+export const GRANT_EXPIRY_DAYS = [1, 7, 30, 90] as const;
+export type GrantExpiryDays = (typeof GRANT_EXPIRY_DAYS)[number];
+export const GRANT_EXPIRY_DEFAULT: GrantExpiryDays = 7;
+export const expiresInSeconds = (days: number) => days * 86400;
+
+/** What the dialog says, always, about what the other instance will see (#2055). */
+export const PEER_DISCLOSURE =
+  "The other instance sees this conversation as you see it here, without your secrets we know of." +
+  " A secret we don't know about is not hidden.";
+export const PEER_DISCLOSURE_DETAIL =
+  "It gets the turns and the tool activity. Never the folder, the model settings or files; an" +
+  " image shows as its name only.";
+
+const dayMonth = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
+/** The latest instant a JS `Date` can hold, in seconds (±8.64e15 ms). */
+export const EPOCH_S_MAX = 8.64e12;
+/** What a date that cannot be one reads as. Neutral: it says nothing about the share. */
+export const UNKNOWN_DATE = "an unknown date";
+
+/** Whether `v` is an epoch in seconds this browser can turn into a date: a finite number after 0
+ *  and within `Date`'s range. A number a peer listed is untrusted (#2055 review): `1e300` is
+ *  finite, and `new Date(1e303)` is an Invalid Date that `Intl.DateTimeFormat` THROWS on. */
+export function isEpochS(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= EPOCH_S_MAX;
+}
+
+/** "22 Nov" in the browser's time zone. The ONE place an expiry becomes a `Date`: every surface
+ *  that shows one (the list row, the map node, the pane's banner, Settings → Peers, the share
+ *  dialog) goes through here, and it never throws. A value that is not a date — already stored by
+ *  an earlier build, or from anywhere else — reads as {@link UNKNOWN_DATE}. */
+export function shortDate(epochS: unknown): string {
+  if (!isEpochS(epochS)) return UNKNOWN_DATE;
+  try {
+    return dayMonth.format(new Date(epochS * 1000));
+  } catch {
+    return UNKNOWN_DATE;
+  }
+}
+
+/** "View" for `view`; a level this build does not know is shown as the server named it. */
+export function levelLabel(level: string): string {
+  return level ? level[0].toUpperCase() + level.slice(1) : "";
+}
+
+export interface GrantRowState {
+  /** Who (in a session's dialog) or what (in a peer's list) the row is about. */
+  title: string;
+  level: string;
+  until: string;
+}
+
+/** One row of "Shared with": in a session's dialog it names the peer, in a peer's list the
+ *  session. A session without a readable title is shown by its key's short tail, never blank. */
+export function grantRowState(grant: FederationGrant, by: "peer" | "session"): GrantRowState {
+  const title =
+    by === "peer"
+      ? grant.peer_name || grant.peer_id.slice(0, 8)
+      : grant.title || `Session ${grant.session_key.split(":").pop()?.slice(0, 8) ?? ""}`.trim();
+  return { title, level: levelLabel(grant.level), until: `until ${shortDate(grant.expires_at)}` };
+}
+
+/** The live grant of this session that already names `peerId`, if any: sharing again with the
+ *  same peer changes that grant's expiry (with its revision) and never makes a second one. */
+export function grantFor(
+  grants: readonly FederationGrant[],
+  peerId: string,
+): FederationGrant | undefined {
+  return grants.find((g) => g.peer_id === peerId);
+}
+
+/** The peers a session can be shared with: trusted ones. A revoked peer is not listed. */
+export function shareablePeers(peers: readonly FederationPeer[]): FederationPeer[] {
+  return peers.filter((p) => p.state === "trusted");
+}
+
+export interface RemoteRowState {
+  title: string;
+  peer: string;
+  offline: boolean;
+  /** "view only · until 22 Nov", or "offline" while the peer's channel is down. */
+  meta: string;
+  /** "until 22 Nov": the expiry alone, for a surface that shows the access elsewhere. */
+  until: string;
+  /** For assistive tech: the whole row in one sentence. */
+  label: string;
+}
+
+/** What a remote row (list or map) shows: exactly what the list read carries. */
+export function remoteRowState(r: RemoteShare): RemoteRowState {
+  const title = r.title || "(untitled)";
+  const peer = r.peer_name || r.peer_id.slice(0, 8);
+  const access = r.level === "view" ? "view only" : levelLabel(r.level).toLowerCase();
+  const offline = !r.connected;
+  const until = `until ${shortDate(r.expires_at)}`;
+  return {
+    title,
+    peer,
+    offline,
+    meta: offline ? "offline" : `${access} · ${until}`,
+    until,
+    label: `Open ${title}, shared by ${peer}, ${offline ? "offline" : access}`,
+  };
+}
+
+/** The read-only pane's route. Its own route: never the local session route. */
+export const REMOTE_ROUTE = "/remote/:peerId/:grantId";
+export const remotePath = (peerId: string, grantId: string) =>
+  `/remote/${encodeURIComponent(peerId)}/${encodeURIComponent(grantId)}`;
+
+/** The shapes the server validates before it mirrors an entry (`identity.PEER_ID_RE`,
+ *  `grants.GRANT_ID_RE`). A route whose ids are not these asks the server nothing. */
+export const PEER_ID_RE = /^[a-z2-7]{32}$/;
+export const GRANT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** How long an events read is held, in seconds. Through Home Free a proxied read is cut at 5 s,
+ *  so the hold stays under it everywhere. */
+export const REMOTE_EVENTS_WAIT_S = 3;
+/** How often the pane asks again while the peer is offline or a read failed. */
+export const REMOTE_RETRY_MS = 3_000;
+/** A read that fails for a reason that says nothing about the grant (a timeout, a busy peer) is
+ *  retried with the turns kept; after this many in a row the pane shows nothing. */
+export const REMOTE_STALL_LIMIT = 3;
+
+/** A turn as the projection carries it. Structural, so this module needs nothing from the
+ *  viewer; the pane hands the same objects to the viewer's turn component. */
+export interface RemoteTurn {
+  turn_id: string;
+  [field: string]: unknown;
+}
+
+export interface RemoteSnapshot {
+  link: string;
+  revision: number | null;
+  event_cursor: number | null;
+  state?: string;
+  active_turn?: string | null;
+  turns: RemoteTurn[];
+  omitted_turns: number;
+  pending_requests: { request_id: string; summary?: string }[];
+  background?: boolean;
+  can_send: false;
+}
+
+export interface RemoteEventPage {
+  link: string;
+  revision: number | null;
+  next_cursor: number | null;
+  events: { cursor: number; kind: string }[];
+}
+
+export interface RemoteHistoryPage {
+  link: string;
+  turns: RemoteTurn[];
+  before: string | null;
+  has_more: boolean;
+}
+
+/** `loading`: nothing read yet. `live`: showing what the owner answered. `offline`: the owner is
+ *  not connected (or cannot be read): nothing is shown. `gone`: the share ended; final. */
+export type RemotePaneStatus = "loading" | "live" | "offline" | "gone";
+
+export interface RemotePaneState {
+  /** `<peerId>/<grantId>` of the route this state is for. */
+  target: string;
+  /** THE FENCE. Every read carries the generation it started under; an answer under any other
+   *  generation is discarded. Bumped whenever the pane clears: 404, 503, a new target, leaving. */
+  generation: number;
+  status: RemotePaneStatus;
+  /** Milliseconds to wait before this generation's first read; `null` = read nothing (gone). */
+  startAfterMs: number | null;
+  snapshot: RemoteSnapshot | null;
+  /** Older turns paged in with `history`, oldest first; they end where the snapshot begins. */
+  older: RemoteTurn[];
+  /** Whether turns older than everything held exist. */
+  hasMore: boolean;
+  /** Reads in a row that failed without saying anything about the grant. */
+  stalls: number;
+}
+
+export type RemotePaneEvent =
+  | { type: "open"; target: string }
+  | { type: "snapshot"; generation: number; snapshot: RemoteSnapshot }
+  | { type: "history"; generation: number; page: RemoteHistoryPage }
+  | { type: "failed"; generation: number; status: number };
+
+export function remotePaneInit(target: string): RemotePaneState {
+  return {
+    target,
+    generation: 0,
+    status: "loading",
+    startAfterMs: 0,
+    snapshot: null,
+    older: [],
+    hasMore: false,
+    stalls: 0,
+  };
+}
+
+function cleared(
+  state: RemotePaneState,
+  status: RemotePaneStatus,
+  startAfterMs: number | null,
+  target = state.target,
+): RemotePaneState {
+  return {
+    target,
+    generation: state.generation + 1,
+    status,
+    startAfterMs,
+    snapshot: null,
+    older: [],
+    hasMore: false,
+    stalls: 0,
+  };
+}
+
+/** The turns of an answer that can be shown: objects with an id, each id once. The server checks
+ *  an answer's shape and depth, not every field; what a peer sent is never trusted to be well
+ *  formed here either. */
+function listedTurns(raw: unknown): RemoteTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: RemoteTurn[] = [];
+  for (const t of raw) {
+    const id = (t as RemoteTurn | null)?.turn_id;
+    if (!t || typeof t !== "object" || typeof id !== "string" || !id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(t as RemoteTurn);
+  }
+  return out;
+}
+
+const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
+const objects = (v: unknown): Record<string, unknown>[] =>
+  Array.isArray(v)
+    ? (v.filter((x) => x && typeof x === "object" && !Array.isArray(x)) as Record<string, unknown>[])
+    : [];
+
+/** One turn from a peer as the viewer's turn component takes it, field by field. Anything that
+ *  is not the type it should be is dropped, so a malformed answer renders as less, never as a
+ *  crash. An attachment keeps its name and type and NEVER an image handle: nothing a peer sent
+ *  can make this instance load a picture. */
+export function remoteTurnView(raw: RemoteTurn): PublicTurn {
+  const author = raw.author as { name?: unknown; via?: unknown } | null | undefined;
+  const omitted = raw.tools_omitted;
+  return {
+    kind: raw.kind === "agent" ? "agent" : "operator",
+    turn_id: raw.turn_id,
+    state: text(raw.state) ?? "",
+    text: text(raw.text),
+    reply: text(raw.reply),
+    reply_ts: null,
+    reply_truncated: raw.reply_truncated === true,
+    attachments: objects(raw.attachments).map((a) => ({
+      name: text(a.name) ?? "",
+      mime: text(a.mime) ?? "file",
+    })),
+    tools: objects(raw.tools).map((t) => ({
+      name: text(t.name),
+      outcome: text(t.outcome),
+      summary: text(t.summary),
+    })),
+    tools_truncated: raw.tools_truncated === true,
+    tools_omitted: typeof omitted === "number" && omitted > 0 ? omitted : 0,
+    author:
+      author && author.via === "public_link" && typeof author.name === "string"
+        ? { name: author.name, via: "public_link" }
+        : null,
+    truncated: raw.truncated === true,
+  };
+}
+
+/** What a failed read means for the pane, from its HTTP status alone. */
+export function remoteFailure(status: number): "gone" | "offline" | "stall" {
+  if (status === 404) return "gone";
+  if (status === 503) return "offline";
+  return "stall";
+}
+
+/** The pane's whole state machine, pure. Content only ever enters through an answer whose
+ *  generation is the current one; every transition that clears content bumps the generation, so
+ *  a slow success can never refill a pane that was cleared or now shows another session. */
+export function remotePaneReduce(state: RemotePaneState, event: RemotePaneEvent): RemotePaneState {
+  if (event.type === "open")
+    return event.target === state.target ? state : cleared(state, "loading", 0, event.target);
+  if (event.generation !== state.generation) return state; // an answer from before a clear
+  if (event.type === "failed") {
+    const kind = remoteFailure(event.status);
+    if (kind === "gone") return cleared(state, "gone", null);
+    if (kind === "offline") return cleared(state, "offline", REMOTE_RETRY_MS);
+    return state.stalls + 1 >= REMOTE_STALL_LIMIT
+      ? cleared(state, "offline", REMOTE_RETRY_MS)
+      : { ...state, stalls: state.stalls + 1 };
+  }
+  if (event.type === "snapshot") {
+    const next = { ...event.snapshot, turns: listedTurns(event.snapshot.turns) };
+    const ids = new Set(next.turns.map((t) => t.turn_id));
+    // Turns already on screen that the newer window no longer carries stay, in order, once
+    // history was paged in: the list must not grow a hole between `older` and the snapshot.
+    const carried =
+      state.older.length && state.snapshot
+        ? state.snapshot.turns.filter((t) => !ids.has(t.turn_id))
+        : [];
+    const older = [...state.older.filter((t) => !ids.has(t.turn_id)), ...carried];
+    return {
+      ...state,
+      status: "live",
+      snapshot: next,
+      older,
+      hasMore: older.length ? state.hasMore : Number(next.omitted_turns) > 0,
+      stalls: 0,
+    };
+  }
+  // history: a page of turns that end where the oldest held turn begins.
+  if (state.status !== "live" || !state.snapshot) return state;
+  const held = new Set([...state.older, ...state.snapshot.turns].map((t) => t.turn_id));
+  return {
+    ...state,
+    older: [...listedTurns(event.page.turns).filter((t) => !held.has(t.turn_id)), ...state.older],
+    hasMore: event.page.has_more === true,
+    stalls: 0,
+  };
+}
+
+/** Every turn the pane shows, oldest first. */
+export function remoteTurns(state: RemotePaneState): RemoteTurn[] {
+  return state.snapshot ? [...state.older, ...state.snapshot.turns] : [];
+}
+
+/** The banner's connection word and LED: green only for a connected peer. */
+export function remotePaneBadge(
+  status: RemotePaneStatus,
+  stalled: boolean,
+): { led: "up" | "idle"; word: string } {
+  if (status === "live" && !stalled) return { led: "up", word: "connected" };
+  if (status === "live") return { led: "idle", word: "reconnecting" };
+  if (status === "gone") return { led: "idle", word: "unavailable" };
+  if (status === "offline") return { led: "idle", word: "offline" };
+  return { led: "idle", word: "connecting" };
+}
+
+export const REMOTE_GONE = "This share is no longer available.";
+export const remoteOfflineText = (peer: string) =>
+  `${peer} is not connected. Showing nothing until it is back.`;
+export const remoteViewOnlyText = (peer: string) => `Ask ${peer}'s operator for more access.`;

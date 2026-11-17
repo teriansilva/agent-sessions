@@ -172,7 +172,9 @@ export function activeSection(pathname: string): SectionId | null {
 /** Which sub-menu entry a pathname belongs to — `null` elsewhere.
  *  Same exact-match rule as `activeSection`, which derives the parents from this. */
 export function activeSubsection(pathname: string): SubsectionId | null {
-  if (pathname === SESSIONS_PATH || pathname.startsWith("/s/"))
+  // `/remote/…` (#2055) is a session another instance shares: it sits in the Sessions section,
+  // beside the list its row is in.
+  if (pathname === SESSIONS_PATH || pathname.startsWith("/s/") || pathname.startsWith("/remote/"))
     return "sessions";
   if (pathname === MAP_PATH) return "map";
   if (pathname === TEMPLATES_PATH || pathname.startsWith(`${TEMPLATES_PATH}/`))

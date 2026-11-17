@@ -100,6 +100,10 @@ class FakeFederation {
     const method = req.method();
     const path = new URL(req.url()).pathname.replace(/^.*\/api\/federation/, "") || "/";
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
+    // What is shared with and by each peer (#2055) has its own reads; share-peer.spec.ts covers
+    // them. Here nothing is shared, and these reads are not the page's own poll (`reads`).
+    if (method === "GET" && path.startsWith("/grants")) return json({ grants: [], generation: 0 });
+    if (method === "GET" && path.startsWith("/remote")) return json({ remote: [] });
     if (method === "GET") {
       this.reads++;
       return json(this.state);
@@ -502,7 +506,8 @@ test("a peer that removed this instance: amber, a word, and Remove", async ({ pa
   await expect(r).toContainText(
     "This instance was removed by the other side. It no longer accepts a connection from here.",
   );
-  await expect(r.getByRole("button")).toHaveText(["Remove"]);
+  // The peer's own actions (its shares have their own disclosure, #2055).
+  await expect(r.getByTestId("peer-actions").getByRole("button")).toHaveText(["Remove"]);
   await r.getByRole("button", { name: "Remove laptop" }).click();
   await expect(page.getByRole("alertdialog")).toContainText("Remove laptop?");
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove", exact: true }).click();
@@ -544,7 +549,7 @@ test("a process that does not own federation: read-only, no connection claim, Re
   for (const id of [GPU, LAPTOP]) {
     await expect(row(page, id).getByTestId("peer-state")).toHaveText("connection not shown here");
     await expect(row(page, id).locator(".hud-led")).toHaveAttribute("data-tone", "idle");
-    await expect(row(page, id).getByRole("button")).toHaveText(["Revoke"]);
+    await expect(row(page, id).getByTestId("peer-actions").getByRole("button")).toHaveText(["Revoke"]);
   }
   // Neither claim is made anywhere in the list.
   const list = await page.getByTestId("peers-list").innerText();

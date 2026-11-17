@@ -79,6 +79,10 @@ import { STATE_WORD, type UnitState } from "./unitState";
 import type { WindowRequest, WindowSeed } from "./useWorkspace";
 import { handBack } from "./handBack";
 import { WindowLayer } from "./WindowLayer";
+import { RemoteNode } from "./RemoteNode";
+import { REMOTE_NODE_TYPE, remoteMapNodes, type RemoteNodeData } from "./remoteNodes";
+import { useRemoteShares } from "../../app/remoteShares";
+import { remotePath } from "../../lib/federation";
 import {
   canHostWindow,
   WINDOW_CAP_MAX,
@@ -120,7 +124,9 @@ function MapEdge(props: EdgeProps) {
 }
 
 // Stable identity (module scope) so React Flow doesn't re-register node/edge types each render.
-const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
+// `remote` (#2055) is a session another instance shares: its own type, so no rule written for a
+// local unit (menu, drag, group, window) ever matches it.
+const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode, remote: RemoteNode };
 const edgeTypes = { smoothstep: MapEdge };
 /* The toolbar's actions: the shared ghost plate at row height (docs/design.md §6). */
 const TOOL = `${action.ghost} ${action.compact}`;
@@ -162,7 +168,7 @@ const seedOf = (s: Session): WindowSeed => ({
 /** The minimap draws the sectors as amber blocks, as the v5 board does (#1600); a unit is the
  *  sector's detail, so it stays out of the overview. A live sector reads brighter. */
 const miniMapColor = (n: Node): string =>
-  n.type === "session"
+  n.type === "session" || n.type === REMOTE_NODE_TYPE
     ? "transparent"
     : (n.data as ProjectGroupData).live
       ? "var(--hud-dim)"
@@ -583,12 +589,22 @@ function OverviewCanvasInner({
       new Set(LAYOUTS.filter((l) => Object.keys(initialPins[l]).length > 0)),
   );
   const hasPins = pinnedLayouts.has(groupBy);
+  // Sessions peers share with this instance (#2055). Their own read (never the retained session
+  // list) and their own nodes, appended to what React Flow renders AFTER the local graph is
+  // built: `nodes`, and every count, menu, drag and tether derived from it, never holds one. The
+  // store keeps the array's identity while its content is unchanged, so an idle poll does not
+  // rebuild the node array (the #936 rule).
+  const remote = useRemoteShares();
+  const placed = useCallback(
+    (local: Node[]): Node[] => (remote.length ? [...local, ...remoteMapNodes(local, remote)] : local),
+    [remote],
+  );
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
-    applyPins(nodes, initialPins[groupBy]),
+    placed(applyPins(nodes, initialPins[groupBy])),
   );
   useEffect(() => {
-    setRfNodes(applyPins(nodes, pinsRef.current[groupBy]));
-  }, [nodes, groupBy, setRfNodes]);
+    setRfNodes(placed(applyPins(nodes, pinsRef.current[groupBy])));
+  }, [nodes, groupBy, setRfNodes, placed]);
 
   // Reset layout: this layout's clusters back to their computed slots — the one deliberate
   // rebuild the pins ever cause.
@@ -600,8 +616,8 @@ function OverviewCanvasInner({
       next.delete(groupBy);
       return next;
     });
-    setRfNodes(nodes);
-  }, [groupBy, nodes, setRfNodes]);
+    setRfNodes(placed(nodes));
+  }, [groupBy, nodes, setRfNodes, placed]);
 
   // Toggle keys available to expand (still visible) — drives "Expand all".
   const allKeys = useMemo(
@@ -696,9 +712,9 @@ function OverviewCanvasInner({
         }
       }
       // No actionable target → snap the chip back to its computed slot (clusters keep their pins).
-      setRfNodes(applyPins(nodes, pinsRef.current[groupBy]));
+      setRfNodes(placed(applyPins(nodes, pinsRef.current[groupBy])));
     },
-    [draggable, rf, reassign, setRfNodes, nodes, groupBy],
+    [draggable, rf, reassign, setRfNodes, nodes, groupBy, placed],
   );
 
   // All node interaction goes through React Flow's onNodeClick. This is required, not just
@@ -730,6 +746,11 @@ function OverviewCanvasInner({
         );
       } else if (node.type === "projectGroup") {
         toggle((node.data as ProjectGroupData).groupKey);
+      } else if (node.type === REMOTE_NODE_TYPE) {
+        // A shared session opens its read-only pane's own route. Never a window: the window
+        // layer mounts local terminals and panes, and nothing of a peer belongs in it.
+        const r = (node.data as RemoteNodeData).remote;
+        navigate(remotePath(r.peer_id, r.grant_id));
       }
     },
     [navigate, toggle, canOpenWindow, openWindow, rf, box.x, box.y, bounds],
@@ -1051,7 +1072,7 @@ function OverviewCanvasInner({
   // window's socket and killed the live view because the last chip got filtered off the map.
   // #208's contract is the opposite: a map filter never closes a window. With no windows open,
   // the bare message is exactly what it always was.
-  const emptyMap = !nodes.length;
+  const emptyMap = !nodes.length && !remote.length;
   // The header strip's counts (#1600), read off the graph itself so they follow grouping, the
   // filters and collapsed sectors exactly: sectors are the clusters on the map, units the sessions
   // they hold (collapsed or not), live the units with an agent process running (`running`, the

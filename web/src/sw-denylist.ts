@@ -102,6 +102,9 @@ export const SPA_PATHS: string[] = [
   // The pre-#956 AI tab. A client-side redirect now, so it needs the SPA shell too.
   "/settings/ai-review",
   "/s/claude/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  // #2055: the read-only pane of a session another instance shares. It begins with `/r`, like
+  // the reply links the list above denies (`/r/<id>`), and must not be caught by that rule.
+  "/remote/m5tr2kxwq7ahd3ny6bpev4czj2osu7fl/g7Jx9aBcDeFgHiJkLmNoPq",
 ];
 
 export function isDenied(pathname: string): boolean {

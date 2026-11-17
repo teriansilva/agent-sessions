@@ -267,6 +267,23 @@
   composes: dangerFilled from "./ui/actionButton.module.css";
 }
 
+/* OPT-IN (#2055): a scrolling body with a pinned action row. Markup: `.dialog.pinned` holding the
+ * head, ONE `.sheetBody` and, after it, `.actions`. On a wide screen nothing changes: the body is
+ * `display: contents`, so the dialog lays its parts out and scrolls as one, as every other dialog
+ * does. On a phone the sheet stops scrolling as a whole: the body is the only scroller and the
+ * action row sits at the sheet's floor at every scroll position. Used by the dialog that needs
+ * its actions reachable under a long body (Share with a peer); no other dialog opts in. */
+.pinned {
+  display: flex;
+  flex-direction: column;
+}
+.pinned > * {
+  flex: none;
+}
+.sheetBody {
+  display: contents;
+}
+
 /* Mobile (≤800px): a bottom sheet that slides up, actions stacked full width, primary on top. */
 @media (max-width: 800px) {
   .backdrop {
@@ -298,5 +315,20 @@
   .danger {
     justify-content: center;
     text-align: center;
+  }
+}
+@media (max-width: 800px) {
+  .pinned {
+    overflow: hidden;
+  }
+  .pinned > .sheetBody {
+    display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .pinned > .actions {
+    margin-top: 0;
   }
 }

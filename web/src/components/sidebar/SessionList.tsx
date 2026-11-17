@@ -21,6 +21,8 @@ import { Link, NavLink, useLocation, useMatch, useNavigate } from "react-router-
 import { useConfig } from "../../app/config";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { useSessionsStore } from "../../app/sessionsStore";
+import { useRemoteShares } from "../../app/remoteShares";
+import { RemoteRows } from "../federation/RemoteRow";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
 import {
@@ -588,6 +590,7 @@ export function SessionList({
     missionFilterUnavailable,
     counts,
   } = useSessionsList();
+  const remote = useRemoteShares();
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
   const reorderTimers = useRef<number[]>([]);
@@ -776,6 +779,15 @@ export function SessionList({
     };
   }, []);
 
+  // Sessions peers share with this instance (#2055): their own read and their own rows. They
+  // are never `sessions`: no filter, page, selection or row action above ever sees one.
+  const remoteList =
+    remote.length > 0 ? (
+      <ul className={styles.list} aria-label="Sessions shared by peers">
+        <RemoteRows remote={remote} onNavigate={onNavigate} />
+      </ul>
+    ) : null;
+
   return (
     <div className={styles.wrap} hidden={hidden}>
       {/* Pressing this with the map up should land the new session ON the map, not full screen
@@ -799,15 +811,21 @@ export function SessionList({
         missionFilterUnavailable={missionFilterUnavailable}
       />
       {error ? (
-        <div className={styles.empty}>{error}</div>
+        <>
+          <div className={styles.empty}>{error}</div>
+          {remoteList}
+        </>
       ) : sessions.length === 0 && !loading ? (
-        <div className={styles.empty}>
-          {filters.q || filters.project || filters.engine || filters.mission
-            ? "No sessions match — clear filters."
-            : filters.archived
-              ? "No archived sessions."
-              : "No sessions yet."}
-        </div>
+        <>
+          <div className={styles.empty}>
+            {filters.q || filters.project || filters.engine || filters.mission
+              ? "No sessions match — clear filters."
+              : filters.archived
+                ? "No archived sessions."
+                : "No sessions yet."}
+          </div>
+          {remoteList}
+        </>
       ) : (
         <ul className={styles.list} aria-label={`${total} sessions`}>
           {sessions.map((s) => (
@@ -847,6 +865,8 @@ export function SessionList({
               </button>
             </li>
           )}
+          {/* After the local rows, and outside everything that works on them (#2055). */}
+          <RemoteRows remote={remote} onNavigate={onNavigate} />
         </ul>
       )}
       {/* Always-mounted polite live region (#392): the region exists BEFORE its content

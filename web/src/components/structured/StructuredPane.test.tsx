@@ -635,6 +635,8 @@ test("the head carries the terminal's actions that work for an API session — n
     "Hand off session to another engine",
     "Open this session as a window on the map",
     "Share this session publicly",
+    // #2055: directly under Share publicly…, and a different thing (a paired instance).
+    "Share this session with a paired instance",
     "Stop the worker",
   ]);
   expect(screen.queryByRole("button", { name: /adopt this session/i })).toBeNull();
@@ -685,6 +687,7 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
       "Recap",
       "Hand off",
       "Share publicly…",
+      "Share with a peer…",
       "Stop",
     ]);
   } finally {

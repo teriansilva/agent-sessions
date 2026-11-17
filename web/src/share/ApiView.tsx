@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Avatar, type AvatarSpec } from "../components/chat/Avatar";
-import { Markdown } from "../components/structured/Markdown";
-import { whoInitial } from "../lib/who";
 import {
   PublicError,
-  imageUrl,
-  operatorAvatarUrl,
   publicApi,
   type PublicSnapshot,
   type PublicTurn,
@@ -13,6 +8,7 @@ import {
   type VisitorShare,
 } from "./publicApi";
 import { Composer } from "./Composer";
+import { Bars, ShareApproval, ShareTurn } from "./Turns";
 import styles from "./ShareViewer.module.css";
 
 /** While a turn runs the journal's revision is read this often (the operator pane's cadence). */
@@ -30,65 +26,6 @@ function isActive(snap: PublicSnapshot | null): boolean {
       snap.state === "queued" ||
       snap.state === "delivering")
   );
-}
-
-/** A turn's state, in the visitor's words: approvals belong to the owner, never to them. */
-function stateLabel(state: string): string | null {
-  switch (state) {
-    case "running":
-      return "working";
-    case "queued":
-      return "queued — sent after the current turn";
-    case "awaiting_approval":
-      return "waiting for the owner";
-    case "interrupted":
-      return "interrupted";
-    case "failed":
-      return "failed";
-    case "uncertain":
-      return "outcome unknown";
-    default:
-      return null;
-  }
-}
-
-/** The label on a person's block. The operator's is the display name they chose (#1942), else
- *  "Operator" — never their login name, which a visitor never learns. */
-function who(turn: PublicTurn, operatorName: string | null | undefined): string {
-  return turn.author?.via === "public_link"
-    ? `${turn.author.name} · via public link`
-    : operatorName || "Operator";
-}
-
-/** The disc beside a person's message (#1931). Without an image the operator's shows the first
- *  letter of the display name they chose (#1942), else `O`: a visitor never learns the operator's
- *  login name. */
-function whoAvatar(
-  turn: PublicTurn,
-  operatorAvatar: string | null | undefined,
-  operatorName: string | null | undefined,
-): AvatarSpec {
-  if (turn.author?.via === "public_link") return { kind: "who", name: turn.author.name };
-  const initial = operatorName ? whoInitial(operatorName) : "O";
-  return operatorAvatar
-    ? { kind: "image", src: operatorAvatarUrl(operatorAvatar), fallback: initial }
-    : { kind: "accent", initial };
-}
-
-/** The operator pane's working animation. */
-function Bars() {
-  return (
-    <span className={styles.bars} aria-hidden="true">
-      <span />
-      <span />
-      <span />
-    </span>
-  );
-}
-
-function toolCount(n: number, truncated: boolean): string {
-  const s = n === 1 ? "" : "s";
-  return `${truncated ? "Latest " : ""}${n} command${s} & tool${s}`;
 }
 
 /** The first queued message: the only one Send now can push ahead (the worker refuses any other,
@@ -292,120 +229,32 @@ export function ApiView({
           </p>
         )}
         {snap && turns.length === 0 && <p className={styles.muted}>No messages yet.</p>}
-        {turns.map((t) => {
-          const label = stateLabel(t.state);
-          // The server's own answer: sent through this link (never matched by the name).
-          const mine = t.mine === true;
-          const attachments = t.attachments ?? [];
-          const tools = t.tools ?? [];
-          const own = t.kind === "agent";
-          return (
-            <section key={t.turn_id} className={styles.turn} data-turn={t.turn_id}>
-              {!own && (t.text || attachments.length > 0) && (
-                <div className={styles.block} data-author={t.author ? "visitor" : "operator"}>
-                  <Avatar
-                    spec={whoAvatar(t, snap?.operator_avatar, snap?.operator_name)}
-                    className={styles.avatar}
-                  />
-                  <p className={styles.who}>{who(t, snap?.operator_name)}</p>
-                  {t.text && (
-                    <p className={styles.text}>
-                      {t.text}
-                    </p>
-                  )}
-                  {attachments.length > 0 && (
-                    <div className={styles.images}>
-                      {attachments.map((a, i) =>
-                        a.image ? (
-                          <img
-                            key={i}
-                            className={styles.image}
-                            src={imageUrl(a.image)}
-                            alt={a.name || "attached image"}
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <span key={i} className={styles.chip}>
-                            {a.name || a.mime}
-                          </span>
-                        ),
-                      )}
-                    </div>
-                  )}
-                  {label && t.state !== "running" && t.state !== "awaiting_approval" && (
-                    <p className={styles.state}>
-                      {label}
-                      {mine &&
-                        t.turn_id === head &&
-                        // Already on its way past the running turn (or steered in): the worker
-                        // would refuse a second push, as the operator pane knows too.
-                        (!t.delivery || t.delivery === "interrupt_failed") &&
-                        share.mode === "send" &&
-                        snap?.can_send && (
-                        <button
-                          type="button"
-                          className={styles.ghost}
-                          disabled={pushing === t.turn_id}
-                          onClick={() => sendNow(t.turn_id)}
-                        >
-                          Send now
-                        </button>
-                      )}
-                    </p>
-                  )}
-                </div>
-              )}
-              {(t.reply || tools.length > 0 || t.state === "running" || (own && label)) && (
-                <div className={styles.block} data-author="agent">
-                  <Avatar spec={{ kind: "agent" }} className={styles.avatar} />
-                  <p className={styles.who}>
-                    Agent{own ? " · on its own" : ""}
-                    {t.state === "running" ? " · working" : ""}
-                    {own && label && t.state !== "running" ? ` · ${label}` : ""}
-                  </p>
-                  {tools.length > 0 && (
-                    // Folded behind one line, as in the operator's pane: the reply is what a
-                    // visitor reads; the steps are a tap away.
-                    <details className={styles.activity} data-testid="share-activity">
-                      <summary>
-                        {toolCount(tools.length, t.tools_truncated)}
-                        {t.state === "running" && " · working"}
-                        {tools.some((tool) => /failed|error/i.test(tool.outcome ?? "")) && (
-                          <span className={styles.activityFailed}> · failed steps</span>
-                        )}
-                      </summary>
-                      <ul className={styles.tools}>
-                        {tools.map((tool, i) => (
-                          <li key={i} className={styles.tool}>
-                            <span className={styles.toolName}>{tool.name}</span>
-                            {tool.summary && <span className={styles.toolSummary}> · {tool.summary}</span>}
-                          </li>
-                        ))}
-                        {t.tools_truncated && <li className={styles.tool}>… more steps not shown</li>}
-                      </ul>
-                    </details>
-                  )}
-                  {t.reply && <Markdown text={t.reply} />}
-                  {t.state === "running" && (
-                    <div className={styles.wait} role="status" data-testid="share-working">
-                      <Bars />
-                      <span className={styles.waitText}>
-                        Working
-                        {tools.length > 0 && (
-                          <>
-                            {" · "}
-                            <b>{tools[tools.length - 1].name}</b>
-                            {tools[tools.length - 1].summary && ` ${tools[tools.length - 1].summary}`}
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </section>
-          );
-        })}
+        {turns.map((t) => (
+          <ShareTurn
+            key={t.turn_id}
+            turn={t}
+            operatorAvatar={snap?.operator_avatar}
+            operatorName={snap?.operator_name}
+            queueAction={
+              t.mine === true &&
+              t.turn_id === head &&
+              // Already on its way past the running turn (or steered in): the worker
+              // would refuse a second push, as the operator pane knows too.
+              (!t.delivery || t.delivery === "interrupt_failed") &&
+              share.mode === "send" &&
+              snap?.can_send ? (
+                <button
+                  type="button"
+                  className={styles.ghost}
+                  disabled={pushing === t.turn_id}
+                  onClick={() => sendNow(t.turn_id)}
+                >
+                  Send now
+                </button>
+              ) : null
+            }
+          />
+        ))}
         {background && (
           <div className={`${styles.wait} ${styles.backgroundRow}`} role="status" data-testid="share-background-work">
             <Bars />
@@ -413,11 +262,7 @@ export function ApiView({
           </div>
         )}
         {(snap?.pending_requests ?? []).map((q) => (
-          <section key={q.request_id} className={styles.approval} data-testid="share-approval">
-            <p className={styles.tag}>Approval needed</p>
-            {q.summary && <p className={styles.text}>{q.summary}</p>}
-            <p className={styles.waiting}>Waiting for the owner. Only the owner can approve.</p>
-          </section>
+          <ShareApproval key={q.request_id} request={q} />
         ))}
       </main>
       {actionError && (

@@ -59,6 +59,10 @@ export interface PublicTurn {
   author?: { name: string; via: "public_link" } | null;
   /** Sent through THIS link — what the server checks Send now against (never the name). */
   mine?: boolean;
+  /** Only from another instance (#2054): the sender cut this turn to fit its byte budget, and
+   *  how many steps it left out doing so. A public link never sets them. */
+  truncated?: boolean;
+  tools_omitted?: number;
 }
 
 export interface PublicRequest {

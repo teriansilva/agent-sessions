@@ -537,6 +537,22 @@
   overflow: hidden;
   transition: border-color var(--t-fast) var(--ease-out);
 }
+/* A session another instance shares (#2055): the peer badge's dashed line as its outline, on the
+ * panel ground rather than the raised chip ground, the badge where a local unit shows its
+ * engine, and no ⋯. Neutral ink: an origin is not a state. */
+.tr-ov-chip.tr-ov-chip--remote {
+  background: var(--bg-1);
+  border: 1px dashed var(--text-2);
+}
+.tr-ov-chip.tr-ov-chip--remote:hover {
+  border-color: var(--text-1);
+}
+.tr-ov-chip.tr-ov-chip--remote.offline .tr-ov-ttl {
+  color: var(--text-2);
+}
+.tr-ov-chip-head.tr-ov-chip-head--remote {
+  padding-right: 0;
+}
 /* Hover brightens the edge; nothing moves (docs/design.md §8). */
 .tr-ov-chip:hover {
   border-color: var(--hud-dim);

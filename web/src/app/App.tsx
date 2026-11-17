@@ -40,6 +40,8 @@ import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
 import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
+import { RemoteSessionView } from "../components/federation/RemotePane";
+import { REMOTE_ROUTE } from "../lib/federation";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
 import { Atmosphere } from "../components/hud/Atmosphere";
 import { AccentProvider } from "../theme/AccentProvider";
@@ -918,6 +920,9 @@ function Layout() {
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
                   <Route path="/s/:engine/:id" element={<SessionView />} />
+                  {/* #2055: a session another instance shares, read only. Its own route and
+                      tree: never the local session route, never a local session key. */}
+                  <Route path={REMOTE_ROUTE} element={<RemoteSessionView />} />
                   <Route path={NIGHTJAR_GALLERY_PATH} element={<NightjarGallery />} />
                   <Route path="*" element={<Navigate to={DASHBOARD_PATH} replace />} />
                 </Routes>

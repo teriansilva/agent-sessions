@@ -70,6 +70,8 @@ import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { OpeningPanel } from "../terminal/SessionOpening";
 import { resolveApiModel } from "../../lib/apiModel";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
+import { PeerGlyph } from "../federation/PeerBadge";
+import { SharePeerModal } from "../federation/SharePeerModal";
 import { ReplyShareModal } from "../shares/ReplyShareModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
@@ -1767,6 +1769,10 @@ export function StructuredPane({
     open: false,
     trigger: null,
   });
+  const [sharePeer, setSharePeer] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
   const [permissionsOpen, setPermissionsOpen] = useState<{
     trigger: HTMLElement | null;
   } | null>(null);
@@ -3251,6 +3257,21 @@ export function StructuredPane({
                 trigger: trigger ?? (document.activeElement as HTMLElement | null),
               }),
           },
+          // Share with a peer… (#2055): directly under Share publicly…, and as distinct from it
+          // as the two are: that one is a link anyone opens, this one names a paired instance.
+          {
+            id: "share-peer",
+            label: "Share with a peer…",
+            aria: "Share this session with a paired instance",
+            title:
+              "Share with a peer: let one paired BattleLab instance read this session — view only, with an expiry",
+            icon: <PeerGlyph size={13} />,
+            run: (trigger?: HTMLElement | null) =>
+              setSharePeer({
+                open: true,
+                trigger: trigger ?? (document.activeElement as HTMLElement | null),
+              }),
+          },
         ]
       : []),
     // Stop is a head action while a worker runs, in the pane's own bar and in a window's chrome
@@ -3318,12 +3339,13 @@ export function StructuredPane({
         ];
 
   const presence = snap?.presence ?? null;
+  const headLeftRef = useRef<HTMLSpanElement | null>(null);
 
   // The terminal session's own bar (#1348): the shared facts run + the same actions, so an API
   // session and a terminal session cannot drift apart. The journal read is this pane's link LED.
   const header = host.suppressHead ? null : (
     <div className={term.panelHead} data-panel-head="">
-      <span className={term.headLeft}>
+      <span className={term.headLeft} ref={headLeftRef}>
         <HeadFacts engine={engine} status={status} row={row} />
         {presence && (presence.shared || presence.visitors.length > 0) && (
           // #1931: who has this session open — you, and anyone on one of its links.
@@ -3359,6 +3381,8 @@ export function StructuredPane({
         labelClassName={term.headActionLabel}
         actions={headActions}
         collapsed={compactHead}
+        // #2055: this bar's run carries chips after its facts; the fold leaves them their room.
+        reserveRef={headLeftRef}
       />
     </div>
   );
@@ -3428,6 +3452,15 @@ export function StructuredPane({
           agent={engineLabel(engine)}
           onClose={() => setSharePublic({ open: false, trigger: null })}
           returnFocusTo={sharePublic.trigger}
+        />
+      )}
+      {sharePeer.open && (
+        <SharePeerModal
+          sessionKey={actionKey}
+          title={row?.title || "BattleLab session"}
+          agent={engineLabel(engine)}
+          onClose={() => setSharePeer({ open: false, trigger: null })}
+          returnFocusTo={sharePeer.trigger}
         />
       )}
       {handoff.open && (

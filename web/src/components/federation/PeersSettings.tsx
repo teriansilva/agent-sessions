@@ -35,6 +35,8 @@ import { ConfirmDialog } from "../templates/ConfirmDialog";
 import btn from "../ui/actionButton.module.css";
 import styles from "./Peers.module.css";
 import { qrShape } from "./qr";
+import { PeerShares } from "./PeerShares";
+import { useRemoteShares } from "../../app/remoteShares";
 
 const NO_ADDRESS =
   "This instance has no address another instance can reach. Set a public address for it to create invites. You can still accept an invite from an instance that has one.";
@@ -180,6 +182,8 @@ export function PeersSettings() {
     from: HTMLElement | null;
   } | null>(null);
   const [now, setNow] = useState(nowSeconds);
+  // What peers share with this instance (#2055): the same read the session list shows.
+  const remote = useRemoteShares();
 
   // The same values as refs, for the read path: it must fold a read into the LATEST followed
   // pairings and invite without being re-created (and so restarting the poll) on every change.
@@ -517,6 +521,11 @@ export function PeersSettings() {
             </p>
           </div>
         ) : (
+          <>
+          <p className={`${styles.rowMeta} ${styles.listLede}`}>
+            Each peer lists the sessions shared with it and the ones it shares with this instance.
+            Revoking a share ends it at once.
+          </p>
           <ul className={styles.rows}>
             {data.peers.map((peer) => {
               const row = peerRowState(peer, owner, now);
@@ -584,7 +593,7 @@ export function PeersSettings() {
               return (
                 <li
                   key={peer.peer_id}
-                  className={`${styles.row} ${row.kind === "revoked" ? styles.revoked : ""}`.trim()}
+                  className={`${styles.row} ${styles.rowShares} ${row.kind === "revoked" ? styles.revoked : ""}`.trim()}
                   data-testid="peer-row"
                   data-peer={peer.peer_id}
                   data-state={row.kind}
@@ -631,7 +640,7 @@ export function PeersSettings() {
                       )}
                   </div>
                   {row.revokeLabel && (
-                    <div className={styles.rowActions}>
+                    <div className={styles.rowActions} data-testid="peer-actions">
                       {row.canRename && (
                         <button
                           type="button"
@@ -656,10 +665,16 @@ export function PeersSettings() {
                       </button>
                     </div>
                   )}
+                  {/* #2055: what is shared with this peer and by it. A revoked peer has no
+                      shares in either direction (its revoke ended them). */}
+                  {peer.state === "trusted" && (
+                    <PeerShares peerId={peer.peer_id} peerName={peer.name} remote={remote} />
+                  )}
                 </li>
               );
             })}
           </ul>
+          </>
         )}
       </Card>
 

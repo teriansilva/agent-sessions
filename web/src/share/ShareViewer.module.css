@@ -210,6 +210,14 @@
 .turn {
   border-bottom: 1px solid var(--line);
 }
+/* A turn its sender cut to fit (a session another instance shares, #2055): said in words, quiet. */
+.cut {
+  margin: 0;
+  padding: 0 16px 10px calc(16px + 28px + 10px);
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
 .block {
   padding: 10px 16px;
   min-width: 0;

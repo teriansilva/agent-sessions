@@ -35,7 +35,7 @@ import math
 import re
 import time
 
-from .. import engines, shares
+from .. import engines, metadata, prefs, shares
 from . import identity, store
 
 log = logging.getLogger(__name__)
@@ -222,6 +222,36 @@ def listing(st: store.Store, session_key: object = None) -> list[store.Grant]:
         prov, native, _kind = _shareable(session_key)
         key = f"{prov.engine_id}:{native}"
     return st.list_grants(session_key=key, now=_clock())
+
+
+def titles(session_keys: list[str]) -> dict[str, str]:
+    """``{session key: display title}`` for the OPERATOR's own lists (never sent to a peer:
+    ``sharing._list_entry`` builds that one, redacted). One provider scan per engine; a session
+    that cannot be read is simply absent."""
+    out: dict[str, str] = {}
+    scans: dict[str, dict] = {}
+    meta = None
+    for key in session_keys:
+        engine, _, native = key.partition(":")
+        if engine not in scans:
+            prov = engines.get_any(engine)
+            try:
+                scans[engine] = {s.uuid: s for s in prov.scan()} if prov else {}
+            except Exception:  # noqa: BLE001 — an unreadable engine store titles nothing
+                scans[engine] = {}
+        row = scans[engine].get(native)
+        if row is None:
+            continue
+        if meta is None:
+            meta = metadata.load()
+        out[key] = " ".join(
+            metadata.display_title(
+                meta.get(key) or metadata.SessionMeta(),
+                getattr(row, "first_user_message", "") or "",
+                use_ai_title=prefs.renames_sessions(),
+            ).split()
+        )[:200]
+    return out
 
 
 def sweep(st: store.Store) -> list[store.Grant]:

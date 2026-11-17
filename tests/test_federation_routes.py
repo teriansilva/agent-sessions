@@ -20,7 +20,7 @@ from websockets.asyncio.server import serve as ws_serve
 
 from agent_sessions import shares
 from agent_sessions.federation import channel as ch
-from agent_sessions.federation import noise, remote, service, store
+from agent_sessions.federation import grants, noise, remote, service, store
 
 
 def _client(cfg):
@@ -127,6 +127,18 @@ def test_the_operator_grants_changes_and_revokes_through_the_api(auth_cfg, monke
     assert c.get(f"/api/federation/grants?session={key}").json()["grants"] == listed["grants"]
     other = f"codex-api:{uuid.uuid4()}"
     assert c.get(f"/api/federation/grants?session={other}").json()["grants"] == []
+
+    # The grants to ONE peer, for Settings → Peers: the same rows, each with its session's title.
+    second = _trusted_peer(c)
+    mine = c.get(f"/api/federation/grants?peer={peer.peer_id}").json()
+    assert [g["grant_id"] for g in mine["grants"]] == [grant["grant_id"]]
+    assert mine["grants"][0] == {**grant, "title": ""}  # no such session on disk: no title
+    monkeypatch.setattr(grants, "titles", lambda keys: {k: "Refactor the importer" for k in keys})
+    mine = c.get(f"/api/federation/grants?peer={peer.peer_id}").json()
+    assert mine["grants"][0]["title"] == "Refactor the importer"
+    assert c.get(f"/api/federation/grants?peer={second.peer_id}").json()["grants"] == []
+    assert c.get("/api/federation/grants?peer=..%2Fx").status_code == 404
+    assert "title" not in c.get("/api/federation/grants").json()["grants"][0]
 
     # what the operator API refuses, and how
     def refused(body: dict) -> tuple[int, str]:

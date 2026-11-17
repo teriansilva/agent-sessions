@@ -52,6 +52,8 @@ REFRESH_EVERY_S = 60.0
 REFRESH_MIN_GAP_S = 1.0
 REFRESH_TIMEOUT_S = 60.0
 LIST_CALL_TIMEOUT_S = ch.CALL_TIMEOUT_S
+#: How long a READ waits for the refresh a refusal asks for, before it answers 503.
+RE_RESOLVE_TIMEOUT_S = 20.0
 #: Bounds on a projection passed through to the viewer.
 DEPTH_MAX = 12
 TURNS_MAX = 1000
@@ -72,6 +74,12 @@ PAGE_KEYS = frozenset({"generation", "grants", "next"})
 ENTRY_KEYS_MAX = 16
 LEVEL_SHAPE_RE = re.compile(r"\A[a-z][a-z_]{0,31}\Z")
 KIND_SHAPE_RE = LEVEL_SHAPE_RE
+#: How far past the longest grant an owner can make (``grants.MAX_EXPIRY_S`` from ITS clock) a
+#: listed expiry may lie on THIS clock: room for two instances' clocks to disagree. Anything later
+#: is not an expiry the owner could have produced (``1e300`` is a finite number, and a date no
+#: browser can build), so the entry is malformed like any other bad known field.
+EXPIRY_CLOCK_SLACK_S = 365 * 86400
+EXPIRES_AHEAD_MAX_S = grants.MAX_EXPIRY_S + EXPIRY_CLOCK_SLACK_S
 
 
 class Invalid(Exception):
@@ -171,7 +179,8 @@ def clean_entry(raw: object) -> dict:
     or ``kind`` this build does not know is SKIPPED (it is not listed here, and nothing is guessed
     about it). ``kind`` itself is optional: absent means ``api``. Everything
     this build does know is still checked strictly: a known field that is malformed fails the
-    whole refresh, and the mirror stays as it was."""
+    whole refresh, and the mirror stays as it was. An ``expires_at`` later than
+    :data:`EXPIRES_AHEAD_MAX_S` from now is such a field: no owner sets one."""
     if not isinstance(raw, dict) or not ENTRY_KEYS <= set(raw) or len(raw) > ENTRY_KEYS_MAX:
         raise Invalid("entry")
     session = raw["session"]
@@ -192,7 +201,7 @@ def clean_entry(raw: object) -> dict:
     if not grants.valid_revision(raw["revision"]):
         raise Invalid("revision")
     expires_at = _number(raw["expires_at"])
-    if expires_at <= 0:
+    if not 0 < expires_at <= grants._clock() + EXPIRES_AHEAD_MAX_S:
         raise Invalid("expires_at")
     title = clean_title(raw["title"])
     if kind not in grants.KINDS or not grants._level_allowed(kind, level):
@@ -457,6 +466,39 @@ def events_timeout(wait: float) -> float:
     return float(wait) + sharing.WAIT_CALL_MARGIN_S
 
 
+async def _call(channel, verb: str, args: dict, timeout: float) -> dict:
+    """One call for a read. A refusal by the owner is returned as ``None``; every other failure
+    is a :class:`ReadError`."""
+    try:
+        return await channel.call(verb, args, timeout=timeout)
+    except ch.CallError as exc:
+        if exc.code == sharing.NO_GRANT:
+            return None
+        raise ReadError("peer_offline" if exc.code == "closed" else exc.code) from None
+
+
+async def _re_resolve(fed, peer_id: str, grant_id: str):
+    """After the owner refused: refresh this peer's mirror ONCE, here and now, and return the
+    grant's row as the owner lists it now. :class:`ReadError` ``no_grant`` when the refreshed
+    list no longer has it (or the peer is not trusted any more); ``peer_offline`` or
+    ``unavailable`` when the list could not be read, because then nothing is known and nothing
+    is final."""
+    try:
+        async with asyncio.timeout(RE_RESOLVE_TIMEOUT_S):
+            refreshed = await refresh(fed, peer_id)
+    except TimeoutError:
+        refreshed = False
+    peer = await asyncio.to_thread(fed.store.get, peer_id)
+    if peer is None or not peer.trusted:
+        raise ReadError(sharing.NO_GRANT)
+    if not refreshed:
+        raise ReadError("peer_offline" if fed.channel_for(peer_id) is None else "unavailable")
+    row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
+    if row is None:
+        raise ReadError(sharing.NO_GRANT)
+    return row
+
+
 async def read(
     fed,
     peer_id: str,
@@ -473,7 +515,15 @@ async def read(
     here, without a call (the owner would refuse it the same way). Raises :class:`ReadError`:
     ``no_grant`` (not shared, or the owner refused),
     ``peer_offline`` (no channel), ``bad_answer`` (the answer was refused here), or the call's own
-    code."""
+    code.
+
+    **A refusal is re-resolved before it is final** (#2055). The owner answers one refusal for
+    every cause, so a grant whose revision moved (a renewed expiry) looks like an ended one until
+    this side reads the list again. On a refusal the mirror of that peer is refreshed ONCE and the
+    call is made ONCE more with the revision the refreshed list carries. Only a second refusal,
+    or a grant the refreshed list no longer has, is ``no_grant``. A refresh that fails is
+    ``peer_offline`` / ``unavailable`` (503): nothing is answered from the mirror or from an
+    earlier answer."""
     row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
     peer = await asyncio.to_thread(fed.store.get, peer_id)
     if row is None or peer is None or not peer.trusted or row.kind != kind:
@@ -481,14 +531,23 @@ async def read(
     channel = fed.channel_for(peer_id)
     if channel is None:
         raise ReadError("peer_offline")
-    args = {"grant_id": grant_id, "revision": row.revision, **extra}
-    try:
-        answer = await channel.call(verb, args, timeout=timeout)
-    except ch.CallError as exc:
-        if exc.code == sharing.NO_GRANT:
-            # The grant ended or its revision moved: the mirror is stale, ask for the list again.
-            fed.refresh_remote(peer_id)
-        raise ReadError("peer_offline" if exc.code == "closed" else exc.code) from None
+    answer = await _call(
+        channel, verb, {"grant_id": grant_id, "revision": row.revision, **extra}, timeout
+    )
+    if answer is None:
+        row = await _re_resolve(fed, peer_id, grant_id)
+        if row.kind != kind:
+            # The refreshed list has this grant as the other kind: the same answer as before the
+            # first call, and no second one.
+            raise ReadError(sharing.NO_GRANT)
+        channel = fed.channel_for(peer_id)
+        if channel is None:
+            raise ReadError("peer_offline")
+        answer = await _call(
+            channel, verb, {"grant_id": grant_id, "revision": row.revision, **extra}, timeout
+        )
+        if answer is None:
+            raise ReadError(sharing.NO_GRANT)
     try:
         return check(answer)
     except Invalid as exc:

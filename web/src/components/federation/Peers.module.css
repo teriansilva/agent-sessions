@@ -390,3 +390,93 @@
     flex-basis: 100%;
   }
 }
+
+/* ---- what is shared with a peer, and by it (#2055) ---- */
+/* The disclosure takes the row's full width, under the peer's own line and its actions. */
+.rowShares {
+  flex-wrap: wrap;
+}
+.shares {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.shares :global(.nj-disclosure-toggle) {
+  padding: 0;
+  letter-spacing: 0.12em;
+}
+.shares :global(.nj-disclosure-toggle) b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.sharesBody {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-1) 0 0 var(--sp-4);
+  border-left: 2px solid var(--line-strong);
+}
+.sharesHead {
+  margin: 0 0 var(--sp-1);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.grants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.grants > .grant:last-child {
+  border-bottom: 0;
+}
+.grantMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+}
+.grantTitle {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.level {
+  flex: none;
+  padding: 1px 6px;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.grantMeta {
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.grantRevoke {
+  flex: none;
+}
+@media (max-width: 800px) {
+  .grant {
+    flex-wrap: wrap;
+  }
+  .grantRevoke {
+    flex: 1 1 100%;
+  }
+}
+.listLede {
+  margin: 0 0 var(--sp-3);
+  max-width: 68ch;
+}

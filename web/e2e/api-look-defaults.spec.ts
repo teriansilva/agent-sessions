@@ -36,6 +36,12 @@
 // below is 4 px, and the share icon overhangs the row. Three recorded elements per structured case
 // changed (row-gap and margins on the headers and the overhanging share icon); nothing was added or
 // removed, and the chat pane is byte-identical.
+// A tenth time for #2055: the desktop structured head gained ONE action, Share with a peer…,
+// directly after Share publicly… — six inserted elements per desktop structured case (the button,
+// its svg with two rects and a path, its label span), styled exactly as the chip before it. Stop
+// moved from button[6] to button[7] and every existing element computes exactly the recorded styles
+// at its shifted path (checked by mapping each old path); the mobile cases (one Actions menu,
+// closed) and the chat pane are byte-identical.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

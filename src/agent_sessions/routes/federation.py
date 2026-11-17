@@ -16,6 +16,7 @@ Sharing an API session (#2054) or a terminal session (#2056) with a peer, view o
 owner's side:
 
 * ``GET    /api/federation/grants?session=<key>``    — the live grants (of one session)
+* ``GET    /api/federation/grants?peer=<peer_id>``   — the live grants to one peer, with titles
 * ``POST   /api/federation/grants``                  — ``{session_key, peer_id, level, expires_in}``
 * ``PATCH  /api/federation/grants/{grant_id}``       — ``{expires_in, revision}``
 * ``POST   /api/federation/grants/{grant_id}/revoke``
@@ -30,7 +31,9 @@ checks its grant for that call):
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/frame?have=&wait=`` — a shared TERMINAL
   session's current screen as a redacted text frame (#2056)
 
-No channel answers ``503 peer_offline``; a grant the owner refuses answers ``404``. What a peer
+No channel answers ``503 peer_offline``. A refusal by the owner is re-resolved once (the mirror
+is refreshed and the call repeated under the current revision); a grant that is still refused,
+or no longer listed, answers ``404``. What a peer
 returns is validated (``federation/remote.py``) and passed on as data; it is never a path, a key
 or HTML here.
 
@@ -279,12 +282,22 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
         return await asyncio.to_thread(answer)
 
     @app.get(f"{PREFIX}/grants", dependencies=[Depends(logged_in)])
-    async def federation_grants(session: str = "") -> JSONResponse:
+    async def federation_grants(session: str = "", peer: str = "") -> JSONResponse:
         def read() -> dict:
+            if peer and not identity.PEER_ID_RE.fullmatch(peer):
+                raise FederationError("not_found", "unknown peer", status=404)
             rows = grants.listing(federation.store, session or None)
             peers = {p.peer_id: p for p in federation.store.list_peers()}
+            views = [_grant_view(g, peers) for g in rows if not peer or g.peer_id == peer]
+            if peer:
+                # The per-peer list is shown without its sessions' panes around it (Settings →
+                # Peers), so it carries each session's title: the operator's own, on their own
+                # instance. A session that cannot be read has an empty one.
+                titles = grants.titles([g["session_key"] for g in views])
+                for view in views:
+                    view["title"] = titles.get(view["session_key"], "")
             return {
-                "grants": [_grant_view(g, peers) for g in rows],
+                "grants": views,
                 "generation": federation.store.generation(),
                 "levels": list(grants.LEVELS),
                 "default_expires_in": dict(grants.DEFAULT_EXPIRY_S),

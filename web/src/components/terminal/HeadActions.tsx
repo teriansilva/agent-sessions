@@ -37,6 +37,23 @@ function sameSelection(a: boolean[], b: boolean[]): boolean {
 
 const GAP = 6; // matches .headActions gap
 
+/** The width `el` cannot give up (#2055): a `flex: none` member at its width, a shrinkable one at
+ *  its own `min-width` (an `auto` minimum is taken as its width: folding a little early is the
+ *  safe direction), a flex container at least the floors of its members and their gaps. `root`
+ *  is the run itself: shrinkable to nothing by contract, so only its members count. */
+function floorWidth(el: Element, root = false): number {
+  const cs = getComputedStyle(el);
+  if (cs.display === "none" || cs.position === "absolute" || cs.position === "fixed") return 0;
+  const box = el instanceof HTMLElement ? el.offsetWidth : el.getBoundingClientRect().width;
+  if (!root && cs.flexShrink === "0") return box;
+  const min = root ? 0 : cs.minWidth === "auto" ? box : parseFloat(cs.minWidth) || 0;
+  if (!cs.display.endsWith("flex")) return min;
+  const kids = Array.from(el.children).filter((k) => getComputedStyle(k).display !== "none");
+  const gap = parseFloat(cs.columnGap) || 0;
+  const inner = kids.reduce((sum, k) => sum + floorWidth(k), 0) + gap * Math.max(0, kids.length - 1);
+  return Math.max(min, inner);
+}
+
 
 
 /** Pane-head actions with measurement-driven overflow (#783).
@@ -72,7 +89,7 @@ const GAP = 6; // matches .headActions gap
  *  `overflowRef` after every commit, so the chrome reads the CURRENT fold at menu-open time
  *  without a single extra render. The chips that fit stay chips; the rest are reachable only
  *  through that one menu, which is the point: a window never shows two menus. */
-export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, foldInto = "self", overflowRef, allRef, barRef }: {
+export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, reserveRef, foldInto = "self", overflowRef, allRef, barRef }: {
   actions: HeadAction[];
   className: string;
   btnClassName: string;
@@ -91,6 +108,15 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
    *  fact, and the title + window buttons + grip are constants the chrome owns. Folding late
    *  would clip the title; folding a little early is the safe direction. */
   reservePx?: number;
+  /** The bar's left run, measured instead of the built-in 54 px (#2055). The pane model lets the
+   *  meta run absorb all shrink, which holds while nothing follows it; an API pane's run also
+   *  carries chips AFTER it (who is connected, Skip permissions) and a `flex: none` update time
+   *  inside it, so squeezing the run below those drew the facts under the chip. With this, the
+   *  fold leaves the run what it cannot give up (`floorWidth`: every fixed member and fact, the
+   *  project name still free to ellipsise), plus the bar's own gap, and folds actions into the
+   *  "…" before that. Re-measured when the run's content or the bar's width changes. Ignored when
+   *  `reservePx` is given. */
+  reserveRef?: RefObject<HTMLElement | null>;
   /** Where the overflow goes. `"self"` (default): this component renders its own "…" trigger +
    *  portal menu, exactly as shipped. `"external"` (#1109): a host that carries the ONE merged
    *  menu itself — no trigger, no menu here, and the overflow published via `overflowRef`. */
@@ -164,7 +190,12 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
       // Hand off behind the menu on every phone. A window's chrome bar passes a measured
       // `reservePx` instead (#1109): its facts run is fixed-width, its title and window buttons
       // are constants, and the fold must budget for them or it would clip the title.
-      const IDENTITY_W = reservePx ?? 54; // LED + engine box (the pane model)
+      const run = reservePx === undefined ? reserveRef?.current : null;
+      const barEl = barRef?.current ?? el.parentElement;
+      const runFloor = run
+        ? floorWidth(run, true) + (barEl ? parseFloat(getComputedStyle(barEl).columnGap) || 0 : 0)
+        : 0;
+      const IDENTITY_W = reservePx ?? Math.max(54, runFloor); // LED + engine box (the pane model)
       const PAD = 20;
       const avail = bar - IDENTITY_W - PAD;
       // The "…" chip is reserved only when something will actually overflow — and only when THIS
@@ -189,7 +220,25 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
     ro.observe(el);
     const watched = barRef?.current ?? el.parentElement;
     if (watched) ro.observe(watched);
-    return () => ro.disconnect();
+    // The measured run (#2055): its members change size without the bar doing so (a chip
+    // appears, the update time ticks, the container-query ladder hides a fact).
+    const run = reservePx === undefined ? reserveRef?.current : null;
+    let mo: MutationObserver | null = null;
+    if (run) {
+      const watchMembers = () => {
+        for (const k of Array.from(run.querySelectorAll("*"))) ro.observe(k);
+      };
+      watchMembers();
+      mo = new MutationObserver(() => {
+        watchMembers();
+        measure();
+      });
+      mo.observe(run, { childList: true, subtree: true, characterData: true });
+    }
+    return () => {
+      ro.disconnect();
+      mo?.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, collapsed, reservePx]);
 

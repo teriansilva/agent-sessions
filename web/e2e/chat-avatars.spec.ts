@@ -313,6 +313,65 @@ test("the operator's API session: discs on every message and the head's connecte
   await expect(theirs).toHaveText("J");
 });
 
+test("the API head gives way: actions fold before they cover a fact or the connected count (#2055)", async ({
+  page,
+}, info) => {
+  // Share with a peer… made the head one chip longer. The fold reserved only the LED and the
+  // engine box for the run on the left, so the actions took the room of the update time, which
+  // then ran under the connected count. The run's own floor is reserved now: an action folds into
+  // "…" (where Share with a peer… stays reachable) before any fact is covered, at every width.
+  test.skip(info.project.name !== "desktop", "at ≤800 px every action is in one Actions menu");
+  await operatorPage(page, { avatar: "v1" });
+  await page.goto(`/s/codex-api/${ID}`);
+  const pane = page.getByTestId("structured-pane");
+  const chip = pane.getByTestId("structured-present");
+  await expect(chip).toBeVisible();
+  const head = pane.locator('[class*="panelHead"]');
+  const folded: number[] = [];
+  for (const width of [1440, 1280, 1180, 1080, 980, 900, 820]) {
+    await page.setViewportSize({ width, height: 720 });
+    const bar = await head.evaluate((e) => e.clientWidth);
+    await expect(head.locator("[data-fit-width]")).toHaveAttribute("data-fit-width", String(bar));
+    const geo = await chip.evaluate((c) => {
+      const run = c.parentElement!;
+      const members = Array.from(run.children).filter((k) => getComputedStyle(k).display !== "none");
+      // Where each member's own CONTENT ends (a range, so text running out of a squeezed box
+      // counts) against where the next member begins.
+      const overlaps = members.slice(0, -1).map((k, i) => {
+        const range = document.createRange();
+        range.selectNodeContents(k);
+        return range.getBoundingClientRect().right - members[i + 1].getBoundingClientRect().left;
+      });
+      const actions = run.parentElement!.querySelector("[data-fit-width]")!.getBoundingClientRect();
+      return {
+        overlaps,
+        chipRight: c.getBoundingClientRect().right,
+        runRight: run.getBoundingClientRect().right,
+        actionsLeft: actions.left,
+        whole: c.scrollWidth <= c.clientWidth,
+      };
+    });
+    for (const o of geo.overlaps) expect(o, `${width}px: a fact runs under the next one`).toBeLessThanOrEqual(0.5);
+    expect(geo.chipRight, `${width}px: the count is cut by its run`).toBeLessThanOrEqual(geo.runRight + 0.5);
+    expect(geo.runRight, `${width}px: the run reaches under the actions`).toBeLessThanOrEqual(geo.actionsLeft + 0.5);
+    expect(geo.whole).toBe(true);
+    const peerChip = head.getByRole("button", { name: "Share this session with a paired instance" });
+    const more = head.getByRole("button", { name: "More session actions" });
+    if (!(await peerChip.isVisible())) {
+      folded.push(width);
+      await more.click();
+      await expect(
+        page.getByRole("menu", { name: "More session actions" }).getByRole("menuitem", { name: "Share this session with a paired instance" }),
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+  }
+  // Not vacuous: with room (a 1100 px bar) every chip is on the bar, and at 1280 px (a 940 px
+  // bar, where the facts used to run under the count) Share with a peer… is in the "…".
+  expect(folded).not.toContain(1440);
+  expect(folded).toContain(1280);
+});
+
 test("Settings › Profile: a chosen image is cropped square, scaled, uploaded, and shown", async ({ page }) => {
   let version: string | null = null;
   let uploaded: Buffer | null = null;

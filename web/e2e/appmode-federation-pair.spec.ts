@@ -10,6 +10,7 @@ import { PY_STACK_AVAILABLE } from "./appmode";
 import { startFederationPair, type FederationInstance, type FederationPair } from "./federationPair";
 import { HOOK_TIMEOUT_MS } from "./harness";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { remotePath } from "../src/lib/federation";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
@@ -96,6 +97,21 @@ test("two real instances pair through the page and list each other as connected"
     await expect(row(beta, alphaId).getByTestId("peer-state")).toHaveText("connected");
     await expect(alpha.getByTestId("peers-pairing")).toHaveCount(0);
     await expect(beta.getByTestId("peers-pairing")).toHaveCount(0);
+
+    // #2055, against the real routes: pairing shared nothing, in either direction (the real
+    // `GET /api/federation/grants?peer=` and `GET /api/federation/remote`)...
+    await expect(row(alpha, betaId).getByTestId("peer-shares-counts")).toHaveText(
+      "Sessions · 0 shared · 0 received",
+    );
+    await expect(row(beta, alphaId).getByTestId("peer-shares-counts")).toHaveText(
+      "Sessions · 0 shared · 0 received",
+    );
+    // ...and a share that does not exist, asked of the real receiving route for a real,
+    // connected peer, is the neutral unavailable state with nothing shown.
+    await beta.goto(`${pair.b.origin}${remotePath(alphaId, "g7Jx9aBcDeFgHiJkLmNoPq")}`);
+    await expect(beta.getByTestId("remote-empty")).toHaveText("This share is no longer available.");
+    await expect(beta.getByTestId("remote-state")).toHaveText("unavailable");
+    await expect(beta.locator("[data-turn]")).toHaveCount(0);
   } catch (e) {
     console.error(`alpha:\n${pair.logs.alpha}\nbeta:\n${pair.logs.beta}`);
     throw e;

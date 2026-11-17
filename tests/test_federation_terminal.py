@@ -46,7 +46,7 @@ from agent_sessions.federation import channel as ch
 from agent_sessions.federation import frames, grants, remote, sharing, store, terminal
 from federation_helpers import until
 from test_federation_grants import api_key, live, trusted  # noqa: F401 — `live` is a fixture
-from test_federation_remote import Receiver, entry
+from test_federation_remote import Receiver, Scripted, entry, page
 from test_federation_routes import (  # noqa: F401 — `two_instances` is a fixture
     _client,
     _login,
@@ -1440,7 +1440,13 @@ async def test_a_receiver_unaware_of_kinds_reads_a_terminal_grant_as_a_session_a
             with pytest.raises(remote.ReadError) as exc:
                 await remote.read(p.b, p.a.peer_id, term.grant_id, verb, extra, check=check)
             assert exc.value.code == "no_grant", verb
-        assert answers(wire) == [NO_GRANT] * 3  # the calls were made, and each was refused
+        # Each read was made and refused, re-resolved against the owner's list (#2055: a refusal
+        # is final only after one refresh and one retry), made once more and refused again. The
+        # owner answers `no_grant` every time; the list read between the two is not an answer to
+        # a read (`answers` leaves it out).
+        assert answers(wire) == [NO_GRANT] * 6
+        (row,) = p.b.store.list_remote(p.a.peer_id)
+        assert (row.grant_id, row.kind) == (term.grant_id, "api")  # the retry changed nothing
         everything = b"".join(wire)
         assert MARK.encode() not in everything and b"PROJECTED-REPLY" not in everything
         assert b"an API turn" not in everything
@@ -1561,12 +1567,33 @@ async def test_a_frame_read_goes_to_the_owner_and_a_bad_frame_reaches_nobody(tmp
     ):
         r.script(bad)
         assert await code(have="a" * 32) == "bad_answer"
-    r.script(ch.CallError("unavailable"))
+    channel = r.script(ch.CallError("unavailable"))
     assert await code() == "unavailable"
-    assert refreshes == []
-    r.script(ch.CallError("no_grant"))
-    assert await code() == "no_grant"
-    assert refreshes == [r.peer.peer_id]  # the mirror may be stale: the list is asked for again
+    assert [verb for verb, _a, _t in channel.calls] == ["terminal.frame"]  # no list read for it
+    # A refusal is re-resolved before it is final (#2055): the list is read ONCE, here and now
+    # (not by a background refresh), and the frame is asked for ONCE more with the revision the
+    # list carries. The owner refuses again, so it is `no_grant`, and there is no third call: the
+    # frame still in the script reaches nobody.
+    channel = r.script(
+        ch.CallError("no_grant"),
+        page([entry(7, kind="terminal", revision=4)]),
+        ch.CallError("no_grant"),
+        good,
+    )
+    assert await code(have="a" * 32, wait=3.0) == "no_grant"
+    assert [(verb, args.get("revision"), args.get("have")) for verb, args, _t in channel.calls] == [
+        ("terminal.frame", 1, "a" * 32),
+        ("share.list", None, None),
+        ("terminal.frame", 4, "a" * 32),
+    ]
+    assert channel.script == [good] and refreshes == []
+    # A bad frame after the retry reaches nobody either.
+    r.script(
+        ch.CallError("no_grant"),
+        page([entry(7, kind="terminal", revision=5)]),
+        _frame_answer(lines=["x" * 11]),
+    )
+    assert await code(have="a" * 32) == "bad_answer"
 
 
 def test_the_frame_route_needs_a_session_and_validates_its_query(auth_cfg, monkeypatch):
@@ -1596,6 +1623,190 @@ def test_the_frame_route_needs_a_session_and_validates_its_query(auth_cfg, monke
     assert c.get(f"{base}/{'z' * 22}/frame").status_code == 404
     assert c.get(f"/api/federation/remote/NOT-A-PEER/{term['grant_id']}/frame").status_code == 404
     assert c.post(frame, headers=hdr).status_code == 405  # a read is not a write
+
+
+# ── a refused frame read is re-resolved before it is final (#2055) ────
+
+
+def _frame_route(auth_cfg, *steps):
+    """An operator's client on an instance that mirrors one terminal grant (revision 1) and one
+    API grant of a trusted peer, whose "channel" answers from a script."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    fed = c.app.state.federation
+    peer = _trusted_peer(c)
+    rows = [remote.clean_entry(entry(1, kind="terminal")), remote.clean_entry(entry(2))]
+    assert fed.store.replace_remote(peer.peer_id, rows)
+    channel = Scripted(*steps)
+    fed._channels[peer.peer_id] = channel
+    url = f"/api/federation/remote/{peer.peer_id}/{rows[0]['grant_id']}/frame"
+    return c, fed, peer, channel, url
+
+
+def _asked(channel) -> list[tuple]:
+    return [(verb, args.get("revision")) for verb, args, _t in channel.calls]
+
+
+def test_the_frame_route_keeps_working_for_a_terminal_grant_renewed_on_the_owner(auth_cfg):
+    good = _frame_answer()
+    renewed = [entry(1, kind="terminal", revision=2), entry(2)]
+    c, fed, peer, channel, url = _frame_route(
+        auth_cfg, ch.CallError("no_grant"), page(renewed), good
+    )
+    r = c.get(f"{url}?have={'b' * 32}&wait=3")
+    assert r.status_code == 200 and r.json() == good  # the operator never sees the refusal
+    assert r.headers["cache-control"] == "no-store"
+    assert _asked(channel) == [("terminal.frame", 1), ("share.list", None), ("terminal.frame", 2)]
+    # Both frame calls are the same read: the same `have`, wait and timeout.
+    first, _list, second = channel.calls
+    assert first[1] == {**second[1], "revision": 1} and first[2] == second[2]
+    assert second[1]["have"] == "b" * 32 and second[1]["wait"] == 3.0
+    assert fed.store.get_remote(peer.peer_id, entry(1)["grant_id"]).revision == 2
+
+
+def test_the_frame_route_is_404_for_a_truly_ended_terminal_grant_and_its_row_is_gone(auth_cfg):
+    c, fed, peer, channel, url = _frame_route(
+        auth_cfg, ch.CallError("no_grant"), page([entry(2)]), _frame_answer()
+    )
+    r = c.get(url)
+    assert r.status_code == 404 and r.json()["code"] == "no_grant" and "lines" not in r.json()
+    assert _asked(channel) == [("terminal.frame", 1), ("share.list", None)]  # no second call
+    assert fed.store.get_remote(peer.peer_id, entry(1)["grant_id"]) is None
+    listed = [row["grant_id"] for row in c.get("/api/federation/remote").json()["remote"]]
+    assert listed == [entry(2)["grant_id"]]  # the next list read has no such row
+    assert c.get(url).status_code == 404 and len(channel.calls) == 2  # ...and nobody is asked
+
+
+def test_the_frame_route_is_404_when_the_owner_refuses_the_renewed_revision_too(auth_cfg):
+    c, _fed, _peer, channel, url = _frame_route(
+        auth_cfg,
+        ch.CallError("no_grant"),
+        page([entry(1, kind="terminal", revision=7)]),
+        ch.CallError("no_grant"),
+        _frame_answer(),  # never asked for
+    )
+    r = c.get(url)
+    assert r.status_code == 404 and "lines" not in r.json()
+    assert _asked(channel) == [("terminal.frame", 1), ("share.list", None), ("terminal.frame", 7)]
+
+
+def test_the_frame_route_is_404_when_the_refreshed_list_has_the_grant_as_another_kind(auth_cfg):
+    """The retry asks with the row the refreshed list carries, and only for what its kind can
+    answer: a grant id that came back as an API grant is not read as a screen."""
+    c, _fed, _peer, channel, url = _frame_route(
+        auth_cfg, ch.CallError("no_grant"), page([entry(1, revision=2)]), _frame_answer()
+    )
+    assert c.get(url).status_code == 404
+    assert _asked(channel) == [("terminal.frame", 1), ("share.list", None)]
+
+
+@pytest.mark.parametrize("failure", ["call fails", "malformed", "channel gone", "hangs"])
+def test_the_frame_route_is_503_and_serves_nothing_when_the_refresh_fails(
+    auth_cfg, monkeypatch, failure
+):
+    holder: dict = {}
+
+    def gone(_args):
+        holder["fed"]._channels.pop(holder["peer"].peer_id, None)
+        return ch.CallError("closed")
+
+    async def hang(_args):
+        await asyncio.sleep(30)
+
+    if failure == "hangs":
+        monkeypatch.setattr(remote, "RE_RESOLVE_TIMEOUT_S", 0.05)
+    step = {
+        "call fails": ch.CallError("timeout"),
+        "malformed": {"generation": "x", "grants": [], "next": None},
+        "channel gone": gone,
+        "hangs": hang,
+    }[failure]
+    c, fed, peer, channel, url = _frame_route(
+        auth_cfg, ch.CallError("no_grant"), step, _frame_answer()
+    )
+    holder.update(fed=fed, peer=peer)
+    r = c.get(url)
+    assert r.status_code == 503, r.text
+    assert r.json()["code"] == ("peer_offline" if failure == "channel gone" else "unavailable")
+    assert "lines" not in r.json()
+    # The frame still in the script was never asked for, and the mirror is what it was: a failed
+    # refresh decides nothing about the grant.
+    assert [verb for verb, _a, _t in channel.calls] == ["terminal.frame", "share.list"]
+    row = fed.store.get_remote(peer.peer_id, entry(1)["grant_id"])
+    assert (row.kind, row.revision) == ("terminal", 1)
+
+
+@pytest.mark.anyio
+async def test_a_terminal_grant_renewed_on_the_owner_keeps_a_frame_read_working(
+    tmp_path,
+    monkeypatch,
+    live,  # noqa: F811
+):
+    async with paired(tmp_path, monkeypatch) as p:
+        made, key = await terminal_grant(p)
+        _rows_for(monkeypatch, {key: "a terminal"})
+
+        def mirrored():
+            return p.b.store.get_remote(p.a.peer_id, made.grant_id)
+
+        await until(lambda: mirrored() is not None)
+
+        async def read() -> dict:
+            return await remote.read(
+                p.b,
+                p.a.peer_id,
+                made.grant_id,
+                "terminal.frame",
+                {"wait": 0.0},
+                check=remote.check_frame,
+                kind="terminal",
+            )
+
+        assert (await read())["lines"][1] == MARK
+        # The owner renews the grant and its hint is lost (its rounds are paused): the mirror
+        # still says revision 1.
+        p.pause_owner_rounds(monkeypatch)
+        await asyncio.sleep(0.15)
+        await asyncio.to_thread(
+            grants.change, p.a.store, made.grant_id, expires_in=3600, revision=1
+        )
+        assert mirrored().revision == 1
+        # Refused once, re-resolved, answered under revision 2.
+        assert (await read())["lines"][1] == MARK
+        assert (mirrored().revision, mirrored().kind) == (2, "terminal")
+        assert await p.refused("terminal.frame", ref(made)) == "no_grant"  # 1 stays refused
+
+
+@pytest.mark.anyio
+async def test_a_truly_ended_terminal_grant_is_404_and_its_row_is_gone_from_the_mirror(
+    tmp_path,
+    monkeypatch,
+    wire,  # noqa: F811
+    live,  # noqa: F811
+):
+    async with paired(tmp_path, monkeypatch) as p:
+        made, key = await terminal_grant(p)
+        _rows_for(monkeypatch, {key: "a terminal"})
+        await until(lambda: p.b.store.get_remote(p.a.peer_id, made.grant_id) is not None)
+        p.pause_owner_rounds(monkeypatch)  # the owner's hint is lost
+        await asyncio.sleep(0.15)
+        await asyncio.to_thread(grants.revoke, p.a.store, made.grant_id)
+        assert p.b.store.get_remote(p.a.peer_id, made.grant_id) is not None  # it has not heard
+        wire.clear()
+        with pytest.raises(remote.ReadError) as exc:
+            await remote.read(
+                p.b,
+                p.a.peer_id,
+                made.grant_id,
+                "terminal.frame",
+                {"wait": 0.0},
+                check=remote.check_frame,
+                kind="terminal",
+            )
+        assert exc.value.code == "no_grant"
+        assert p.b.store.get_remote(p.a.peer_id, made.grant_id) is None
+        assert remote.listing(p.b) == []
+        assert frames_sent(wire) == [] and MARK.encode() not in b"".join(wire)
 
 
 # ── two real instances, a real terminal session ───────────────────────

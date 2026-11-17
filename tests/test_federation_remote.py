@@ -33,6 +33,7 @@ from agent_sessions import (
 from agent_sessions.federation import channel as ch
 from agent_sessions.federation import grants, noise, remote, store
 from agent_sessions.main import create_app
+from agent_sessions.routes import federation as routes_federation
 from agent_sessions.routes import missions as mission_routes
 from federation_helpers import until
 from test_federation_grants import api_key, live, trusted  # noqa: F401 — `live` is a fixture
@@ -42,6 +43,8 @@ from test_federation_sharing import FakeRuntime, _rows_for, op_turn, paired, ref
 
 LOCAL = "claude:11111111-1111-1111-1111-111111111111"  # a session `fake_jsonl` lays down
 SRC = Path(remote.__file__).resolve().parents[1]
+#: A listed expiry a week ahead: what an owner's default grant carries.
+LATER = float(int(time.time()) + 7 * 86400)
 
 
 @pytest.fixture
@@ -144,7 +147,7 @@ def entry(i: int = 1, **over) -> dict:
         "title": f"session {i}",
         "kind": "api",
         "level": "view",
-        "expires_at": 2_000_000_000.0,
+        "expires_at": LATER,
         "revision": 1,
     }
     out.update(over)
@@ -163,14 +166,14 @@ def test_a_listed_entry_is_validated_field_by_field():
         "title": "session 7",
         "kind": "api",
         "level": "view",
-        "expires_at": 2_000_000_000.0,
+        "expires_at": LATER,
         "revision": 1,
     }
     # A title is cleaned: one line, no control or bidi-override characters; empty is allowed.
     assert remote.clean_entry(entry(title="  a‮b\x07\n\tc  "))["title"] == "ab c"
     assert remote.clean_entry(entry(title=""))["title"] == ""
     assert remote.clean_entry(entry(title="\U0001f600" * 200))["title"] == "\U0001f600" * 200
-    assert remote.clean_entry(entry(expires_at=2_000_000_000))["expires_at"] == 2_000_000_000.0
+    assert remote.clean_entry(entry(expires_at=int(LATER)))["expires_at"] == LATER
 
     # Forward compatibility: the two instances are updated independently. A key this build does
     # not know is ignored (and never stored); an entry with a level this build does not know is
@@ -258,6 +261,26 @@ def test_a_listed_entry_is_validated_field_by_field():
     ):
         with pytest.raises(remote.Invalid):
             remote.clean_page(raw)
+
+
+def test_a_listed_expiry_is_one_the_owner_could_have_set(monkeypatch):
+    """#2055 review (P1): ``expires_at`` was accepted as any positive finite number, so a peer
+    could list ``1e300``; the mirror stored it and the operator's browser threw building a date
+    from it, in a row drawn outside the pane's error boundary. An owner's grant ends at most
+    ``grants.MAX_EXPIRY_S`` after ITS clock, so the bound is that on this clock plus a year of
+    slack for two clocks that disagree; anything later is a malformed field."""
+    now = 1_800_000_000.0
+    monkeypatch.setattr(grants, "_clock", lambda: now)
+    assert remote.EXPIRES_AHEAD_MAX_S == grants.MAX_EXPIRY_S + remote.EXPIRY_CLOCK_SLACK_S
+    assert remote.EXPIRY_CLOCK_SLACK_S == 365 * 86400
+    bound = now + remote.EXPIRES_AHEAD_MAX_S
+    # What an owner produces: the longest grant, the same with its clock a year ahead, and an
+    # expiry its clock already passed (this side never decides expiry: the owner does).
+    for ok in (now + grants.MAX_EXPIRY_S, bound, now - 3600, 1.0):
+        assert remote.clean_entry(entry(expires_at=ok))["expires_at"] == ok
+    for bad in (bound + 1, 1e300, 1e15, 8.64e12, 2**53, 10**300, 0, 0.0, -1e300):
+        with pytest.raises(remote.Invalid):
+            remote.clean_entry(entry(expires_at=bad))
 
 
 # ── the refresh ───────────────────────────────────────────────────────
@@ -378,6 +401,8 @@ FAILURES = {
         page([entry(51), entry(52, session={"engine": "peer", "id": "x"})]),
     ],
     "a_title_is_oversize": lambda: [page([entry(1, title="x" * 201)])],
+    # #2055 review: a finite expiry no owner could have set (and no browser can turn into a date)
+    "an_expiry_is_out_of_range": lambda: [page([entry(1), entry(2, expires_at=1e300)])],
     "the_page_is_not_a_page": lambda: [{"grants": "all of them"}],
     "more_than_200_entries": lambda: [
         page(_fifty(1), nxt=last(_fifty(1))),
@@ -718,8 +743,6 @@ async def test_a_read_goes_to_the_owner_with_the_mirrored_revision_and_refuses_b
 ):
     r = Receiver(tmp_path)
     grant_id = r.old[0]["grant_id"]
-    refreshes: list[str] = []
-    monkeypatch.setattr(r.fed, "refresh_remote", refreshes.append)
 
     async def read(verb="session.snapshot", extra=None, check=remote.check_snapshot, **kw):
         return await remote.read(
@@ -772,13 +795,7 @@ async def test_a_read_goes_to_the_owner_with_the_mirrored_revision_and_refuses_b
     assert await code() == "peer_offline"
     r.script(ch.CallError("unavailable"))
     assert await code() == "unavailable"
-    assert refreshes == []
     assert r.unchanged()  # a read never writes the mirror
-
-    # The owner refuses: the mirror may be stale, so the list is asked for again.
-    r.script(ch.CallError("no_grant"))
-    assert await code() == "no_grant"
-    assert refreshes == [r.peer.peer_id]
 
     # Not mirrored, or mirrored for a peer that is no longer trusted: refused without a call.
     channel = r.script(good)
@@ -796,8 +813,134 @@ async def test_a_read_goes_to_the_owner_with_the_mirrored_revision_and_refuses_b
     await _stop(r.fed)
 
 
+# ── a refusal is re-resolved before it is final (#2055) ───────────────
+
+
+class Refused:
+    """A receiver whose owner refuses the first call of a read, and what follows is scripted."""
+
+    def __init__(self, tmp_path) -> None:
+        self.r = Receiver(tmp_path)
+        self.grant_id = self.r.old[0]["grant_id"]
+
+    async def read(self):
+        return await remote.read(
+            self.r.fed,
+            self.r.peer.peer_id,
+            self.grant_id,
+            "session.snapshot",
+            {},
+            check=remote.check_snapshot,
+        )
+
+    async def code(self) -> str:
+        with pytest.raises(remote.ReadError) as exc:
+            await self.read()
+        return exc.value.code
+
+    def row(self):
+        return self.r.fed.store.get_remote(self.r.peer.peer_id, self.grant_id)
+
+
 @pytest.mark.anyio
-async def test_a_stale_revision_is_refused_by_the_owner_and_the_mirror_catches_up(
+async def test_a_refused_read_refreshes_the_mirror_once_and_retries_once_with_the_new_revision(
+    tmp_path,
+):
+    f = Refused(tmp_path)
+    good = _snapshot_answer()
+    renewed = [entry(900, revision=2), entry(901)]
+    channel = f.r.script(ch.CallError("no_grant"), page(renewed), good)
+    assert await f.read() is good
+    assert [(verb, args.get("revision")) for verb, args, _t in channel.calls] == [
+        ("session.snapshot", 1),
+        ("share.list", None),
+        ("session.snapshot", 2),
+    ]
+    assert f.row().revision == 2
+    await _stop(f.r.fed)
+
+
+@pytest.mark.anyio
+async def test_a_grant_the_refreshed_list_no_longer_has_is_404_without_a_second_call(tmp_path):
+    f = Refused(tmp_path)
+    channel = f.r.script(ch.CallError("no_grant"), page([entry(901)]))
+    assert await f.code() == "no_grant"
+    assert [verb for verb, _a, _t in channel.calls] == ["session.snapshot", "share.list"]
+    assert f.row() is None  # the refresh took the row out: the next list read has no such row
+    # ...and the next read of it is refused without asking anybody.
+    channel = f.r.script()
+    assert await f.code() == "no_grant" and channel.calls == []
+    await _stop(f.r.fed)
+
+
+@pytest.mark.anyio
+async def test_a_second_refusal_is_final_and_there_is_no_third_call(tmp_path):
+    f = Refused(tmp_path)
+    channel = f.r.script(
+        ch.CallError("no_grant"),
+        page([entry(900, revision=7), entry(901)]),
+        ch.CallError("no_grant"),
+        _snapshot_answer(),  # never asked for
+    )
+    assert await f.code() == "no_grant"
+    assert [(verb, args.get("revision")) for verb, args, _t in channel.calls] == [
+        ("session.snapshot", 1),
+        ("share.list", None),
+        ("session.snapshot", 7),
+    ]
+    await _stop(f.r.fed)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["call fails", "malformed", "channel gone", "hangs"])
+async def test_a_refresh_that_fails_after_a_refusal_is_503_and_serves_nothing(
+    tmp_path, monkeypatch, failure
+):
+    f = Refused(tmp_path)
+    fed, peer_id = f.r.fed, f.r.peer.peer_id
+
+    def gone(_args):
+        fed._channels.pop(peer_id, None)
+        return ch.CallError("closed")
+
+    async def hang(_args):
+        await asyncio.sleep(30)
+
+    if failure == "hangs":
+        monkeypatch.setattr(remote, "RE_RESOLVE_TIMEOUT_S", 0.05)
+    step = {
+        "call fails": ch.CallError("timeout"),
+        "malformed": {"generation": "x", "grants": [], "next": None},
+        "channel gone": gone,
+        "hangs": hang,
+    }[failure]
+    channel = f.r.script(ch.CallError("no_grant"), step, _snapshot_answer())
+    code = await f.code()
+    assert code == ("peer_offline" if failure == "channel gone" else "unavailable")
+    assert routes_federation._READ_STATUS[code] == 503
+    # Nothing was served: the answer still in the script was never asked for, and the mirror is
+    # exactly what it was (a failure decides nothing about the grant).
+    assert [verb for verb, _a, _t in channel.calls] == ["session.snapshot", "share.list"]
+    assert f.r.unchanged()
+    await _stop(fed)
+
+
+@pytest.mark.anyio
+async def test_a_refused_read_for_a_peer_revoked_meanwhile_is_404(tmp_path):
+    f = Refused(tmp_path)
+    fed, peer_id = f.r.fed, f.r.peer.peer_id
+
+    def revoked(_args):
+        fed.store.revoke(peer_id)
+        return page([entry(900, revision=2)])
+
+    f.r.script(ch.CallError("no_grant"), revoked, _snapshot_answer())
+    assert await f.code() == "no_grant"
+    await _stop(fed)
+
+
+@pytest.mark.anyio
+async def test_a_grant_renewed_on_the_owner_keeps_a_read_working(
     tmp_path,
     monkeypatch,
     live,  # noqa: F811
@@ -816,19 +959,45 @@ async def test_a_stale_revision_is_refused_by_the_owner_and_the_mirror_catches_u
             )
 
         assert (await read())["turns"][0]["text"] == "hello"
-        # The owner changes the grant and its hint is lost (its rounds are paused).
+        # The owner renews the grant and its hint is lost (its rounds are paused): the mirror
+        # still says revision 1.
         p.pause_owner_rounds(monkeypatch)
         await asyncio.sleep(0.15)
         await asyncio.to_thread(
             grants.change, p.a.store, made.grant_id, expires_in=3600, revision=1
         )
-        with pytest.raises(remote.ReadError) as exc:
-            await read()  # the mirror still says revision 1
-        assert exc.value.code == "no_grant"
-        # ...which made beta ask for the list again, and the next read carries revision 2.
-        await until(lambda: _mirrored(p, made).revision == 2)
+        assert _mirrored(p, made).revision == 1
+        # The read is refused once, re-resolved, and answered under revision 2: the operator
+        # never sees the refusal.
         assert (await read())["turns"][0]["text"] == "hello"
+        assert _mirrored(p, made).revision == 2
         assert await p.refused("session.snapshot", ref(made)) == "no_grant"  # 1 stays refused
+
+
+@pytest.mark.anyio
+async def test_a_truly_ended_grant_is_404_and_its_row_is_gone_from_the_mirror(
+    tmp_path,
+    monkeypatch,
+    live,  # noqa: F811
+):
+    fake = FakeRuntime().install(monkeypatch)
+    fake.turns = [op_turn("hello")]
+    async with paired(tmp_path, monkeypatch) as p:
+        key = api_key()
+        _rows_for(monkeypatch, {key: "ending"})
+        made = await p.grant(key)
+        await until(lambda: _mirrored(p, made) is not None)
+        p.pause_owner_rounds(monkeypatch)  # the owner's hint is lost
+        await asyncio.sleep(0.15)
+        await asyncio.to_thread(grants.revoke, p.a.store, made.grant_id)
+        assert _mirrored(p, made) is not None  # the mirror has not heard
+        with pytest.raises(remote.ReadError) as exc:
+            await remote.read(
+                p.b, p.a.peer_id, made.grant_id, "session.snapshot", {}, check=remote.check_snapshot
+            )
+        assert exc.value.code == "no_grant"
+        assert _mirrored(p, made) is None
+        assert remote.listing(p.b) == []
 
 
 # ── no local consumer takes a remote session for a local one ──────────
