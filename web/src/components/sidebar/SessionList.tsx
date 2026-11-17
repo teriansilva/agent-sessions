@@ -33,7 +33,10 @@ import {
 } from "../../lib/format";
 import { sessionStatus } from "../../lib/sessionStatus";
 import { SESSIONS_PATH } from "../../lib/routes";
+import { isClusterId } from "../../lib/clusters";
 import type { ProjectRef, Session } from "../../types/api";
+import { ClusterHead } from "./ClusterHead";
+import { ClusterTree } from "./ClusterTree";
 import { FiltersBar } from "./Filters";
 import { RowMenu } from "./RowMenu";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
@@ -469,6 +472,17 @@ function Row({
                 <span className={styles.missionTagText}>{s.mission.title}</span>
               </span>
             ) : null}
+            {/* Its topic cluster (#1997): membership, like the mission tag, in the neutral voice
+                because HQ chose it. Never shown beside a mission: the mission is the group. */}
+            {s.cluster ? (
+              <span
+                className={styles.clusterTag}
+                title={`Cluster: ${s.cluster.title}`}
+                data-testid="row-cluster-tag"
+              >
+                {s.cluster.title}
+              </span>
+            ) : null}
             {origin ? <OriginBadge origin={origin} /> : null}
             {/* Handoff provenance (#597): where this session came from (accent) or where
                 it was handed to (muted). Non-interactive by construction — the row IS a
@@ -588,9 +602,27 @@ export function SessionList({
     setOrchestratorExcluded,
     setProject,
     missionFilterUnavailable,
+    clusterFilterUnavailable,
     counts,
   } = useSessionsList();
   const remote = useRemoteShares();
+  // Session clusters (#1997). Off (or an older server): no tree, no head, no chip.
+  const config = useConfig();
+  const clustersCfg = config?.clusters;
+  const clustersOn = clustersCfg?.enabled ?? false;
+  const selectedCluster = isClusterId(filters.cluster) ? filters.cluster : null;
+  // A cluster filter saved while clusters were on must not outlive them: with the tree hidden
+  // there would be nothing left to clear it with. Only once the config has answered.
+  const staleClusterFilter = !!config && !clustersOn && !!filters.cluster;
+  useEffect(() => {
+    if (staleClusterFilter) update({ cluster: "" });
+  }, [staleClusterFilter, update]);
+  // A cluster belongs to one project, so picking another project in Filters drops it.
+  const updateFilters = useCallback(
+    (patch: Parameters<typeof update>[0]) =>
+      update("project" in patch && !("cluster" in patch) ? { ...patch, cluster: "" } : patch),
+    [update],
+  );
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
   const reorderTimers = useRef<number[]>([]);
@@ -789,7 +821,10 @@ export function SessionList({
     ) : null;
 
   return (
-    <div className={styles.wrap} hidden={hidden}>
+    <div
+      className={clustersOn ? `${styles.wrap} ${styles.wrapClusters}` : styles.wrap}
+      hidden={hidden}
+    >
       {/* Pressing this with the map up should land the new session ON the map, not full screen
         (#936). The landing form is still a page — it needs the room, and the map has none to
         spare — so the map's address rides along in router state and the form returns there. The
@@ -806,10 +841,31 @@ export function SessionList({
       <FiltersBar
         filters={filters}
         facets={facets}
-        onChange={update}
+        onChange={updateFilters}
         onClear={clear}
         missionFilterUnavailable={missionFilterUnavailable}
       />
+      {clustersOn ? (
+        <ClusterTree
+          filters={filters}
+          facets={facets}
+          configured={clustersCfg?.configured ?? false}
+          filterUnavailable={clusterFilterUnavailable}
+          onChange={update}
+        />
+      ) : null}
+      {clustersOn && selectedCluster && facets.clusters ? (
+        <ClusterHead
+          key={selectedCluster}
+          clusterId={selectedCluster}
+          cluster={facets.clusters.find((c) => c.id === selectedCluster)}
+          projectName={
+            facets.projects.find((p) => p.id === filters.project)?.name ?? "project"
+          }
+          configured={clustersCfg?.configured ?? false}
+          onSelect={(id) => update({ cluster: id })}
+        />
+      ) : null}
       {error ? (
         <>
           <div className={styles.empty}>{error}</div>
@@ -818,7 +874,11 @@ export function SessionList({
       ) : sessions.length === 0 && !loading ? (
         <>
           <div className={styles.empty}>
-            {filters.q || filters.project || filters.engine || filters.mission
+            {filters.q ||
+            filters.project ||
+            filters.engine ||
+            filters.mission ||
+            filters.cluster
               ? "No sessions match — clear filters."
               : filters.archived
                 ? "No archived sessions."

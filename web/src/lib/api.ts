@@ -99,6 +99,10 @@ import type {
   AutomationScope,
   AutomationPolicy,
   AutoSortReport,
+  ClusterDetail,
+  ClustersList,
+  ReclusterReport,
+  SessionClusterRef,
   DirectionPreview,
   DraftAttachment,
   EngineDetail,
@@ -748,6 +752,7 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   if (q.project) p.set("project", q.project);
   if (q.engine) p.set("engine", q.engine);
   if (q.mission) p.set("mission", q.mission);
+  if (q.cluster) p.set("cluster", q.cluster);
   if (q.snapshot) p.set("snapshot", q.snapshot);
   return `/api/sessions?${p.toString()}`;
 }
@@ -1846,6 +1851,33 @@ export const api = {
    *  configured. CSRF-guarded. */
   autoSortNow: () =>
     mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
+  /** Session clusters (#1997): one project's clusters (or all), with summaries and last sweeps. */
+  clusters: (project?: string) =>
+    getJson<ClustersList>(
+      `/api/clusters${project ? `?project=${enc(project)}` : ""}`,
+    ),
+  createCluster: (projectId: string, title: string) =>
+    mutateJson<ClusterDetail>("POST", "/api/clusters", { project_id: projectId, title }),
+  /** `title` renames (and keeps); `keep` keeps the title shown now, or hands it back to HQ. */
+  patchCluster: (id: string, patch: { title: string } | { keep: boolean }) =>
+    mutateJson<SessionClusterRef>("PATCH", `/api/clusters/${enc(id)}`, patch),
+  mergeCluster: (id: string, into: string) =>
+    mutateJson<SessionClusterRef>("POST", `/api/clusters/${enc(id)}/merge`, { into }),
+  dissolveCluster: (id: string) =>
+    mutateJson<{ ok: true }>("DELETE", `/api/clusters/${enc(id)}`),
+  /** Put a session into a cluster of its project, or `null`: back to HQ's choice. */
+  placeSession: (sid: string, clusterId: string | null) =>
+    mutateJson<{ id: string; cluster: SessionClusterRef | null }>(
+      "PUT",
+      `/api/sessions/${enc(sid)}/cluster`,
+      { cluster_id: clusterId },
+    ),
+  recluster: (projectId?: string) =>
+    mutateJson<ReclusterReport>(
+      "POST",
+      "/api/clusters/recluster",
+      projectId ? { project_id: projectId } : {},
+    ),
   /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
    *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
   patchProject: (

@@ -85,6 +85,7 @@ SETTINGS_PAGES = (
     "ai-endpoint",
     "ai-session-review",
     "ai-auto-sort",
+    "ai-clusters",  # session clusters (#1997)
     "ai-hq",
     "ai-prompts",
     "ai-activity",

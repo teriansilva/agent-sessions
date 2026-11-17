@@ -32,6 +32,30 @@ It is deliberately conservative:
 Auto-sort only ever touches sessions with **no** project. It does not second-guess an assignment
 you made.
 
+## Session clusters
+
+With many sessions in one project the list stays flat: five sessions fixing one bug and five on
+a release look alike. HQ groups a project's sessions by **topic** and names each group.
+
+- **Projects & clusters** in the sidebar lists each project with its clusters, its missions and
+  *Not clustered*. Press one to filter the list to it. Each session row shows its cluster.
+- Clusters follow the work. A new session joins a cluster, a new topic becomes a cluster once two
+  sessions work on it, and a cluster that runs out of sessions goes away.
+- **Rename** a cluster and the title is yours: HQ keeps moving sessions in and out but no longer
+  renames it. **Keep title** does the same for the title HQ chose. **Let HQ rename** hands it
+  back.
+- **Move to cluster…** in a session's ⋯ menu puts the session where you want it, and it stays
+  there. Choose **Back to HQ's choice** to let HQ decide again. You can also name a new cluster
+  there.
+- A cluster's ⋯ menu merges it into another, asks HQ to look at the project again, or dissolves
+  it. Dissolving frees its sessions; HQ may group them again later.
+- A session a mission holds is shown under its mission, not in a cluster. A cluster never spans
+  projects.
+
+HQ reads the session titles and AI summaries the [session review](/guide/ai-review) wrote, so a
+session appears in a cluster after its first review. Sessions you excluded from AI review are
+never sent. The switches are in [Settings](/guide/settings#session-clusters-ai-clusters).
+
 ## Visibility: three settings that are easy to confuse
 
 These do genuinely different things, and the difference matters:

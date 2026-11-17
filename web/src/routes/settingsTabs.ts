@@ -33,6 +33,8 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-endpoint", label: "Endpoint & model", group: "ai" },
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
+  // Session clusters (#1997): HQ groups each project's sessions by topic.
+  { id: "ai-clusters", label: "Session clusters", group: "ai" },
   // One HQ home (#2037): its conversations, missions, calls and connected services.
   { id: "ai-hq", label: "HQ", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },

@@ -83,6 +83,9 @@ export interface Session {
   /** The mission holding this session (#948): `null` when none does. ABSENT when the server
    *  could not read the mission store — unknown, so no adopt/open control is offered. */
   mission?: SessionMissionRef | null;
+  /** The topic cluster this session is in (#1997): `null` when none (or a mission holds it, or
+   *  clusters are off). ABSENT when the server could not tell — unknown, never "not clustered". */
+  cluster?: SessionClusterRef | null;
   /** An API session's live generation near its memory limit (#1643), or null: none, unknown, or
    *  not an API session. Absent on older servers. */
   memory_pressure?: MemoryPressure | null;
@@ -1506,12 +1509,17 @@ export interface SessionsPage {
     projects: ProjectRef[];
     engines: string[];
     /** Missions holding at least one session in scope (#948). Absent when the store was unreadable. */
-    missions?: (SessionMissionRef & { count: number })[];
+    missions?: SessionMissionFacet[];
     /** Sessions in scope held by no mission (#948). */
     no_mission?: number;
+    /** Every topic cluster, with its count in scope (#1997). Absent when the answer is unknown
+     *  (a store could not be read) or clusters are off. */
+    clusters?: SessionClusterFacet[];
   };
   /** A `mission` filter was requested but the mission store could not be read (#948). */
   mission_filter_unavailable?: boolean;
+  /** A `cluster` filter was requested but could not be answered (#1997). */
+  cluster_filter_unavailable?: boolean;
   /** A `running` filter was requested but the runtime probe failed (#1123): unknown, not "none". */
   running_filter_unavailable?: boolean;
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
@@ -1524,6 +1532,57 @@ export interface SessionMissionRef {
   id: string;
   title: string;
   state: string;
+}
+
+/** A mission in the list's facets: its count in scope and, per project, how many of those
+ *  sessions are in that project (#1997; absent on older servers). */
+export type SessionMissionFacet = SessionMissionRef & {
+  count: number;
+  by_project?: Record<string, number>;
+};
+
+/** The topic cluster a session is in, as stamped on session rows (#1997). `kept` = the operator
+ *  chose the title, so HQ no longer renames it. */
+export interface SessionClusterRef {
+  id: string;
+  title: string;
+  kept: boolean;
+}
+
+export type SessionClusterFacet = SessionClusterRef & {
+  project_id: string;
+  count: number;
+};
+
+/** One cluster as `GET /api/clusters` lists it (#1997). */
+export interface ClusterDetail extends SessionClusterRef {
+  project_id: string;
+  ai_title: string;
+  source: "ai" | "operator";
+  summary: string;
+  count: number;
+}
+
+/** Session clusters settings (#1997). `configured` mirrors the AI endpoint's readiness. */
+export interface ClustersConfig {
+  enabled: boolean;
+  agent_tool: boolean;
+  interval_minutes: number;
+  configured: boolean;
+}
+
+export interface ClustersList {
+  clusters: ClusterDetail[];
+  /** project id → its last sweep. */
+  sweeps: Record<string, { at: number | null; error: string | null } | null>;
+  /** The cluster store could not be read: nothing is listed, and that is not "no clusters". */
+  unreadable: boolean;
+  settings: ClustersConfig;
+}
+
+export interface ReclusterReport {
+  projects: { project_id: string; status: string; error?: string }[];
+  deferred: number;
 }
 
 /** What a session BELONGS to (#361): a project entity, or the implicit folder group
@@ -1756,6 +1815,8 @@ export interface AppConfig {
   pulse?: PulseConfig;
   /** How deeply a session is read before a decision (#1086 Phase 2). No secret. */
   session_review?: SessionReviewConfig;
+  /** Session clusters (#1997). Absent on older servers, which have no clusters. */
+  clusters?: ClustersConfig;
   orchestrator?: OrchestratorConfig;
   /** #1019: feature-detected scoped grants; legacy projections may conservatively be off. */
   automation?: {
@@ -2612,6 +2673,8 @@ export interface SessionsQuery {
   engine?: string;
   /** A mission id, or `none` for sessions no mission holds (#948). */
   mission?: string;
+  /** A cluster id, or `none` for sessions in no cluster and no mission (#1997). */
+  cluster?: string;
   /** Pin one server scan across a paging sequence (#1007 Phase 3): `new` on the first page, then
    *  the `snapshot` the previous page returned. Omitted (the sidebar), nothing is pinned. */
   snapshot?: string;

@@ -157,6 +157,58 @@ export const SESSIONS_FACETS = {
   no_mission: FLEET.length - 2,
 };
 
+/** Session clusters (#1997, the `clusters` sweep state): two clusters in orbital-api, one with a
+ *  kept title. The two mission-held rows keep their mission (a mission is their group). */
+export const TC_A = "tc_0a1b2c3d4e5f";
+export const TC_B = "tc_112233445566";
+export const CLUSTERS_ON = { enabled: true, agent_tool: true, interval_minutes: 30, configured: true };
+export function clusterSessions() {
+  return [
+    ...SESSIONS.map((r) => ({
+      ...r,
+      cwd: proj("p-orbital").folders[0],
+      project: projRef("p-orbital"),
+      cluster: r.mission ? null : { id: TC_B, title: "Checkout theming", kept: true },
+    })),
+    ...[
+      ["claude", 21, "Token bucket: burst allowance", "Burst allowance tuned; replaying the k6 profile."],
+      ["codex", 22, "429 responses carry Retry-After", "Header added; contract test written."],
+    ].map(([engine, n, title, summary], i) => ({
+      ...sessionRow({ engine, n, project: "p-orbital", state: i ? "idle" : "working", title, summary }, i + 3),
+      mission: null,
+      cluster: { id: TC_A, title: "Ingest rate limiting", kept: false },
+    })),
+  ];
+}
+/** The facets of that fleet, COUNTED from its rows, so the tree's numbers are the list's. */
+export function clusterFacets() {
+  const rows = clusterSessions();
+  const inCluster = (id) => rows.filter((r) => r.cluster?.id === id).length;
+  const held = rows.filter((r) => r.mission).length;
+  return {
+    projects: [
+      { ...projRef("p-orbital"), count: rows.length },
+      { ...projRef("p-harbor"), count: 0 },
+    ],
+    engines: [...new Set(rows.map((r) => r.engine))],
+    missions: [{ id: M1, title: "Harden the public ingest API", state: "running", count: held, by_project: { "p-orbital": held } }],
+    no_mission: rows.length - held,
+    clusters: [
+      { id: TC_A, title: "Ingest rate limiting", kept: false, project_id: "p-orbital", count: inCluster(TC_A) },
+      { id: TC_B, title: "Checkout theming", kept: true, project_id: "p-orbital", count: inCluster(TC_B) },
+    ],
+  };
+}
+export const CLUSTER_LIST = {
+  clusters: [
+    { id: TC_A, title: "Ingest rate limiting", ai_title: "Ingest rate limiting", kept: false, source: "ai", project_id: "p-orbital", count: 2, summary: "Two sessions on the public ingest limiter: the token bucket and its 429 responses." },
+    { id: TC_B, title: "Checkout theming", ai_title: "Checkout tokens", kept: true, source: "ai", project_id: "p-orbital", count: 0, summary: "Design tokens and accessibility for the checkout flow." },
+  ],
+  sweeps: { "p-orbital": { at: NOW - 240, error: null } },
+  unreadable: false,
+  settings: CLUSTERS_ON,
+};
+
 export function sessionsPage(rows = SESSIONS) {
   return {
     sessions: rows,

@@ -11,6 +11,7 @@ import {
   Package,
   Pencil,
   ScrollText,
+  Shapes,
   Sparkles,
   Star,
   Tag,
@@ -27,6 +28,12 @@ import { missionLink } from "../../lib/missionLink";
 import type { ProjectRef, Session } from "../../types/api";
 import type { RowMenuEntry } from "../sidebar/RowMenu";
 import { MoveToProjectModal } from "../sidebar/MoveToProjectModal";
+import { ClusterPickerModal } from "../sidebar/ClusterPickerModal";
+import { useConfig } from "../../app/config";
+import { api, ApiError } from "../../lib/api";
+import { announceClustersChanged } from "../../lib/clusterEvents";
+import { clusterProjectId } from "../../lib/clusters";
+import { shortCwd } from "../../lib/format";
 import rowStyles from "../sidebar/SessionList.module.css";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
@@ -137,6 +144,32 @@ export function useSessionMenu(
       setBusy(false);
     }
   }, []);
+
+  // "Move to cluster" (#1997): the same picker pattern. Offered when clusters are on and the
+  // session can be in one: not archived, and KNOWN to be held by no mission (a mission is its
+  // group; an unknown membership offers nothing).
+  const clustersOn = useConfig()?.clusters?.enabled ?? false;
+  const canCluster = clustersOn && !s.archived && s.mission === null;
+  const [clustering, setClustering] = useState(false);
+  const [clusterReturnFocus, setClusterReturnFocus] = useState<HTMLElement | null>(null);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const placeInCluster = async (clusterId: string | null) => {
+    setClusterError(null);
+    // No shortcut for the cluster the session is already in: the row cannot tell an automatic
+    // membership from a placement, and choosing it here is how the operator pins the session
+    // where HQ put it ("stays where you put it"). The server's write is idempotent.
+    setBusy(true);
+    try {
+      await api.placeSession(s.id, clusterId);
+      setClustering(false);
+      announceClustersChanged();
+    } catch (e) {
+      // The dialog stays open with the server's reason (another project, a mission took it).
+      setClusterError(e instanceof ApiError ? e.message : "That didn’t work. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleMove = async (ref: ProjectRef | null) => {
     setMoving(false);
@@ -353,6 +386,22 @@ export function useSessionMenu(
         setMoving(true);
       },
     },
+    ...(canCluster
+      ? [
+          {
+            key: "cluster",
+            label: "Move to cluster…",
+            ariaLabel: "Move session to a cluster",
+            icon: <Shapes size={15} />,
+            disabled: busy,
+            onSelect: () => {
+              setClusterReturnFocus(document.activeElement as HTMLElement | null);
+              setClusterError(null);
+              setClustering(true);
+            },
+          },
+        ]
+      : []),
     {
       key: "archive",
       label: s.archived ? "Unarchive" : "Archive",
@@ -379,6 +428,22 @@ export function useSessionMenu(
           onCancel={() => setMoving(false)}
           onMove={(ref) => void handleMove(ref)}
           returnFocusTo={moveReturnFocus}
+        />
+      )}
+      {clustering && (
+        <ClusterPickerModal
+          heading="Move to cluster"
+          subjectLabel="SESSION"
+          subject={s.title || shortCwd(s.cwd)}
+          projectId={clusterProjectId(s.project)}
+          currentId={s.cluster?.id}
+          allowCreate
+          onRelease={s.cluster ? () => void placeInCluster(null) : undefined}
+          onPick={(c) => void placeInCluster(c.id)}
+          onCancel={() => setClustering(false)}
+          busy={busy}
+          error={clusterError}
+          returnFocusTo={clusterReturnFocus}
         />
       )}
       {/* The same modals the terminal header mounts, keyed to this session — no need to open it
@@ -425,7 +490,8 @@ export function useSessionMenu(
   return {
     items,
     dialogs,
-    dialogOpen: adopting || moving || recapOpen || handoffOpen || artifactsOpen,
+    dialogOpen:
+      adopting || moving || clustering || recapOpen || handoffOpen || artifactsOpen,
     reviewing: reviewBusy,
     busy,
     runBusy,

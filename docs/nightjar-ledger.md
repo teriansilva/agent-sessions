@@ -118,6 +118,7 @@ the same list.
 | `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu headers:topbar | tile hover transition |
 | `components/shell/RelayChip.module.css` | css | 4 | done | headers:topbar popup:operator-menu | LED breathe (linked) / blink (ends soon), steady in Reduced; the panel is the operator menu's (appear, ≤800px sheet). Relayed-only, so the sweep shows its plate (the HQ/bell plate) and panel chrome; its own states are captured by `e2e/homefree-relay-plate.spec.ts` (#1658) |
 | `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission headers:topbar headers:topbar-menu | tab tint transition |
+| `components/sidebar/Clusters.module.css` | css | 6 | done | route:sidebar-clusters route:sidebar-cluster-head route:sidebar-cluster-kept route:sidebar-cluster-rename route:sidebar-clusters-unconfigured popup:cluster-menu popup:move-to-cluster popup:cluster-merge | the Filters fold's disclosure and chevron turn (composed); node tint transition; none on the head |
 | `components/sidebar/Filters.module.css` | css | 6 | done | route:sidebar route:sidebar-folded route:sidebar-empty | disclosure (grid rows 0fr → 1fr, one container), chevron turn, segment tint transition |
 | `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
@@ -211,6 +212,7 @@ the same list.
 | `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | done | popup:share-publicly | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/shares/ReplyShareModal.tsx` | popup | 3 | done | popup:reply-share | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced (the shared HudDialog) |
+| `components/sidebar/ClusterPickerModal.tsx` | popup | 3 | done | popup:move-to-cluster popup:cluster-merge | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced (the HUD dialog's own) |
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu popup:objective-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/structured/ApiRail.tsx` | popup | 6 | todo |  |  |

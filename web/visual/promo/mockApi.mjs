@@ -76,7 +76,15 @@ async function answer(path, q, method, req, state) {
       if (method === "POST") return json(req.postDataJSON() ?? {});
       return null;
     case "/api/config":
-      return json({ ...F.CONFIG, theme: state.theme ?? "dark", ...(state.config ?? {}) });
+      return json({
+        ...F.CONFIG,
+        theme: state.theme ?? "dark",
+        // `clusters` (a sweep state, #1997): session clusters on; "unconfigured" = no AI endpoint.
+        ...(state.clusters
+          ? { clusters: { ...F.CLUSTERS_ON, configured: state.clusters !== "unconfigured" } }
+          : {}),
+        ...(state.config ?? {}),
+      });
     case "/api/version":
       return json({ version: "0.19.4" });
     case "/api/telemetry":
@@ -211,8 +219,28 @@ async function answer(path, q, method, req, state) {
         return json(X.askBody(c), 201);
       }
       break;
+    case "/api/clusters":
+      if (method !== "GET") break;
+      // The list's counts are the facets' (one fleet, counted once).
+      return json({
+        ...F.CLUSTER_LIST,
+        clusters: F.CLUSTER_LIST.clusters.map((c) => ({
+          ...c,
+          count: F.clusterFacets().clusters.find((x) => x.id === c.id)?.count ?? 0,
+        })),
+      });
     case "/api/sessions": {
       if (method !== "GET") break;
+      // `clusters` (a sweep state, #1997): rows with cluster chips, the cluster facets, and the
+      // `cluster` filter the tree sets.
+      if (state.clusters === true) {
+        const cluster = q.get("cluster");
+        const all = F.clusterSessions();
+        const picked = cluster ? all.filter((r) => r.cluster?.id === cluster) : all;
+        return json({ ...F.sessionsPage(picked), facets: F.clusterFacets() });
+      }
+      if (state.clusters === "unconfigured")
+        return json({ ...F.sessionsPage(), facets: { ...F.SESSIONS_FACETS, clusters: [] } });
       let rows = F.SESSIONS;
       const running = q.get("running");
       if (running === "live") rows = rows.filter((r) => r.running);

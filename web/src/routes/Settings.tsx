@@ -53,6 +53,7 @@ import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
+import { ClustersSettings } from "./ClustersSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
@@ -2164,6 +2165,7 @@ export function Settings() {
         {section === "ai-endpoint" && <AiEndpointSetup />}
         {section === "ai-session-review" && <AiReviewSettings />}
         {section === "ai-auto-sort" && <AutoSortSettings />}
+        {section === "ai-clusters" && <ClustersSettings />}
         {section === "ai-hq" && <HqSettings />}
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}

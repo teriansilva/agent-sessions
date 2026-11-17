@@ -143,6 +143,21 @@ When enabled, sessions that belong to no project are classified against your exi
 assigned automatically — but only when the classifier clears the confidence floor, and never a
 session you assigned yourself.
 
+### Session clusters · `ai-clusters`
+
+HQ groups each project's sessions by topic, with the AI endpoint from *Endpoint & model*. On by
+default; it does nothing until an endpoint is set.
+
+- *Group sessions into clusters* (on): shows **Projects & clusters** in the sidebar and the
+  cluster on each session row. Off hides them and stops the sweep; your clusters are kept and
+  come back when you turn it on again.
+- *Sessions see their cluster* (on): agents get the BattleLab cluster tool from their next launch.
+- *Re-cluster*: every 15 minutes, 30 minutes (default), hour or 4 hours. Only projects whose
+  sessions changed are sent to the model.
+- **Re-cluster now** looks at every project at once.
+
+See [Projects](/guide/projects#session-clusters).
+
 ### HQ · `ai-hq`
 
 One home for HQ, with links to each group. Old `ai-mission-control`, `ai-hq-calls` and

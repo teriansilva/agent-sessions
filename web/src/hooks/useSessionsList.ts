@@ -3,6 +3,7 @@ import type { SessionCounts } from "../app/sessionsStore";
 import { useSectionState } from "../app/sectionState";
 import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
+import { CLUSTERS_CHANGED_EVENT } from "../lib/clusterEvents";
 import {
   SESSION_MISSION_CHANGED_EVENT,
   type SessionMissionChange,
@@ -10,7 +11,8 @@ import {
 import type {
   ProjectRef,
   Session,
-  SessionMissionRef,
+  SessionClusterFacet,
+  SessionMissionFacet,
   SessionsQuery,
 } from "../types/api";
 
@@ -31,6 +33,9 @@ export interface Filters {
   /** A mission id, `none` for sessions no mission holds, or "" for all (#948). Optional because a
    *  section state saved before it existed does not carry it. */
   mission?: string;
+  /** A cluster id, `none` for sessions in no cluster and no mission, or "" for all (#1997).
+   *  Optional for the same reason as `mission`. */
+  cluster?: string;
   archived: boolean;
 }
 
@@ -39,6 +44,7 @@ const EMPTY: Filters = {
   project: "",
   engine: "",
   mission: "",
+  cluster: "",
   archived: false,
 };
 
@@ -46,8 +52,10 @@ interface Facets {
   projects: ProjectRef[];
   engines: string[];
   /** Absent when the server could not read the mission store (#948). */
-  missions?: (SessionMissionRef & { count: number })[];
+  missions?: SessionMissionFacet[];
   no_mission?: number;
+  /** Absent when the server could not tell, or clusters are off (#1997). */
+  clusters?: SessionClusterFacet[];
 }
 
 /** The sidebar's data layer: filtered + paginated session list with server facets.
@@ -65,6 +73,8 @@ export function useSessionsList() {
   const [facets, setFacets] = useState<Facets>({ projects: [], engines: [] });
   /** The server could not apply the mission filter (#948): say so, rather than "no sessions". */
   const [missionFilterUnavailable, setMissionFilterUnavailable] = useState(false);
+  /** The same for the cluster filter (#1997). */
+  const [clusterFilterUnavailable, setClusterFilterUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
@@ -113,10 +123,18 @@ export function useSessionsList() {
       project: filters.project || undefined,
       engine: filters.engine || undefined,
       mission: filters.mission || undefined,
+      cluster: filters.cluster || undefined,
       archived: filters.archived,
       limit: PAGE,
     }),
-    [debouncedQ, filters.project, filters.engine, filters.mission, filters.archived],
+    [
+      debouncedQ,
+      filters.project,
+      filters.engine,
+      filters.mission,
+      filters.cluster,
+      filters.archived,
+    ],
   );
 
   // Live row count — read inside refresh() without re-creating it on every list mutation,
@@ -162,6 +180,7 @@ export function useSessionsList() {
         }
         setFacets(page.facets);
         setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
+        setClusterFilterUnavailable(Boolean(page.cluster_filter_unavailable));
       } catch (e) {
         if (gen !== reqId.current) return;
         // Background failure → keep existing rows, no flicker. `keepOnError` is a VISIBLE read
@@ -447,11 +466,27 @@ export function useSessionsList() {
     return () => window.removeEventListener(SESSION_MISSION_CHANGED_EVENT, onChange);
   }, []);
 
+  // Clusters changed from anywhere in this tab (#1997): a move, a rename, a merge, a dissolve, a
+  // re-cluster. The rows' chips, the `cluster` filter's members and the tree's counts all come
+  // from the server, so this is the same visible replacement read as a mission change.
+  useEffect(() => {
+    const onChange = () => {
+      reconcile.current = true;
+      void fetchRef.current(0, true, {
+        limit: Math.max(PAGE, sessionsCount.current),
+        keepOnError: true,
+      });
+    };
+    window.addEventListener(CLUSTERS_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(CLUSTERS_CHANGED_EVENT, onChange);
+  }, []);
+
   return {
     sessions,
     total,
     counts,
     missionFilterUnavailable,
+    clusterFilterUnavailable,
     facets,
     filters,
     loading,

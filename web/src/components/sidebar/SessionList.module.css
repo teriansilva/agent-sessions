@@ -27,6 +27,14 @@
   overflow-y: auto;
   flex: 1;
 }
+/* With the Projects & clusters tree above it (#1997) the list can run out of room on a short
+ * screen. It keeps three rows' height, and the sidebar itself scrolls to reach it. */
+.wrapClusters {
+  overflow-y: auto;
+}
+.wrapClusters .list {
+  min-height: 132px;
+}
 .more {
   padding: 10px var(--sp-3);
 }
@@ -501,6 +509,23 @@ input.editInput {
 }
 :global(:root[data-theme="light"]) .missionTag {
   color: var(--brand);
+}
+/* Topic cluster chip (#1997): the mission tag's shape in the neutral voice — HQ grouped it,
+ * the operator did not adopt it. One line, truncated; the tooltip carries the whole title. */
+.clusterTag {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+  padding: 0 4px;
+  line-height: 15px;
 }
 .missionTagText {
   min-width: 0;

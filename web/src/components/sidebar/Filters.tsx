@@ -35,9 +35,13 @@ function readOpen(): boolean {
 /** What the folded header says is in force, so a collapsed block can never hide a filter that is
  *  quietly narrowing the list. */
 function summary(filters: Filters): string {
-  const n = [filters.q, filters.project, filters.engine, filters.mission].filter(
-    Boolean,
-  ).length;
+  const n = [
+    filters.q,
+    filters.project,
+    filters.engine,
+    filters.mission,
+    filters.cluster,
+  ].filter(Boolean).length;
   const parts = [filters.archived ? "Archived" : "Active"];
   if (n) parts.push(`${n} filter${n === 1 ? "" : "s"}`);
   return parts.join(" · ");
@@ -55,7 +59,13 @@ export function FiltersBar({
   missionFilterUnavailable,
 }: Props) {
   const mission = filters.mission ?? "";
-  const hasFilter = !!(filters.q || filters.project || filters.engine || mission);
+  const hasFilter = !!(
+    filters.q ||
+    filters.project ||
+    filters.engine ||
+    mission ||
+    filters.cluster
+  );
   const [open, setOpen] = useState(readOpen);
   const bodyId = useId();
   const toggle = () => {

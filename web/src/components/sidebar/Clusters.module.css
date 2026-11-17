@@ -1,0 +1,317 @@
+/* SESSION CLUSTERS IN THE SIDEBAR (#1997): the Projects & clusters tree, the selected cluster's
+ * head, and the picker's extras. Tokens only, square boxes, no gradient (docs/design.md).
+ *
+ * The fold header and its expansion are the Filters block's own (composed, not restated), so the
+ * two folds in the sidebar cannot drift apart. */
+
+.tree {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+.toggle {
+  composes: toggle from "./Filters.module.css";
+}
+.toggle > span {
+  white-space: nowrap;
+}
+.toggle small.summaryOn {
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px var(--sp-1);
+  border: 1px solid var(--hud-dim);
+  background: var(--hud-tint);
+  color: var(--hud-text);
+}
+.chev {
+  composes: chev from "./Filters.module.css";
+}
+.body {
+  composes: body from "./Filters.module.css";
+}
+.bodyInner {
+  composes: bodyInner from "./Filters.module.css";
+  gap: 2px;
+}
+
+.note {
+  margin: 0;
+  padding: var(--sp-1) 2px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-3);
+  list-style: none;
+}
+.note:empty {
+  display: none;
+}
+.note a {
+  color: var(--hud-text);
+}
+.err {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  color: var(--danger-text);
+}
+
+/* THE NODES. One press each; the selected one carries the accent marker line on its left and
+ * the HUD tint, the same vocabulary as the selected session row. */
+.nodes,
+.children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* The tree never takes the list's room: past a third of the screen it scrolls on its own. */
+.nodes {
+  max-height: min(34vh, 300px);
+  overflow-y: auto;
+}
+.children[hidden] {
+  display: none;
+}
+.projectRow {
+  display: flex;
+  align-items: stretch;
+}
+.node {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 2px var(--sp-2);
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+  text-align: left;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.node:hover {
+  color: var(--text-1);
+  background: var(--hud-tint);
+}
+.node:focus-visible,
+.fold:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.node[aria-current="true"] {
+  border-left-color: var(--accent);
+  background: var(--hud-tint);
+  color: var(--text-1);
+  font-weight: 600;
+}
+.project {
+  padding-left: 2px;
+}
+.child {
+  padding-left: calc(var(--sp-4) + var(--sp-3));
+}
+.fold {
+  flex: none;
+  width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.fold:hover {
+  color: var(--text-1);
+}
+.fold[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kind {
+  color: var(--text-3);
+}
+.count {
+  flex: none;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* A project's colour, as on its session rows. A flat square: not a status, so never an LED. */
+.swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+}
+/* The non-status bullet (design.md §3): a flat accent square; hollow for "Not clustered". */
+.bullet {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.bulletOpen {
+  background: transparent;
+  border: 1px solid var(--text-3);
+}
+.missionMark {
+  flex: none;
+  color: var(--accent-text);
+}
+.kept,
+.tag,
+.tagKept {
+  flex: none;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 15px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.kept,
+.tagKept {
+  border-color: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* THE CLUSTER HEAD, above the list while a cluster is selected. */
+.head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--accent);
+  background: var(--hud-tint);
+}
+.headKicker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.headTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.headSummary {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.btn {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* LOCAL MODIFIER: three controls share one row of a 300px sidebar ("Rename", "Let HQ rename",
+ * the menu), so the plates are tighter here; the 44px height is the shared one. */
+button.btn {
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-label);
+  letter-spacing: 0.08em;
+}
+.btn:disabled,
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.iconBtn {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
+}
+.rename {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.renameInput {
+  composes: nj-field from global;
+  flex: 1;
+}
+input.renameInput {
+  width: auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 5px var(--sp-2);
+  font: inherit;
+}
+
+/* The picker's "New cluster" row and a cluster's member count. */
+.create {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-3);
+}
+.createRow {
+  display: flex;
+  gap: var(--sp-2);
+}
+.createRow input {
+  flex: 1;
+  min-width: 0;
+}
+.pickCount {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+/* TOUCH FLOOR (docs/design.md §8): every node and control is 44px where a finger is the pointer. */
+@media (pointer: coarse), (max-width: 800px) {
+  .node {
+    min-height: 44px;
+  }
+  .fold {
+    width: 44px;
+    min-height: 44px;
+  }
+  .child {
+    padding-left: calc(44px + var(--sp-2));
+  }
+}
