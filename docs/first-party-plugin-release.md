@@ -89,6 +89,11 @@ expiry in release notes before replacing the compatibility pair.
   signer, battlelab-cloud#98) then cuts and renews agents cuts from `main`'s recipes. Until that
   key exists the file ships empty and this manual procedure is the only path; it remains the
   recovery path afterwards (a release-signed cut at a higher sequence).
+- **The GitHub pair is mirrored, not hand-uploaded (#2082 P3).** An hourly catalog mirror job
+  copies the relay's current, verified cut onto the latest GitHub release: it never lowers the
+  mirror, refuses to overwrite a different cut at the same sequence, and reads the pair back the
+  way hosts do. Publish a cut (including a recovery cut) on the relay, then let the job, or a
+  manual run of the same job, mirror it. A hand upload would bypass those checks and race the job.
 
 The separate #982 marketing release hold is unchanged.
 

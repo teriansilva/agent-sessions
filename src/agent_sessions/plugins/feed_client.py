@@ -43,12 +43,32 @@ def _url(url: str, *, initial: str) -> str:
     return url
 
 
+class Unavailable(feed.FeedError):
+    """GitHub answered a non-success status. `status` lets the catalog mirror (#2082 P3) tell an
+    absent asset (404) from an outage; the client treats both alike."""
+
+    def __init__(self, status: int, step: str):
+        # Fixed text plus an integer: response bodies and headers never reach the operator.
+        super().__init__(f"GitHub answered HTTP {status} for the catalog's {step}")
+        self.status = status
+
+
 def _unavailable(status: int, step: str) -> feed.FeedError:
-    # Fixed text plus an integer: response bodies and headers never reach the operator.
-    return feed.FeedError(f"GitHub answered HTTP {status} for the catalog's {step}")
+    return Unavailable(status, step)
 
 
-async def _latest(client) -> str:
+def feed_url(tag: str) -> str:
+    """The constructed (never response-supplied) feed asset URL of a release tag."""
+    return f"https://github.com/{REPOSITORY}/releases/download/{tag}/plugin-feed.json"
+
+
+def open_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=10, follow_redirects=False, trust_env=False, transport=_TRANSPORT
+    )
+
+
+async def latest_tag(client) -> str:
     """The latest release's tag, read from the `Location` of one never-followed redirect."""
     client.cookies.clear()
     async with client.stream("GET", LATEST) as response:
@@ -64,7 +84,7 @@ async def _latest(client) -> str:
     return match.group(1)
 
 
-async def _get(client, url: str, limit: int, *, step: str) -> bytes:
+async def read_asset(client, url: str, limit: int, *, step: str) -> bytes:
     initial = url
     for _ in range(4):
         _url(url, initial=initial)
@@ -84,16 +104,21 @@ async def _get(client, url: str, limit: int, *, step: str) -> bytes:
     raise feed.FeedError("too many catalog redirects")
 
 
+async def fetch_pair(client) -> tuple[str, bytes, bytes]:
+    """`(tag, feed bytes, signature)`: exactly the pair a client resolves. The catalog mirror's
+    readback (#2082 P3) calls this same function, so it checks what hosts will read."""
+    tag = await latest_tag(client)
+    base = feed_url(tag)
+    data = await read_asset(client, base, feed.MAX_BYTES, step="feed")
+    signature = await read_asset(client, base + ".sig", 16 * 1024, step="feed signature")
+    return tag, data, signature
+
+
 async def refresh() -> feed.Feed:
     try:
         async with asyncio.timeout(DEADLINE):
-            async with httpx.AsyncClient(
-                timeout=10, follow_redirects=False, trust_env=False, transport=_TRANSPORT
-            ) as client:
-                tag = await _latest(client)
-                base = f"https://github.com/{REPOSITORY}/releases/download/{tag}/plugin-feed.json"
-                data = await _get(client, base, feed.MAX_BYTES, step="feed")
-                signature = await _get(client, base + ".sig", 16 * 1024, step="feed signature")
+            async with open_client() as client:
+                _, data, signature = await fetch_pair(client)
                 # A long cut's freshness statement (#1730), from the pinned publisher origin. A
                 # short cut needs none, so none is fetched: the legacy path is unchanged.
                 statement = None
