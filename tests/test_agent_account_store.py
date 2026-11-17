@@ -65,7 +65,88 @@ def test_an_agent_without_accounts_reads_nothing_and_launches_as_before(pool, tm
     assert store.for_launch(plain, ["plain:x"], new=False) is None
 
 
+def test_a_session_started_before_any_account_keeps_the_default_login(pool):
+    """Hermes on #2122: no pool, then an account is added and picked, then the same key relaunches
+    before it wrote history. It stays on the default login; only a new session takes the pick."""
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
+    b = store.add(pool, "B")["id"]
+    store.set_new_sessions(pool, b)
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=False) is None
+    assert store.for_launch(pool, [f"{ENGINE}:s2"], new=True).account_id == b
+
+
+def test_a_session_started_while_the_pool_was_emptied_keeps_the_default_login(pool):
+    a = store.add(pool, "A")["id"]
+    store.remove(pool, a)  # the last account gone: the pool is empty again
+    store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
+    b = store.add(pool, "B")["id"]
+    store.set_new_sessions(pool, b)
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
+
+
+def test_default_rows_are_never_dropped_so_a_late_relaunch_keeps_its_login(pool, monkeypatch):
+    """Hermes on #2122: no row is dropped by age. A day later, after an unrelated launch, the
+    first session's pre-history relaunch still finds its default choice."""
+    store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
+    b = store.add(pool, "B")["id"]
+    store.set_new_sessions(pool, b)
+    later = store.time.time() + 30 * 24 * 3600
+    monkeypatch.setattr(store.time, "time", lambda: later)
+    store.for_launch(pool, [f"{ENGINE}:s2"], new=True)
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
+
+
+@pytest.mark.parametrize("pooled", [False, True])
+def test_a_choice_that_cannot_be_recorded_refuses_the_launch(pool, monkeypatch, pooled):
+    """Never started unrecorded, pool or no pool: a launch nothing remembers could take a later
+    pick on its next relaunch (Hermes on #2122)."""
+    if pooled:
+        store.add(pool, "Max 2")
+
+    def fail(doc):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(store, "_write", fail)
+    with pytest.raises(store.AccountRefused, match="cannot be written"):
+        store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
+
+
+def test_after_a_refused_write_the_session_is_recorded_on_its_first_real_launch(pool, monkeypatch):
+    """Failure, recovery, then add and pick: the refused launch never ran, so its key's first real
+    launch records what it actually starts on, and that choice then sticks."""
+    real = store._write
+
+    def fail(doc):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(store, "_write", fail)
+    with pytest.raises(store.AccountRefused):
+        store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
+    monkeypatch.setattr(store, "_write", real)
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None  # recorded: default
+    b = store.add(pool, "B")["id"]
+    store.set_new_sessions(pool, b)
+    assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens a read-only file anyway")
+def test_an_unwritable_lock_sidecar_refuses_cleanly(pool):
+    """A real 0400 lock file, nothing mocked: the launch gets `AccountRefused`, never a raw
+    `OSError` the terminal seam does not catch."""
+    agent_accounts.ensure_root()
+    lock = agent_accounts.root() / "state.json.lock"
+    lock.write_text("")
+    lock.chmod(0o400)
+    try:
+        with pytest.raises(store.AccountRefused, match="cannot be written"):
+            store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
+    finally:
+        lock.chmod(0o600)
+
+
 def test_the_default_pick_is_recorded_and_launches_on_the_default_login(pool):
+    store.add(pool, "Max 2")  # a pool exists, so the default choice is a choice and is recorded
     assert store.for_launch(pool, [f"{ENGINE}:s1"], new=True) is None
     assert _state()["assignments"][f"{ENGINE}:s1"]["account"] == store.DEFAULT
     assert store.assignment([f"{ENGINE}:s1"]) is None
@@ -74,6 +155,7 @@ def test_the_default_pick_is_recorded_and_launches_on_the_default_login(pool):
 
 def test_a_session_created_on_the_default_login_keeps_it_when_the_pick_changes(pool):
     """Hermes on #2048: default, then the pick moves to B, then the same key relaunches."""
+    store.add(pool, "A")  # a pool exists, so starting on the default login is a recorded choice
     store.for_launch(pool, [f"{ENGINE}:s1"], new=True)
     b = store.add(pool, "B")["id"]
     store.set_new_sessions(pool, b)

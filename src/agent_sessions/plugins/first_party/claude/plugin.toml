@@ -49,6 +49,13 @@ kind = "claude-jsonl"
 [memory]
 kind = "claude-auto-memory"
 
+# Several logins of this agent (#1820): each account's home is the reviewed recipe `claude-config-dir`
+# (`kinds.ACCOUNT_RECIPES`). Switched on by the operator's decision on #1820 (2026-11-17), before
+# the two-login proof, so the accounts can be signed in through the Settings UI; the proof is run
+# on those accounts with `scripts/agent-accounts-p0 run claude --account <id>`.
+[accounts]
+kind = "claude-config-dir"
+
 [usage]
 source = "plan"
 kind = "claude-cli-probe"

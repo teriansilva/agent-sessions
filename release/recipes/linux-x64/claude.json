@@ -1,5 +1,8 @@
 {
   "manifest": {
+    "accounts": {
+      "kind": "claude-config-dir"
+    },
     "binary": {
       "env_var": "AGENT_SESSIONS_CLAUDE_BIN",
       "name": "claude",

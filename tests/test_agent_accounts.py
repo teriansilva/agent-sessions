@@ -67,11 +67,20 @@ def test_an_unknown_kind_has_no_recipe():
     assert agent_accounts.recipe("made-up") is None
 
 
-def test_no_first_party_agent_declares_accounts_before_its_proof():
-    """#1820 P0: an engine's manifest names a kind only once the recipe is proven against the
-    real CLI. Until a results table says so, every first-party manifest stays on "none"."""
+#: Which first-party agents hold several accounts, and with which recipe. Claude and Codex were
+#: switched on by the operator's decision on #1820 (2026-11-17), before the two-login proof, so the
+#: accounts could be signed in through the UI; the proof runs on those accounts. Any other agent
+#: gets a kind only with its own proof table on the issue: extend this map in that PR.
+DECLARED = {"claude": "claude-config-dir", "codex": "codex-home"}
+
+
+def test_only_the_decided_first_party_agents_declare_accounts():
+    found = {}
     for path in sorted(FIRST_PARTY_DIR.glob("*/plugin.toml")):
-        assert manifest.load_file(path).accounts_kind == "none", path.parent.name
+        kind = manifest.load_file(path).accounts_kind
+        if kind != "none":
+            found[path.parent.name] = kind
+    assert found == DECLARED
 
 
 # --- the manifest field --------------------------------------------------------------------------

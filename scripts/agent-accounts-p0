@@ -171,7 +171,7 @@ def _setup(args):
         sys.exit(f"no candidate recipe for {args.engine!r}; known: {', '.join(CANDIDATES)}")
     rec = agent_accounts.recipe(kind)
     shared = agent_accounts.default_home(rec)
-    account = agent_accounts.home(args.engine, ACCOUNT_ID)
+    account = agent_accounts.home(args.engine, args.account)
     return rec, shared, account, ADAPTERS[kind](_binary(args.engine, args.bin))
 
 
@@ -380,6 +380,12 @@ def main():
     ap.add_argument("command", choices=("signin", "run"))
     ap.add_argument("engine", choices=sorted(CANDIDATES))
     ap.add_argument("--bin", help="the agent's binary, when BattleLab cannot find it")
+    ap.add_argument(
+        "--account",
+        default=ACCOUNT_ID,
+        help="the account to prove: one added in Settings (its id, e.g. a-1a2b3c4d) or the "
+        f"script's own (default: {ACCOUNT_ID})",
+    )
     ap.add_argument(
         "--trusted-dir",
         default=os.getcwd(),

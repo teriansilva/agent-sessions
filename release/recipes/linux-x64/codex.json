@@ -1,5 +1,8 @@
 {
   "manifest": {
+    "accounts": {
+      "kind": "codex-home"
+    },
     "binary": {
       "env_var": "AGENT_SESSIONS_CODEX_BIN",
       "name": "codex",

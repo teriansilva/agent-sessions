@@ -131,18 +131,24 @@ def _write(doc: dict) -> None:
 
 
 def _mutate(fn):
+    """Read-modify-write under the store's lock. Every filesystem failure, taking the lock
+    included, becomes a `StoreError` the caller turns into its own refusal (Hermes on #2122: an
+    unwritable lock sidecar escaped as a raw `OSError`)."""
     try:
         agent_accounts.ensure_root()
     except agent_accounts.AccountError as exc:
         raise StoreError(str(exc)) from None
-    with json_write_lock(_path()):
-        try:
-            doc = _read()
-        except AccountRefused as exc:
-            raise StoreError(exc.detail) from None
-        out = fn(doc)
-        _write(doc)
-        return out
+    try:
+        with json_write_lock(_path()):
+            try:
+                doc = _read()
+            except AccountRefused as exc:
+                raise StoreError(exc.detail) from None
+            out = fn(doc)
+            _write(doc)
+            return out
+    except OSError as exc:
+        raise StoreError("the account store cannot be written") from exc
 
 
 def _pool(doc: dict, engine: str) -> dict:
@@ -367,10 +373,13 @@ def _record_new(engine: str, keys: list[str]) -> str:
     """Fix a new session's account: the agent's new-session pick, recorded under every key in
     the same write that reads the pick, so a pick changed concurrently cannot split the two.
 
-    ``default`` is recorded too. Without it, a session created on the default login and
-    relaunched before it wrote history would be indistinguishable from one never assigned, and
-    would take whatever the pick had become meanwhile (Hermes on #2048). A key that already has
-    an assignment keeps it."""
+    Every choice is recorded and kept, ``default`` included, pool or no pool. A session's account
+    is fixed only if its choice is durable: a session created on the default login and relaunched
+    before it wrote history is otherwise indistinguishable from one never assigned, and would take
+    whatever the pick had become meanwhile, including a pick made after the first account was
+    added (Hermes on #2048 and #2122). So nothing here deletes a row by age, and a launch whose
+    choice cannot be recorded is refused rather than started unrecorded. A key that already has an
+    assignment keeps it."""
     doc = _read()
     held = next((doc["assignments"][k]["account"] for k in keys if k in doc["assignments"]), None)
     if held is not None:
