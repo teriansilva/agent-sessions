@@ -931,7 +931,26 @@ def read_proposals(cid: str) -> list[dict]:
 
 
 def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
-    """One sidecar entry as it may be written; ValueError for a shape no caller should produce."""
+    """One sidecar entry as it may be written; ValueError for a shape no caller should produce.
+
+    Any kind may carry ``replaced_by`` (#2120): the id of the card HQ staged to replace it. It is
+    kept only on a ``dismissed`` entry (a replacement dismisses the card it replaces, and nothing
+    else does). The replacement carries ``replaces``, the card it replaced. Both are absent
+    otherwise, so an older sidecar reads byte for byte the same."""
+    out = _admit_kind(e, secrets, fresh=fresh)
+    for key in ("replaced_by", "replaces"):
+        other = e.get(key)
+        if other is None:
+            continue
+        if not (isinstance(other, str) and _ACTION_ID_RE.match(other)) or other == out["id"]:
+            raise ValueError(f"malformed {key}")
+        if key == "replaced_by" and out.get("state") != "dismissed":
+            raise ValueError("only a dismissed card was replaced")
+        out[key] = other
+    return out
+
+
+def _admit_kind(e: dict, secrets: list[str], *, fresh: bool) -> dict:
     pid, tid = e.get("id"), e.get("turn_id")
     if not (isinstance(pid, str) and _ACTION_ID_RE.match(pid)):
         raise ValueError("malformed proposal id")

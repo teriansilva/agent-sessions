@@ -19,8 +19,23 @@ const FINAL_WORD: Record<string, string> = {
   dismissed: "Dismissed",
 };
 
+/** HQ cards a spoken "dismiss" reaches (#2120): the server's `DISMISSABLE_KINDS` a card on the call
+ *  screen can have. A nudge and every Needs-you row are never dismissed by voice. */
+export const DISMISSABLE_KINDS = new Set(["session", "operation", "message"]);
+
+/** What the armed line says the Commander may answer. */
+export function listeningFor(kind: string): string {
+  return DISMISSABLE_KINDS.has(kind) ? "“confirm”, “dismiss” or “cancel”" : "“confirm” or “cancel”";
+}
+
 /** The stamp for a voice settlement, from the route's own answer. */
-export function settledWord(st: CardSettlement, kind: string): { text: string; tone: "ok" | "warn" | "alert" } {
+export function settledWord(
+  st: CardSettlement,
+  kind: string,
+): { text: string; tone: "ok" | "warn" | "alert" | "neutral" } {
+  if (st.dismissed && st.ok && st.final === undefined) {
+    return { text: "Dismissed by voice", tone: "neutral" }; // nothing ran: not a success colour
+  }
   if (st.final !== undefined) {
     if (st.final === null) return { text: "Still running", tone: "warn" };
     const text = FINAL_WORD[st.final] ?? st.final;

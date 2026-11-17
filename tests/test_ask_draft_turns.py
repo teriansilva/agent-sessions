@@ -37,6 +37,8 @@ GATED = {
     "propose_secret",
     "propose_session",
     "propose_session_change",
+    # #2120: withdrawing a card is an effect on it; it waits for the commit like a proposal.
+    "withdraw_card",
     # #2102: the screen moves only once the Commander has finished speaking.
     "show",
 }

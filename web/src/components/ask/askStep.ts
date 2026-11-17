@@ -65,6 +65,8 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   connector_list: { label: "Listing a connected folder", noun: ["item", "items"] },
   list_recipients: { label: "Listing the recipients", noun: ["recipient", "recipients"] },
   propose_message: { label: "Preparing the message for you to send" },
+  withdraw_card: { label: "Withdrawing a card" },
+  list_cards: { label: "Looking at the cards", noun: ["card", "cards"] },
   // #1559: staging a change for the operator to confirm.
   propose_session: { label: "Preparing the session for you to start" },
   propose_session_change: { label: "Preparing the change for you to confirm" },

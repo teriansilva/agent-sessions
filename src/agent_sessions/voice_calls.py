@@ -211,6 +211,16 @@ def _judged(cards: list[dict]) -> bool:
     return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
 
 
+#: HQ cards a spoken reply may DISMISS through their own decide route (#2120): the proposal
+#: sidecar's cards. A nudge (a ledger action) and every Needs-you row keep their own grammar and
+#: routes; "dismiss" there is a cancel, never a refusal.
+DISMISSABLE_KINDS = frozenset({"session", "operation", "message", "suggest"})
+
+
+def _dismissable(cards: list[dict]) -> bool:
+    return bool(cards) and all(c.get("kind") in DISMISSABLE_KINDS for c in cards)
+
+
 from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     call_language,
@@ -1138,7 +1148,14 @@ class Call:
             cards = confirmable_cards(
                 view, summaries=summaries, picks=picks, suggestions=suggestions
             )[:4]
-            lines = list(card_sentences(view, skip={c["id"] for c in cards}, said=words))
+            lines = list(
+                card_sentences(
+                    view,
+                    skip={c["id"] for c in cards},
+                    said=words,
+                    reasons=screen_reasons(view, summaries=summaries, suggestions=suggestions),
+                )
+            )
             sid = uuid.uuid4().hex[:12]
             # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
             # a card that still needs the operator, an empty answer, an answer that ASKS
@@ -1294,7 +1311,9 @@ class Call:
             # The fixed English phrases decide at once (the fast path); anything they don't cover
             # — any wording, any language — goes to ONE focused judgement (#1715 P1).
             verdict, idx = (
-                classify_confirmation(text, len(ch["cards"])) if english else ("other", None)
+                classify_confirmation(text, len(ch["cards"]), dismiss=_dismissable(ch["cards"]))
+                if english
+                else ("other", None)
             )
             if verdict == "other" and judged:
                 # `snap` was taken at receipt, before ANY await (this caption send included): a
@@ -1395,13 +1414,17 @@ class Call:
 
         if verdict == "other":
             return False
+        if verdict in ("dismiss", "ambiguous_dismiss") and not _dismissable(ch["cards"]):
+            verdict = "cancel"  # a judged nudge: "drop it" leaves it, as a no always did
         if snap is not None:
             # An ANSWER from this turn is taken (Hermes 7359): an older reply still being judged
             # is now older than what the Commander did since, so its words step aside.
             self.taken_turn = max(self.taken_turn, snap["turn"])
-        if verdict in ("confirm", "choose") and idx is not None:
+        if verdict in ("confirm", "choose", "dismiss") and idx is not None:
             self.challenge = None  # single use: consumed BEFORE anything is awaited
             card = first if verdict == "choose" else ch["cards"][idx]
+            if verdict == "dismiss":
+                card = {**card, "dismiss": True}  # its own route, with the screen's dismiss
             await caption()
             await self.client({"t": "challenge", "cards": []})
             self._side(self._settle_then_next(card, ch["queue"], ch["gen"], snap))
@@ -1431,6 +1454,7 @@ class Call:
             "broader": "By voice I can only allow it once. Anything broader stays on"
             " your screen.",
             "no_allow": "I can't allow this one by voice. Say refuse it, or skip.",
+            "ambiguous_dismiss": "Which one? Say dismiss and the number.",
         }.get(verdict, "Which one? Say confirm and the number.")
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
@@ -1510,7 +1534,14 @@ class Call:
         from . import asgi_call
 
         kind = card["kind"]
-        if kind in ("nudge", "needs_you"):
+        if card.get("dismiss") and kind in DISMISSABLE_KINDS:
+            # A spoken dismiss (#2120): the card's decide route with the screen's own dismiss —
+            # exactly what the Dismiss button sends. Nothing of the card runs.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "dismiss"}
+        elif card.get("dismiss"):
+            return  # never anything but a sidecar card's own dismiss
+        elif kind in ("nudge", "needs_you"):
             method, path, body = "POST", f"/api/pulse/actions/{card['id']}/approve", None
         elif kind == "suggest":
             # Still the same EXISTING folder for a card still waiting, at THIS moment: what was
@@ -1564,7 +1595,8 @@ class Call:
             resp = None
         ok = settled_ok(card, resp)
         await self.client({"t": "settled", "card": card["id"], "ok": ok,
-                           "status": resp.status if resp else 0})  # fmt: skip
+                           "status": resp.status if resp else 0,
+                           **({"dismissed": True} if card.get("dismiss") else {})})  # fmt: skip
         await self.say(outcome_sentence(card, resp), kind="outcome")
         if resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
             # Accepted is not finished: follow the card to its end state and say THAT.
@@ -2275,8 +2307,8 @@ def confirmable_cards(
     out: list[dict] = []
     for p in view.get("proposals") or []:
         pid = p.get("action_id")
-        if not isinstance(pid, str) or not pid:
-            continue
+        if not isinstance(pid, str) or not pid or p.get("replaced_by"):
+            continue  # a card HQ replaced is never offered (#2120)
         title = (p.get("title") or "").strip()[:80] or "that session"
         kind = p.get("kind")
         if kind == "nudge":
@@ -2348,6 +2380,48 @@ def confirmable_cards(
             label = (p.get("label") or p.get("verb") or "A change").strip()[:60]
             out.append({"id": pid, "kind": "operation", "verb": "do it",
                         "line": _sentence(f"{label}, for {title}: {effect}")})  # fmt: skip
+    # A card that replaced an earlier one is read back as the change it is (#2120).
+    changed = {p.get("action_id") for p in view.get("proposals") or [] if p.get("replaces")}
+    return [{**c, "line": f"Changed: {c['line']}"} if c["id"] in changed else c for c in out]
+
+
+def screen_reasons(
+    view: dict,
+    *,
+    summaries: dict[str, str] | None = None,
+    suggestions: dict[str, dict] | None = None,
+) -> dict[str, str]:
+    """Why each HQ operation card of a turn stays on screen (#2120): a FIXED sentence per card
+    id, from the card's kind and the call's own checks — never model text — so the Commander
+    hears the reason, and HQ is never taken to be unable to confirm anything by voice. Only for
+    operations: a session, nudge or message card says its own reason already."""
+    from . import ask_library, ask_operations
+
+    out: dict[str, str] = {}
+    for p in view.get("proposals") or []:
+        pid, op_id = p.get("action_id"), p.get("op")
+        if p.get("kind") != "operation" or not isinstance(pid, str) or not isinstance(op_id, str):
+            continue
+        op = ask_operations.CATALOG.get(op_id)
+        group = op.group if op is not None else ""
+        needs = p.get("needs") or []
+        if op_id in ask_operations._SUGGEST_FROM_NAME and needs == ["folder"]:
+            if not (suggestions or {}).get(pid):
+                out[pid] = "Its folder doesn't exist yet, and I can't pick a new one by voice."
+        elif group == "mission":
+            out[pid] = "A draft mission is confirmed on screen for now."
+        elif group == "team":
+            out[pid] = "A team change is confirmed on screen."
+        elif group == "secret":
+            out[pid] = "Secrets are only ever confirmed on screen."
+        elif group in ask_library.GROUPS and op_id not in VOICE_DRAFTS:
+            out[pid] = "Library changes are confirmed on screen, where their content is."
+        elif op_id in VOICE_DRAFTS and not (summaries or {}).get(pid):
+            out[pid] = "It's too long to read out in full."
+        elif needs:
+            out[pid] = "It needs a choice on screen."
+        elif verbatim(p.get("text") or "") is None:
+            out[pid] = "It's too long to read out in full."
     return out
 
 
@@ -2613,6 +2687,8 @@ def settled_ok(card: dict, resp) -> bool:
     body = resp.body if isinstance(resp.body, dict) else {}
     if card["kind"] in ("nudge", "needs_you", "permission", "menu"):
         return _result_state(card, body) == "delivered"
+    if card.get("dismiss"):
+        return _result_state(card, body) == "dismissed"  # what a spoken dismiss asked for
     return _result_state(card, body) in ("done", "started", "sent")
 
 
@@ -2637,7 +2713,10 @@ def outcome_sentence(card: dict, resp) -> str:
             if choice.get("as") == "refuse":
                 return "Refused."
             return _sentence(f"Chosen: {choice.get('label')}")
-        return final_sentence(card, _result_state(card, body) or "unknown")
+        state = _result_state(card, body) or "unknown"
+        if card.get("dismiss") and state == "dismissed":
+            return "Dismissed."
+        return final_sentence(card, state)
     if card["kind"] in ("permission", "menu"):
         # FIXED sentences, never the route's `detail` (#1683 review): a refusal can quote the
         # live screen's label, which is the agent's text.

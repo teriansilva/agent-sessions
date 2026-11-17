@@ -353,10 +353,15 @@ def _any_view(row: dict) -> dict:
     from . import ask_messages, ask_operations
 
     if row.get("kind") == "operation":
-        return ask_operations.view(row)
-    if row.get("kind") == "message":
-        return ask_messages.view(row)
-    return view(row)
+        out = ask_operations.view(row)
+    elif row.get("kind") == "message":
+        out = ask_messages.view(row)
+    else:
+        out = view(row)
+    for key in ("replaced_by", "replaces"):  # the card that replaced it, or it replaced (#2120)
+        if row.get(key):
+            out[key] = row[key]
+    return out
 
 
 # ---- the decision ------------------------------------------------------------------------------
@@ -707,3 +712,61 @@ async def drain(timeout: float = DECIDE_SHUTDOWN_WAIT_S) -> None:
         t.cancel()
     if late:
         await asyncio.wait(late, timeout=5)
+
+
+# ---- replacing and withdrawing a card (#2120) ---------------------------------------------------
+
+#: What a replacement or a withdrawal can report about the card it named.
+REPLACED, BUSY, MISSING = "replaced", "busy", "missing"
+
+
+def replace_refusal(cid: str, pid: object, kind: str) -> str:
+    """Why ``pid`` can't be named as the card a NEW ``kind`` card replaces, or ``""``. Checked
+    before anything is staged, so a wrong id stages nothing. Only a card of this conversation's
+    sidecar, and of the same kind, can be replaced; its state is NOT checked here — a card
+    decided meanwhile still lets the new card stage, and the replacement reports what won.
+    Blocking."""
+    if not valid_pid(pid):
+        return "replaces must be the action_id of a card you proposed in this conversation"
+    try:
+        row = _row(cid, str(pid))
+    except ask_store.SidecarUnreadable:
+        return "the cards of this conversation could not be read just now; nothing was proposed"
+    if row is None:
+        return "replaces names no card of this conversation; nothing was proposed"
+    if row.get("kind") != kind:
+        return f"replaces names a {row.get('kind')} card, not a {kind} card; nothing was proposed"
+    return ""
+
+
+async def supersede(cid: str, old: str, new: str) -> str:
+    """Settle card ``old`` as replaced by the just-staged card ``new`` (#2120): ``pending →
+    dismissed`` with ``replaced_by``, a compare-and-set under the conversation's decide lock AND
+    its sidecar lock, so a tap, a spoken confirm or another replacement deciding the same card
+    can't interleave. Returns ``"replaced"``, ``"busy"`` (a decision of this conversation is
+    running; the old card stays as it is), ``"missing"``, or the old card's own state when
+    something else got there first — that state is never relabelled. Nothing is undone."""
+    fd = await _decide_lock(cid)
+    if fd is None:
+        return BUSY
+    try:
+        return await asyncio.to_thread(_supersede_locked, cid, old, new)
+    finally:
+        os.close(fd)
+
+
+def _supersede_locked(cid: str, old: str, new: str) -> str:
+    with ask_store.proposals_lock(cid):
+        rows = ask_store.read_proposals(cid)
+        row, repl = _find(rows, old), _find(rows, new)
+        if row is None or repl is None:
+            return MISSING
+        state = str(row.get("state"))
+        if state != PENDING:
+            return state
+        row.update(state=DISMISSED, replaced_by=new, settled_at=time.time())
+        repl["replaces"] = old  # the call reads it back as "Changed: …"
+        if row.get("kind") == "session":
+            row["notice"] = ""  # as a tap's dismiss leaves it
+        ask_store.write_proposals(cid, rows)
+    return REPLACED

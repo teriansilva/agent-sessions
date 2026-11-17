@@ -254,18 +254,26 @@ def _same_words(text: str) -> str:
 
 
 def card_sentences(
-    view: dict, *, skip: set[str] | frozenset = frozenset(), said: str = ""
+    view: dict,
+    *,
+    skip: set[str] | frozenset = frozenset(),
+    said: str = "",
+    reasons: dict[str, str] | None = None,
 ) -> list[str]:
     """Fixed, server-rendered sentences for what an HQ turn left on screen (D8). The card text
     itself is not read out: the title and kind are enough to find it; the screen has the rest.
 
     ``said`` is what HQ's own answer already spoke on this turn: a question it contains WORD FOR
     WORD (case and spacing aside) is not asked a second time, only its options are read (#1911).
-    Exact containment only: a paraphrase is asked again, so nothing goes unsaid."""
+    Exact containment only: a paraphrase is asked again, so nothing goes unsaid.
+
+    ``reasons``: why a card the call can't confirm by voice stays on screen (#2120), a FIXED
+    sentence by card id, said before "Confirm it on your screen" so HQ is never taken to be
+    unable to confirm anything by voice. A card HQ replaced (``replaced_by``) is not announced."""
     out: list[str] = []
     for p in view.get("proposals") or []:
-        if p.get("action_id") in skip:
-            continue  # read back as a confirmable card instead
+        if p.get("action_id") in skip or p.get("replaced_by"):
+            continue  # read back as a confirmable card instead, or replaced by a newer one
         kind = p.get("kind")
         title = (p.get("title") or "").strip()[:80] or "that session"
         if kind == "nudge":
@@ -274,7 +282,9 @@ def card_sentences(
             out.append("I've drafted a new session. It's on your screen to start.")
         elif kind == "operation":
             label = (p.get("label") or p.get("verb") or "change").strip()[:60]
-            out.append(f"I've drafted this: {label}, for {title}. Confirm it on your screen.")
+            why = (reasons or {}).get(p.get("action_id") or "", "")
+            why = f" {why}" if why else ""
+            out.append(f"I've drafted this: {label}, for {title}.{why} Confirm it on your screen.")
         elif kind == "message":
             # Reached only when the card is not confirmable by voice (#1833, Hermes 7610/7612): it
             # can't be read out word for word (too long, or not plain speech), so it's sent from the
@@ -338,7 +348,14 @@ _CONFIRM_PHRASES = (
 )  # fmt: skip
 _FILLERS = frozenset({"please", "ok", "okay", "yes", "yeah"})
 _SKIP = frozenset({"the", "number", "option", "please", "ok", "okay", "yes", "yeah"})
-_CANCEL = re.compile(r"^(no|nope|cancel|cancel it|leave it|not now|never mind|dismiss)\b")
+_CANCEL = re.compile(r"^(no|nope|cancel|cancel it|leave it|not now|never mind)\b")
+#: Dismissing an HQ card by voice (#2120): one of these verbs, optionally its object, and then
+#: what a confirm may carry (an ordinal, fillers). "No, dismiss it" is a dismiss; "no, don't
+#: dismiss it" is not one (the extra word fails the allowlist) and stays a cancel.
+_DISMISS_VERBS = frozenset({"dismiss", "drop", "discard", "delete", "scrap", "withdraw"})
+_DISMISS_OBJECTS = (("it",), ("that",), ("this",), ("that", "card"), ("this", "card"),
+                    ("the", "card"))  # fmt: skip
+_DISMISS_LEAD = frozenset({"no", "nope", *_FILLERS})
 _ALL_TAILS = (("all",), ("everything",), ("both",), ("all", "of", "them"), ("them", "all"),
               ("every", "one"), ("each", "one"), ("all", "three"), ("all", "four"))  # fmt: skip
 CONFIRM_MAX_WORDS = 6
@@ -356,28 +373,23 @@ def _confirm_rest(words: list[str]) -> list[str] | None:
     return None
 
 
-def classify_confirmation(said: str, cards: int) -> tuple[str, int | None]:
-    """What a spoken reply to a read-back means, matched on the WHOLE utterance, never by a model:
+def _dismiss_rest(words: list[str]) -> list[str] | None:
+    """The words after a leading dismiss verb and its optional object, or None (#2120)."""
+    i = 0
+    while i < len(words) and words[i] in _DISMISS_LEAD:
+        i += 1
+    if i >= len(words) or words[i] not in _DISMISS_VERBS:
+        return None
+    rest = words[i + 1 :]
+    for obj in sorted(_DISMISS_OBJECTS, key=len, reverse=True):
+        if tuple(rest[: len(obj)]) == obj:
+            return rest[len(obj) :]
+    return rest
 
-    - ``("confirm", i)`` — fillers, one confirm phrase and, when more than one card is pending,
-      exactly one ordinal naming card ``i``. Nothing else, and no question mark;
-    - ``("cancel", None)`` — leave it (the card stays on screen, untouched);
-    - ``("all", None)`` — a bulk request, refused;
-    - ``("ambiguous", None)`` — a confirm without the ordinal several cards need;
-    - ``("other", None)`` — anything else: a new question, and the challenge is void.
-    """
-    raw = said.translate(_APOSTROPHES).lower()
-    norm = " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split())
-    words = norm.split()
-    if not words:
-        return "other", None
-    if _CANCEL.match(norm):
-        return "cancel", None
-    if "?" in raw or len(words) > CONFIRM_MAX_WORDS:
-        return "other", None
-    rest = _confirm_rest(words)
-    if rest is None:
-        return "other", None
+
+def _which(rest: list[str], cards: int, verdict: str) -> tuple[str, int | None]:
+    """The card the words after a confirm or dismiss phrase name: ``(verdict, i)``, ``all``,
+    ``ambiguous`` or ``other`` — one rule for both, so a dismiss is never looser than a confirm."""
     if tuple(w for w in rest if w not in _FILLERS) in _ALL_TAILS:
         return "all", None
     rest = [w for w in rest if w not in _SKIP]
@@ -393,7 +405,44 @@ def classify_confirmation(said: str, cards: int) -> tuple[str, int | None]:
         return "ambiguous", None  # names a card that was not read out
     if picked is None and cards != 1:
         return "ambiguous", None
-    return "confirm", picked or 0
+    return verdict, picked or 0
+
+
+def classify_confirmation(
+    said: str, cards: int, *, dismiss: bool = False
+) -> tuple[str, int | None]:
+    """What a spoken reply to a read-back means, matched on the WHOLE utterance, never by a model:
+
+    - ``("confirm", i)`` — fillers, one confirm phrase and, when more than one card is pending,
+      exactly one ordinal naming card ``i``. Nothing else, and no question mark;
+    - ``("dismiss", i)`` — only when ``dismiss`` (HQ cards, #2120): a dismiss verb, optionally
+      "it"/"that", and the same ordinal rule as a confirm. The card is dismissed on its route;
+    - ``("cancel", None)`` — leave it (the card stays on screen, untouched);
+    - ``("all", None)`` — a bulk request, refused;
+    - ``("ambiguous", None)`` — a confirm without the ordinal several cards need;
+    - ``("other", None)`` — anything else: a new question, and the challenge is void.
+    """
+    raw = said.translate(_APOSTROPHES).lower()
+    norm = " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split())
+    words = norm.split()
+    if not words:
+        return "other", None
+    if dismiss and "?" not in raw and len(words) <= CONFIRM_MAX_WORDS:
+        rest = _dismiss_rest(words)
+        if rest is not None:
+            verdict, i = _which(rest, cards, "dismiss")
+            if verdict == "ambiguous":
+                return "ambiguous_dismiss", None  # "Which one? Say dismiss and the number."
+            if verdict != "other":
+                return verdict, i
+    if _CANCEL.match(norm) or (not dismiss and words[0] == "dismiss"):
+        return "cancel", None  # where there is no dismiss, "dismiss" still means leave it
+    if "?" in raw or len(words) > CONFIRM_MAX_WORDS:
+        return "other", None
+    rest = _confirm_rest(words)
+    if rest is None:
+        return "other", None
+    return _which(rest, cards, "confirm")
 
 
 # --- deciding ONE Needs-you item by voice (#1681 P2) -------------------------------------------

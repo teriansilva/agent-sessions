@@ -142,8 +142,14 @@ and tells you whether it arrived.
   to a session and changes HQ proposes are always read in full, or stay on screen.
 - Say **confirm** within 20 seconds of the read-back finishing. With several cards, say which one
   ("confirm the second").
+- Say **dismiss it** to throw the card away (with several cards, "dismiss the second"). Nothing of
+  it runs. This works on HQ's own cards: sessions, changes, Library drafts and messages.
 - Anything else — silence, "cancel", talking over the read-back, or a new question — leaves the card
   untouched. "Confirm everything" is refused.
+- To **change** a card, just say what to change ("call it Game Place Promotions instead"). HQ puts
+  up the corrected card, reads it back ("Changed: …"), and the old one is marked **Replaced**.
+- When a card can't be confirmed by voice, HQ says why (for example, a new project whose folder
+  doesn't exist yet). Confirm those on screen.
 - Tapping the card works too, and always wins.
 - Some operations need input on screen. Those are never offered by voice.
 

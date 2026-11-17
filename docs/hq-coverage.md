@@ -148,6 +148,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Connectors: a messenger's recipients and its send switch (#1832) | GET …/recipients/candidates, PUT …/recipients, POST …/capabilities `{send}` | **never** (who HQ may message is the Commander's consent, and so is the switch) |
 | Connectors: a messenger's notify route, and its recent deliveries (#1841) | POST …/notify, GET …/deliveries | **never** to set it (where notifications go is the Commander's consent); P2 to read the deliveries |
 | Send a message through a messenger connector (#1833) | the proposal decide route, `{decision: "send"}` | have (`propose_message` stages a card; only the Commander's tap sends) |
+| Change or withdraw a card HQ proposed in this conversation (#2120) | the proposal decide route, `{decision: "dismiss"}` | have (`replaces` on a propose tool closes the card it corrects; `withdraw_card` dismisses one as the turn's operator; nothing of either card runs) |
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |

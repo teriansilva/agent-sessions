@@ -209,7 +209,7 @@ export type CallServerMessage =
   /** The cards a spoken "confirm" may settle now, in their spoken order; `[]` clears it. */
   | { t: "challenge"; cards: string[]; expires_s?: number }
   /** A voice confirmation ran the card's route: its status, then (202 only) the end state. */
-  | { t: "settled"; card: string; ok: boolean; status: number }
+  | { t: "settled"; card: string; ok: boolean; status: number; dismissed?: boolean }
   | { t: "settled"; card: string; final: string | null };
 
 /** What a spoken confirmation did to one card (#1397 P2). `final` arrives only after a 202. */
@@ -217,4 +217,6 @@ export interface CardSettlement {
   ok: boolean;
   status: number;
   final?: string | null;
+  /** A spoken dismiss (#2120): the card's own dismiss route, not its confirm. */
+  dismissed?: boolean;
 }

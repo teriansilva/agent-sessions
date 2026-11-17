@@ -1125,6 +1125,10 @@ export interface AskNudgeCard {
  *  as shown; what a tap launches is the server's own entry. Its state is the server's:
  *  `unknown` = the entry could not be read just now, `gone` = there is no entry to decide. */
 export interface AskSessionCard {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
   action_id: string;
   kind: "session";
   title: string;
@@ -1175,6 +1179,10 @@ export type AskSessionDecision = Pick<
  *  is the server's catalog entry, bound to this card — never anything the client sends but the
  *  decision and the inputs the card asks the OPERATOR for (`needs`, e.g. a folder). */
 export interface AskOperationCard {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
   action_id: string;
   kind: "operation";
   /** The catalog id, e.g. `session.archive`. */
@@ -1253,6 +1261,10 @@ export type AskOperationDecision = Pick<
 /** A message HQ proposes through a messenger connector (#1833): the exact text a tap sends.
  *  Its live fields come from the proposal sidecar (`ask_messages.view`). */
 export type AskMessageCard = {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
   action_id: string;
   kind: "message";
   connector: string;

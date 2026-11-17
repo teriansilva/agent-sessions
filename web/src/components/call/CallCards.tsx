@@ -16,7 +16,7 @@ import { api, ApiError } from "../../lib/api";
 import type { AskConversationTurn, AskProposalCard, NeedsYouRow } from "../../types/api";
 import { MessageCard, NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
 import b from "../ui/actionButton.module.css";
-import { confirmPhrase, settledWord } from "./cardVoice";
+import { confirmPhrase, listeningFor, settledWord } from "./cardVoice";
 import { useCall } from "./callContext";
 import s from "./call.module.css";
 
@@ -34,6 +34,9 @@ function useNow(on: boolean): number {
   }, [on]);
   return now;
 }
+
+/** A settlement's stamp; a dismiss is neutral, never a success or failure colour (#2120). */
+const STAMP_CLASS = { ok: "is-ok", warn: "is-warn", alert: "is-down", neutral: "" } as const;
 
 /** The voice line above one card: the spoken window, the settlement, or why the voice can't. */
 function VoiceLine({
@@ -56,7 +59,7 @@ function VoiceLine({
     const w = settledWord(settled, kind);
     return (
       <div className={s.voice} data-testid="call-card-voice" data-voice="settled" data-tone={w.tone}>
-        <span className={`nj-stamp ${w.tone === "ok" ? "is-ok" : w.tone === "warn" ? "is-warn" : "is-down"}`}>
+        <span className={`nj-stamp ${STAMP_CLASS[w.tone]}`}>
           {w.text}
         </span>
         {settled.final === null ? (
@@ -72,7 +75,7 @@ function VoiceLine({
           Say “{confirmPhrase(index, ch.cards.length)}” · {left} s
         </span>
         <span className={s.voiceNote}>
-          Listening for “confirm” or “cancel”. Tapping works too; a tap ends the spoken window.
+          Listening for {listeningFor(kind)}. Tapping works too; a tap ends the spoken window.
         </span>
       </div>
     );

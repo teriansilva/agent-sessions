@@ -326,6 +326,8 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # #1833: a messenger's allowed recipients, and a message the Commander's tap sends.
         "list_recipients": "read",
         "propose_message": "proposal",
+        "withdraw_card": "proposal",  # #2120: dismisses a card HQ proposed in this conversation
+        "list_cards": "read",  # #2120: this conversation's cards and their ids
     }
     # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]

@@ -33,7 +33,7 @@ JUDGE_TIMEOUT_S = 4.0
 #: Room for a reasoning model's thinking before the one token (as for #1668's judge).
 JUDGE_MAX_TOKENS = 1024
 
-_CARD_VERDICT = re.compile(r"(confirm|cancel|all|other)(?: ([1-9]))?")
+_CARD_VERDICT = re.compile(r"(confirm|dismiss|cancel|all|other)(?: ([1-9]))?")
 
 
 def parse_card_verdict(content: object, cards: int) -> tuple[str, int | None] | None:
@@ -46,14 +46,16 @@ def parse_card_verdict(content: object, cards: int) -> tuple[str, int | None] | 
     if m is None:
         return None
     word, n = m.group(1), m.group(2)
-    if n is not None and word != "confirm":
+    if n is not None and word not in ("confirm", "dismiss"):
         return None  # "cancel 2" is not in the set
-    if word != "confirm":
+    if word not in ("confirm", "dismiss"):
         return word, None
+    # A dismiss names its card the way a confirm does (#2120).
+    unclear = "ambiguous" if word == "confirm" else "ambiguous_dismiss"
     if n is None:
-        return ("confirm", 0) if cards == 1 else ("ambiguous", None)
+        return (word, 0) if cards == 1 else (unclear, None)
     i = int(n) - 1
-    return ("confirm", i) if i < cards else ("ambiguous", None)
+    return (word, i) if i < cards else (unclear, None)
 
 
 def _user_message(readback: str, cards: int, reply: str) -> str:

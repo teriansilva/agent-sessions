@@ -329,7 +329,11 @@ export class CallClient {
         const next: CardSettlement =
           "final" in msg
             ? { ok: prev?.ok ?? true, status: prev?.status ?? 202, final: msg.final }
-            : { ok: !!msg.ok, status: typeof msg.status === "number" ? msg.status : 0 };
+            : {
+                ok: !!msg.ok,
+                status: typeof msg.status === "number" ? msg.status : 0,
+                ...(msg.dismissed === true ? { dismissed: true } : {}),
+              };
         this.set({
           settled: { ...this.snap.settled, [msg.card]: next },
           cardSeq: this.snap.cardSeq + 1,

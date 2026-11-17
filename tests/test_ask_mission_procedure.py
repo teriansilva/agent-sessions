@@ -437,7 +437,11 @@ def test_a_continuation_reads_and_proposes_but_never_sends_or_remembers(hq, monk
     # never offered off a call and refused there anyway.
     kinds = {t.kind for t in ask_orchestrator.TOOLS.values()}
     allowed = {"read", "proposal", "ends_turn", "call"}
-    assert ask_orchestrator.CONTINUATION_REFUSED_TOOLS == {"propose_hq_memory_change"}
+    # A continuation never dismisses a card either (#2120): that is the Commander's own call.
+    assert ask_orchestrator.CONTINUATION_REFUSED_TOOLS == {
+        "propose_hq_memory_change",
+        "withdraw_card",
+    }
     assert ask_orchestrator.CONTINUATION_REFUSED_KINDS == kinds - allowed
     assert "end_call" not in {t["function"]["name"] for t in ask_orchestrator.tool_specs("card")}
 

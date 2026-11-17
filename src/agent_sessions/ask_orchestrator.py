@@ -2067,6 +2067,167 @@ def _operator(turn: _Turn):
     return turn.operator, turn.app
 
 
+# ---- changing and withdrawing a card (#2120) ---------------------------------------------------
+
+#: The propose tools whose card may replace an earlier one, and the sidecar kind each stages.
+#: Team cards (`assemble`, `assign`, overrides) are screen decisions and are not here.
+REPLACEABLE: dict[str, str] = {
+    "propose_session": "session",
+    "propose_message": "message",
+    **{
+        n: "operation"
+        for n in (
+            "propose_session_change",
+            "propose_mission",
+            "propose_project_change",
+            "propose_library",
+            "propose_secret",
+            "propose_hq_memory_change",
+        )
+    },
+}
+REPLACES_PROPERTY = {
+    "type": "string",
+    "description": "Only when the Commander asks to change a card proposed in this "
+    "conversation: that card's `card` id (list_cards). The new card replaces it: the old one "
+    "closes as replaced and nothing of it runs.",
+}
+#: What the model is told about the card it named in `replaces`, by `ask_proposals.supersede`.
+_REPLACED_NOTES = {
+    "replaced": "The card it replaces is closed as replaced; nothing of it ran.",
+    "busy": "The card it was to replace is being decided right now, so it was left as it is. "
+    "Tell the Commander both cards are on screen.",
+    "missing": "The card it was to replace could not be found; it was left as it is.",
+    "unrecorded": "The card it was to replace could not be closed just now, so both cards are "
+    "on screen. Tell the Commander.",
+}
+
+
+#: Cards `list_cards` returns at most, newest first.
+LIST_CARDS_MAX = 20
+
+
+async def _list_cards(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """This conversation's cards, newest first, with their ids and live states (#2120): what a
+    change (`replaces`) or a withdrawal (`withdraw_card`) names. Earlier turns reach the model as
+    their questions and answers only, so without this an id from an earlier turn is a guess."""
+    from . import ask_proposals
+
+    records = await asyncio.to_thread(ask_store.read, turn.cid)
+    status, live = await asyncio.to_thread(ask_proposals.views, turn.cid)
+    rows: list[dict] = []
+    for r in reversed(records):
+        if r.get("type") != "proposal" or r.get("kind") not in SIDECAR_KINDS:
+            continue
+        pid, kind = r.get("action_id"), r.get("kind")
+        view = live.get(pid) or {}
+        text = str(r.get("text") or "")
+        if kind == "operation":
+            what = f"{r.get('label') or 'Change'}, for {r.get('title') or 'its target'}: {text}"
+        elif kind == "session":
+            what = f"A new session in {r.get('title') or 'a project'}: {text}"
+        else:
+            what = f"A message to {r.get('recipient') or 'a recipient'}: {text}"
+        state = view.get("state") or "unknown"
+        row = {"card": pid, "kind": kind, "state": state, "what": what[:300]}
+        if view.get("replaced_by"):
+            row["replaced_by"] = view["replaced_by"]
+        rows.append(row)
+        if len(rows) >= LIST_CARDS_MAX:
+            break
+    return (
+        {
+            "cards": rows,
+            "note": "Only a pending card can be changed (propose the corrected card with replaces) "
+            "or withdrawn (withdraw_card)."
+            + ("" if status == "ok" else " The states could not be read just now."),
+        },
+        {"count": len(rows)},
+    )
+
+
+async def _replace_refusal(turn: _Turn, name: str, args: dict) -> str:
+    """Why this call's ``replaces`` can't be honoured, checked BEFORE the tool stages anything."""
+    from . import ask_proposals
+
+    if "replaces" not in args or name not in REPLACEABLE:
+        return ""
+    return await asyncio.to_thread(
+        ask_proposals.replace_refusal, turn.cid, args.get("replaces"), REPLACEABLE[name]
+    )
+
+
+async def _replace_after(turn: _Turn, args: dict, wrote: list) -> dict:
+    """Settle the card ``replaces`` named, now that the new card is staged (#2120). The old card
+    is only ever replaced while it is still pending; whatever decided it first is reported."""
+    from . import ask_proposals
+
+    new = next((r.get("action_id") for r in reversed(wrote) if r.get("action_id")), None)
+    if not new:
+        return {}
+    try:
+        outcome = await ask_proposals.supersede(turn.cid, str(args["replaces"]), new)
+    except Exception:  # noqa: BLE001 — both cards stay pending, as a crash here would leave them
+        log.warning("replacing a card failed", exc_info=True)
+        outcome = "unrecorded"
+    note = _REPLACED_NOTES.get(
+        outcome,
+        f"The card it was to replace was already {outcome.replace('_', ' ')}, so it was not "
+        "replaced and nothing of it was undone. Tell the Commander.",
+    )
+    return {"replaced": outcome == "replaced", "replaced_note": note}
+
+
+async def _withdraw_card(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Dismiss a pending card HQ proposed in THIS conversation, through the card's own decide
+    route as the turn's operator (#2120). Nothing of the card runs; HQ can propose it again."""
+    from . import asgi_call, ask_proposals
+
+    pid = args.get("card")
+    if not ask_proposals.valid_pid(pid):
+        raise _ToolRefused(
+            "refused: card must be the `card` id of a card you proposed in this conversation",
+            "bad_card",
+        )
+    operator, app = _operator(turn)
+    try:
+        row = await asyncio.to_thread(ask_proposals._row, turn.cid, str(pid))
+    except ask_store.SidecarUnreadable:
+        raise _ToolRefused(
+            "refused: the cards could not be read just now; nothing was withdrawn", "unreadable"
+        ) from None
+    if row is None:
+        raise _ToolRefused(
+            "refused: no card of this conversation has that id; only a session, change, "
+            "Library or message card you proposed here can be withdrawn",
+            "unknown_card",
+        )
+    if row.get("state") != ask_proposals.PENDING:
+        state = str(row.get("state")).replace("_", " ")
+        return (
+            {"withdrawn": False, "note": f"That card was already {state}; nothing changed."},
+            {"count": 0},
+        )
+    resp = await asgi_call.call(
+        app, operator, "POST", f"/api/ask/proposals/{pid}/decide", {"decision": "dismiss"}
+    )
+    view = resp.body.get("proposal") if isinstance(resp.body, dict) else None
+    state = view.get("state") if isinstance(view, dict) else None
+    if resp.status != 200 or state != ask_proposals.DISMISSED:
+        why = resp.detail or (f"it is {state}" if state else f"status {resp.status}")
+        return (
+            {
+                "withdrawn": False,
+                "note": f"The card was not withdrawn ({why}). Tell the Commander.",
+            },
+            {"count": 0},
+        )
+    return (
+        {"withdrawn": True, "note": "The card is dismissed; nothing of it ran."},
+        {"count": 1},
+    )
+
+
 async def _stage(
     turn: _Turn,
     op,
@@ -3505,8 +3666,42 @@ TOOLS: dict[str, Tool] = {
             ),
             _propose_message,
         ),
+        Tool(
+            "withdraw_card",
+            "proposal",
+            _spec(
+                "withdraw_card",
+                "Dismiss one card you proposed in this conversation that is still waiting, when "
+                "the Commander says to drop it. Nothing of it runs. If several cards wait and the "
+                "Commander's words don't name one, ask which (ask_operator) before withdrawing. "
+                "To change a card instead, propose the corrected one with replaces.",
+                {
+                    "card": {
+                        "type": "string",
+                        "description": "the card's `card` id, from list_cards",
+                    }
+                },
+                ["card"],
+            ),
+            _withdraw_card,
+        ),
+        Tool(
+            "list_cards",
+            "read",
+            _spec(
+                "list_cards",
+                "The cards proposed in this conversation, newest first: each one's card id, kind, "
+                "state and what it does. Call it before changing a card (replaces) or withdrawing "
+                "one (withdraw_card) from a previous turn.",
+                {},
+                [],
+            ),
+            _list_cards,
+        ),
     )
 }
+for _name in REPLACEABLE:  # the optional `replaces` of every replaceable propose tool (#2120)
+    TOOLS[_name].spec["function"]["parameters"]["properties"]["replaces"] = REPLACES_PROPERTY
 
 
 #: Per-turn budgets by tool kind: ``kind: (turn counter, cap, noun, refusal code)``. They bound
@@ -3541,7 +3736,10 @@ CONTINUATION_REFUSED_KINDS = frozenset({"send", "memory", "screen"})
 #: Tools a continuation may not run although their kind is allowed: a memory correction card's
 #: provenance check reads the turn's question as the Commander's words, and a continuation's
 #: question is the server's note.
-CONTINUATION_REFUSED_TOOLS = frozenset({"propose_hq_memory_change"})
+CONTINUATION_REFUSED_TOOLS = frozenset({"propose_hq_memory_change", "withdraw_card"})
+#: Proposal-kind tools that stage no card (#2120): they take no card slot, and a conversation
+#: holding as many cards as it can may still withdraw one.
+CARD_FREE_TOOLS = frozenset({"withdraw_card"})
 #: The tools a call's DRAFT turn may run before it is committed (#1845): reads with no effect,
 #: listed one by one. Every other tool, today every `propose_*`, `send_nudge`, `ask_operator`,
 #: `end_call` and `show` (#2102: the screen moves only once the Commander has finished), waits
@@ -3557,7 +3755,7 @@ DRAFT_READ_TOOLS = frozenset(
         "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool", "list_procedures",
-        "list_memory_notebooks", "search_memory", "read_memory",
+        "list_memory_notebooks", "search_memory", "read_memory", "list_cards",
     }
 )  # fmt: skip
 
@@ -3639,7 +3837,11 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
                 False,
             )
         setattr(turn, counter, getattr(turn, counter) + 1)
-    if tool.kind == "proposal" and turn.cards >= ask_store.MAX_SESSION_PROPOSALS:
+    if (
+        tool.kind == "proposal"
+        and name not in CARD_FREE_TOOLS
+        and turn.cards >= ask_store.MAX_SESSION_PROPOSALS
+    ):
         # The one limit on cards (#2076): what a conversation keeps, not what a turn may stage.
         # Refused BEFORE the tool runs, so nothing is written; the turn goes on.
         return (
@@ -3651,6 +3853,15 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
             ),
             stored_args,
             {"error": "proposals_full"},
+            False,
+        )
+    why_not = await _replace_refusal(turn, name, args)
+    if why_not:
+        # A wrong `replaces` stages nothing (#2120): the model fixes the id or proposes afresh.
+        return (
+            json.dumps({"error": f"refused: {why_not}"}),
+            stored_args,
+            {"error": "replaces"},
             False,
         )
     wrote: list = []
@@ -3671,14 +3882,21 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
         )
         if budget is not None and not left_something:
             setattr(turn, budget[0], getattr(turn, budget[0]) - 1)
-        if left_something and tool.kind == "proposal":
+        if left_something and tool.kind == "proposal" and name not in CARD_FREE_TOOLS:
             _count_card(turn, wrote)
         return json.dumps({"error": str(e)}), stored_args, {"error": e.code}, left_something
     finally:
         _WROTE.reset(token)
     effect = tool.kind in EFFECT_KINDS
-    if tool.kind == "proposal":
+    if tool.kind == "proposal" and name not in CARD_FREE_TOOLS:
         _count_card(turn, wrote)
+    if name in REPLACEABLE and result.get("proposed") is True:
+        # The new card's id, so a later change or withdrawal can name it (#2120).
+        card = next((r.get("action_id") for r in reversed(wrote) if r.get("action_id")), None)
+        if card:
+            result = {**result, "card": card}
+        if args.get("replaces") is not None:
+            result = {**result, **await _replace_after(turn, args, wrote)}
     if tool.kind == "proposal" and turn.via == "call" and result.get("proposed") is True:
         result = {**result, "on_call": CALL_CARD_NOTE}  # one announcement per card (#1911)
     content = json.dumps(result, ensure_ascii=False)

@@ -262,6 +262,16 @@ export function NudgeCard({
 }
 
 /** The outcome words for a session proposal — from the server's own state. */
+/** A card HQ replaced with a corrected one (#2120): dismissed when the new card was staged, and
+ *  said so — never on a card something else decided first. */
+const REPLACED = {
+  word: "Replaced",
+  tone: "neutral" as Tone,
+  detail: "HQ replaced it with a corrected card. Nothing ran.",
+};
+const isReplaced = (p: { state: string; replaced_by?: string }) =>
+  p.state === "dismissed" && Boolean(p.replaced_by);
+
 function sessionOutcome(p: AskSessionCard): { word: string; tone: Tone; detail: string } | null {
   switch (p.state) {
     case "pending":
@@ -327,7 +337,7 @@ export function SessionCard({
   // The control starts from the card's starting value. A NEW starting value (the default changed
   // and the card asks again) remounts the card — its parent keys it on that value.
   const [bypass, setBypass] = useState(p.bypass_default);
-  const out = sessionOutcome(p);
+  const out = isReplaced(p) ? REPLACED : sessionOutcome(p);
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   const name = p.title || "this project";
   return (
@@ -638,7 +648,12 @@ export function OperationCard({
   const [shown, setShown] = useState(false);
   const onShown = useCallback((v: boolean) => setShown(v), []);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
-  const out = p.state === "pending" ? null : OPERATION_OUTCOMES[p.state];
+  const out =
+    p.state === "pending"
+      ? null
+      : isReplaced(p)
+        ? { ...REPLACED, detail: () => REPLACED.detail }
+        : OPERATION_OUTCOMES[p.state];
   const needsFolder = p.needs.includes("folder");
   const choices = p.choices?.folder;
   const fromProject = Array.isArray(choices);
@@ -963,7 +978,7 @@ export function MessageCard({
   onSend: () => void;
   onDismiss: () => void;
 }) {
-  const out = messageOutcome(p);
+  const out = isReplaced(p) ? REPLACED : messageOutcome(p);
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   // An email (#1836): the server's From, To, subject and body, exactly as the transport sends them.
   const mail = p.sender !== undefined;
