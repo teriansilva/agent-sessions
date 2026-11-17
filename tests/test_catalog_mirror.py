@@ -744,3 +744,18 @@ def test_no_other_workflow_uploads_the_catalog_pair():
     for path in (ROOT / ".forgejo" / "workflows").glob("*.yml"):
         if path != WF:
             assert "plugin-feed.json" not in path.read_text(), path.name
+
+
+def test_the_workflow_installs_only_the_mirror_group_lock_pinned():
+    """The hourly job installs the `catalog-mirror` group alone (httpx, pinned like the app) from
+    the lock, hash-verified: the full `uv sync` fetched the app's heavy dependencies every hour
+    and hit the job deadline before the script ran (#2082 P3)."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    wf = (root / ".forgejo/workflows/agent-catalog-mirror.yml").read_text()
+    assert "uv sync --locked --only-group catalog-mirror --no-install-project" in wf
+    assert "uv run --no-sync python .forgejo/scripts/catalog_mirror.py" in wf
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    assert project["dependency-groups"]["catalog-mirror"] == ["httpx==0.28.1"]
+    assert "httpx==0.28.1" in project["project"]["dependencies"]

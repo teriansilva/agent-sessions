@@ -40,6 +40,13 @@ agent-sessions = "agent_sessions.cli:main"
 battlelab-secrets = "agent_sessions.secrets_mcp:cli"
 battlelab-memory = "agent_sessions.memory_client:cli"
 
+[dependency-groups]
+# The catalog mirror workflow (#2082 P3, `.forgejo/scripts/catalog_mirror.py`): its only third-party
+# import. Installed alone (`uv sync --only-group catalog-mirror --no-install-project`) so the hourly
+# job stays lock-pinned and hash-verified without fetching the app's heavy dependencies over a slow
+# link — the full `uv sync` hit the job's deadline every run.
+catalog-mirror = ["httpx==0.28.1"]
+
 [project.optional-dependencies]
 # Calling HQ (#1397): the voice worker's conversation engine (VAD, Smart Turn end-of-turn,
 # interruptions). Optional — without it calls are simply unavailable, with the reason shown.

@@ -40,6 +40,11 @@ voice = [
     { name = "pipecat-ai" },
 ]
 
+[package.dev-dependencies]
+catalog-mirror = [
+    { name = "httpx" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = "==4.13.0" },
@@ -64,6 +69,9 @@ requires-dist = [
     { name = "websockets", specifier = "==16.0" },
 ]
 provides-extras = ["voice", "dev"]
+
+[package.metadata.requires-dev]
+catalog-mirror = [{ name = "httpx", specifier = "==0.28.1" }]
 
 [[package]]
 name = "aiofiles"
