@@ -164,6 +164,20 @@ def test_no_free_slot_fails_closed_without_running_the_command(
         _reap_group(holder)
 
 
+def test_the_default_wait_fits_a_shard_under_the_runner_job_ceiling() -> None:
+    """The default wait is 7200 s, and it is a derived number, not a round one.
+
+    The org runners kill a job 3 h after pickup (runner `timeout: 3h`; a workflow's
+    `timeout-minutes` can only shorten that). A shard needs ~5 min of setup plus 30–50 min of
+    browsers, so the longest wait after which a won slot still FINISHES is ~2 h. Longer, and a
+    slot won late starts a run the runner kills mid-shard — a slot burnt for nothing during the
+    very storm the wait exists for. Shorter (it was 3600 s) and PRs fail closed while a 16–20
+    deep e2e/appmode queue would have drained (2026-11-17). The script never prints its default
+    on success and waiting it out is not a test, so this pins the text.
+    """
+    assert 'wait_s="${E2E_SLOT_WAIT_S:-7200}"' in SCRIPT.read_text()
+
+
 @pytest.mark.parametrize("bad", ["0", "x", "-1"])
 def test_a_nonsense_slot_count_is_refused(slot_dir: Path, bad: str) -> None:
     r = _run(slot_dir, 1, "true", E2E_SLOTS=bad)

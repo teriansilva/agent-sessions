@@ -30,12 +30,19 @@
 # Environment:
 #   E2E_SLOTS         number of slots, host-wide (default 4 — one PR's full shard set; see web-ci.yml for the sizing)
 #   E2E_SLOT_DIR      slot directory (default /tmp/agent-sessions-e2e-slots)
-#   E2E_SLOT_WAIT_S   longest wait for a slot before failing closed (default 3600)
+#   E2E_SLOT_WAIT_S   longest wait for a slot before failing closed (default 7200 — 2 h; see below)
 #   E2E_SLOT_POLL_S   delay between rounds while every slot is busy (default 10)
 #   E2E_NICE          niceness the command runs at (default 10; 0 disables)
 #
 # Every caller must agree on E2E_SLOT_DIR and E2E_SLOTS for the cap to mean anything; the
 # workflows set neither, so they share the defaults.
+#
+# Why the wait is 2 h and not longer: the org runners kill a job 3 h after picking it up (runner
+# `timeout: 3h`, which a workflow's `timeout-minutes` can shorten but never extend). A shard runs
+# 30–50 min on a loaded host after ~5 min of setup, so a slot won by minute 120 still finishes
+# under that ceiling; a slot won later would start a run the runner kills mid-shard — burning a
+# slot for nothing, in exactly the storm this wait exists to survive. 3600 s was too short: with
+# 16–20 e2e/appmode jobs queued at once, PRs failed closed while the queue would have drained.
 
 set -uo pipefail
 
@@ -72,7 +79,7 @@ case "${E2E_NICE:-10}" in
     ;;
 esac
 dir="${E2E_SLOT_DIR:-/tmp/agent-sessions-e2e-slots}"
-wait_s="${E2E_SLOT_WAIT_S:-3600}"
+wait_s="${E2E_SLOT_WAIT_S:-7200}"
 poll_s="${E2E_SLOT_POLL_S:-10}"
 
 case "$slots" in
