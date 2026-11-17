@@ -24,6 +24,7 @@ ENGINES = {
     "codex-app-server": "codex-api",
     "claude-stream-json": "claude-api",
     "opencode-acp": "opencode-api",
+    "opencode2-acp": "opencode2-api",  # the same ACP journal shape (#2084)
     "copilot-acp": "copilot-api",
 }
 

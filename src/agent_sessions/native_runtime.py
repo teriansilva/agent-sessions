@@ -78,6 +78,7 @@ _FLOORS = {
     "codex-app-server": native_protocol.CODEX_MIN_VERSION,
     "claude-stream-json": native_protocol.CLAUDE_MIN_VERSION,
     "opencode-acp": native_protocol.OPENCODE_MIN_VERSION,
+    "opencode2-acp": native_protocol.OPENCODE2_MIN_VERSION,
     "copilot-acp": native_protocol.COPILOT_MIN_VERSION,
 }
 # The vendor CLI writes where ITS defaults point. A BattleLab store override that the vendor
@@ -91,9 +92,14 @@ _VENDOR_STORES = {
     # The console copilot manifest names no store path_env, so both always address ~/.copilot.
     "copilot-acp": (None, ".copilot"),
 }
+#: Adapters whose source runs in its OWN forced XDG tree (`forced_env`, #1986/#2084) instead of
+#: the vendor's defaults: its store is wherever that tree puts it (`isolation_env` refuses any
+#: other declaration, and any tree reaching a 1.x store), so it has no `_VENDOR_STORES` row, and
+#: every process the API path starts for it — `--version` included — gets the tree, last.
+_ISOLATED = frozenset({"opencode2-acp"})
 #: Adapters whose native history id is minted by the agent and bound by the worker from its
 #: creation response (Codex `thread/start`, ACP `session/new`); Claude's is ours.
-_ADOPTED = frozenset({"codex-app-server", "opencode-acp", "copilot-acp"})
+_ADOPTED = frozenset({"codex-app-server", "opencode-acp", "opencode2-acp", "copilot-acp"})
 _LEASES = "native-leases"
 _LEASE_TOKEN = "native-leases"  # noqa: S105 — a marker the installer must contain, not a secret
 _ERRORS = {
@@ -233,12 +239,16 @@ HOST = Host()
 _VERSIONS: dict[tuple, tuple[int, int, int] | None] = {}
 
 
-def native_version(binary: str) -> tuple[int, int, int] | None:
+def native_version(binary: str, env: dict[str, str] | None = None) -> tuple[int, int, int] | None:
+    """The CLI's `--version`, cached per binary identity. ``env``: the source's `forced_env`,
+    laid over the minimal environment LAST (opencode 2 writes a log line even on `--version`, so
+    it must run in its own tree: `docs/invariants/opencode2-isolation.md`)."""
     try:
         st = os.stat(binary)
     except OSError:
         return None
-    key = (binary, st.st_ino, st.st_size, st.st_mtime_ns)
+    forced = dict(env or {})
+    key = (binary, st.st_ino, st.st_size, st.st_mtime_ns, tuple(sorted(forced.items())))
     if key not in _VERSIONS:
         try:
             done = subprocess.run(  # noqa: S603 — admitted binary, literal argv
@@ -247,7 +257,11 @@ def native_version(binary: str) -> tuple[int, int, int] | None:
                 capture_output=True,
                 timeout=20,
                 stdin=subprocess.DEVNULL,
-                env={"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                env={
+                    "HOME": str(Path.home()),
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    **forced,
+                },
             )
             found = _VERSION.search(done.stdout or b"")
             _VERSIONS[key] = tuple(int(x) for x in found.groups()) if found else None
@@ -311,6 +325,23 @@ def _vendor_store_matches(adapter: str, source) -> bool:
         return False
 
 
+def source_environment(adapter: str, source) -> dict[str, str]:
+    """`forced_env(source)` for a process the API path starts, or a `NativeError` refusal.
+
+    Asked before every such process (version, discovery, the worker's child): a source whose
+    tree would reach a 1.x store refuses, and an isolated adapter's source that reports no tree
+    refuses too — it would otherwise run on its defaults, which are 1.x's database."""
+    from .plugins.provider import forced_env
+
+    try:
+        forced = forced_env(source)
+    except Exception as exc:  # noqa: BLE001 — EngineError: the isolation refusal, verbatim
+        raise NativeError(409, str(exc)) from None
+    if adapter in _ISOLATED and not forced:
+        raise NativeError(409, "this agent must run in its own isolated tree, and has none")
+    return forced
+
+
 def readiness(prov) -> tuple[bool, str | None]:
     """Live, local facts only; never a network probe and never an authorization grant."""
     adapter = prov.manifest.api.kind
@@ -325,11 +356,17 @@ def readiness(prov) -> tuple[bool, str | None]:
         binary = binding.source.entrypoint_path()
     except Exception as exc:  # noqa: BLE001 — EngineError/provenance: a refusal reason
         return False, str(exc)
-    version = native_version(binary)
+    # The source's isolated tree BEFORE its first process (#2084): an overlap with a 1.x store
+    # refuses here, and the version check below runs inside the tree.
+    try:
+        forced = source_environment(adapter, binding.source)
+    except NativeError as exc:
+        return False, exc.detail
+    version = native_version(binary, forced)
     if version is None or version < _FLOORS[adapter]:
         floor = ".".join(map(str, _FLOORS[adapter]))
         return False, f"{binding.source.engine_id} {floor} or later is required for native mode"
-    if not _vendor_store_matches(adapter, binding.source):
+    if adapter not in _ISOLATED and not _vendor_store_matches(adapter, binding.source):
         return False, "the agent's history store is overridden; native mode would write elsewhere"
     _python, release = interpreter()
     if release is not None and not _installer_honours_leases(release):
@@ -589,6 +626,8 @@ def _launch_generation(
     runtime = HOST.runtime_dir()
     adapter = record["adapter"]
     binary, selection = _entrypoint(binding.source)
+    # Before anything is written or spawned (#2084): the isolated tree, or the refusal.
+    forced = source_environment(adapter, binding.source)
     config = {
         "version": 1,
         "worker_id": worker.worker_id,
@@ -620,6 +659,9 @@ def _launch_generation(
         ),
         "idle_timeout": WORKER_IDLE_TIMEOUT,
     }
+    if forced:
+        # Applied by the worker LAST over its child's environment (`forced_environment`).
+        config["forced_env"] = forced
     # Started from a specialist (#1693 S4b): each generation is a new agent process, so it takes
     # its own slot — the same version, re-reserved — and its skill bundle here, once everything
     # above that can refuse the launch has passed. Released at once if nothing is spawned; after a

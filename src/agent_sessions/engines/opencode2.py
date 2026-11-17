@@ -36,6 +36,7 @@ from .. import metadata as _metadata
 from ..scanner import Session, is_ephemeral_cwd
 from . import base
 from .opencode import (
+    _API_AGENT_RE,
     _UNATTENDED_AGENT_RE,
     OPENCODE_CONFIG_CONTENT_ENV,
     _in_dir,
@@ -222,6 +223,26 @@ def _guarded_config_content(existing: str | None, agent: str) -> str:
     """
     if not isinstance(agent, str) or not _UNATTENDED_AGENT_RE.match(agent):
         raise ValueError("malformed unattended agent name")
+    return _agent_config(
+        existing,
+        agent,
+        UNATTENDED_PERMISSIONS,
+        "BattleLab unattended mission: reads go through, everything else asks",
+    )
+
+
+def _agent_config(
+    existing: str | None,
+    agent: str,
+    rules: list[dict[str, str]],
+    description: str,
+    *,
+    config_level: str = "ask",
+) -> str:
+    """One freshly named primary agent holding ``rules`` (in 2.x's ordered list shape), made the
+    ``default_agent``, with the config-level list replaced by one catch-all ``config_level`` rule
+    — the shape `_guarded_config_content` documents, shared by the unattended launch and the API
+    client (#2084)."""
     base_cfg: dict = {}
     if existing is not None and existing.strip():
         try:
@@ -240,14 +261,14 @@ def _guarded_config_content(existing: str | None, agent: str) -> str:
     agents = base_cfg.get("agents")
     agents = dict(agents) if isinstance(agents, dict) else {}
     agents[agent] = {
-        "description": "BattleLab unattended mission: reads go through, everything else asks",
+        "description": description,
         "mode": "primary",
-        "permissions": json.loads(json.dumps(UNATTENDED_PERMISSIONS)),
+        "permissions": json.loads(json.dumps(rules)),
     }
     return json.dumps(
         {
             **base_cfg,
-            "permissions": [{"action": "*", "resource": "*", "effect": "ask"}],
+            "permissions": [{"action": "*", "resource": "*", "effect": config_level}],
             "default_agent": agent,
             "agents": agents,
         }
@@ -274,6 +295,42 @@ UNATTENDED_PERMISSIONS: list[dict[str, str]] = [
     _rule("list", "*", "allow"),
     _rule("todowrite", "*", "allow"),
 ]
+
+
+#: The API client's guarded agent (#2084): 1.x's API decision (#1312, `API_GUARDED_PERMISSION`)
+#: in 2.x's list shape — EVERY tool call asks, reads included, and a subagent is refused (its
+#: child session's requests are not shown to the operator, so an ask there could never be
+#: answered). Measured on 2.2.7 over ACP under a permissive global AND project config, with the
+#: project pre-declaring the same agent name allow-all: real `shell` and `write` calls arrived as
+#: `session/request_permission`, waited, and a reject left no effect; a `session/load` by the next
+#: generation, pinned to ITS agent, asked again.
+API_GUARDED_PERMISSIONS: list[dict[str, str]] = [
+    _rule("*", "*", "ask"),
+    _rule("subagent", "*", "deny"),
+]
+
+
+def api_config_content(agent: str, *, bypass: bool = False) -> str:
+    """`OPENCODE_CONFIG_CONTENT` for an `opencode2-api` worker's child: BattleLab's own guarded
+    agent (guarded only until #2108's approval: a bypass request is refused), named per generation
+    (`opencode.mint_api_agent`), made the default and pinned by the worker after every
+    `session/new`/`session/load`. Built by the same helper as the unattended launch's agent.
+    The app's own `OPENCODE_CONFIG_CONTENT` is not merged in: the worker's environment is
+    sanitized, as for 1.x. No `server` block: 2.x's ACP client decides its listener itself
+    (loopback, random port, its own password)."""
+    if not isinstance(agent, str) or not _API_AGENT_RE.match(agent):
+        raise ValueError("malformed API agent name")
+    if bypass is not False:
+        # Guarded only (#2108): an allow-all agent is a new blanket grant that waits for the
+        # operator's own approval. `kinds.API_BYPASS_KINDS` already refuses it at create; this is
+        # the second fence, so no path can build one.
+        raise ValueError("opencode2-api runs guarded only; skip permission prompts is not enabled")
+    return _agent_config(
+        None,
+        agent,
+        API_GUARDED_PERMISSIONS,
+        "BattleLab API client: every tool call asks the operator; subagents are refused",
+    )
 
 
 class OpenCode2Provider:

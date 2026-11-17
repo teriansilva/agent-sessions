@@ -8,7 +8,11 @@ import re
 
 from agent_sessions.plugins import kinds
 
-PINNED_OFF = {"copilot-acp": "#2004", "codex-app-server": "#2005"}  # kind-data
+PINNED_OFF = {
+    "copilot-acp": "#2004",
+    "codex-app-server": "#2005",
+    "opencode2-acp": "#2084",
+}  # kind-data
 
 
 def test_pinned_kinds_are_off_with_a_reason_naming_their_issue():

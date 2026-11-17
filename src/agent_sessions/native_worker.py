@@ -132,6 +132,7 @@ _URGENT = frozenset(
 _TURN_KINDS = frozenset({"turn_started", "turn_completed", "text", "tool", "approval"})
 
 OPENCODE = "opencode-acp"
+OPENCODE2 = "opencode2-acp"
 COPILOT = "copilot-acp"
 PROBE_TIMEOUT = 30.0
 PROBE_LIMIT = 4 * 1024 * 1024
@@ -497,6 +498,37 @@ def _probe_sink(limit: int) -> int:
     return fd
 
 
+def forced_environment(config: dict) -> dict[str, str]:
+    """The forced XDG tree of an isolated source (#1986, #2084), or ``{}``.
+
+    Computed by the web process from `forced_env(source)` at generation launch — after the 1.x
+    overlap refusal, before any spawn — and passed explicitly in the config: exactly
+    ``XDG_{DATA,STATE,CACHE,CONFIG}_HOME``, absolute paths, nothing else. An `opencode2-acp`
+    generation without it is refused: a 2.x child must never run on its defaults, which are
+    1.x's database."""
+    from .engines.opencode2 import XDG_DIRS
+
+    value = config.get("forced_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid isolated environment")
+    if value and (
+        set(value) != set(XDG_DIRS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid isolated environment")
+    if config.get("adapter") == OPENCODE2 and not value:
+        raise WorkerError("opencode 2 has no isolated environment; refusing to run it")
+    return dict(value)
+
+
+#: Listener passwords a 2.x child must never be handed (#2084): its ACP client mints its own
+#: per process and overrides an inherited one anyway; a stray value is simply dropped.
+_LISTENER_PASSWORDS = ("OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD")
+
+
 def child_environment(
     config: dict,
     server_password: str | None = None,
@@ -540,8 +572,22 @@ def child_environment(
             )
         except ValueError as exc:
             raise WorkerError(str(exc)) from None
+    if config["adapter"] == OPENCODE2:
+        from .engines import opencode2
+
+        try:
+            env["OPENCODE_CONFIG_CONTENT"] = opencode2.api_config_content(
+                agent, bypass=config.get("bypass") is True
+            )
+        except ValueError as exc:
+            raise WorkerError(str(exc)) from None
+        for key in _LISTENER_PASSWORDS:
+            env.pop(key, None)
     if config["adapter"] == COPILOT:
         env["COPILOT_AUTO_UPDATE"] = "false"
+    # LAST, over everything above (`docs/invariants/opencode2-isolation.md`): an isolated
+    # source's forced XDG tree. Refused when an opencode 2 generation lacks one.
+    env.update(forced_environment(config))
     return env
 
 
@@ -577,6 +623,13 @@ class Worker:
                 opencode.mint_api_agent()
             )  # this generation's own immutable permission mode
             self.codec = native_protocol.OpencodeAcpCodec(self.native_id, agent=self.agent)
+        elif self.adapter == OPENCODE2:
+            from .engines import opencode
+
+            # The same per-generation name grammar as 1.x's (`battlelab-api-<16 hex>`), defined
+            # in 2.x's own shape by `engines.opencode2.api_config_content`.
+            self.agent = opencode.mint_api_agent()
+            self.codec = native_protocol.Opencode2AcpCodec(self.native_id, agent=self.agent)
         elif self.adapter == COPILOT:
             self.codec = native_protocol.CopilotAcpCodec(self.native_id)
         else:
@@ -685,6 +738,8 @@ class Worker:
             return native_protocol.CodexCodec.argv(binary)
         if self.adapter == OPENCODE:
             return native_protocol.OpencodeAcpCodec.argv(binary)
+        if self.adapter == OPENCODE2:
+            return native_protocol.Opencode2AcpCodec.argv(binary)
         if self.adapter == COPILOT:
             tools = tool_servers(self.config)
             return native_protocol.CopilotAcpCodec.argv(
@@ -2087,6 +2142,14 @@ class Worker:
             native_id = event.data["native_id"]
             await asyncio.to_thread(self.bind_created, request["id"], event)
             self.native_id = native_id
+        if isinstance(codec, native_protocol.Opencode2AcpCodec) and codec.offered_models:
+            # 2.x's model list is the one its own session offers (#2084): recorded beside the
+            # journal for `native_models`, never asked of another CLI process. Best effort.
+            from . import native_models
+
+            await asyncio.to_thread(
+                native_models.record_offered, self.journal_root, codec.offered_models
+            )
         await self.request(codec.pin_mode())
         if model is not None:
             await self.request(codec.set_model(model))
@@ -2139,6 +2202,7 @@ class Worker:
         action = {
             "codex-app-server": "thread/start",
             OPENCODE: "session/new",
+            OPENCODE2: "session/new",
             COPILOT: "session/new",
         }.get(self.adapter)
         native_id = event.data.get("native_id")

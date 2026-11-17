@@ -1169,7 +1169,10 @@ def test_activation_preview_reads_a_host_binary_only_where_readiness_does(recipe
         manifest=SimpleNamespace(id="fixture", runtime="pty", api=None),
         entrypoint_path=lambda: "/host/bin/fixture",
     )
-    monkeypatch.setattr(native_runtime, "native_version", lambda p: asked.append(p) or (2, 1, 318))
+    # `env`: the source's forced tree (#2084); this fixture source has none.
+    monkeypatch.setattr(
+        native_runtime, "native_version", lambda p, env=None: asked.append(p) or (2, 1, 318)
+    )
     by_id = {"fixture": host}
     monkeypatch.setattr(manager, "_live_roster", lambda: by_id)
     # Nothing sources it: no binary is run, the current version is unknown.

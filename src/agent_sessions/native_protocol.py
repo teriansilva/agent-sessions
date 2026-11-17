@@ -3843,6 +3843,10 @@ class OpencodeAcpCodec(_Codec):
     """
 
     ADAPTER = "opencode-acp"
+    #: The CLI floor the handshake's `agentInfo.version` must meet, and the refusal that names
+    #: it. Explicit per subclass (#2084): a 2.x connection never inherits 1.x's floor.
+    MIN_VERSION = OPENCODE_MIN_VERSION
+    FLOOR_REFUSAL = "opencode {} or later is required"
     runs_slash_commands = True
 
     def __init__(self, session_id: str | None = None, *, agent: str) -> None:
@@ -4142,6 +4146,14 @@ class OpencodeAcpCodec(_Codec):
     def _after_turn(self) -> None:
         self._tool_calls.clear()
 
+    def _unpresentable(self, tool_call: dict) -> str | None:
+        """Why this permission request cannot be approved as presented (`_acp_unpresentable`)."""
+        return _acp_unpresentable(tool_call)
+
+    def _offered(self, options: Any) -> None:
+        """The models a `session/new`/`session/load` reply offers; 1.x lists them by CLI."""
+        return None
+
     def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
         return _acp_frame_lost(self, head, tail)
 
@@ -4198,10 +4210,8 @@ class OpencodeAcpCodec(_Codec):
             refusal = None
             if result.get("protocolVersion") != ACP_PROTOCOL_VERSION:
                 refusal = "the agent speaks another ACP protocol version"
-            elif version is None or version < OPENCODE_MIN_VERSION:
-                refusal = (
-                    f"opencode {'.'.join(map(str, OPENCODE_MIN_VERSION))} or later is required"
-                )
+            elif version is None or version < self.MIN_VERSION:
+                refusal = self.FLOOR_REFUSAL.format(".".join(map(str, self.MIN_VERSION)))
             elif not isinstance(capabilities, dict) or capabilities.get("loadSession") is not True:
                 refusal = "the agent cannot load an existing session"
             if refusal is not None:
@@ -4218,6 +4228,7 @@ class OpencodeAcpCodec(_Codec):
                 raise ProtocolError("native session identity changed")
             self.native_id = native_id
             config = _acp_config(result.get("configOptions", []))
+            self._offered(result.get("configOptions"))
             return [
                 _event(
                     "session",
@@ -4346,7 +4357,7 @@ class OpencodeAcpCodec(_Codec):
             effective = {**tool_call, "rawInput": context["rawInput"]}
         # Approve needs the consequential action itself in what is presented (Hermes on #1336):
         # an allow_once option alone would approve a blind request.
-        reason = _acp_unpresentable(effective)
+        reason = self._unpresentable(effective)
         if reason is None and "allow_once" not in once:
             reason = "the agent offered no single one-shot approval"
         if reason is not None:
@@ -4578,6 +4589,102 @@ class OpencodeAcpCodec(_Codec):
         if not isinstance(update, dict):
             raise ProtocolError("native session update must be an object")
         return self._update(update)
+
+
+# --- OpenCode 2.x: the same Agent Client Protocol, its own process (#2084) -----------------------
+#
+# Checked against opencode 2.2.7 (`opencode acp`, ACP protocol version 1), measured in a forced XDG
+# tree (`docs/invariants/opencode2-isolation.md`). The wire — framing, updates, permission
+# requests, `configOptions` — is 1.x's, so the parsing is shared by subclassing. What is NOT
+# shared is stated here, explicitly:
+#
+# * argv is exactly `[<admitted binary>, "acp"]`: 2.x takes none of 1.x's listener flags, and its
+#   ACP client always starts ONE private `serve --stdio --port 0` on 127.0.0.1 (never the shared
+#   `serve --service`), whatever a global or project config says (measured with a hostile one);
+# * the private listener is authenticated BY 2.x ITSELF: its ACP client mints a 256-bit password
+#   per process and hands it only to that child, which strips it from its environment before any
+#   MCP server or tool starts (measured: unauthenticated and wrong-password API requests 401, MCP
+#   servers from the global config, the project config and ACP `mcpServers` never see it). So
+#   BattleLab mints none — an inherited `OPENCODE_PASSWORD` is overridden by the client anyway —
+#   and runs no `debug config` probe (a subcommand the 2.x invariant forbids);
+# * the floor is 2.2.7 (`OPENCODE2_MIN_VERSION`), from `--version` (under the forced tree) for
+#   readiness and from `agentInfo.version` in the handshake;
+# * a write of a NEW file arrives as a `diff` block whose `oldText` is null (2.2.7), not "".
+OPENCODE2_MIN_VERSION = (2, 2, 7)
+
+
+def _acp2_edit_context(tool_call: dict) -> bool:
+    """1.x's edit presentation, plus 2.2.7's new-file `diff` (``oldText: null``): the file and
+    its complete new text are both present, so the request shows everything it would do."""
+    if _acp_edit_context(tool_call):
+        return True
+    content = tool_call.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict)
+        and block.get("type") == "diff"
+        and _nonempty(block.get("path"))
+        and block.get("oldText") is None
+        and "oldText" in block
+        and isinstance(block.get("newText"), str)
+        for block in content
+    )
+
+
+class Opencode2AcpCodec(OpencodeAcpCodec):
+    """One `opencode acp` (2.x) connection. Framing, update parsing, the mode pin and the
+    permission presentation are `OpencodeAcpCodec`'s; argv, floor and the probe are 2.x's own."""
+
+    ADAPTER = "opencode2-acp"
+    MIN_VERSION = OPENCODE2_MIN_VERSION
+    FLOOR_REFUSAL = "opencode 2 {} or later is required"
+
+    @staticmethod
+    def argv(binary: str) -> list[str]:
+        # No listener flags: 2.2.7's `acp` takes none, and its private server binds 127.0.0.1 on
+        # a random port regardless of `server.*` in any config (measured, #2084).
+        return [_path(binary), "acp"]
+
+    #: Never a configuration probe: `debug …` spawns 2.x's shared background service
+    #: (`opencode2-isolation.md`), and 2.x needs none to keep its listener password from MCP
+    #: servers. Not inherited from 1.x either: there is no argv to call.
+    config_probe_argv = None
+
+    def __init__(self, session_id: str | None = None, *, agent: str) -> None:
+        super().__init__(session_id, agent=agent)
+        #: The `model` select of the latest `session/new`/`session/load` reply, as
+        #: ``[{"id", "label"}]`` (bounded; ids of the `_MODEL` grammar only), or None when none
+        #: was offered. The worker records it for `native_models`: the list comes from the
+        #: session itself, never from another CLI process (#2084).
+        self.offered_models: list[dict[str, str]] | None = None
+
+    def _offered(self, options: Any) -> None:
+        if not isinstance(options, list):
+            return
+        for option in options[:64]:
+            if (
+                not isinstance(option, dict)
+                or option.get("id") != "model"
+                or option.get("type") != "select"
+            ):
+                continue
+            out: list[dict[str, str]] = []
+            values = option.get("options")
+            for value in values[:200] if isinstance(values, list) else ():
+                mid = value.get("value") if isinstance(value, dict) else None
+                if not isinstance(mid, str) or not _MODEL.fullmatch(mid):
+                    continue
+                if any(m["id"] == mid for m in out):
+                    continue
+                name = value.get("name")
+                label = _text(name.strip(), limit=200) if isinstance(name, str) else ""
+                out.append({"id": mid, "label": label or mid})
+            self.offered_models = out
+            return
+
+    def _unpresentable(self, tool_call: dict) -> str | None:
+        if tool_call.get("kind") == "edit":
+            return None if _acp2_edit_context(tool_call) else _ACP_APPROVABLE["edit"][1]
+        return _acp_unpresentable(tool_call)
 
 
 # --- GitHub Copilot CLI: the Agent Client Protocol over stdio (#1565) ---------------------------

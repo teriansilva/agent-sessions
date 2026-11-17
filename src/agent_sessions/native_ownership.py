@@ -39,7 +39,7 @@ MAX_REQUEST_BYTES = 16 * 1024
 MAX_RUNTIME_ENTRIES = 50_000
 _APP_KEY = re.compile(r"[a-z][a-z0-9-]{1,23}:[0-9a-f-]{36}")
 _SOURCE_LAYOUTS = frozenset(value[0] for value in kinds.API_SOURCE_KINDS.values())
-_DATABASE_LAYOUTS = frozenset({"opencode-sqlite"})
+_DATABASE_LAYOUTS = frozenset({"opencode-sqlite", "opencode2-sqlite"})
 _UNAVAILABLE = "native history ownership is unavailable; console access was refused"
 
 

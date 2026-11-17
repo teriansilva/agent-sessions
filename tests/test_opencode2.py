@@ -190,9 +190,6 @@ SPAWNS_ELSEWHERE = {
     "plugins/probes.py": "spawns through `process.spawn`, which applies `forced_env`",
     "engines/opencode.py": "1.x's unattended argv; spawned by `headless_dispatch`",
     "engines/registry.py": "resolves the binary for display (`launchable_bin`), spawns nothing",
-    "native_models.py": "API agents' model lists only (runtime `api`); opencode2 has none",
-    "native_runtime.py": "API agents' workers only (runtime `api`); opencode2 has none",
-    "plugins/manager.py": "an API source's version only (runtime `api`); opencode2 has none",
     "ptybridge.py": "wraps an agent argv in dtach (its own `launch_argv`); spawns nothing",
 }
 APPLIES = {
@@ -201,7 +198,16 @@ APPLIES = {
     "headless_dispatch.py",
     "agent_account_store.py",  # #1820: an account's status command
     "engines/opencode2.py",  # #2083: the unattended preflight's probe (`engine_auth.run_probe`)
+    # #2084: the API path. Readiness `--version` and the worker's child (config `forced_env`,
+    # applied LAST by `native_worker.forced_environment`); a model probe refuses an isolated
+    # source unless it spawns nothing; the activation preview's `--version`.
+    "native_runtime.py",
+    "native_models.py",
+    "plugins/manager.py",
 }
+#: `forced_env` itself, or the API path's one wrapper of it (`native_runtime.source_environment`,
+#: which also refuses an isolated adapter whose source reports no tree).
+APPLY_NAMES = {"forced_env", "source_environment"}
 RESOLVERS = {"entrypoint_path", "launch_argv", "new_launch_argv", "unattended_launch"}
 
 
@@ -217,7 +223,7 @@ def _names(tree) -> set[str]:
 
 def test_every_spawn_seam_applies_the_forced_environment():
     for rel in APPLIES:
-        assert "forced_env" in _names(ast.parse((SRC / rel).read_text())), rel
+        assert APPLY_NAMES & _names(ast.parse((SRC / rel).read_text())), rel
     unexplained = []
     for f in sorted(SRC.rglob("*.py")):
         rel = f.relative_to(SRC).as_posix()

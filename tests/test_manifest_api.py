@@ -139,6 +139,7 @@ def test_every_existing_manifest_still_parses():
             "codex-api",
             "claude-api",
             "opencode-api",
+            "opencode2-api",
             "copilot-api",
         }
 

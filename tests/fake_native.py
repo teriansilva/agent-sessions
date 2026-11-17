@@ -1360,6 +1360,13 @@ def _control(name, default=None):
         return default
 
 
+def _oc_version():
+    """The version this opencode fake reports: a binary named `opencode2*` is OpenCode 2 (#2084,
+    floor 2.2.7), anything else 1.x; a `version` switch overrides either."""
+    two = os.path.basename(sys.argv[0]).startswith("opencode2")
+    return _control("version", "2.2.7" if two else "1.18.35")
+
+
 def _control_copilot(name, default=None):
     """Test switches for the copilot fake (#1565), under its HOME like the opencode one's."""
     try:
@@ -1431,10 +1438,15 @@ def _start_mcp(config):
 
 def _permission(config, mode, permission):
     """opencode's evaluation, reduced: defaults (allow everything), then the config-level block,
-    then the agent's own block; the LAST rule naming the permission (or `*`) decides."""
+    then the agent's own block; the LAST rule naming the permission (or `*`) decides. 2.x's
+    ordered `permissions` lists (`{action, resource, effect}`, #2084) are read the same way, for
+    a resource of `*`."""
     agent = config.get("agent", {}).get(mode, {})
     rules = [("*", "allow"), *config.get("permission", {}).items()]
     rules += list(agent.get("permission", {}).items())
+    agent2 = config.get("agents", {}).get(mode, {})
+    for block in (config.get("permissions", []), agent2.get("permissions", [])):
+        rules += [(r["action"], r["effect"]) for r in block if r.get("resource") == "*"]
     action = "allow"
     for key, value in rules:
         if key in ("*", permission):
@@ -1443,7 +1455,7 @@ def _permission(config, mode, permission):
 
 
 def _modes(config):
-    return ["build", "plan", "yolo", *config.get("agent", {})]
+    return ["build", "plan", "yolo", *config.get("agent", {}), *config.get("agents", {})]
 
 
 #: Models with reasoning variants (#1407): as on 1.18.35, ACP offers an `effort` option
@@ -1555,6 +1567,8 @@ def opencode():
         "password": os.environ.get("OPENCODE_SERVER_PASSWORD"),
         "config": os.environ.get("OPENCODE_CONFIG_CONTENT"),
         "keys": sorted(os.environ),
+        # The forced XDG tree an OpenCode 2 child must run in (#2084).
+        "xdg": {k: os.environ.get(k) for k in sorted(os.environ) if k.startswith("XDG_")},
     }
     stream = frames()
     for frame in stream:
@@ -1572,7 +1586,7 @@ def opencode():
                     },
                     "agentInfo": {
                         "name": "OpenCode",
-                        "version": _control("version", "1.18.35"),
+                        "version": _oc_version(),
                     },
                 },
             )
@@ -2109,7 +2123,7 @@ if __name__ == "__main__":
         print(
             "codex-cli 0.160.0"
             if name.startswith("codex")
-            else _control("version", "1.18.35")
+            else _oc_version()
             if name.startswith("opencode")
             else _control_copilot("version", "1.0.68")
             if name.startswith("copilot")

@@ -269,6 +269,10 @@ def derive(adapter: str, kind: str | None, payload, cwd: str | None) -> dict:
             risk, choices = _claude(payload, cwd)
         elif adapter == "opencode-acp":
             risk, choices = _opencode(payload, cwd)
+        elif adapter == "opencode2-acp":
+            # No standing grant for opencode 2 (#2084): what 2.2.7's `always` covers is not yet
+            # measured, so only the one-shot choices are offered — strictly the safer side.
+            return {"risk": _opencode(payload, cwd)[0], "always": []}
         elif adapter == "copilot-acp":
             # copilot never offers `allow_always` to BattleLab (#1565): no grant to derive, by
             # decision — not by omission from the unknown-adapter fallthrough.

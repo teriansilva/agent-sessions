@@ -155,6 +155,7 @@ ORDER = [
     "claude-api",
     "opencode",
     "opencode2",
+    "opencode2-api",
     "opencode-api",
     "codex",
     "codex-api",
@@ -172,7 +173,8 @@ ORDER = [
 SEVEN = [
     e
     for e in ORDER
-    if e not in ("apichat", "codex-api", "claude-api", "opencode-api", "copilot-api")
+    if e
+    not in ("apichat", "codex-api", "claude-api", "opencode-api", "opencode2-api", "copilot-api")
 ]
 
 

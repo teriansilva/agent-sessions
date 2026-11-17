@@ -1206,12 +1206,18 @@ def activation_preview(plugin_id: str, generation_id: str) -> dict:
     live = roster.get(plugin_id)
     if row.get("enabled") and row.get("active") in (row.get("generations") or {}):
         current = generation_version(row["generations"][row["active"]])
-    elif live is not None and any(
-        getattr(getattr(p.manifest, "api", None), "source", None) == plugin_id
-        for p in roster.values()
+    elif live is not None and (
+        clients := [
+            p.manifest.api.kind
+            for p in roster.values()
+            if getattr(getattr(p.manifest, "api", None), "source", None) == plugin_id
+        ]
     ):
         try:
-            found = native_runtime.native_version(live.entrypoint_path())
+            # In the source's own isolated tree, as readiness runs it (#2084): an overlap with
+            # a 1.x store refuses before `--version` runs, and the version stays unknown.
+            forced = native_runtime.source_environment(clients[0], live)
+            found = native_runtime.native_version(live.entrypoint_path(), forced)
         except Exception:  # noqa: BLE001 — no readable binary: the current version is unknown
             found = None
         current = ".".join(map(str, found)) if found else None

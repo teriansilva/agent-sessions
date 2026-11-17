@@ -49,6 +49,9 @@ API_SOURCE_KINDS = {
     # opencode's Agent Client Protocol over stdio (`opencode acp`, #1312). Its histories live in
     # the operator's shared SQLite store, which stays read-only to BattleLab itself.
     "opencode-acp": ("opencode-sqlite", "opencode-sqlite"),
+    # OpenCode 2.x over the same protocol (`opencode acp`, #2084): its histories live in its OWN
+    # database under the forced XDG tree (`docs/invariants/opencode2-isolation.md`), read-only.
+    "opencode2-acp": ("opencode2-sqlite", "opencode2-sqlite"),
     # GitHub Copilot CLI's ACP server (`copilot --acp --no-auto-update`, #1565). Its histories
     # are per-session directories under `~/.copilot/session-state/`, shared with the console CLI.
     "copilot-acp": ("copilot-sessions", "copilot-events"),
@@ -57,6 +60,8 @@ API_KINDS = frozenset(API_SOURCE_KINDS)
 #: API kinds whose adapter maps "Skip permission prompts" onto its own protocol (#1339). Any
 #: other kind refuses the field at create rather than launching under a mode it cannot honour.
 #: copilot-acp: the session's `allow_all` config option (#1565).
+#: opencode2-acp is NOT here (#2108): its bypass would be a new allow-all grant, which waits for
+#: the operator's own approval; until then `opencode2-api` is guarded only and a bypass is refused.
 API_BYPASS_KINDS = frozenset(
     {"codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"}
 )
@@ -68,6 +73,7 @@ API_IMAGE_INPUT = {
     # Not yet: ACP image blocks must be gated by the agent's `promptCapabilities.image` (#1332).
     "opencode-acp": False,
     "copilot-acp": False,  # same ACP image gate as opencode-acp (#1565)
+    "opencode2-acp": False,  # same ACP image gate (2.2.7 advertises images; not wired, #1332)
 }
 #: Which API kinds may hold a MISSION role (#1273 P3, #1898): a fact about how BattleLab supervises
 #: each protocol, never a value a manifest chooses. A capability bit only, never readiness: callers
@@ -81,6 +87,7 @@ API_MISSION_READY = {
     "claude-stream-json": True,
     "opencode-acp": True,
     "copilot-acp": False,
+    "opencode2-acp": False,
 }
 #: Why each kind whose bit is false stays false, naming the issue that lifts it (#1903). A kind
 #: absent from here is true; a test pins both directions, so flipping a bit means touching this
@@ -91,6 +98,9 @@ API_MISSION_REFUSAL = {
     # Operator, #1903 comment 125177: no mission role until the applied patch is bound to the
     # shown patch.
     "codex-app-server": "applied patch is not yet bound to the shown patch (#2005)",
+    # #2084: guarded/isolation parity is proved by its gated e2e; a mission role needs its own
+    # end-to-end proof, as #1903 gave 1.x.
+    "opencode2-acp": "not yet proved end to end for missions (follow-up of #2084, as #1903)",
 }
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -312,6 +322,9 @@ API_MCP_KINDS = {
     "claude-stream-json": ("claude-mcp-config-flag",),
     "codex-app-server": ("codex-config-override",),
     "opencode-acp": ("opencode-config-content",),
+    # 2.x: BattleLab's own servers ride in ACP `mcpServers`, exactly as 1.x's; the kind names the
+    # source agent's shape (#2084).
+    "opencode2-acp": ("opencode2-config-content",),
     "copilot-acp": ("copilot-additional-mcp-config",),
 }
 
@@ -542,6 +555,7 @@ RESERVED_IDS = frozenset(
         "copilot",
         "copilot-api",
         "opencode2",
+        "opencode2-api",
     }
 )
 

@@ -263,6 +263,7 @@ _ADAPTERS = MappingProxyType(
         ("api", "codex-app-server"): _NativeAdapter(),
         ("api", "claude-stream-json"): _NativeAdapter(),
         ("api", "opencode-acp"): _NativeAdapter(),
+        ("api", "opencode2-acp"): _NativeAdapter(),
         ("api", "copilot-acp"): _NativeAdapter(),
     }
 )

@@ -353,7 +353,10 @@ def test_an_api_adapter_without_mcp_or_a_bad_bundle_refuses_the_spawn(real_bundl
 
 
 #: A protocol-valid native id per adapter (claude and codex take UUIDs, opencode `ses_…`).
-_NATIVE = {"opencode-acp": "ses_0123456789abcdefABCDEF0123"}
+_NATIVE = {
+    "opencode-acp": "ses_0123456789abcdefABCDEF0123",
+    "opencode2-acp": "ses_0123456789abcdefABCDEF0123",  # #2084: the same `ses_` shape
+}
 
 
 def _worker(adapter: str, bundle: str, tmp_path):

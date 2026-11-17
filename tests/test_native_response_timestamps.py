@@ -10,7 +10,14 @@ from agent_sessions import native_runtime, structured_runtime
 from test_native_journal import event, request
 
 conversation = journal_tests.conversation
-ADAPTERS = ["codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"]
+# Every native adapter journals turns the same way; opencode2-acp is the 2.x ACP client (#2084).
+ADAPTERS = [
+    "codex-app-server",
+    "claude-stream-json",
+    "opencode-acp",
+    "opencode2-acp",
+    "copilot-acp",
+]
 FIRST_TEXT = 1_791_790_242.125
 
 

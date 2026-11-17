@@ -39,6 +39,7 @@ directory), shown with the binary's name instead of its resolved path.
 | **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
 | **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
 | **OpenCode 2** (`opencode2`) | `opencode2` · `AGENT_SESSIONS_OPENCODE2_BIN` | `~/.local/share/agent-sessions/agents/opencode2` · `AGENT_SESSIONS_OPENCODE2_DIR` | `opencode2 --standalone <dir> --session <id>` | `opencode2 --standalone <dir>`, then adopt the id it mints | `--auto` |
+| **OpenCode 2 — API** (`opencode2-api`) | OpenCode 2's | `~/.local/share/agent-sessions/native/opencode2-api` · `AGENT_SESSIONS_OPENCODE2_API_DIR` | contained worker — runtime `api`, protocol `opencode2-acp` | new conversation | — |
 | **opencode — API** (`opencode-api`) | opencode's | `~/.local/share/agent-sessions/native/opencode-api` · `AGENT_SESSIONS_OPENCODE_API_DIR` | contained worker — runtime `api`, protocol `opencode-acp` | new conversation | — |
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
 | **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
@@ -64,6 +65,7 @@ and the scroll-up transcript, so pointing one at a different location moves both
 | `AGENT_SESSIONS_OPENCODE_LOG` | opencode | the store's `log` (`~/.local/share/opencode/log/opencode.log`) |
 | `AGENT_SESSIONS_OPENCODE2_BIN` | OpenCode 2 | the binary |
 | `AGENT_SESSIONS_OPENCODE2_DIR` | OpenCode 2 | the store root (`~/.local/share/agent-sessions/agents/opencode2`) |
+| `AGENT_SESSIONS_OPENCODE2_API_DIR` | OpenCode 2 — API | the store root (`~/.local/share/agent-sessions/native/opencode2-api`) |
 | `AGENT_SESSIONS_OPENCODE_API_DIR` | opencode — API | the store root (`~/.local/share/agent-sessions/native/opencode-api`) |
 | `AGENT_SESSIONS_CODEX_BIN` | Codex | the binary |
 | `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | Codex | the store root (`~/.codex/sessions`) |
@@ -135,6 +137,7 @@ added under **Settings → Agents → *engine***, for a model released after thi
 | **Claude — API** (`claude-api`) | — | — | — |
 | **opencode** (`opencode`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
 | **OpenCode 2** (`opencode2`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
+| **OpenCode 2 — API** (`opencode2-api`) | — | — | — |
 | **opencode — API** (`opencode-api`) | — | — | — |
 | **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
 | **Codex — API** (`codex-api`) | — | — | — |
@@ -188,6 +191,15 @@ allow" is never offered). It needs opencode 1.18.35 or later; your console openc
 and a conversation started here does not show up in the console's session list (nor can the
 console resume it). Interrupt stops the current turn; Stop ends the worker and reports whether it is
 confirmed gone. Closing the tab never cancels a turn: the view picks up where it left off.
+
+**OpenCode 2 — API** (`opencode2-api`) does the same for OpenCode 2 (2.2.7 or later), over its own
+`opencode acp`. It runs, like the OpenCode 2 console agent, entirely inside that agent's own
+folder (`~/.local/share/agent-sessions/agents/opencode2`), never in opencode 1.x's data, and it is
+refused before anything starts if that folder would reach 1.x's. Its agent asks before every tool
+call too (subagents are refused); *Approve always* is not offered, and **Skip permission prompts**
+applies only when you choose it. Its model list is the one its own session offers: until a first
+OpenCode 2 — API conversation has started, the form offers `default` only. Pictures and missions
+are not available for it yet.
 
 A client that cannot start is listed with the reason — the CLI is missing or older than the
 protocol needs, there is no systemd user session, or its console agent is disabled. If the

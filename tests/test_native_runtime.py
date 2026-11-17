@@ -52,12 +52,16 @@ ENGINES = {
     "claude": "claude-api",
     "opencode": "opencode-api",
     "copilot": "copilot-api",
+    # OpenCode 2 (#2084): the same fake, named `opencode2` (it reports 2.2.7), in its own forced
+    # XDG tree under this test's HOME.
+    "opencode2": "opencode2-api",
 }
 KINDS = {
     "codex": "codex-app-server",
     "claude": "claude-stream-json",
     "opencode": "opencode-acp",
     "copilot": "copilot-acp",
+    "opencode2": "opencode2-acp",
 }
 
 
@@ -161,6 +165,8 @@ def host(tmp_home, tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", str(bindir / "claude"))
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", str(bindir / "opencode"))
     monkeypatch.setenv("AGENT_SESSIONS_COPILOT_BIN", str(bindir / "copilot"))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE2_BIN", str(bindir / "opencode2"))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE2_DIR", str(tmp_path / "opencode2-root"))
     monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_PROJECTS_DIR", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))

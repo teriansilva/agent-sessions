@@ -9,6 +9,10 @@ the one that CLI reports through its own protocol:
   response (the list Claude Code's own model picker shows).
 * ``opencode-acp`` — ``opencode models`` (``provider/model`` per line), the ids its ACP
   ``session/new`` offers as the ``model`` config option; run under the store's shared admission.
+* ``opencode2-acp`` — the ``model`` config option the client's own ``session/new`` /
+  ``session/load`` returned (#2084), recorded by its worker beside the journal
+  (`record_offered`). No CLI process is spawned for it: until a first session has reported its
+  list, the honest answer is "no list" and callers offer ``default``.
 * ``copilot-acp`` — the ACP server's ``configOptions`` of a probe ``session/new`` (#1565): the
   ``model`` select's options, with ``reasoning_effort``'s as the levels. 1.0.68 offers no
   ``model`` option at all, so the honest answer there is "no list". The probe session the CLI
@@ -41,6 +45,7 @@ only; nothing is substituted (`model_choice.select_api`).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -497,8 +502,85 @@ def _discover_copilot(binary: str, *, source) -> list[dict]:
 
 _discover_copilot.needs_source = True  # type: ignore[attr-defined]
 
+#: Where an `opencode2-acp` worker records the models its session offered (#2084), in the
+#: client's own store root (BattleLab's journal directory, never the agent's). Not a `.jsonl`, so
+#: the store's session listing never sees it.
+OFFERED_FILE = "offered-models.json"
+_OFFERED_MAX = 256 * 1024
+
+
+def record_offered(root: str | os.PathLike, offered: list[dict]) -> None:
+    """Write ``offered`` (``[{"id", "label"}]``, as `Opencode2AcpCodec.offered_models`) to the
+    client's store root, atomically and 0600. Best effort: a failure costs the list, never the
+    session. Only entries `_model` admits are kept."""
+    rows = []
+    for item in offered[:MAX_MODELS] if isinstance(offered, list) else ():
+        if not isinstance(item, dict):
+            continue
+        m = _model(
+            item.get("id"), label=item.get("label"), description=None, efforts=[], is_default=False
+        )
+        if m is not None:
+            rows.append({"id": m["id"], "label": m["label"]})
+    data = json.dumps({"format": 1, "models": rows}).encode()
+    if len(data) > _OFFERED_MAX:
+        return
+    target = Path(root) / OFFERED_FILE
+    tmp = target.with_name(f".{OFFERED_FILE}.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        os.replace(tmp, target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+def _discover_offered(binary: str, *, source, client) -> list[dict]:
+    """opencode 2's list as its own last session offered it (`record_offered`); spawns nothing."""
+    root = client.store_root() if client is not None else None
+    if root is None:
+        raise ProbeError("this client has no conversation store")
+    try:
+        fd = os.open(Path(root) / OFFERED_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise ProbeError(
+            "OpenCode 2 lists its models in a session; start one to see them"
+        ) from None
+    try:
+        raw = os.read(fd, _OFFERED_MAX + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > _OFFERED_MAX:
+        raise ProbeError("the agent's answer was too large")
+    doc = json.loads(raw)
+    rows = doc.get("models") if isinstance(doc, dict) and doc.get("format") == 1 else None
+    if not isinstance(rows, list):
+        raise ProbeError("the agent's answer was not understood")
+    out = []
+    for item in rows[:MAX_MODELS]:
+        if isinstance(item, dict):
+            m = _model(
+                item.get("id"),
+                label=item.get("label"),
+                description=None,
+                efforts=[],
+                is_default=False,
+            )
+            if m is not None:
+                out.append(m)
+    return out
+
+
+_discover_offered.needs_client = True  # type: ignore[attr-defined]
+_discover_offered.spawns_nothing = True  # type: ignore[attr-defined]
+
 _DISCOVER = {
     "opencode-acp": _opencode,
+    "opencode2-acp": _discover_offered,
     "codex-app-server": _codex,
     "claude-stream-json": _claude,
     "copilot-acp": _discover_copilot,
@@ -525,6 +607,7 @@ class _Target:
     discover: Callable
     binary: str
     source: Any
+    client: Any = None
 
 
 _CACHE: dict[tuple, _Entry] = {}
@@ -548,14 +631,41 @@ def _target(prov) -> _Target | ModelList:
     except Exception:  # noqa: BLE001 — a missing/unadmitted binary is a reason, not a crash
         return ModelList("unavailable", reason="the agent's CLI is not available")
     key = (kind, binary, st.st_ino, st.st_size, st.st_mtime_ns)
-    return _Target(key, discover, binary, binding.source)
+    if getattr(discover, "needs_client", False):
+        # A list read from the CLIENT's own store (opencode2-acp: `record_offered`) is that
+        # client's, not the executable's (#2095 review): two clients sharing one binary must never
+        # serve each other's list from the cache, the single-flight lock or the refresher.
+        try:
+            root = prov.store_root()
+        except Exception:  # noqa: BLE001 — no store: discovery itself reports it
+            root = None
+        key += (os.path.realpath(root) if root is not None else None,)
+    return _Target(key, discover, binary, binding.source, prov)
 
 
 def _probe(t: _Target) -> ModelList:
-    """Ask the CLI once. The outcome — a list or why there is none — stamped with `_clock`."""
+    """Ask the CLI once. The outcome — a list or why there is none — stamped with `_clock`.
+
+    An isolated source (`forced_env`, opencode 2: #1986, #2084) is asked FIRST, before anything
+    can run: a tree that would reach a 1.x store refuses here, and only a discovery that starts
+    no process (`spawns_nothing`) may serve such a source — the CLI probes below build their own
+    environments and would run it on its defaults."""
+    from .plugins.provider import forced_env
+
+    try:
+        if forced_env(t.source) and not getattr(t.discover, "spawns_nothing", False):
+            return ModelList(
+                "unavailable",
+                reason="this agent's models cannot be listed outside its isolated tree",
+                fetched_at=_clock(),
+            )
+    except Exception as exc:  # noqa: BLE001 — EngineError: the isolation refusal, as a reason
+        return ModelList("unavailable", reason=str(exc)[:_TEXT_MAX], fetched_at=_clock())
     try:
         found = (
-            t.discover(t.binary, source=t.source)
+            t.discover(t.binary, source=t.source, client=t.client)
+            if getattr(t.discover, "needs_client", False)
+            else t.discover(t.binary, source=t.source)
             if getattr(t.discover, "needs_source", False)
             else t.discover(t.binary)
         )[:MAX_MODELS]
