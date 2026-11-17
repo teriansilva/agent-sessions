@@ -37,6 +37,8 @@ GATED = {
     "propose_secret",
     "propose_session",
     "propose_session_change",
+    # #2102: the screen moves only once the Commander has finished speaking.
+    "show",
 }
 
 _VOLATILE = (

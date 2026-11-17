@@ -12,6 +12,9 @@ against this text.
   a tap, plugin installs, outsiders driving agents, consent. A note like `off only` means
   narrowing is in that phase and widening is never.
 - `device` — browser-local state.
+- `screen` — what ONE browser shows (#2102): HQ's `show` tool asks the asking device to open a
+  session, a mission, an artifact or a section, or to run a map command. No route is called and
+  no platform state changes; the device's own outcome is never reported back.
 - `n/a` — no operator meaning: diagnostics, HQ itself, the public visitor surface, uploads.
 - `prefs` / `nested` — see the prefs map.
 
@@ -22,7 +25,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 
 ## The ledger
 
-**Codes.** `have` = HQ can do it today. `#1554` / `#1443` / `#1786` = owned there. `P1`–`P7` = this epic's phases. `R` = read tool, `W` = confirmable action. `device` = browser-local state, not platform state (HQ can't reach this browser's storage; it can offer an **Open** link instead). `never` = recorded exclusion (reasons in the next section). `n/a` = no operator meaning.
+**Codes.** `have` = HQ can do it today. `#1554` / `#1443` / `#1786` = owned there. `P1`–`P7` = this epic's phases. `R` = read tool, `W` = confirmable action. `device` = browser-local state, not platform state (HQ can't reach this browser's storage; it can offer an **Open** link instead). `screen` = what the asking browser shows, moved by HQ's `show` (#2102). `never` = recorded exclusion (reasons in the next section). `n/a` = no operator meaning.
 
 #### Sessions (sidebar, row menu, pane)
 | Capability | Route(s) | HQ |
@@ -56,7 +59,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Chat-runtime session: send / retry | POST /api/chat/{sid}/messages, …/retry | P7 W |
 | Chat-runtime: approve or reject a proposed file edit | POST /api/chat/…/proposals/{p}/decide | P7 W (diff on the card) |
 | Take over a session from another tab; repaint; scroll; copy; text size −/+ | WS / client | device |
-| Open in map / full screen, minimise, arrange, window cap, cluster layout, group-by | client | device (HQ answers carry Open / Open in map links) |
+| Open in map / full screen, focus, minimise, arrange, close a window, close all | client | have (`show`, `screen`: a closed directive to the asking device only, applied once; #2102) |
+| Window cap, cluster layout, group-by | client | device (HQ answers carry Open / Open in map links) |
 | Compose box state, sent-message history, dictation, always-send-now | localStorage | device |
 
 #### New session and projects

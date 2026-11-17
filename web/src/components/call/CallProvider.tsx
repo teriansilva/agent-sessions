@@ -7,9 +7,11 @@
  *  not, why) are read on mount, when a call ends, and when the tab comes back. */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
+import { SCREEN_SHOWN_EVENT, useScreen } from "../../app/screenControl";
 import { api, currentCsrfToken } from "../../lib/api";
 import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { openAppSocket } from "../../lib/termSocket";
+import { MOBILE_QUERY } from "../../lib/useIsMobile";
 import type { VoiceCapabilities } from "../../types/voice";
 import { useHqContact } from "../hq/useHqContact";
 import { browserCallAudio, type CallAudioFactory } from "./callAudio";
@@ -30,6 +32,7 @@ export function CallProvider({
   audio?: CallAudioFactory;
 }) {
   const { wire } = useHqContact();
+  const screen = useScreen();
   const [client, setClient] = useState<CallClient | null>(null);
   const subscribe = useCallback(
     (fn: () => void) => (client ?? noClient).subscribe(fn),
@@ -83,6 +86,9 @@ export function CallProvider({
         hangUp: (id) => api.endCall(id),
         openSocket: openAppSocket,
         csrf: currentCsrfToken,
+        // HQ shows it on screen (#2102): the call's directives go to the same executor the
+        // typed stream uses, which applies each id at most once.
+        onScreen: (directive, meta) => screen?.execute(directive, { ...meta, source: "call" }),
       });
       setClient(c);
       setMinimized(false);
@@ -91,8 +97,22 @@ export function CallProvider({
         conversationId: opts?.conversationId ?? null,
       });
     },
-    [client, audio, wire],
+    [client, audio, wire, screen],
   );
+
+  // On a phone the call panel covers the page, so once a directive has put something on screen
+  // the call gives way to its on-call bar (Mute, Open and End stay one tap away; Open brings the
+  // panel back). On a wide screen the panel stays where it is (#2102).
+  useEffect(() => {
+    if (!client) return;
+    const onShown = () => {
+      if (client.active && (window.matchMedia?.(MOBILE_QUERY).matches ?? false)) {
+        setMinimized(true);
+      }
+    };
+    window.addEventListener(SCREEN_SHOWN_EVENT, onShown);
+    return () => window.removeEventListener(SCREEN_SHOWN_EVENT, onShown);
+  }, [client]);
 
   const dismiss = useCallback(() => {
     if (client?.active) return;

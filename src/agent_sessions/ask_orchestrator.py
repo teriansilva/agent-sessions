@@ -61,6 +61,7 @@ from . import (
     ask_attachments,
     ask_memory,
     ask_operations,
+    ask_screen,
     ask_settings,
     ask_store,
     engines,
@@ -178,6 +179,7 @@ class Tool:
     name: str
     #: "read" — looks something up. "proposal" — stages an effect for an operator tap (none yet).
     #: "send" — sends a message into a session now, on HQ's own authority (#1960).
+    #: "screen" — asks the asking device to show something (#2102): no platform state changes.
     kind: str
     spec: dict
     run: Callable
@@ -240,6 +242,11 @@ class _Turn:
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
     sends: int = 0
+    #: `show` calls so far (#2102, `ask_screen.MAX_SHOWS_PER_TURN`).
+    shows: int = 0
+    #: Artifact ids THIS turn's `artifacts_find` returned (#2102), with the agent's title: what
+    #: `show` may open. The title is data for the Commander's screen, never an instruction.
+    artifacts: dict[str, str] = field(default_factory=dict)
     memories: int = 0
     memory_chars: int = 0
     memory_refs: dict = field(default_factory=dict)
@@ -614,6 +621,7 @@ async def _artifacts_find(turn: _Turn, args: dict) -> tuple[dict, dict]:
         mid = o.get("mission_id")
         if isinstance(mid, str) and missions.MISSION_ID_RE.match(mid):
             turn.mission_ids.add(mid)
+        turn.artifacts[str(a["id"])] = str(a.get("title") or "")
         rows.append(
             {
                 "id": a["id"],
@@ -1291,6 +1299,83 @@ async def _read_settings(turn: _Turn, args: dict) -> tuple[dict, dict]:
     except ask_settings.UnknownSection as e:
         raise _ToolRefused(f"refused: {e}", "bad_arguments") from None
     return out, {"count": 1}
+
+
+# ---- showing it on screen (#2102) --------------------------------------------------------------
+
+
+async def _show_title(turn: _Turn, directive: dict) -> str:
+    """The words the asking device shows for a directive's target: the server's own title for a
+    session, a mission or an artifact. Sent with the live event only, through the store's guard,
+    and never stored: the record keeps closed fields. Best effort; nothing is a title too."""
+    title = ""
+    key = ask_screen.session_of(directive)
+    if key is not None:
+        title = (turn.matches.get(key) or {}).get("title") or next(
+            (s["title"] for s in turn.known_sessions if s["key"] == key), ""
+        )
+        if not title:
+            with contextlib.suppress(Exception):
+                card = next((c for c in await turn.catalog() if c.get("id") == key), None)
+                title = str((card or {}).get("title") or "")
+    elif directive["op"] == "open" and directive["target"]["type"] == "mission":
+        mid = directive["target"]["id"]
+        await _focus_mission(turn, mid)  # linked from the answer, like any mission looked at
+        title = (
+            (turn.mission_rows.get(mid) or {}).get("title")
+            or (turn.mission_matches.get(mid) or {}).get("title")
+            or ""
+        )
+    elif directive["op"] == "open" and directive["target"]["type"] == "artifact":
+        title = turn.artifacts.get(directive["target"]["id"]) or ""
+    try:
+        return await asyncio.to_thread(ask_store.guard_text, title, ask_store.TITLE_MAX)
+    except ask_store.StoreRefused:
+        return ""
+
+
+async def _show(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Ask the Commander's screen to show something (#2102). The model names a target from the
+    closed catalog (`ask_screen`); the server resolves it to a directive, stores it as a turn
+    record and sends it ONCE, on this turn's own progress — the stream of the browser that asked,
+    or its call socket. Nothing else happens here: no route is called and no state changes. What
+    the screen then did is that device's own and is never reported back."""
+    try:
+        resolved = ask_screen.resolve(
+            args,
+            ask_screen.Known(
+                keys=turn.keys,
+                mission_ids=turn.mission_ids,
+                artifact_ids=turn.artifacts,
+                conversation=turn.cid,
+            ),
+        )
+    except ask_screen.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    key = ask_screen.session_of(resolved)
+    if key is not None:
+        _known_key(turn, {"key": key})  # it still parses as a session of a known engine
+    directive = ask_screen.admit({"id": ask_screen.new_id(), **resolved})
+    title = await _show_title(turn, directive)
+    try:
+        await _turn_append(turn, {"type": "screen", "turn_id": turn.turn_id, **directive})
+    except ask_store.StoreRefused:
+        raise _ToolRefused("the request could not be recorded just now", "unavailable") from None
+    # After the record: what reaches the screen is always something the conversation can show.
+    turn.progress(
+        {"type": "screen", "turn_id": turn.turn_id, "directive": directive, "title": title}
+    )
+    out = {
+        "asked": True,
+        "note": "The Commander's screen was asked to show it. You are not told what the screen "
+        "did (a full map or unsaved changes can hold it): the app says so under your answer.",
+    }
+    meta: dict = {}
+    if key is not None:
+        meta["keys"] = [key]
+    elif resolved["op"] == "open" and resolved["target"]["type"] == "mission":
+        meta["missions"] = [resolved["target"]["id"]]
+    return out, meta
 
 
 # ---- asking back and nudging (#1443 Phase 2) ---------------------------------------------------
@@ -2581,6 +2666,25 @@ TOOLS: dict[str, Tool] = {
             _end_call,
         ),
         Tool(
+            "show",
+            "screen",
+            _spec(
+                "show",
+                "Put something on the Commander's screen, when they ask to see it ('pull up', "
+                "'show me', 'open', 'go to'). what: session (key; where: map opens it as a window "
+                "in the map, otherwise full screen), mission (mission_id), artifact (artifact_id: "
+                "its page in the Library), conversation (this conversation as a page), section "
+                "(one of the listed names; Settings pages are settings.<page>), or map with an "
+                "action: focus, minimize or close one session's window (key), close_all, "
+                "arrange. Call it once per thing to show. It only changes what their screen "
+                "shows, on the device they are asking from: it changes nothing else, and it "
+                "takes names and ids from your tools, never a path or a URL.",
+                ask_screen.spec_properties(),
+                ["what"],
+            ),
+            _show,
+        ),
+        Tool(
             "ask_operator",
             "ends_turn",
             _spec(
@@ -3215,6 +3319,9 @@ TOOLS: dict[str, Tool] = {
 _BUDGETS = {
     "memory": ("memories", 3, "memory writes", "too_many_memories"),
     "send": ("sends", MAX_SENDS_PER_TURN, "messages", "too_many_sends"),
+    # #2102: what a turn may ask the Commander's screen to show. A no-effect kind: it changes no
+    # platform state, so a refused call gives its slot back like any refusal that wrote nothing.
+    "screen": ("shows", ask_screen.MAX_SHOWS_PER_TURN, "things shown", "too_many_shows"),
 }
 #: Kinds whose call can have an effect. A step of one that went through, or whose refusal may
 #: have left something behind, is ALWAYS stored (#2076); every other step is a no-effect step.
@@ -3233,14 +3340,16 @@ _WROTE: contextvars.ContextVar[list | None] = contextvars.ContextVar("ask_wrote"
 CALL_ONLY_TOOLS = frozenset({"end_call"})
 #: Tool kinds a continuation turn (`via: "card"`, #1950) may not run: the ones with an effect
 #: that no card confirms. It reads, asks and stages cards; every write stays a tap.
-CONTINUATION_REFUSED_KINDS = frozenset({"send", "memory"})
+#: `screen` (#2102) too: nobody asked the server's own continuation to move their screen.
+CONTINUATION_REFUSED_KINDS = frozenset({"send", "memory", "screen"})
 #: Tools a continuation may not run although their kind is allowed: a memory correction card's
 #: provenance check reads the turn's question as the Commander's words, and a continuation's
 #: question is the server's note.
 CONTINUATION_REFUSED_TOOLS = frozenset({"propose_hq_memory_change"})
 #: The tools a call's DRAFT turn may run before it is committed (#1845): reads with no effect,
-#: listed one by one. Every other tool, today every `propose_*`, `send_nudge`, `ask_operator` and
-#: `end_call`, waits for commit before its handler runs. Fail-closed: a new tool is gated until
+#: listed one by one. Every other tool, today every `propose_*`, `send_nudge`, `ask_operator`,
+#: `end_call` and `show` (#2102: the screen moves only once the Commander has finished), waits
+#: for commit before its handler runs. Fail-closed: a new tool is gated until
 #: it is added here on purpose (a test ratchets this list against the registry).
 DRAFT_READ_TOOLS = frozenset(
     {
@@ -4536,6 +4645,9 @@ def turn_views(records: list[dict]) -> list[dict]:
                 # question this turn ANSWERS.
                 "ask": None,
                 "proposals": [],
+                # #2102: what this turn asked the Commander's screen to show, as stored. A
+                # request, never a result, and never executed when read back.
+                "shows": [],
                 "answers": r.get("answers"),
                 # #1525: who answered this turn — its own, kept when the operator switches.
                 # A turn from before HQ contacts (or with a contact since removed) is plain HQ.
@@ -4584,6 +4696,9 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "tools": dict(r.get("tools") or {}),
                 "refused": dict(r.get("refused") or {}),
             }
+        elif kind == "screen":
+            with contextlib.suppress(ValueError):
+                t["shows"].append(ask_screen.admit(r))
         elif kind == "question":
             t["ask"] = {
                 "question_id": r.get("question_id"),
@@ -4623,6 +4738,7 @@ def turn_views(records: list[dict]) -> list[dict]:
                 }
             )
     out = [turns[t] for t in order]
+    _title_shows(records, out)
     for t in out:
         steps = t["steps"]
         plain = sum(1 for s in t["tools"] if not s.get("effect"))
@@ -4638,6 +4754,29 @@ def turn_views(records: list[dict]) -> list[dict]:
         if t["ask"] is not None:
             t["ask"]["answered"] = t["ask"]["question_id"] in answered
     return out
+
+
+def _title_shows(records: list[dict], views: list[dict]) -> None:
+    """A shown session's or mission's title (#2102), for the line read back from history: taken
+    from what this conversation ALREADY stores through the store boundary (an answer's matches
+    and mission links, a card's session), never from the directive record, which keeps closed
+    fields only. A target the conversation never titled reads without one."""
+    if not any(t["shows"] for t in views):
+        return
+    titles: dict[str, str] = {}
+    for r in records:
+        rows: list = []
+        if r.get("type") == "assistant":
+            rows = [*(r.get("matches") or []), *(r.get("mission_matches") or [])]
+        elif r.get("type") == "proposal":
+            rows = [{"id": r.get("key"), "title": r.get("title")}]
+        for m in rows:
+            if isinstance(m, dict) and isinstance(m.get("id"), str) and m.get("title"):
+                titles[m["id"]] = str(m["title"])
+    for t in views:
+        for show in t["shows"]:
+            target = ask_screen.session_of(show) or (show.get("target") or {}).get("id")
+            show["title"] = titles.get(target, "") if target else ""
 
 
 #: Proposal kinds whose live state is the proposal sidecar's (`ask_proposals.views`).

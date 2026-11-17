@@ -25,7 +25,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // away from the map look like a map that cannot host one.
     if (ready !== null) setHostable((cur) => (cur === ready ? cur : ready));
   }, []);
-  const { requestOpen } = ws;
+  const { requestOpen, focus, minimize, close, closeAll, requestArrange } = ws;
   // New session over the map (#1648). The sidebar opens it; the map route renders it.
   const [newSession, setNewSession] = useState<{ trigger: HTMLElement | null } | null>(null);
   const openNewSession = useCallback((trigger: HTMLElement | null) => setNewSession({ trigger }), []);
@@ -82,6 +82,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       openKeys,
       requestOpen,
       openInMap,
+      focus,
+      minimize,
+      close,
+      closeAll,
+      requestArrange,
       newSession,
       openNewSession,
       closeNewSession,
@@ -94,6 +99,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       openKeys,
       requestOpen,
       openInMap,
+      focus,
+      minimize,
+      close,
+      closeAll,
+      requestArrange,
       newSession,
       openNewSession,
       closeNewSession,

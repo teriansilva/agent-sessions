@@ -77,6 +77,8 @@ export interface CallDeps {
   openSocket: (url: string) => WebSocket;
   csrf: () => string;
   now?: () => number;
+  /** A screen directive arrived on the call socket (#2102): handed to the app's one executor. */
+  onScreen?: (directive: unknown, meta: { title: string; turnId: string | null }) => void;
 }
 
 export const CAPTIONS_KEPT = 40;
@@ -286,6 +288,14 @@ export class CallClient {
         });
         return;
       }
+      case "screen":
+        // HQ asked this call's screen to show something (#2102). The executor above the router
+        // applies it once; nothing of it is kept here.
+        this.deps.onScreen?.(msg.directive, {
+          title: typeof msg.title === "string" ? msg.title : "",
+          turnId: typeof msg.turn_id === "string" ? msg.turn_id : null,
+        });
+        return;
       case "turn":
         this.set({
           work: null, // the turn settled: answered, failed or stopped

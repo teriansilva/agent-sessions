@@ -73,6 +73,8 @@ import {
 
 import { Link, useNavigate } from "react-router-dom";
 
+import { useScreen } from "../../app/screenControl";
+import { showOf, type ScreenShow } from "../../app/screenDirective";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { ACTION_RESOLVED_EVENT, announceActionResolved } from "../../lib/actionEvents";
 import { ApiError, api } from "../../lib/api";
@@ -113,6 +115,7 @@ import {
   useAskConversations,
 } from "./askConversationsStore";
 import { AskProcess } from "./AskProcess";
+import { AskShown } from "./AskShown";
 import { surfaceOver } from "./escOwner";
 import {
   applyProcessEvent,
@@ -162,6 +165,9 @@ export interface AskTurn {
   at: number | null;
   /** Files shared with the question (#1707). */
   attachments: AskAttachment[];
+  /** What the turn asked this screen to show (#2102): the stored requests, plus a live one the
+   *  moment its event arrives. Rendered as lines; never executed from here. */
+  shows: ScreenShow[];
   /** The server's continuation after a confirmed card (#1950): its question is the server's
    *  note, not the Commander's words, so it renders as a slim line, never a "You" bubble. */
   continuation?: boolean;
@@ -220,6 +226,7 @@ function fromServer(t: AskConversationTurn): AskTurn {
     at: typeof t.asked_at === "number" ? t.asked_at : null,
     contact: t.contact ?? "off",
     attachments: t.attachments ?? [],
+    shows: (t.shows ?? []).map(showOf).filter((s): s is ScreenShow => s !== null),
     continuation: t.via === "card",
   };
 }
@@ -286,6 +293,13 @@ function AnswerHead({ contact }: { contact: string }) {
 
 /** Fold one streamed progress line into its turn. */
 function applyEvent(turn: AskTurn, ev: AskTurnEvent): AskTurn {
+  if (ev.type === "screen") {
+    // The request shows under the turn at once (#2102); the executor's outcome words it.
+    const show = showOf({ ...(ev.directive as object), title: ev.title ?? "" });
+    return show && !turn.shows.some((s) => s.id === show.id)
+      ? { ...turn, shows: [...turn.shows, show] }
+      : turn;
+  }
   if (ev.type !== "progress") return turn;
   const t = { ...turn, process: applyProcessEvent(turn.process, ev, Date.now()) };
   if (ev.step === "tool_done") return t; // the next line says what runs now
@@ -509,12 +523,18 @@ export function AskConsole({
   };
   const current = (id: string | null) => live.current && cidRef.current === id;
 
+  /** HQ's screen executor (#2102), above the router: a live `screen` event is handed to it. */
+  const screen = useScreen();
+  /** The stream in flight has delivered a screen directive (#2102). Such a stream is watched to
+   *  its end even if this console unmounts — the directive itself may have navigated away from
+   *  HQ's page — so the directives queued behind it still reach the executor. */
+  const showing = useRef(false);
   /** The stream being watched. Aborting it stops WATCHING; the server's turn goes on. */
   const inflight = useRef<AbortController | null>(null);
   useEffect(
     () => () =>
       queueMicrotask(() => {
-        if (!live.current) inflight.current?.abort();
+        if (!live.current && !showing.current) inflight.current?.abort();
       }),
     [],
   );
@@ -863,6 +883,7 @@ export function AskConsole({
       gen.current++; // a read already in flight must not land over this turn
       const ctl = new AbortController();
       inflight.current = ctl;
+      showing.current = false;
       setStreaming(true);
       const optimistic: AskTurn = {
         id: turnId,
@@ -880,6 +901,7 @@ export function AskConsole({
         at: null,
         contact: contactRef.current,
         attachments: atts,
+        shows: [],
       };
       setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
@@ -932,6 +954,16 @@ export function AskConsole({
             ...(atts.length ? { attachments: atts.map((x) => x.id) } : {}),
           },
           (ev) => {
+            if (ev.type === "screen") {
+              // Executed HERE, once, by the device that asked — whatever this console is doing
+              // (a directive may already have navigated away from it). Never from a read.
+              showing.current = true;
+              screen?.execute(ev.directive, {
+                title: ev.title,
+                turnId: ev.turn_id ?? turnId,
+                source: "typed",
+              });
+            }
             if (current(id)) update((t) => applyEvent(t, ev));
           },
           ctl.signal,
@@ -999,7 +1031,7 @@ export function AskConsole({
       }
     },
     // `current` reads refs only.
-    [busy, configured, load, refreshList, title],
+    [busy, configured, load, refreshList, title, screen],
   );
 
   /** STOP (#2076). It names the running turn, so it can never end another; the server lets what
@@ -1539,6 +1571,8 @@ export function AskConsole({
                         streaming={t.pending}
                         markup={blockMarkup}
                       />
+                      {/* What HQ put on screen (#2102): directly under the answer. */}
+                      <AskShown shows={t.shows} />
                       {/* Missions first, then sessions — each group labelled only when there
                           are missions, so a sessions-only answer reads as it did before #1069. */}
                       {t.missions.length > 0 ? (
@@ -1672,6 +1706,8 @@ export function AskConsole({
                         : null}
                     </>
                   ) : null}
+                  {/* …and under a turn with no answer (running, stopped, failed) just the same. */}
+                  {t.answer === null ? <AskShown shows={t.shows} /> : null}
                   {t.error ? (
                     <div className={`${styles.objStale} ${a.errorRow}`} data-testid="ask-error">
                       {t.error}

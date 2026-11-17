@@ -44,6 +44,7 @@ the same list.
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
 | `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
 | `components/ask/AskHome.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-recent popup:needs-you-details popup:recent-work | rows arrive (slide + tint flash), needs-you LEDs blink in Full (steady in Reduced/Off), first read Acquiring (scan bar) |
+| `components/ask/AskShown.module.css` | css | 4 | done | popup:hq | none (a static row under the answer, #2102) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/automations/automations.module.css` | css | 10 | done | route:automations route:automations-list popup:automation-menu route:automation-runs route:automation-editor popup:consent | segments and weekdays light in the chrome on a short colour fade; the run row lights its edge; no ambient motion (the counters are static readouts) |
 | `components/chat/Avatar.module.css` | css | 6 | done | share:open route:settings-profile | none (static discs) |

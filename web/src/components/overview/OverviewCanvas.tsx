@@ -453,9 +453,14 @@ function OverviewCanvasInner({
   // be handled in two places, and the second one silently cleared the queue. A caller decided
   // this session should be on screen, and a fresh one carries the cwd and bypass the operator had
   // just chosen; neither may evaporate (Hermes on #939, rounds 1 + 2).
+  //
+  // The queue also carries the commands that were asked for BEHIND an open or an Arrange (#2102:
+  // a minimize, a close, an Arrange itself). The drain replays them all in order, so it runs
+  // whenever anything is queued, not only when an open is.
   const pending = ws.pending;
+  const queue = ws.queue;
   useEffect(() => {
-    if (!pending.length || !measured) return;
+    if (!queue.length || !measured) return;
     const anchors = new Map(
       pending.map((req) => {
         const node = canOpenWindow ? rf.getNode(req.seed.key) : undefined;
@@ -471,7 +476,7 @@ function OverviewCanvasInner({
       }),
     );
     drain(anchors, bounds, canOpenWindow);
-  }, [pending, canOpenWindow, measured, drain, rf, box.x, box.y, bounds]);
+  }, [queue, pending, canOpenWindow, measured, drain, rf, box.x, box.y, bounds]);
 
   // A refused request is handed BACK to the route it came from — the full-screen pane, carrying
   // `fresh` so the launch still happens. Anything else loses work the operator has already done.

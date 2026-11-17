@@ -252,6 +252,33 @@ keeps the last **50** conversations for **30 days**. What it
 stores is your questions and its answers — never the screens or transcripts it read to answer —
 and any text that looks like a password or a token is stored as *withheld*.
 
+## Showing it on screen
+
+Ask HQ to show you something and the screen follows, typed or on a call: "pull up the api-rebase
+session", "open it in the map", "show me the release mission", "open the artifact the docs
+session published", "go to the automations", "open Settings, Security". HQ can open a session
+(full screen, or as a window in the session map), a mission, an artifact's page in the
+Library, this conversation as a page, any section of the app, and it can focus, minimise, close
+or arrange the map's windows.
+
+Under the answer a line says what happened on **this** device:
+
+- **Shown: api-rebase · in the map** — it opened here. **Open** takes you back to it.
+- **Shown: api-rebase · full screen (the map is full)**, or **(the map can't host a window
+  here)** on a phone or a small window — a map window was asked for and the session opened full
+  screen instead.
+- **Shown: 2 of 4 sessions · in the map (the map is full)** with **Asked to show: 2 more
+  sessions** — the map had room for some. **Open** on the second line opens the rest as windows
+  once there is room, otherwise the first of them full screen.
+- **Not opened: you have unsaved changes on this page** — the page asked before leaving, as it
+  does for any link, and you stayed.
+- **Asked to show: api-rebase · in the map** — what you see after a reload, on another device or
+  in another tab. It only says what was asked; nothing is opened again. **Open** opens it.
+
+Only the device you asked from moves, and only once. HQ changes what the screen shows and nothing
+else: it cannot open anything outside the app, and showing a session never types into it. On a
+phone HQ's drawer closes when something opens, as it does when you tap a link in an answer.
+
 ## Sharing files
 
 A question can carry **files** (#1707) — a screenshot of the failing page, a log tail, a photo of

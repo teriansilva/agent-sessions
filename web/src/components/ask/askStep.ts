@@ -72,6 +72,8 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   propose_mission: { label: "Preparing the draft mission for you to confirm" },
   // What HQ does itself, and how a turn ends.
   send_nudge: { label: "Sending a message", noun: ["session", "sessions"] },
+  // #2102: HQ asks this screen to show something; what the screen did is the line under the answer.
+  show: { label: "Putting it on your screen" },
   ask_operator: { label: "Asking you a question" },
   end_call: { label: "Ending the call" },
 };

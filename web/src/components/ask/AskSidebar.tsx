@@ -22,6 +22,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 
 import { useConfig } from "../../app/config";
+import { SCREEN_SHOWN_EVENT } from "../../app/screenControl";
 import { HQ_PATH, hqConversationPath } from "../../lib/routes";
 import { coerceRecentWindowDays } from "../../lib/recentWindow";
 import { useModalDrawer } from "../pulse/useModalDrawer";
@@ -151,6 +152,13 @@ export function AskSidebar() {
     },
     [drawer, close],
   );
+
+  // The same when HQ itself put something on screen (#2102): the drawer gives way to it.
+  useEffect(() => {
+    if (!open || !drawer) return;
+    window.addEventListener(SCREEN_SHOWN_EVENT, close);
+    return () => window.removeEventListener(SCREEN_SHOWN_EVENT, close);
+  }, [open, drawer, close]);
 
   // Open as page (#1776): the conversation on screen on HQ's page, or the page itself from the
   // empty thread — nothing is minted. The panel closes: the page is now the one console.

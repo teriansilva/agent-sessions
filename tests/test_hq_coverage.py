@@ -33,6 +33,7 @@ CODES = {
     "#1932",
     "never",
     "device",
+    "screen",
     "n/a",
     "prefs",
     "nested",

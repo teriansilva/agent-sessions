@@ -181,6 +181,19 @@ export function saveWorkspace(windows: WorkspaceWindow[]): void {
   }
 }
 
+/** Write a layout that has NOT been restored yet (#2102). Before the map has mounted the stored
+ *  layout is the workspace's only record of its windows, so a command from outside the map (HQ
+ *  closing or parking one) changes that record, and the change has to reach storage: otherwise
+ *  the next load would bring the window back. Same swallow-everything policy as above. */
+export function saveStoredWorkspace(stored: StoredWindow[]): void {
+  try {
+    if (!stored.length) localStorage.removeItem(WORKSPACE_KEY);
+    else localStorage.setItem(WORKSPACE_KEY, JSON.stringify(stored));
+  } catch {
+    /* quota, private mode, storage disabled — never fatal */
+  }
+}
+
 export function loadWindowCap(): number {
   try {
     const raw = localStorage.getItem(CAP_KEY);

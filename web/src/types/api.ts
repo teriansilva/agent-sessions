@@ -1340,6 +1340,11 @@ export interface AskConversationTurn {
   contact?: string;
   /** Files shared with the question (#1707) — their descriptors, as stored. */
   attachments?: AskAttachment[];
+  /** What the turn asked the Commander's screen to show (#2102): each stored directive's closed
+   *  fields beside the title the conversation already holds for its target. A REQUEST, never a
+   *  result, and never executed when read: only a live `screen` event is. Absent from an older
+   *  server. Parsed field by field (`app/screenDirective.ts`). */
+  shows?: unknown[];
   /** How the turn began (#1397, #1950): absent = typed, `call` = spoken on a call, `card` = the
    *  server's continuation after a confirmed draft-mission card — not the Commander's words. */
   via?: "call" | "card" | null;
@@ -1418,6 +1423,9 @@ export type AskTurnEvent =
       more: number;
       record: AskToolStep | null;
     }
+  // #2102: HQ asks THIS browser to show something. Sent once, on the stream of the device that
+  // asked; `title` is the server's name for the target, for the line under the answer.
+  | { type: "screen"; turn_id?: string; directive: unknown; title?: string }
   | { type: "turn"; status: number; turn: AskConversationTurn }
   | { type: "error"; status: number; detail: string };
 

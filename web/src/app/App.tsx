@@ -65,6 +65,7 @@ import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { DashboardRetentionProvider } from "./DashboardRetentionContext";
 import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
+import { ScreenProvider } from "./ScreenContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
 import { EntryLinks } from "../components/links/EntryLinks";
 import { EngineRosterProvider } from "./EngineRosterProvider";
@@ -1066,10 +1067,15 @@ export default function App() {
                       navigations they exist to be resilient to, and a provider inside the routed
                       tree would be remounted by exactly those. */}
                     <WorkspaceProvider>
-                      {/* ABOVE the router (#1397): a call to HQ survives navigation. */}
-                      <CallProvider>
-                        <RouterProvider router={router} />
-                      </CallProvider>
+                      {/* ABOVE the router too (#2102): HQ's one screen executor. A directive
+                        that navigates unmounts the view it came from; the ones queued behind
+                        it, and a map window waiting for the map to mount, must outlive that. */}
+                      <ScreenProvider router={router}>
+                        {/* ABOVE the router (#1397): a call to HQ survives navigation. */}
+                        <CallProvider>
+                          <RouterProvider router={router} />
+                        </CallProvider>
+                      </ScreenProvider>
                     </WorkspaceProvider>
                   </SessionsProvider>
                   </DashboardRetentionProvider>

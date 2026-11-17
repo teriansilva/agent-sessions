@@ -500,3 +500,174 @@ describe("minimize and arrange", () => {
     ]);
   });
 });
+
+// Commands from OUTSIDE the map, before the map has mounted since the page loaded (#2102, review
+// of PR #2109): the stored layout is then the workspace's only record of its windows. A command
+// has to change that record AND storage — otherwise the next page load restores the window.
+describe("before hydration: commands act on the stored layout, and the change is written", () => {
+  const entry = (n: number) => ({
+    key: `claude:s${n}`,
+    engine: "claude",
+    id: `s${n}`,
+    title: `Session ${n}`,
+    x: 40 * n,
+    y: 40 * n,
+    w: 640,
+    h: 420,
+    z: n,
+  });
+  const seed = (...ns: number[]) =>
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(ns.map(entry)));
+  const storedKeys = () =>
+    (JSON.parse(localStorage.getItem(WORKSPACE_KEY) ?? "[]") as { key: string }[]).map(
+      (w) => w.key,
+    );
+
+  it("reading a layout back writes nothing", () => {
+    seed(1, 2);
+    const raw = localStorage.getItem(WORKSPACE_KEY);
+    setup();
+    expect(localStorage.getItem(WORKSPACE_KEY)).toBe(raw);
+  });
+
+  it("close removes the stored window for good: a reload does not bring it back", () => {
+    seed(1, 2);
+    const { result, unmount } = setup();
+    act(() => result.current.close("claude:s1"));
+    expect(result.current.restorable.map((w) => w.key)).toEqual(["claude:s2"]);
+    expect(storedKeys()).toEqual(["claude:s2"]);
+    unmount();
+    const again = setup(); // the page reloads
+    act(() => again.result.current.restore(BOUNDS));
+    expect(again.result.current.windows.map((w) => w.key)).toEqual(["claude:s2"]);
+  });
+
+  it("minimize parks the stored window, and it restores parked", () => {
+    seed(1, 2);
+    const { result, unmount } = setup();
+    act(() => result.current.minimize("claude:s2"));
+    unmount();
+    const again = setup();
+    act(() => again.result.current.restore(BOUNDS));
+    expect(again.result.current.windows.map((w) => [w.key, Boolean(w.minimized)])).toEqual([
+      ["claude:s1", false],
+      ["claude:s2", true],
+    ]);
+  });
+
+  it("close all empties the stored layout", () => {
+    seed(1, 2);
+    const { result } = setup();
+    act(() => result.current.closeAll());
+    expect(result.current.restorable).toEqual([]);
+    expect(localStorage.getItem(WORKSPACE_KEY)).toBeNull();
+  });
+
+  it("a command behind a queued open queues behind it, and the drain replays them in order", () => {
+    const { result } = setup();
+    act(() => result.current.restore(BOUNDS));
+    act(() => {
+      result.current.requestOpen(session(1));
+      result.current.requestOpen(session(2));
+      result.current.command({ type: "close", key: "claude:s1", ack: "c1" });
+      result.current.command({ type: "minimize", key: "claude:s2", ack: "m2" });
+    });
+    // Nothing ran yet: applied now, the close would have run BEFORE the open it follows.
+    expect(result.current.queue.map((c) => c.kind)).toEqual(["open", "open", "close", "minimize"]);
+    expect(result.current.pending.map((p) => p.seed.key)).toEqual(["claude:s1", "claude:s2"]);
+    expect(result.current.acks).toEqual([]);
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    expect(result.current.windows.map((w) => [w.key, Boolean(w.minimized)])).toEqual([
+      ["claude:s2", true],
+    ]);
+    expect(result.current.queue).toEqual([]);
+    expect(result.current.acks).toEqual([
+      { id: "c1", result: "applied" },
+      { id: "m2", result: "applied" },
+    ]);
+  });
+
+  it("with nothing queued a command applies at once, and is answered at once", () => {
+    const { result } = setup();
+    act(() => result.current.open(session(1), null, BOUNDS));
+    act(() => {
+      result.current.command({ type: "minimize", key: "claude:s1", ack: "m" });
+      result.current.command({ type: "close", key: "claude:s9", ack: "c" });
+      result.current.command({ type: "closeAll", ack: "all" });
+      result.current.command({ type: "closeAll", ack: "again" });
+    });
+    expect(result.current.windows).toEqual([]);
+    expect(result.current.acks).toEqual([
+      { id: "m", result: "applied" },
+      { id: "c", result: "noop", reason: "absent" },
+      { id: "all", result: "applied" },
+      { id: "again", result: "noop", reason: "empty" },
+    ]);
+  });
+
+  it("a later request for a queued, minimised session brings it back: the order decides", () => {
+    const { result } = setup();
+    act(() => result.current.restore(BOUNDS));
+    act(() => {
+      result.current.command({ type: "request", req: { seed: session(1), acks: ["o"] } });
+      result.current.command({ type: "minimize", key: "claude:s1", ack: "m" });
+      result.current.command({ type: "request", req: { seed: session(1), acks: ["f"] } });
+    });
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    expect(result.current.windows.map((w) => [w.key, Boolean(w.minimized)])).toEqual([
+      ["claude:s1", false],
+    ]);
+    expect(result.current.acks.map((a) => [a.id, a.result])).toEqual([
+      ["o", "applied"],
+      ["m", "applied"],
+      ["f", "applied"],
+    ]);
+  });
+
+  it("every Arrange is answered by its own id: applied, nothing on screen, or refused", () => {
+    const { result } = setup();
+    act(() => result.current.restore(BOUNDS));
+    act(() => result.current.command({ type: "requestArrange", ack: "empty" }));
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    act(() => result.current.open(session(1), null, BOUNDS));
+    act(() => result.current.minimize("claude:s1"));
+    act(() => result.current.command({ type: "requestArrange", ack: "parked" }));
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    act(() => result.current.focus("claude:s1"));
+    act(() => result.current.command({ type: "requestArrange", ack: "ran" }));
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    act(() => result.current.command({ type: "requestArrange", ack: "small" }));
+    act(() => result.current.drain(new Map(), BOUNDS, false));
+    expect(result.current.acks).toEqual([
+      { id: "empty", result: "noop", reason: "empty" },
+      { id: "parked", result: "noop", reason: "parked" },
+      { id: "ran", result: "applied", parked: [] },
+      { id: "small", result: "refused", reason: "host" },
+    ]);
+  });
+
+  it("a withdrawn command is answered cancelled and never runs", () => {
+    const { result } = setup();
+    act(() => result.current.restore(BOUNDS));
+    act(() => {
+      result.current.command({ type: "request", req: { seed: session(1), acks: ["o"] } });
+      result.current.command({ type: "requestArrange", ack: "a" });
+      result.current.command({ type: "cancel", acks: ["o", "a"] });
+    });
+    expect(result.current.queue).toEqual([]);
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    expect(result.current.windows).toEqual([]);
+    expect(result.current.acks.map((a) => [a.id, a.result])).toEqual([
+      ["o", "cancelled"],
+      ["a", "cancelled"],
+    ]);
+  });
+
+  it("a numbered action records how far the state has got with its caller's dispatches", () => {
+    const { result } = setup();
+    expect(result.current.seq).toBe(0);
+    act(() => result.current.command({ type: "closeAll", seq: 3 }));
+    act(() => result.current.command({ type: "closeAll", seq: 2 })); // never goes back
+    expect(result.current.seq).toBe(3);
+  });
+});

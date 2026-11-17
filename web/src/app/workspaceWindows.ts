@@ -74,6 +74,14 @@ export interface WorkspaceCommands {
   openKeys: ReadonlySet<string>;
   requestOpen: Workspace["requestOpen"];
   openInMap: (seed: WindowSeed) => boolean;
+  /** The workspace's own commands, for a surface outside the map (#2102: HQ's `show`). Each
+   *  takes the SESSION's key — the window holding it is found by either identity — and is a
+   *  stable callback. `requestArrange` waits for the measured canvas, like a window request. */
+  focus: Workspace["focus"];
+  minimize: Workspace["minimize"];
+  close: Workspace["close"];
+  closeAll: Workspace["closeAll"];
+  requestArrange: Workspace["requestArrange"];
   /** New session over the map (#1648): `null` = closed, otherwise the element that opened it
    *  (focus returns there). Held above the router so the sidebar, outside the map route, can open
    *  it; the map route renders it. */

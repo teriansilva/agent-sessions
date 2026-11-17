@@ -1713,6 +1713,18 @@ class Call:
                 done, _ = await asyncio.wait({get, task}, return_when=asyncio.FIRST_COMPLETED)
                 if get in done:
                     ev = get.result()
+                    if ev.get("type") == "screen":
+                        # HQ asked this call's screen to show something (#2102): the directive
+                        # goes to the browser holding the call socket, once, and nowhere else.
+                        await self.client(
+                            {
+                                "t": "screen",
+                                "turn_id": ev.get("turn_id"),
+                                "directive": ev.get("directive"),
+                                "title": str(ev.get("title") or ""),
+                            }
+                        )
+                        continue
                     self._track(ev)
                     if ev.get("step") == "tool_done":
                         continue  # a finished step: the next event says what runs now

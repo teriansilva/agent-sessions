@@ -6,6 +6,7 @@ import {
   loadWindowCap,
   loadWorkspace,
   rectOf,
+  saveStoredWorkspace,
   saveWindowCap,
   saveWorkspace,
   seedOf,
@@ -54,7 +55,42 @@ export interface WindowRequest {
    *  at its window cap; `host` = the map could not host a window at all (too small, a phone). The
    *  full-screen hand-back says "the map was full" for `cap` only. */
   reason?: "cap" | "host";
+  /** The acknowledgements this request owes (#2102): every caller that asked with an id is told,
+   *  by that id, what the drain did with it (`Workspace.acks`). */
+  acks?: string[];
 }
+
+/** What became of ONE command a caller queued or applied with an id (#2102). Explicit and per
+ *  request, so nothing a caller is waiting on can stay unanswered, and no later request can be
+ *  taken for an earlier one. */
+export interface WorkspaceAck {
+  id: string;
+  /** `applied`: the workspace changed as asked. `noop`: there was nothing to do it to.
+   *  `refused`: the map could not do it. `cancelled`: withdrawn before it ran. */
+  result: "applied" | "noop" | "refused" | "cancelled";
+  /** `cap` / `host`: why the map refused. `parked`: every window is minimised (Arrange).
+   *  `empty` / `absent`: no window (at all / for that session). */
+  reason?: "cap" | "host" | "parked" | "empty" | "absent";
+  /** A refused open that was the drain's ONLY refusal: the map hands that one back to its
+   *  full-screen route. Several stay listed on the map. */
+  alone?: boolean;
+  /** The sessions an applied Arrange parked in the tray (they did not fit at the floor). */
+  parked?: string[];
+}
+
+/** One entry of the ordered queue the canvas drains (#2102). Opens need the canvas (an anchor,
+ *  the measured box) and so does Arrange; minimize, close and close-all do not, but once
+ *  anything is queued they QUEUE BEHIND it, so the drain replays every command in the order it
+ *  was asked for. That one rule is what makes a batch delivered before a render end exactly
+ *  where the same commands, applied one at a time with a drain between each, would end. */
+export type QueuedCommand =
+  | { kind: "open"; req: WindowRequest }
+  | { kind: "arrange"; ack?: string }
+  | { kind: "minimize" | "close"; key: string; ack?: string }
+  | { kind: "closeAll"; ack?: string };
+
+/** How many acknowledgements are kept for their callers to read. */
+const ACKS_KEPT = 64;
 
 /** One open window. `key` is the engine-qualified session id (`engine:uuid`) — the app's own
  *  identity for a session, and the dedupe key that keeps a session to a single window. */
@@ -115,8 +151,20 @@ interface State {
   /** The operator's ceiling (#936). In state rather than read from storage at each decision, so
    *  the reducer stays pure and every transition is testable without a DOM. */
   cap: number;
-  /** Requests queued from outside the map, drained by the canvas once it is measured. */
+  /** Requests queued from outside the map, drained by the canvas once it is measured. Always
+   *  the open requests of `queue`, in order: kept as its own list because the canvas resolves an
+   *  anchor for each. */
   pending: WindowRequest[];
+  /** Everything waiting for the canvas, in the order it was asked for (`QueuedCommand`). */
+  queue: QueuedCommand[];
+  /** What became of the commands that carried an id, oldest first, the newest `ACKS_KEPT`. */
+  acks: WorkspaceAck[];
+  /** The highest sequence number among the actions applied so far that carried one. A caller
+   *  that numbers its own dispatches reads here how far the committed state has got with them,
+   *  which is what lets it predict from a state that lags its dispatches (#2102). */
+  seq: number;
+  /** The box the canvas last measured, for a prediction that has to tile without a canvas. */
+  bounds: Size | null;
   /** Requests the drain could NOT honour — the map cannot host a window, or the cap is full.
    *
    *  They are not discarded, because a caller decided this session should be on screen and a
@@ -152,18 +200,21 @@ type Action =
       rect?: Rect;
     }
   | { type: "focus"; key: string }
-  | { type: "minimize"; key: string }
+  | { type: "minimize"; key: string; ack?: string }
   | {
       type: "arrange";
       bounds: Size;
     }
-  | { type: "close"; key: string }
-  | { type: "closeAll" }
+  | { type: "close"; key: string; ack?: string }
+  | { type: "closeAll"; ack?: string }
   | { type: "rect"; key: string; rect: Rect }
   | { type: "role"; key: string; role: TermRole }
   | { type: "reconcile"; key: string; sid: string }
   | { type: "titles"; titles: Map<string, string> }
   | { type: "request"; req: WindowRequest }
+  | { type: "requestArrange"; ack?: string }
+  /** Withdraw queued commands by their ids: each is acknowledged `cancelled` and never runs. */
+  | { type: "cancel"; acks: string[] }
   | {
       type: "drain";
       /** Chip anchors, projected by the canvas — the reducer cannot compute them. */
@@ -274,6 +325,160 @@ function openInto(
   };
 }
 
+/** Replace the queue, keeping `pending` (its open requests, in order) in step. */
+function requeue(state: State, queue: QueuedCommand[]): State {
+  return {
+    ...state,
+    queue,
+    pending: queue.flatMap((c) => (c.kind === "open" ? [c.req] : [])),
+  };
+}
+
+const queued = (state: State, command: QueuedCommand): State =>
+  requeue(state, [...state.queue, command]);
+
+/** Record what became of the command `id` (none: the caller did not ask to be told). */
+function acked(state: State, id: string | undefined, ack: Omit<WorkspaceAck, "id">): State {
+  if (!id) return state;
+  return { ...state, acks: [...state.acks, { ...ack, id }].slice(-ACKS_KEPT) };
+}
+
+/** The queue once the map has unmounted (`detach`): a request for a window that survived is
+ *  dropped (it would only be refused as a duplicate), and its callers are told. */
+function requeued(state: State, survivors: Set<string>): Pick<State, "queue" | "pending" | "acks"> {
+  let next = state;
+  const queue = state.queue.filter((c) => {
+    if (c.kind !== "open" || !survivors.has(c.req.seed.key)) return true;
+    for (const id of c.req.acks ?? []) next = acked(next, id, { result: "cancelled" });
+    return false;
+  });
+  const { pending, acks } = requeue(next, queue);
+  return { queue, pending, acks };
+}
+
+type Outcome = [State, Omit<WorkspaceAck, "id">];
+const ABSENT: Omit<WorkspaceAck, "id"> = { result: "noop", reason: "absent" };
+
+// The three transitions below act on the windows AND, while the map has not mounted since the
+// page loaded, on the stored layout still waiting to be restored (#2102): before hydration that
+// layout is the workspace's only record of its windows, and a command that looked at `windows`
+// alone would report nothing to do and then watch the restore bring the window back.
+
+/** Park one window in the tray. */
+function minimizeKey(state: State, key: string): Outcome {
+  const w = holderOf(state.windows, key);
+  const stored = !state.hydrated && state.restorable.some((r) => r.key === key);
+  if (!w && !stored) return [state, ABSENT];
+  const live = w && !w.minimized;
+  const kept = stored && state.restorable.some((r) => r.key === key && !r.minimized);
+  if (!live && !kept) return [state, { result: "applied" }]; // parked already: as asked
+  return [
+    {
+      ...state,
+      windows: live
+        ? state.windows.map((x) => (x.key === w.key ? { ...x, minimized: true } : x))
+        : state.windows,
+      restorable: kept
+        ? state.restorable.map((r) => (r.key === key ? { ...r, minimized: true } : r))
+        : state.restorable,
+      focusedKey: w && state.focusedKey === w.key ? null : state.focusedKey,
+      flashKey: w && state.flashKey === w.key ? null : state.flashKey,
+    },
+    { result: "applied" },
+  ];
+}
+
+/** Close one window. Unmounting it unmounts <Terminal>, which closes its socket and detaches its
+ *  document-level listeners; there is nothing else to tear down. */
+function closeKey(state: State, key: string): Outcome {
+  const held = holderOf(state.windows, key);
+  const stored = !state.hydrated && state.restorable.some((r) => r.key === key);
+  if (!held && !stored) return [state, ABSENT];
+  return [
+    {
+      ...state,
+      windows: held ? state.windows.filter((w) => w !== held) : state.windows,
+      restorable: stored ? state.restorable.filter((r) => r.key !== key) : state.restorable,
+      focusedKey: held && state.focusedKey === held.key ? null : state.focusedKey,
+      flashKey: held && state.flashKey === held.key ? null : state.flashKey,
+    },
+    { result: "applied" },
+  ];
+}
+
+function closeEvery(state: State): Outcome {
+  const stored = !state.hydrated && state.restorable.length > 0;
+  if (!state.windows.length && !stored) return [state, { result: "noop", reason: "empty" }];
+  return [
+    {
+      ...state,
+      windows: [],
+      restorable: stored ? [] : state.restorable,
+      focusedKey: null,
+      flashKey: null,
+    },
+    { result: "applied" },
+  ];
+}
+
+/** Arrange: tile the windows on screen, sorted by name; the parked ones stay in the tray. Tiles
+ *  never overlap: windows past what the box holds at the floor (`tileCapacity`) are PARKED, so
+ *  every window stays reachable — on screen, or as a chip in the tray (Hermes on #1320). With
+ *  no window on screen there is nothing to tile, and it says which kind of nothing. */
+function tile(state: State, bounds: Size): Outcome {
+  const shown = state.windows
+    .filter((w) => !w.minimized)
+    .sort(
+      (a, b) =>
+        a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) ||
+        a.key.localeCompare(b.key),
+    );
+  if (!shown.length)
+    return [state, { result: "noop", reason: state.windows.length ? "parked" : "empty" }];
+  const tiled = shown.slice(0, tileCapacity(bounds));
+  const rects = tileRects(tiled.length, bounds);
+  const base = topZ(state.windows);
+  const placed = new Map(tiled.map((w, i) => [w.key, { rect: rects[i], z: base + 1 + i }]));
+  const parked = new Set(shown.slice(tiled.length).map((w) => w.key));
+  return [
+    {
+      ...state,
+      bounds,
+      windows: state.windows.map((w) => {
+        const p = placed.get(w.key);
+        if (p) return { ...w, rect: p.rect, z: p.z };
+        return parked.has(w.key) ? { ...w, minimized: true } : w;
+      }),
+      focusedKey: state.focusedKey && parked.has(state.focusedKey) ? null : state.focusedKey,
+    },
+    {
+      result: "applied",
+      parked: shown.slice(tiled.length).map((w) => w.actionKey),
+    },
+  ];
+}
+
+/** Where the workspace will be once the canvas has caught up: the stored layout restored and the
+ *  queue replayed, by the SAME transitions the canvas will run. For a caller that must decide now
+ *  (is there room, does this session have a window, is anything on screen) from a workspace whose
+ *  queue has not drained (#2102). The box only decides where tiles land and how many fit, never
+ *  how many windows there are. */
+export function settledWorkspace(state: State): State {
+  const bounds = state.bounds ?? { w: 1600, h: 1000 };
+  let next = state;
+  if (!next.hydrated) next = step(next, { type: "restore", bounds });
+  if (next.queue.length)
+    next = step(next, { type: "drain", anchors: new Map(), bounds, canHost: true });
+  return next;
+}
+
+/** One action, with the bookkeeping every action shares: a numbered one records how far the
+ *  state has got with its caller's dispatches (`State.seq`). */
+function reduce(state: State, action: Action & { seq?: number }): State {
+  const next = step(state, action);
+  return action.seq === undefined || action.seq <= next.seq ? next : { ...next, seq: action.seq };
+}
+
 /** The whole workspace transition, in one pure function.
  *
  *  This is a reducer rather than a set of `setState` calls **because the outcome of an open is
@@ -283,7 +488,7 @@ function openInto(
  *  code after `setWindows` could act on a decision that had not been made, or on one made
  *  twice. A capped open then skipped its notice and focused a key with no window behind it.
  *  Here the notice and the flash are decided in the same atomic step as the window list. */
-function reduce(state: State, action: Action): State {
+function step(state: State, action: Action): State {
   switch (action.type) {
     case "open":
       return openInto(
@@ -294,66 +499,50 @@ function reduce(state: State, action: Action): State {
         action.fresh,
         action.rect,
       );
-    case "focus":
-      return raise(state, action.key);
-    case "minimize": {
-      const w = state.windows.find((x) => x.key === action.key);
-      if (!w || w.minimized) return state;
-      return {
-        ...state,
-        windows: state.windows.map((x) =>
-          x.key === action.key ? { ...x, minimized: true } : x,
-        ),
-        focusedKey: state.focusedKey === action.key ? null : state.focusedKey,
-        flashKey: state.flashKey === action.key ? null : state.flashKey,
-      };
+    // Focus, minimize and close take a window's own key OR the session it holds (`holderOf`):
+    // a caller outside the map (HQ's `show`, #2102) knows the session, not the transport key a
+    // window launched under.
+    case "focus": {
+      const w = holderOf(state.windows, action.key);
+      return w ? raise(state, w.key) : state;
     }
-    case "arrange": {
-      // Tile the windows on screen, sorted by name; the parked ones stay in the tray. Tiles never
-      // overlap: windows past what the box holds at the floor (`tileCapacity`) are PARKED, so
-      // every window stays reachable — on screen, or as a chip in the tray (Hermes on #1320).
-      const shown = state.windows
-        .filter((w) => !w.minimized)
-        .sort(
-          (a, b) =>
-            a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) ||
-            a.key.localeCompare(b.key),
-        );
-      if (!shown.length) return state;
-      const tiled = shown.slice(0, tileCapacity(action.bounds));
-      const rects = tileRects(tiled.length, action.bounds);
-      const base = topZ(state.windows);
-      const placed = new Map(
-        tiled.map((w, i) => [w.key, { rect: rects[i], z: base + 1 + i }]),
-      );
-      const parked = new Set(shown.slice(tiled.length).map((w) => w.key));
-      return {
-        ...state,
-        windows: state.windows.map((w) => {
-          const p = placed.get(w.key);
-          if (p) return { ...w, rect: p.rect, z: p.z };
-          return parked.has(w.key) ? { ...w, minimized: true } : w;
-        }),
-        focusedKey:
-          state.focusedKey && parked.has(state.focusedKey) ? null : state.focusedKey,
-      };
-    }
+    // Minimize, close and close-all apply at once ONLY while nothing is queued for the canvas.
+    // Behind a queued open or Arrange they queue too, and the drain replays the lot in order
+    // (`QueuedCommand`): applied now, a close would run BEFORE the open it was asked after.
+    case "minimize":
     case "close": {
-      // Unmounting the window unmounts <Terminal>, which closes its socket and detaches its
-      // document-level listeners. There is nothing else to tear down here.
-      const windows = state.windows.filter((w) => w.key !== action.key);
-      if (windows.length === state.windows.length) return state;
-      return {
-        ...state,
-        windows,
-        focusedKey: state.focusedKey === action.key ? null : state.focusedKey,
-        flashKey: state.flashKey === action.key ? null : state.flashKey,
-      };
+      if (state.queue.length)
+        return queued(state, { kind: action.type, key: action.key, ack: action.ack });
+      const [next, ack] = (action.type === "close" ? closeKey : minimizeKey)(state, action.key);
+      return acked(next, action.ack, ack);
     }
-    case "closeAll":
-      return state.windows.length
-        ? { ...state, windows: [], focusedKey: null, flashKey: null }
-        : state;
+    case "closeAll": {
+      if (state.queue.length) return queued(state, { kind: "closeAll", ack: action.ack });
+      const [next, ack] = closeEvery(state);
+      return acked(next, action.ack, ack);
+    }
+    case "requestArrange":
+      return queued(state, { kind: "arrange", ack: action.ack });
+    case "arrange":
+      return tile(state, action.bounds)[0];
+    case "cancel": {
+      const drop = new Set(action.acks);
+      let next = state;
+      const queue: QueuedCommand[] = [];
+      for (const c of state.queue) {
+        const ids = c.kind === "open" ? (c.req.acks ?? []) : c.ack ? [c.ack] : [];
+        const hit = ids.filter((i) => drop.has(i));
+        if (!hit.length) {
+          queue.push(c);
+          continue;
+        }
+        for (const id of hit) next = acked(next, id, { result: "cancelled" });
+        // An open others still wait on stays queued, without the withdrawn ids.
+        const left = ids.filter((i) => !drop.has(i));
+        if (c.kind === "open" && left.length) queue.push({ ...c, req: { ...c.req, acks: left } });
+      }
+      return queue.length === state.queue.length && next === state ? state : requeue(next, queue);
+    }
     case "rect":
       return {
         ...state,
@@ -407,43 +596,88 @@ function reduce(state: State, action: Action): State {
       return changed ? { ...state, windows } : state;
     }
     case "request": {
-      // Bounded, and deduped against what is already queued: a double-click on a sidebar row
-      // must not queue two requests for one session. (`open` would refuse the second anyway;
-      // this just keeps the queue honest.)
-      if (state.pending.some((p) => p.seed.key === action.req.seed.key)) return state;
-      if (state.pending.length >= state.cap) return state;
-      return { ...state, pending: [...state.pending, action.req] };
+      const { req } = action;
+      const last = state.queue[state.queue.length - 1];
+      // Deduped against the request queued RIGHT before it: a double-click on a sidebar row must
+      // not queue two requests for one session. Only an adjacent one — behind anything else
+      // (a minimize, a close, an Arrange) a second request is a new intent with its own place in
+      // the order, and merging it into the earlier one would run it too early.
+      if (last?.kind === "open" && last.req.seed.key === req.seed.key) {
+        if (!req.acks?.length) return state;
+        const merged = { ...last.req, acks: [...(last.req.acks ?? []), ...req.acks] };
+        return requeue(state, [...state.queue.slice(0, -1), { kind: "open", req: merged }]);
+      }
+      // Bounded: a runaway caller cannot grow the queue without limit. Refused, and said so.
+      if (state.pending.length >= Math.max(state.cap, WINDOW_CAP_MAX)) {
+        let next = state;
+        for (const id of req.acks ?? [])
+          next = acked(next, id, { result: "refused", reason: "cap" });
+        return next;
+      }
+      return queued(state, { kind: "open", req });
     }
     case "drain": {
-      if (!state.pending.length) return state;
-      // A map that cannot host refuses the whole queue in one step — same outcome, one code path,
-      // so the two ways a request can fail cannot drift apart.
-      if (!action.canHost)
-        return {
-          ...state,
-          pending: [],
-          rejected: [...state.rejected, ...state.pending.map((r) => ({ ...r, reason: "host" as const }))],
-        };
-      let next: State = { ...state, pending: [] };
+      if (!state.queue.length) return state;
+      // ONE replay of the queue, in the order it was asked for. Every command goes through the
+      // same transition it would have gone through alone, and each one that carried an id is
+      // acknowledged with what actually happened.
+      let next: State = requeue({ ...state, bounds: action.bounds }, []);
       const rejected: WindowRequest[] = [];
-      for (const req of state.pending) {
-        // "Already open" counts as honoured: `openInto` focuses and flashes the existing window,
-        // which is exactly what the caller asked for. Only a request that produced no window and
-        // had none to focus was actually refused.
-        const held = Boolean(holderOf(next.windows, req.seed.key));
-        const before = next.windows.length;
-        next = openInto(
-          next,
-          req.seed,
-          action.anchors.get(req.seed.key) ?? null,
-          action.bounds,
-          req.fresh,
-        );
-        if (!held && next.windows.length === before) rejected.push({ ...req, reason: "cap" });
+      const refusals: string[] = [];
+      for (const c of state.queue) {
+        if (c.kind === "open") {
+          const { req } = c;
+          // A map that cannot host refuses every open — same outcome, one code path, so the two
+          // ways a request can fail cannot drift apart.
+          //
+          // "Already open" counts as honoured: `openInto` focuses and flashes the existing
+          // window (bringing a parked one back), which is exactly what the caller asked for.
+          // Only a request that produced no window and had none to focus was actually refused.
+          const held = Boolean(holderOf(next.windows, req.seed.key));
+          const before = next.windows.length;
+          if (action.canHost)
+            next = openInto(
+              next,
+              req.seed,
+              action.anchors.get(req.seed.key) ?? null,
+              action.bounds,
+              req.fresh,
+            );
+          const opened = action.canHost && (held || next.windows.length > before);
+          if (!opened) {
+            rejected.push({ ...req, reason: action.canHost ? "cap" : "host" });
+            refusals.push(...(req.acks ?? []));
+          }
+          for (const id of req.acks ?? [])
+            next = acked(
+              next,
+              id,
+              opened
+                ? { result: "applied" }
+                : { result: "refused", reason: action.canHost ? "cap" : "host" },
+            );
+        } else if (c.kind === "arrange") {
+          const [tiled, ack] = action.canHost
+            ? tile(next, action.bounds)
+            : [next, { result: "refused", reason: "host" } as const];
+          next = acked(tiled, c.ack, ack);
+        } else {
+          const [done, ack] =
+            c.kind === "closeAll"
+              ? closeEvery(next)
+              : (c.kind === "close" ? closeKey : minimizeKey)(next, c.key);
+          next = acked(done, c.ack, ack);
+        }
       }
-      return rejected.length
-        ? { ...next, rejected: [...next.rejected, ...rejected] }
-        : next;
+      if (!rejected.length) return next;
+      next = { ...next, rejected: [...next.rejected, ...rejected] };
+      // The canvas hands a LONE refusal back to its full-screen route; its caller is told so.
+      if (next.rejected.length === 1)
+        next = {
+          ...next,
+          acks: next.acks.map((a) => (refusals.includes(a.id) ? { ...a, alone: true } : a)),
+        };
+      return next;
     }
     case "clearRejected":
       return state.rejected.length ? { ...state, rejected: [] } : state;
@@ -456,7 +690,7 @@ function reduce(state: State, action: Action): State {
     case "restore": {
       if (!state.restorable.length)
         return state.hydrated ? state : { ...state, hydrated: true };
-      let next: State = { ...state, restorable: [], hydrated: true };
+      let next: State = { ...state, restorable: [], hydrated: true, bounds: action.bounds };
       for (const w of state.restorable) {
         // Restored in stored stacking order (the codec sorts by z), so the window that was on
         // top opens last and lands on top. Each goes through the SAME open transition, so the
@@ -539,7 +773,7 @@ function reduce(state: State, action: Action): State {
         flashKey: null,
         // A pending request for a window that just went away must not be resurrected; one for a
         // window that survived is about to be refused as a duplicate anyway.
-        pending: state.pending.filter((p) => !keys.has(p.seed.key)),
+        ...requeued(state, keys),
       };
     }
     case "cap": {
@@ -591,6 +825,11 @@ export interface Workspace extends State {
   /** Tile the windows on screen into the box, sorted by name; any that do not fit at the floor
    *  are parked in the tray. */
   arrange: (bounds: Size) => void;
+  /** Ask for Arrange from outside the map: the canvas runs it once it is mounted and measured. */
+  requestArrange: () => void;
+  /** The queue's own actions, for a caller that numbers its dispatches and asks to be told, by
+   *  id, what became of each (HQ's screen executor, #2102). Stable. */
+  command: (action: WorkspaceCommand) => void;
   close: (key: string) => void;
   closeAll: () => void;
   setRect: (key: string, rect: Rect) => void;
@@ -602,6 +841,17 @@ export interface Workspace extends State {
   syncTitles: (titles: Map<string, string>) => void;
 }
 
+/** The pure transition and its starting state, for tests that drive the REAL reducer without a
+ *  canvas (the screen executor's, #2102). Nothing in the app imports these. */
+export { reduce as workspaceReducer, init as initWorkspace };
+export type WorkspaceAction = Action & { seq?: number };
+/** What `Workspace.command` takes: the actions that queue for, or are ordered against, the canvas. */
+export type WorkspaceCommand = Extract<
+  WorkspaceAction,
+  { type: "request" | "minimize" | "close" | "closeAll" | "requestArrange" | "cancel" }
+>;
+export type { State as WorkspaceState };
+
 function init(): State {
   return {
     windows: [],
@@ -612,6 +862,10 @@ function init(): State {
     refused: [],
     cap: loadWindowCap(),
     pending: [],
+    queue: [],
+    acks: [],
+    seq: 0,
+    bounds: null,
     restorable: loadWorkspace(),
     hydrated: false,
   };
@@ -657,6 +911,19 @@ export function useWorkspace(): Workspace {
     const t = setTimeout(() => saveWorkspace(windows), PERSIST_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [windows, hydrated]);
+
+  // Before hydration the stored layout IS the workspace's record of its windows. A command from
+  // outside the map can change it (HQ closing or parking a window while the map has not mounted
+  // since the page loaded, #2102), and that change must reach storage at once: the debounced
+  // write above is gated on `hydrated`, so without this the next load would restore the window.
+  // Only a CHANGE is written — never the layout that was just read back.
+  const { restorable } = state;
+  const restorableWritten = useRef(restorable);
+  useEffect(() => {
+    if (restorableWritten.current === restorable) return;
+    restorableWritten.current = restorable;
+    if (!hydrated) saveStoredWorkspace(restorable);
+  }, [restorable, hydrated]);
 
   // The cap is written on change, not debounced — a stepper press is one discrete decision, and
   // the first render must not write the value it just read back (which would be harmless but is
@@ -704,6 +971,8 @@ export function useWorkspace(): Workspace {
     (bounds: Size) => dispatch({ type: "arrange", bounds }),
     [],
   );
+  const requestArrange = useCallback(() => dispatch({ type: "requestArrange" }), []);
+  const command = useCallback((action: WorkspaceCommand) => dispatch(action), []);
   const close = useCallback((key: string) => dispatch({ type: "close", key }), []);
   const closeAll = useCallback(() => dispatch({ type: "closeAll" }), []);
   const setRect = useCallback(
@@ -740,6 +1009,8 @@ export function useWorkspace(): Workspace {
       focus,
       minimize,
       arrange,
+      requestArrange,
+      command,
       close,
       closeAll,
       setRect,
@@ -761,6 +1032,8 @@ export function useWorkspace(): Workspace {
       focus,
       minimize,
       arrange,
+      requestArrange,
+      command,
       close,
       closeAll,
       setRect,

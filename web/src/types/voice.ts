@@ -197,6 +197,8 @@ export type CallServerMessage =
   | { t: "turn"; turn: { turn_id?: string; status?: string; [k: string]: unknown } }
   // `steps` (#2076): how many steps the running turn has finished; absent from an older server.
   | { t: "progress"; step: string; steps?: number | null }
+  /** #2102: HQ asks the browser holding this call to show something. Applied at most once. */
+  | { t: "screen"; turn_id?: string | null; directive: unknown; title?: string }
   | { t: "interrupt" }
   | { t: "speaking"; id?: string; on: boolean }
   | { t: "user"; speaking: boolean }

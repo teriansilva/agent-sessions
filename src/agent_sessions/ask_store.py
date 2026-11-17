@@ -54,7 +54,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import hq_contacts, missions, template_secrets, template_suggest
+from . import ask_screen, hq_contacts, missions, template_secrets, template_suggest
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ VIAS = frozenset({"call", "card"})
 RECORD_TYPES = frozenset(
     {
         "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
-        "steps_more",
+        "steps_more", "screen",
     }
 )  # fmt: skip
 
@@ -590,6 +590,11 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 raise ValueError("malformed tool error code")
             meta["error"] = err
         out["meta"] = meta
+    elif kind == "screen":
+        # What a turn asked the Commander's screen to show (#2102): a directive's closed fields
+        # (an operation, a target by type and id, a section name) and nothing else. No free text.
+        out["turn_id"] = _turn_id(rec)
+        out.update(ask_screen.admit(rec))
     elif kind == "steps_more":
         # The steps a turn ran past its stored ones (#2076): numbers and tool names only.
         out["turn_id"] = _turn_id(rec)

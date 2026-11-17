@@ -86,6 +86,11 @@ enter that server's key again or remove it.
   but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;
   HQ says "Stopped." and keeps listening. It never ends the call, and a sentence that only
   contains the word ("stop the staging deploy") is a request like any other.
+- **Ask to see something and it opens.** "Open the automations", "pull up the api-rebase
+  session in the map": HQ puts it on the screen of the device you are calling from
+  ([Showing it on screen](/guide/hq#showing-it-on-screen)). On a phone the call panel covers the
+  page, so the call shrinks to its bar under the top bar, with **Mute**, **Open** (back to the
+  call panel) and **End**; on a wide screen the panel stays where it is.
 - **Captions are off unless you turn them on** (Settings → AI → HQ → Calls → Conversation, or the
   call panel). A call then shows only the cards that need your decision.
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.

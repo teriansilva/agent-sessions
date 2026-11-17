@@ -280,6 +280,9 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # #1668: on a CALL turn only, refused elsewhere: ends that call after its farewell.
         "end_call": "call",
         "send_nudge": "send",
+        # #2102: asks the asking device to show something. No platform state changes, no route
+        # is called, and the target comes from a closed catalog — a kind of its own.
+        "show": "screen",
         "list_agents": "read",
         "list_specialists": "read",
         # #1950: a mission's team — two reads and four proposals, each a card the operator
@@ -381,7 +384,7 @@ def test_twenty_calls_in_one_round_all_run(app, ai):
 def test_the_removed_caps_are_gone():
     for name in ("MAX_TOOL_ROUNDS", "MAX_CALLS_PER_ROUND", "MAX_PROPOSALS_PER_TURN"):
         assert not hasattr(ask_orchestrator, name)
-    assert set(ask_orchestrator._BUDGETS) == {"memory", "send"}
+    assert set(ask_orchestrator._BUDGETS) == {"memory", "send", "screen"}  # #2102: shows
     assert ask_orchestrator.MAX_SENDS_PER_TURN == 10 and ask_orchestrator._BUDGETS["memory"][1] == 3
 
 
