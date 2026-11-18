@@ -107,6 +107,13 @@ async def _run(coroutine):
         raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
 
+def _peer_authors(app: FastAPI, session_key: str) -> dict:
+    """The turns a paired instance caused in this session (#2057). An app built without
+    federation has none; a store that cannot be read raises, and attribution is then UNKNOWN."""
+    federation = getattr(app.state, "federation", None)
+    return {} if federation is None else federation.store.peer_authors(session_key)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.get("/api/structured/clients/{engine}")
     async def structured_client(engine: str, _user: str = Depends(logged_in)) -> JSONResponse:
@@ -198,11 +205,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         return out
 
     async def _attributed(view: dict, key: str) -> dict:
-        # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.
-        try:
-            authors = await asyncio.to_thread(
-                shares.store().authors, view.get("session_key") or key
+        # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too,
+        # and a turn a paired instance caused (#2057) carries that peer's name.
+        session_key = view.get("session_key") or key
+
+        def read() -> dict:
+            return share_api.with_peer_authors(
+                shares.store().authors(session_key),
+                _peer_authors(app, session_key),
             )
+
+        try:
+            authors = await asyncio.to_thread(read)
         except Exception:  # the share store must never take the operator's own view down…
             log.warning("structured view: visitor attribution unavailable", exc_info=True)
             authors = None  # …but then every turn is UNKNOWN, never labelled the operator's

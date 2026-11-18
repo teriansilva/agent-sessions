@@ -123,7 +123,14 @@ def test_the_operator_grants_changes_and_revokes_through_the_api(auth_cfg, monke
 
     listed = c.get("/api/federation/grants").json()
     assert [g["grant_id"] for g in listed["grants"]] == [grant["grant_id"]]
-    assert listed["levels"] == ["view"] and listed["max_expires_in"] == 90 * 86400
+    assert listed["levels"] == ["view", "suggest", "send"]
+    assert listed["default_level"] == "view" and listed["max_expires_in"] == 90 * 86400
+    assert listed["max_expires_in_by_level"] == {
+        "view": 90 * 86400,
+        "suggest": 30 * 86400,
+        "send": 24 * 3600,
+    }
+    assert listed["default_expires_in"]["send"] == 3600 and listed["send_risk"]
     assert c.get(f"/api/federation/grants?session={key}").json()["grants"] == listed["grants"]
     other = f"codex-api:{uuid.uuid4()}"
     assert c.get(f"/api/federation/grants?session={other}").json()["grants"] == []
@@ -275,7 +282,9 @@ def test_the_remote_routes_answer_offline_not_shared_and_invalid(auth_cfg, monke
         ("invalid", 422),
         ("timeout", 504),
         ("bad_answer", 502),
-        ("too_large", 502),
+        ("too_large", 413),
+        ("held", 409),
+        ("not_found", 404),
         ("internal", 502),
         ("something-a-peer-made-up", 502),
     ):

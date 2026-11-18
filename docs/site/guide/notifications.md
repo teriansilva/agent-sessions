@@ -59,6 +59,14 @@ a question*, *Stopped — take a look*). That text is fixed and never written by
 whole thing off in Settings → Session review → *Notify me when a session needs me*. Doing so takes
 back any that are open. Sessions inside a mission are announced by mission control, as before.
 
+## A paired instance suggests a message
+
+When another BattleLab you paired with suggests a message for a session you share with it, the
+bell gets one entry and your subscribed devices one push. It names that instance as you named it,
+the session and a link. It never contains the suggested message: you read that on the session
+itself, where you approve or reject it. The entry goes away once you decide, the other side takes
+the suggestion back, or the share ends.
+
 ## Web push
 
 You can subscribe the browser for push, so an escalation reaches your phone with BattleLab closed.

@@ -668,6 +668,10 @@ def test_the_second_check_is_the_last_await_before_every_answer():
         assert check.value.value.func.id == "_authorize", handler.__name__
         first = next(n for n in ast.walk(tree) if isinstance(n, ast.Await))
         assert first.value.func.id == "_authorize"  # and the call starts with the same check
+        if handler is not terminal.terminal_frame:  # its own `_authorize` asks for terminal
+            for call in (check.value.value, first.value):
+                kinds = [ast.unparse(k.value) for k in call.keywords if k.arg == "kind"]
+                assert kinds == ["grants.KIND_API"], handler.__name__  # stated, never defaulted
 
 
 # ── the long-poll ─────────────────────────────────────────────────────

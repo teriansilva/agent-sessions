@@ -307,12 +307,21 @@ def fit_events(view: dict) -> dict:
 
 
 # ── the per-call check ────────────────────────────────────────────────
-async def _authorize(fed, peer_id: str, args: dict, *, kind: str = grants.KIND_API) -> store.Grant:
-    """:func:`grants.authorize`, off the event loop. One refusal code, whatever failed. The verbs
-    of this module read API sessions: a terminal grant is refused here like an unknown one
-    (``terminal.py`` asks for its own kind)."""
+async def _authorize(
+    fed, peer_id: str, args: dict, *, kind: str, need: str = "view"
+) -> store.Grant:
+    """:func:`grants.authorize`, off the event loop. One refusal code, whatever failed. Every
+    caller states the ``kind`` of session its verb reads (``api`` for this module's verbs and the
+    input verbs, ``terminal`` for ``terminal.frame``) and, for input, the level it ``need``s: a
+    grant of the other kind, or below that level, is refused like an unknown one."""
     grant = await asyncio.to_thread(
-        grants.authorize, fed.store, args["grant_id"], peer_id, args["revision"], kind=kind
+        grants.authorize,
+        fed.store,
+        args["grant_id"],
+        peer_id,
+        args["revision"],
+        kind=kind,
+        need=need,
     )
     if grant is None:
         raise ch.VerbError(NO_GRANT)
@@ -341,9 +350,16 @@ async def _projected(build):
         raise ch.VerbError(UNAVAILABLE) from None
 
 
-async def _authors(session_key: str) -> dict:
+async def _authors(fed, session_key: str) -> dict:
+    """Whose turn each one was: a public link's visitors and the peers that caused turns."""
+
+    def read() -> dict:
+        return share_api.with_peer_authors(
+            shares.store().authors(session_key), fed.store.peer_authors(session_key)
+        )
+
     try:
-        return await asyncio.to_thread(shares.store().authors, session_key)
+        return await asyncio.to_thread(read)
     except Exception:  # noqa: BLE001 — attribution that cannot be read is not guessed
         log.warning("federation: turn attribution could not be read; nothing was sent")
         raise ch.VerbError(UNAVAILABLE) from None
@@ -464,12 +480,12 @@ async def share_list(channel: ch.Channel, args: dict) -> dict:
 # ── session.snapshot ──────────────────────────────────────────────────
 async def session_snapshot(channel: ch.Channel, args: dict) -> dict:
     fed, peer_id = channel.context
-    grant = await _authorize(fed, peer_id, args)
+    grant = await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     try:
         snap = await runtime.snapshot(grant.session_key)
     except runtime.StructuredError as exc:
         raise _runtime_refusal(exc) from None
-    authors = await _authors(grant.session_key)
+    authors = await _authors(fed, grant.session_key)
 
     def build() -> dict:
         # The SAME projection and redactor a public `view` link gets. The grant id stands where
@@ -482,19 +498,19 @@ async def session_snapshot(channel: ch.Channel, args: dict) -> dict:
 
     answer = await _projected(build)
     # The second check, directly before the answer is returned: nothing may wait after it.
-    await _authorize(fed, peer_id, args)
+    await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     return answer
 
 
 # ── session.history ───────────────────────────────────────────────────
 async def session_history(channel: ch.Channel, args: dict) -> dict:
     fed, peer_id = channel.context
-    grant = await _authorize(fed, peer_id, args)
+    grant = await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     try:
         page = await runtime.history(grant.session_key, before=args["before"])
     except runtime.StructuredError as exc:
         raise _runtime_refusal(exc) from None
-    authors = await _authors(grant.session_key)
+    authors = await _authors(fed, grant.session_key)
 
     def build() -> dict:
         view = share_api.project(
@@ -506,7 +522,7 @@ async def session_history(channel: ch.Channel, args: dict) -> dict:
 
     answer = await _projected(build)
     # The second check, directly before the answer is returned: nothing may wait after it.
-    await _authorize(fed, peer_id, args)
+    await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     return answer
 
 
@@ -549,7 +565,7 @@ async def _held_events(fed, peer_id: str, grant: store.Grant, args: dict) -> dic
 
 async def session_events(channel: ch.Channel, args: dict) -> dict:
     fed, peer_id = channel.context
-    grant = await _authorize(fed, peer_id, args)
+    grant = await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     try:
         link = await asyncio.to_thread(share_api.link_id, grant.grant_id)
     except template_secrets.SecretKeyUnavailable:
@@ -574,7 +590,7 @@ async def session_events(channel: ch.Channel, args: dict) -> dict:
     answer = fit_events(share_api.project_events(page, link))
     # The second check, directly before the answer is returned: nothing may wait after it. An
     # event that woke this wait is not sent when the grant ended while it was parked.
-    await _authorize(fed, peer_id, args)
+    await _authorize(fed, peer_id, args, kind=grants.KIND_API)
     return answer
 
 

@@ -804,8 +804,19 @@ def session_state(prov, native: str) -> str:
 def _end_federation_grants(session_key: str) -> int:
     """End the federation grants of a session being archived (#2054). The process's own store
     (the environment's federation directory): no store means nothing was ever granted and nothing
-    is created; a store that cannot be read or written raises, and the archive is refused."""
-    return len(federation_store.Store().end_grants_for_session(session_key))
+    is created; a store that cannot be read or written raises, and the archive is refused.
+
+    Each grant ends under its fence (#2057, ``federation/fence.py``): while a peer's delivery to
+    this session is in flight the archive waits, and past the wait the store raises ``Busy``,
+    nothing is ended and the archive is refused. The grants' pending suggestions are withdrawn
+    in the same transaction; their bell rows are retracted here (best effort)."""
+    st = federation_store.Store()
+    ended = st.end_grants_for_session(session_key)
+    if ended:
+        from .federation import notices  # at call time: it imports modules that import this one
+
+        notices.retract(st)
+    return len(ended)
 
 
 # How long an archive (or a create) waits for the session's lock before giving up. Holders keep

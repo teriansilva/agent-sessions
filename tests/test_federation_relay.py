@@ -199,9 +199,22 @@ def _connected(box: Box) -> dict | None:
 
 
 def _ping(box: Box) -> dict:
-    peer = box.app.state()["peers"][0]
-    channel = box.fed.channel_for(peer["peer_id"])
-    return asyncio.run_coroutine_threadsafe(channel.call("peer.ping"), box.loop).result(10)
+    """One answered `peer.ping` over the box's live channel.
+
+    "Connected" in the state and "the channel object is still the live one" are two reads. When
+    both sides redial at once after a drop, the tie-break replaces one channel a moment after it
+    connected: `channel_for` is then `None` for an instant, or the call rides a channel that is
+    closed under it. Neither is what these tests assert, so the ping waits for a live channel
+    and is asked again when its channel was replaced."""
+    peer_id = box.app.state()["peers"][0]["peer_id"]
+    last: Exception | None = None
+    for _attempt in range(5):
+        channel = _wait(lambda: box.fed.channel_for(peer_id))
+        try:
+            return asyncio.run_coroutine_threadsafe(channel.call("peer.ping"), box.loop).result(10)
+        except ch.CallError as exc:
+            last = exc
+    raise AssertionError(f"no ping was answered: {last!r}")
 
 
 PLAINTEXT_MARKERS = (b"peer.hello", b"peer.ping", b"pair.hello", b"pair.confirm", b'"verb"')

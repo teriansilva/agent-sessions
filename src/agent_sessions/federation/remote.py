@@ -422,6 +422,57 @@ def check_history(doc: dict) -> dict:
     return doc
 
 
+#: How long the CALLER waits for ``input.send``: past the owner's own handler timeout, so the
+#: owner's ``timeout`` answer arrives instead of this side giving up first.
+INPUT_CALL_TIMEOUT_S = ch.HANDLER_TIMEOUT_S + 10.0
+SUGGESTION_STATES = frozenset(store.SUGGESTION_STATES)
+HANDOFFS = frozenset({"queued", "uncertain", "sent", "not_sent"})
+SUGGESTIONS_MAX = 50
+
+
+def _suggestion_ref(doc: dict) -> None:
+    if not grants.valid_grant_id(doc.get("suggestion_id")):
+        raise Invalid("suggestion id")
+    if doc.get("state") not in SUGGESTION_STATES:
+        raise Invalid("suggestion state")
+
+
+def check_suggestion(doc: dict) -> dict:
+    """An ``input.suggest`` or ``input.withdraw`` answer: an id and a state, nothing else."""
+    if set(doc) != {"suggestion_id", "state"}:
+        raise Invalid("suggestion")
+    _suggestion_ref(doc)
+    return doc
+
+
+def check_suggestions(doc: dict) -> dict:
+    """An ``input.suggestions`` answer: ids, retry keys, states and times. No text."""
+    if set(doc) != {"suggestions"}:
+        raise Invalid("suggestions")
+    keys = {"suggestion_id", "client_key", "state", "handoff", "created_at", "updated_at"}
+    for row in _dicts(doc["suggestions"], SUGGESTIONS_MAX, "suggestions"):
+        if set(row) != keys:
+            raise Invalid("suggestion")
+        _suggestion_ref(row)
+        if not isinstance(row["client_key"], str) or len(row["client_key"]) > 64:
+            raise Invalid("client key")
+        if row["handoff"] is not None and row["handoff"] not in HANDOFFS:
+            raise Invalid("handoff")
+        _number(row["created_at"])
+        _number(row["updated_at"])
+    return doc
+
+
+def check_sent(doc: dict) -> dict:
+    """An ``input.send`` answer: the owner knows the operation, and the runtime's receipt (or
+    ``null`` when that runtime gives none). Nothing here is read as more than it says."""
+    if set(doc) != {"operation_id_known", "handoff"} or doc["operation_id_known"] is not True:
+        raise Invalid("send answer")
+    if doc["handoff"] is not None and doc["handoff"] not in HANDOFFS:
+        raise Invalid("handoff")
+    return doc
+
+
 def check_frame(doc: dict, have: str | None = None) -> dict:
     """A ``terminal.frame`` answer fit to hand to the viewer, or :class:`Invalid`. Exactly one of
     three shapes: ``{settling: true}``; ``{fingerprint, unchanged: true}``, and then only for the
@@ -509,6 +560,7 @@ async def read(
     check,
     timeout: float = ch.CALL_TIMEOUT_S,
     kind: str = grants.KIND_API,
+    retry: bool = True,
 ) -> dict:
     """Call ``verb`` for a mirrored grant on its owner's live channel and return the validated
     answer. ``kind`` is what the verb reads: a mirrored grant of the other kind is ``no_grant``
@@ -523,7 +575,13 @@ async def read(
     call is made ONCE more with the revision the refreshed list carries. Only a second refusal,
     or a grant the refreshed list no longer has, is ``no_grant``. A refresh that fails is
     ``peer_offline`` / ``unavailable`` (503): nothing is answered from the mirror or from an
-    earlier answer."""
+    earlier answer.
+
+    **A refused WRITE is never repeated** (``retry=False``: ``input.suggest``, ``input.send``,
+    ``input.withdraw``). The refusal is returned as it is (``no_grant``); the mirror is refreshed
+    in the background so the next call uses the current revision. Sending a message a second time
+    is the operator's decision, never this function's: a repeated send could deliver it under a
+    grant the owner's operator just changed."""
     row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
     peer = await asyncio.to_thread(fed.store.get, peer_id)
     if row is None or peer is None or not peer.trusted or row.kind != kind:
@@ -535,6 +593,9 @@ async def read(
         channel, verb, {"grant_id": grant_id, "revision": row.revision, **extra}, timeout
     )
     if answer is None:
+        if not retry:
+            fed.refresh_remote(peer_id)
+            raise ReadError(sharing.NO_GRANT)
         row = await _re_resolve(fed, peer_id, grant_id)
         if row.kind != kind:
             # The refreshed list has this grant as the other kind: the same answer as before the

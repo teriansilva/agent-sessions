@@ -56,7 +56,7 @@ from .. import net_vetting
 from ..homefree import peerpipe
 from . import channel as ch
 from . import endpoints as ep
-from . import grants, identity, remote, store, terminal, verbs
+from . import grants, identity, inputs, notices, remote, store, terminal, verbs
 
 log = logging.getLogger(__name__)
 
@@ -451,6 +451,8 @@ class Federation:
         self._kick = asyncio.Event()
         #: Parked `session.events` waits per peer (`sharing.WAITS_PER_PEER` bounds it).
         self.waits: dict[str, int] = {}
+        #: A peer's deliveries in flight in this process (`inputs.DELIVERIES_PER_PEER`).
+        self.deliveries: dict[str, int] = {}
         #: Parked `terminal.frame` waits per peer (`terminal.FRAME_WAITS_PER_PEER` bounds it),
         #: and the shared renders of the terminal screens peers watch (#2056).
         self.frame_waits: dict[str, int] = {}
@@ -526,6 +528,9 @@ class Federation:
         self._hold_owner_lock()
         if self._dialer_task is None:
             self._dialer_task = asyncio.create_task(self._dialer())
+            # Approvals a crash or a lost answer left between their two steps are replayed
+            # (#2057): each under its grant's fence, with its eligibility checked again.
+            self._spawn(inputs.resume_all(self))
 
     async def stop(self) -> None:
         self._stopped = True
@@ -554,6 +559,14 @@ class Federation:
             with contextlib.suppress(OSError):
                 os.close(self._lock_fd)
             self._lock_fd = None
+
+    def background(self, coro) -> None:
+        """Run ``coro`` beside the caller (a notification, a retraction). After a stop it is
+        dropped: nothing is started on a service that is going away."""
+        if self._stopped:
+            coro.close()
+            return
+        self._spawn(coro)
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -960,10 +973,15 @@ class Federation:
         self._check_id(peer_id)
         try:
             # Trust ends FIRST: from here a handshake with this key is refused, whatever happens
-            # to the goodbye below.
+            # to the goodbye below. Under the fences of the peer's suggest and send grants: while
+            # one of its deliveries is in flight this waits, and past the wait NOTHING is
+            # committed (503 `busy`): the peer is still trusted and the operator retries.
             await asyncio.to_thread(self.store.revoke, peer_id)
+        except store.Busy as exc:
+            raise FederationError("busy", str(exc), status=exc.status) from exc
         except store.StoreError as exc:
             raise FederationError("not_found", str(exc), status=exc.status) from exc
+        self.background(asyncio.to_thread(notices.retract, self.store))
         channel = self._channels.pop(peer_id, None)
         if channel is not None and not channel.closed:
             with contextlib.suppress(ch.CallError):
@@ -1242,6 +1260,9 @@ class Federation:
         """The dialer round's share of the work. Never raises: sharing must not stop dialing."""
         try:
             await asyncio.to_thread(grants.sweep, self.store)
+            # Approvals whose grant ended are withdrawn, and the bell rows of suggestions that
+            # are no longer pending go (also for a change another process wrote).
+            await inputs.settle_ended(self)
             generation = await asyncio.to_thread(self.store.generation)
             if generation != self._generation:
                 # Something changed since the last round, written by this process, another one

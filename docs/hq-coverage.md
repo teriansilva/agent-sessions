@@ -188,9 +188,12 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Peers (#1246): this instance's id, paired instances and whether each is connected; revoke a peer | GET /api/federation, POST /api/federation/peers/{peer_id}/revoke | P6 R/W (revoking narrows) |
 | Peers (#1246): make or withdraw an invite, accept one, confirm or deny the short code, rename a peer | POST /api/federation/invites, DELETE …/invites/{invite_id}, POST /api/federation/pairings, POST …/pairings/{pairing_id}/confirm, …/deny, PATCH /api/federation/peers/{peer_id} | **never** (pairing decides which other instance this one trusts; the confirmation is the Commander's own comparison of two screens) |
 | Sessions shared with a peer (#2054): the grants of this instance (list); end one | GET /api/federation/grants, POST /api/federation/grants/{grant_id}/revoke | P6 R/W (revoking narrows) |
-| Sessions shared with a peer (#2054, #2056): share an API session, or a terminal session's screen, with a paired instance (view only); change a grant's expiry | POST /api/federation/grants, PATCH /api/federation/grants/{grant_id} | **never** (decides what another instance may read of a session, and for how long) |
+| Sessions shared with a peer (#2054, #2056, #2057): share an API session with a paired instance (view, suggest or send), or a terminal session's screen (view only); change a grant's expiry or level | POST /api/federation/grants, PATCH /api/federation/grants/{grant_id} | **never** (decides what another instance may read of a session, whether it may propose or send messages to its agent, and for how long) |
 | Sessions a peer shares with this instance (#2054): the list; read one (snapshot, events, older turns) | GET /api/federation/remote, GET …/remote/{peer_id}/{grant_id}/snapshot, …/events, …/history | P6 R |
 | A terminal session a peer shares with this instance (#2056): its current screen as a redacted text frame (view only; nothing is typed into or resized on the owner's terminal) | GET /api/federation/remote/{peer_id}/{grant_id}/frame | P6 R |
+| What a peer suggests for a session (#2057): the list with its text; approve one (also with edited text) | GET /api/federation/suggestions, POST /api/federation/suggestions/{suggestion_id}/approve | **never** (approve is a tap that approves another party's proposal; the list returns unapproved text another party wrote, so it is in no model-facing read tool, generic ones included) |
+| What a peer suggests for a session (#2057): reject one | POST /api/federation/suggestions/{suggestion_id}/reject | P6 W (it narrows; the card names the peer and the session, never the suggested text) |
+| Writing to a session a peer shares with this instance (#2057): suggest a message, send one, read the states of one's own suggestions, withdraw one | POST /api/federation/remote/{peer_id}/{grant_id}/suggest, …/turns, GET …/suggestions, POST …/suggestions/{suggestion_id}/withdraw | **never** for suggest and send (a model must not send to another instance's agent); the states read and the withdraw are P6 R/W (ids and states, no text; withdrawing narrows) |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
 #### Library
@@ -279,7 +282,9 @@ Each row is a credential, a grant of more permission or autonomy, or a tap that 
 | Outsiders driving agents | public share in "can send messages" mode | external control of an agent |
 | Consent | analytics consent | consent is the operator's own act |
 | Trusting another instance | federation invites, accepting one, confirming or denying a pairing, renaming a peer (#1246) | a paired instance can later be granted access to sessions; who is trusted, and under which name it is shown, is the Commander's decision |
-| Sharing a session with another instance | granting a paired instance access to a session, changing that grant's expiry (#2054) | it decides what another instance's operator may read; ending a grant narrows and is allowed |
+| Sharing a session with another instance | granting a paired instance access to a session, changing that grant's expiry or level (#2054, #2057) | it decides what another instance's operator may read, and whether that instance may propose or send messages to the agent; ending a grant narrows and is allowed |
+| A peer's suggestions | approving a message a paired instance suggested; reading the suggestions (#2057) | approving is the Commander's tap on another party's proposal, and an unapproved suggestion is text a third party wrote: it reaches no model before a human on this side approved it. Rejecting narrows and is allowed |
+| Driving another instance's agent | suggesting or sending a message to a session a peer shares with this instance (#2057) | a model here must not instruct an agent on someone else's machine; the Commander writes those messages |
 
 
 ## Route map
@@ -744,6 +749,13 @@ GET    /api/federation/remote/{peer_id}/{grant_id}/snapshot                     
 GET    /api/federation/remote/{peer_id}/{grant_id}/events                         P6  # read: cursors and kinds
 GET    /api/federation/remote/{peer_id}/{grant_id}/history                        P6  # read: older turns
 GET    /api/federation/remote/{peer_id}/{grant_id}/frame                          P6  # read: a shared terminal's screen as text (#2056)
+GET    /api/federation/suggestions                                                never  # unapproved text another party wrote (#2057)
+POST   /api/federation/suggestions/{suggestion_id}/approve                        never  # the Commander's tap on another party's proposal
+POST   /api/federation/suggestions/{suggestion_id}/reject                         P6  # narrows: declines a peer's suggestion
+POST   /api/federation/remote/{peer_id}/{grant_id}/suggest                        never  # a model must not send to another instance's agent
+POST   /api/federation/remote/{peer_id}/{grant_id}/turns                          never  # a model must not send to another instance's agent
+GET    /api/federation/remote/{peer_id}/{grant_id}/suggestions                    P6  # read: one's own suggestions' ids and states, no text
+POST   /api/federation/remote/{peer_id}/{grant_id}/suggestions/{suggestion_id}/withdraw  P6  # narrows: takes a suggestion back
 WS     /ws/fed                                                                    n/a  # another instance's channel; Noise-authenticated, never a browser's
 WS     /ws/agent-accounts/{engine}/{account}/signin                                never  # interactive vendor login (#1820)
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)

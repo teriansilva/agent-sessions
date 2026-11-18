@@ -8,7 +8,10 @@ uses. The rules are pinned in ``docs/invariants/public-shares.md``.
 
 Attribution: a visitor's turn is recorded in the share store (``ShareStore.record_turn``) under an
 operation id the server minted, so both views can say whose it was — ``{"name": …, "via":
-"public_link"}`` — without touching the native journal or the workers' IPC.
+"public_link"}`` — without touching the native journal or the workers' IPC. A turn a paired
+instance caused (#2057) is recorded the same way in the federation store and shown as ``{"name":
+<the peer's display name here>, "via": "peer"}``, to the operator, to a public viewer and to
+other peers alike.
 """
 
 from __future__ import annotations
@@ -26,10 +29,39 @@ UNKNOWN_AUTHOR = {"name": None, "via": "unknown"}
 
 
 def author_view(entry: dict | None) -> dict | None:
-    """The attribution both views carry for a visitor's turn; None for the operator's own."""
+    """The attribution every view carries for a turn somebody else caused; None for the
+    operator's own. A peer's turn (#2057) names the peer as THIS instance shows it, the label its
+    side gave for who wrote it (shown, never authority), and whether the operator changed the
+    text before approving it."""
     if not entry:
         return None
+    if entry.get("via") == "peer":
+        view = {"name": entry["name"], "via": "peer"}
+        if entry.get("actor"):
+            view["actor"] = entry["actor"]
+        if entry.get("edited"):
+            view["edited"] = True
+        return view
     return {"name": entry["name"], "via": "public_link"}
+
+
+def with_peer_authors(authors: dict[str, dict], peer_authors: dict[str, dict]) -> dict[str, dict]:
+    """The authors map of a session with its peer turns added (``federation.store.Store
+    .peer_authors``). An entry's ``share_id`` is the GRANT the turn came through, so the peer
+    that wrote it reads its own text back as it typed it, exactly as a link's visitor does
+    (redacting it would mark which of its guesses equals a secret). A text the operator EDITED
+    carries no such id: it holds the operator's words and is redacted for everyone."""
+    out = dict(authors)
+    for operation_id, entry in peer_authors.items():
+        row: dict = {"name": entry["name"], "via": "peer"}
+        if entry.get("actor"):
+            row["actor"] = entry["actor"]
+        if entry.get("edited"):
+            row["edited"] = True
+        else:
+            row["share_id"] = entry["grant_id"]
+        out[operation_id] = row
+    return out
 
 
 def overlay_authors(snapshot: dict, authors: dict[str, dict] | None) -> dict:

@@ -9,17 +9,22 @@ service attached when it built the channel (``(federation, pairing)`` in ``pair`
 ``(federation, peer_id)`` in ``peer`` mode). Handlers never take a path, a URL to fetch, a command
 or a session key from a peer's arguments: a shared session is addressed by its **grant id**
 (#2054), and the handlers behind those verbs live in :mod:`sharing`.
+
+Input (#2057, handlers in :mod:`inputs`): ``input.suggest``, ``input.suggestions``,
+``input.withdraw`` and ``input.send``. A peer never names an operation id (the owner mints
+them) and **no verb changes a grant**: none extends, raises or re-creates one.
 """
 
 from __future__ import annotations
 
 import asyncio
 import math
+import uuid
 
 from .. import chat_store
 from . import channel as ch
 from . import endpoints as ep
-from . import frames, grants, sharing, store, terminal
+from . import frames, grants, inputs, sharing, store, terminal
 
 APP_PROTOCOL = 1
 
@@ -126,6 +131,78 @@ def _history_args(args: dict) -> dict:
     return {**_grant_ref(args), "before": before}
 
 
+def _client_key(args: dict) -> str:
+    """The caller's retry key: a UUID in its canonical form, kept exactly as it was sent."""
+    raw = args.get("client_key")
+    if not isinstance(raw, str) or len(raw) != 36:
+        raise ch.BadArgs("client_key")
+    try:
+        canonical = str(uuid.UUID(raw))
+    except ValueError:
+        raise ch.BadArgs("client_key") from None
+    if canonical != raw:
+        raise ch.BadArgs("client_key")
+    return raw
+
+
+def _text(args: dict) -> str:
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text) > inputs.MAX_TEXT:
+        raise ch.BadArgs("text")
+    return text
+
+
+def _actor(args: dict) -> str:
+    """An optional display label for who wrote the message on the peer's side. Cleaned like a
+    peer name; shown and audited, never authority. Absent is empty."""
+    raw = args.get("actor")
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str) or len(raw) > 4 * store.NAME_MAX:
+        raise ch.BadArgs("actor")
+    try:
+        return store.clean_name(raw)
+    except store.Invalid:
+        raise ch.BadArgs("actor") from None
+
+
+def _suggest_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "client_key", "text", "actor")
+    return {
+        **_grant_ref(args),
+        "client_key": _client_key(args),
+        "text": _text(args),
+        "actor": _actor(args),
+    }
+
+
+def _send_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "client_key", "text", "actor", "expected_revision")
+    expected = args.get("expected_revision")
+    if expected is not None and (type(expected) is not int or not 0 <= expected <= 2**53):
+        raise ch.BadArgs("expected_revision")
+    return {
+        **_grant_ref(args),
+        "client_key": _client_key(args),
+        "text": _text(args),
+        "actor": _actor(args),
+        "expected_revision": expected,
+    }
+
+
+def _suggestions_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision")
+    return _grant_ref(args)
+
+
+def _withdraw_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "suggestion_id")
+    suggestion_id = args.get("suggestion_id")
+    if not grants.valid_grant_id(suggestion_id):  # the same shape: `store.new_grant_id`
+        raise ch.BadArgs("suggestion_id")
+    return {**_grant_ref(args), "suggestion_id": suggestion_id}
+
+
 # ── pair mode ─────────────────────────────────────────────────────────
 async def _pair_hello(channel: ch.Channel, args: dict) -> dict:
     fed, pairing = channel.context
@@ -208,6 +285,11 @@ PEER = _table(
     ("session.events", _events_args, sharing.session_events),
     ("session.history", _history_args, sharing.session_history),
     ("share.changed", _no_args, sharing.share_changed),
+    # Input (#2057), answered by the OWNER. None of them changes a grant.
+    ("input.suggest", _suggest_args, inputs.input_suggest),
+    ("input.suggestions", _suggestions_args, inputs.input_suggestions),
+    ("input.withdraw", _withdraw_args, inputs.input_withdraw),
+    ("input.send", _send_args, inputs.input_send),
     # A terminal session's current screen as a redacted text frame, view only (#2056). Answered
     # by the OWNER; it reads, and nothing on this channel types into or resizes a terminal.
     ("terminal.frame", _frame_args, terminal.terminal_frame),

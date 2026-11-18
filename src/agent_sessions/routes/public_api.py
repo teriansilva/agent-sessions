@@ -270,6 +270,13 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
     _view = require_share()
     _send = require_share(send=True)
 
+    def _authors(session_key: str) -> dict:
+        """Whose turn each one was: this session's link visitors, and the paired instances that
+        caused turns in it (#2057), which a visitor sees named as the owner names them."""
+        federation = getattr(app.state, "federation", None)
+        peers = {} if federation is None else federation.store.peer_authors(session_key)
+        return share_api.with_peer_authors(store.authors(session_key), peers)
+
     @app.get("/api/public/session")
     async def public_session(
         visitor=Depends(_view),  # noqa: B008 — a closure-local dependency
@@ -278,7 +285,7 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         _api_only(share)
         presence.default().touch(share.session_key, visitor.viewer, name=visitor.name)
         snap = await _snapshot(share.session_key)
-        authors = await asyncio.to_thread(store.authors, share.session_key)
+        authors = await asyncio.to_thread(_authors, share.session_key)
 
         def build():
             # Off the loop: reading the secret store and redacting a full snapshot are real work,
@@ -574,7 +581,7 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
             raise HTTPException(status_code=422, detail="queued_turn_id is required")
         await asyncio.to_thread(_not_mission_held, share.session_key)
         snap = await _snapshot(share.session_key)
-        authors = await asyncio.to_thread(store.authors, share.session_key)
+        authors = await asyncio.to_thread(_authors, share.session_key)
         mine = {
             t.get("turn_id")
             for t in snap.get("turns") or []

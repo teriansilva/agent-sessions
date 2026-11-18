@@ -1115,6 +1115,18 @@ KIND_REASON = {
 }
 
 
+#: What a row says for an event that is not a needs-you episode, keyed by the SERVER's name for
+#: the event. The same rule as :data:`KIND_REASON`: fixed strings, so nothing another party
+#: wrote reaches the bell or a push through its producer.
+#:
+#: ``peer_suggestion`` (#2057): a paired instance proposed a message for a session and it waits
+#: for the operator. Its row and its push carry the peer's display name on this instance, the
+#: session's title and the link; NEVER the proposed text (``federation/notices.py``).
+EVENT_REASON = {
+    "peer_suggestion": "A paired instance suggests a message",
+}
+
+
 def episode_tag(session_id: str, episode: str) -> str:
     """The notification tag for one episode — what a close push closes, and ONLY that."""
     return f"needs-you:{session_id}:{episode}"

@@ -96,9 +96,13 @@ def test_schema_1_migrates_in_place_and_a_backup_is_taken_first(tmp_path):
     assert st.by_key(key).name == "old box"  # the first use migrates, and the peer is still there
 
     con = sqlite3.connect(st.db_path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 4
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"peers", "grants", "grant_events", "remote_shares", "meta"} <= tables
+    # Schema 3 (#2056, the grant kind) and schema 4 (#2057, input), in the same migration.
+    assert "kind" in {r[1] for r in con.execute("PRAGMA table_info(grants)")}
+    assert "kind" in {r[1] for r in con.execute("PRAGMA table_info(remote_shares)")}
+    assert {"suggestions", "peer_turns"} <= tables
     con.close()
     assert st.generation() == 0
 
@@ -220,8 +224,8 @@ def test_a_grant_needs_a_local_api_session_a_trusted_peer_and_a_bounded_expiry(s
     assert longest.expires_at - time.time() > 90 * 86400 - 5
     for bad in (90 * 86400 + 1, 0, -5, 1, True, "3600", float("nan"), float("inf"), 10**400, []):
         assert refusal(grant, st, peer, expires_in=bad).code == "invalid", bad
-    # only `view` in this phase
-    for level in ("send", "suggest", "", None, 1):
+    # a level this build does not grant (the levels' own rules: `test_federation_inputs.py`)
+    for level in ("admin", "SEND", "", None, 1, ["send"]):
         assert refusal(grant, st, peer, level=level).code == "invalid"
 
     # one live grant per session and peer; another peer may hold its own
@@ -344,7 +348,7 @@ def test_authorize_is_one_answer_for_everything_that_is_not_this_peers_live_gran
     con.commit()
     refused(mine.grant_id, peer.peer_id, 2, "no longer a local shareable session")
     con.execute(
-        "UPDATE grants SET session_key = ?, level = 'send' WHERE grant_id = ?",
+        "UPDATE grants SET session_key = ?, level = 'admin' WHERE grant_id = ?",
         (mine.session_key, mine.grant_id),
     )
     con.commit()

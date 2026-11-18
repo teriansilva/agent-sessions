@@ -796,9 +796,14 @@ def test_a_terminal_session_is_granted_view_only_now_and_later(tmp_path, live, m
     peer = trusted(st)
     key = term_key()
 
-    def create(session_key=key, level="view"):
+    def create(session_key=key, level="view", accept_risk=False):
         return grants.create(
-            st, session_key=session_key, peer_id=peer.peer_id, level=level, expires_in=None
+            st,
+            session_key=session_key,
+            peer_id=peer.peer_id,
+            level=level,
+            expires_in=None,
+            accept_risk=accept_risk,
         )
 
     made = create()
@@ -817,10 +822,10 @@ def test_a_terminal_session_is_granted_view_only_now_and_later(tmp_path, live, m
     monkeypatch.setattr(grants, "LEVELS", ("view", "suggest", "send"))
     monkeypatch.setitem(grants.DEFAULT_EXPIRY_S, "send", 86400)
     monkeypatch.setitem(grants.DEFAULT_EXPIRY_S, "suggest", 86400)
-    assert create(api_key(), "send").level == "send"
+    assert create(api_key(), "send", accept_risk=True).level == "send"
     for level in ("send", "suggest"):
-        with pytest.raises(grants.GrantError) as exc:
-            create(term_key(), level)
+        with pytest.raises(grants.GrantError) as exc:  # the operator's risk word changes nothing
+            create(term_key(), level, accept_risk=True)
         assert exc.value.code == "invalid" and "view only" in exc.value.detail
     # ...and a terminal row that somehow carries another level is not served, nor listed.
     con = sqlite3.connect(st.db_path)
@@ -895,7 +900,8 @@ def test_schema_2_migrates_in_place_with_a_backup_and_its_grants_are_api_grants(
     assert st.get_grant("g" * 22).kind == "api"  # the first use migrates
     assert st.get_remote("a" * 32, "r" * 22).kind == "api"
     con = sqlite3.connect(path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 3
+    # Through schema 3 (the kind) and on to 4 (#2057's input tables), in one migration.
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 4
     # The database is the arbiter: a kind this build does not know is never stored.
     with pytest.raises(sqlite3.IntegrityError):
         con.execute("UPDATE grants SET kind = 'pty'")
@@ -1105,7 +1111,8 @@ def test_the_second_check_is_the_last_await_before_the_frame_is_returned():
     assert [ast.unparse(k.value) for k in awaited.value.keywords if k.arg == "kind"] == [
         "grants.KIND_TERMINAL"
     ]
-    assert sharing._authorize.__kwdefaults__ == {"kind": "api"}
+    # The shared check has no default kind: every caller states the kind its verb reads.
+    assert "kind" not in (sharing._authorize.__kwdefaults__ or {})
 
 
 @pytest.mark.anyio
