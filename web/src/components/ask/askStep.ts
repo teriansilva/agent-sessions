@@ -67,6 +67,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   propose_message: { label: "Preparing the message for you to send" },
   withdraw_card: { label: "Withdrawing a card" },
   list_cards: { label: "Looking at the cards", noun: ["card", "cards"] },
+  // #2137: what waits on the Commander, and the bell.
+  needs_you: { label: "Checking what needs you", noun: ["item", "items"] },
+  notifications: { label: "Reading your notifications", noun: ["notification", "notifications"] },
   // #1559: staging a change for the operator to confirm.
   propose_session: { label: "Preparing the session for you to start" },
   propose_session_change: { label: "Preparing the change for you to confirm" },
@@ -78,6 +81,8 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   show: { label: "Putting it on your screen" },
   ask_operator: { label: "Asking you a question" },
   end_call: { label: "Ending the call" },
+  // #2137: on a call, the decisions read back for the Commander to answer aloud.
+  offer_decisions: { label: "Putting decisions to you" },
 };
 
 /** A step's words in the list: the tool's label, or a lookup for a tool this build does not know

@@ -104,6 +104,16 @@ OBJECTIVES_MAX = 30
 QUERY_MAX = pulse_chat.QUERY_MAX
 #: Replayed history: the last settled turns of this conversation, each side capped.
 HISTORY_TURNS = 8
+#: What HQ said on a call outside its answers that later turns see (#2137): read-backs and
+#: outcomes, a few per turn, each capped. The greeting and the still-there question are not news.
+SAID_REPLAYED = frozenset({"readback", "outcome"})
+SAID_REPLAYED_MAX = 4
+SAID_REPLAYED_CHARS = 600
+#: Prefixed to the next question when the call dropped words for their language (#2137).
+FOREIGN_NOTE = (
+    "[Some words before this were heard in a language this call does not listen in, "
+    "and were not taken.]"
+)
 #: What a FAILED turn's question is replayed with (#1887): a fixed line, never the stored failure
 #: detail (some details carry endpoint text). Without it the question vanished from the history, so
 #: the operator's "try again" reached HQ with nothing to try.
@@ -503,6 +513,16 @@ class _Turn:
     #: HQ judged that the operator's words mean the call is over (#1668): `end_call` was used on
     #: this CALL turn. Memory only, never stored: the settled view carries it to the call alone.
     end_call: bool = False
+    #: Needs-you decisions THIS turn's `needs_you` read returned (#2137): what `offer_decisions`
+    #: may name, by the pending action's id.
+    needs_you_seen: set = field(default_factory=set)
+    #: Needs-you decisions HQ put to the Commander on this CALL turn (`offer_decisions`, #2137), in
+    #: order. Memory only: the settled view carries them to the call, which reads each back from
+    #: the LIVE list and arms the spoken confirmation; the Commander decides, never HQ.
+    offers: list = field(default_factory=list)
+    #: The call dropped words for their language since the previous question (#2137): THIS
+    #: question carries the note, so "did you hear that?" is answered knowing it.
+    dropped_foreign: bool = False
     #: Files shared with this question (#1707): their descriptors (as stored), and the bounded
     #: TEXT bodies read at begin — the model request boundary sanitizes them (fail-closed).
     attachments: list[dict] = field(default_factory=list)
@@ -1605,6 +1625,106 @@ async def _end_call(turn: _Turn, args: dict) -> tuple[dict, dict]:
     turn.end_call = True
     note = "Now say a short goodbye as your answer; the call ends once it has been spoken."
     return {"ending": True, "note": note}, {}
+
+
+# ---- Needs-you, the bell, and deciding by voice (#2137) ------------------------------------------
+
+NEEDS_YOU_LISTED_MAX = 20
+NOTIFICATIONS_LISTED_MAX = 20
+
+
+async def _get(turn: _Turn, path: str) -> object:
+    """A read route's body, in-process as the operator; refused when it can't be read."""
+    from . import asgi_call
+
+    operator, app = _operator(turn)
+    try:
+        resp = await asgi_call.call(app, operator, "GET", path, None)
+    except Exception:  # noqa: BLE001
+        raise _ToolRefused("could not be read just now", "not_available") from None
+    if resp.status != 200 or not isinstance(resp.body, dict):
+        raise _ToolRefused("could not be read just now", "not_available")
+    return resp.body
+
+
+async def _needs_you(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """The Commander's Needs-you list (#2137): what waits on them, newest first, in the call's own
+    fixed sentences (`voice_calls.needs_you_sentence`: an agent's words only where they read back
+    whole). A row a voice may decide carries its `decision` id, for `offer_decisions`."""
+    from . import voice_calls
+
+    body = await _get(turn, "/api/pulse/needs-you")
+    rows = [r for r in body.get("rows") or [] if isinstance(r, dict)]  # type: ignore[union-attr]
+    out: list[dict] = []
+    for r in rows[:NEEDS_YOU_LISTED_MAX]:
+        cards = voice_calls.needs_you_cards([r])
+        if cards:
+            # What a voice may decide: told as the call reads it back, whole (#1681).
+            out.append({"what": cards[0]["line"], "decision": cards[0]["id"]})
+            turn.needs_you_seen.add(cards[0]["id"])
+        else:
+            out.append({"what": voice_calls.needs_you_sentence(r)})
+    total = body.get("total")  # type: ignore[union-attr]
+    if not isinstance(total, int) or isinstance(total, bool) or total < len(rows):
+        total = len(rows)
+    note = (
+        "A row with a decision can be put to the Commander by voice on a call with "
+        "offer_decisions; the rest are decided on their screen."
+    )
+    return {"total": total, "rows": out, "note": note}, {"count": len(out)}
+
+
+async def _notifications(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """The bell (#2137): the newest notifications still showing, with HQ's dispatch line where one
+    was written. Reads only: nothing is marked read or dismissed."""
+    body = await _get(turn, "/api/pulse/notifications")
+    rows = [r for r in body.get("notifications") or [] if isinstance(r, dict)]  # type: ignore[union-attr]
+    out: list[dict] = []
+    for r in rows[:NOTIFICATIONS_LISTED_MAX]:
+        row = {
+            "title": str(r.get("title") or "")[:120],
+            "reason": str(r.get("reason") or "")[:200],
+            "session": str(r.get("session_id") or "")[:200],
+            "at": r.get("ts") if isinstance(r.get("ts"), int | float) else None,
+            "read": r.get("read") is True,
+            "needs_you": r.get("needs_you") is True,
+        }
+        d = r.get("dispatch")
+        if isinstance(d, dict) and isinstance(d.get("line"), str):
+            row["dispatch"] = d["line"][:300]
+        out.append(row)
+    unread = body.get("unread")  # type: ignore[union-attr]
+    return (
+        {"unread": unread if isinstance(unread, int) else None, "notifications": out},
+        {"count": len(out)},
+    )
+
+
+async def _offer_decisions(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Put Needs-you decisions to the Commander by voice (#2137). Only on a call, only decisions
+    THIS turn's `needs_you` returned. Nothing is decided here: after HQ's answer the call reads
+    each one back from the live list and the Commander answers it aloud."""
+    from . import voice_calls
+
+    if turn.via != "call":
+        raise _ToolRefused("refused: not on a call", "not_a_call")
+    ids = args.get("decisions")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        raise _ToolRefused("decisions must be a list of decision ids", "bad_arguments")
+    unknown = [i for i in ids if i not in turn.needs_you_seen]
+    if unknown:
+        raise _ToolRefused(
+            "refused: only a decision this turn's needs_you returned can be offered",
+            "unknown_decision",
+        )
+    for i in ids:
+        if i not in turn.offers and len(turn.offers) < voice_calls.OFFERS_MAX:
+            turn.offers.append(i)
+    note = (
+        "After your answer the call reads each one back and the Commander answers it aloud. "
+        "Say briefly what they are; do not read them out yourself."
+    )
+    return {"offered": len(turn.offers), "note": note}, {}
 
 
 async def _ask_operator(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -3107,6 +3227,46 @@ TOOLS: dict[str, Tool] = {
             _end_call,
         ),
         Tool(
+            "needs_you",
+            "read",
+            _spec(
+                "needs_you",
+                "What is waiting on the Commander right now (their Needs-you list): sessions that "
+                "ask a question, a permission or a choice, newest first. Call it when they ask "
+                "what needs them or what is waiting, or before you summarise their open decisions.",
+                {},
+                [],
+            ),
+            _needs_you,
+        ),
+        Tool(
+            "notifications",
+            "read",
+            _spec(
+                "notifications",
+                "The Commander's notification bell: the newest notifications still showing, with "
+                "your own dispatch line where you wrote one. Reads only; nothing is marked read.",
+                {},
+                [],
+            ),
+            _notifications,
+        ),
+        Tool(
+            "offer_decisions",
+            "call",
+            _spec(
+                "offer_decisions",
+                "On a call, put Needs-you decisions to the Commander so they can answer by voice: "
+                "the ids are the `decision` values needs_you returned in this turn. After your "
+                "answer the call reads each one back and the Commander says confirm, allow, "
+                "refuse, an option's number or skip. You decide nothing. Use it when they ask "
+                "what needs them, or to go through their decisions.",
+                {"decisions": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
+                ["decisions"],
+            ),
+            _offer_decisions,
+        ),
+        Tool(
             "show",
             "screen",
             _spec(
@@ -3819,7 +3979,7 @@ ABANDONED_ON_STOP = frozenset({"read"})
 _WROTE: contextvars.ContextVar[list | None] = contextvars.ContextVar("ask_wrote", default=None)
 
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
-CALL_ONLY_TOOLS = frozenset({"end_call"})
+CALL_ONLY_TOOLS = frozenset({"end_call", "offer_decisions"})
 #: Tool kinds a continuation turn (`via: "card"`, #1950) may not run: the ones with an effect
 #: that no card confirms. It reads, asks and stages cards; every write stays a tap.
 #: `screen` (#2102) too: nobody asked the server's own continuation to move their screen.
@@ -3847,6 +4007,7 @@ DRAFT_READ_TOOLS = frozenset(
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool", "list_procedures",
         "list_memory_notebooks", "search_memory", "read_memory", "list_cards",
+        "needs_you", "notifications",
     }
 )  # fmt: skip
 
@@ -4022,12 +4183,29 @@ def _history(
     # after this one began still reads as failed.
     statuses = _turn_statuses(records)
     order: list[str] = []
+    # What HQ said on a call outside its answers (#2137): read-backs and outcomes, replayed after
+    # the answer they followed, so "what did you just read me?" has an answer. And words the call
+    # heard in a language it does not listen in: the next question says some were not taken.
+    said: dict[str, list[str]] = {}
+    foreign = False
     for r in records:
         tid = r.get("turn_id")
         if tid == turn_id:
             break
+        rtype = r.get("type")
+        if rtype == "said" and r.get("kind") in SAID_REPLAYED and isinstance(r.get("text"), str):
+            owner = tid if tid in questions else (order[-1] if order else None)
+            if owner is not None and len(said.setdefault(owner, [])) < SAID_REPLAYED_MAX:
+                said[owner].append(r["text"][:SAID_REPLAYED_CHARS])
+            continue
+        if rtype == "heard" and r.get("route") == "dropped" and r.get("why") == "foreign":
+            foreign = True
+            continue
         if r.get("type") == "user" and isinstance(r.get("text"), str):
             text = r["text"]
+            if foreign:
+                text = f"{FOREIGN_NOTE}\n\n{text}"
+                foreign = False
             # A past question that shared files (#1707) replays their sanitized NOTE so later
             # turns know the files existed — never the bytes again, and never an unsanitized name
             # (the note's own sanitizer is fail-closed).
@@ -4054,6 +4232,8 @@ def _history(
     for tid in replayed[-HISTORY_TURNS:]:
         if tid in answers:
             answer = answers[tid]
+            if said.get(tid):
+                answer += "\n\n" + "\n".join(f"[Said on the call: {line}]" for line in said[tid])
             if speakers[tid] != contact:
                 answer = f"{speaker_label(speakers[tid])}\n\n{answer}"
                 switched = True
@@ -4064,6 +4244,23 @@ def _history(
             {"role": "assistant", "content": answer},
         ]
     return out, switched
+
+
+def _dropped_for_language(records: list[dict], turn_id: str) -> bool:
+    """Whether the call dropped words for their language after the previous question and before
+    THIS one (#2137): the same rule `_history` applies to the questions it replays. A drop recorded
+    after this question's own record (the call's writer is a step behind) still counts, until the
+    next question."""
+    dropped = False
+    for r in records:
+        rtype = r.get("type")
+        if rtype == "user":
+            if r.get("turn_id") != turn_id:
+                dropped = False
+            continue
+        if rtype == "heard" and r.get("route") == "dropped" and r.get("why") == "foreign":
+            dropped = True
+    return dropped
 
 
 def speaker_label(contact: str) -> str:
@@ -4354,6 +4551,8 @@ def _user_content(turn: _Turn, shown: frozenset[str] = frozenset()) -> str:
         base = f'Answering your question "{turn.answering["question"]}": {turn.question}'
     elif turn.replying_to:
         base = f'Answering your question "{turn.replying_to}": {turn.question}'
+    if turn.dropped_foreign:
+        base = f"{FOREIGN_NOTE}\n\n{base}"
     # Files shared with this question (#1707): every name and byte goes through the fail-closed
     # sanitizer at THIS model-request boundary (`ask_attachments.prompt_block`) — the JSONL
     # admission step never saw these bytes and is never relied on for them. A text file is inlined
@@ -4897,6 +5096,7 @@ async def _run_turn(turn: _Turn) -> list[dict]:
         return fail("the AI endpoint is not configured", "unconfigured")
     records = await asyncio.to_thread(ask_store.read, turn.cid)
     history, switched = _history(records, turn.turn_id, turn.contact)
+    turn.dropped_foreign = _dropped_for_language(records, turn.turn_id)
     turn.cards = _cards_held(records)
     await _carry_sessions(turn, records)
     if turn.via == "card" and missions.MISSION_ID_RE.match(turn.continues_mission):
@@ -5711,6 +5911,8 @@ async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
         view = (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view
         if turn.end_call and view:
             view = {**view, "end_call": True}  # to the call alone (#1668), never stored
+        if turn.offers and view:
+            view = {**view, "offers": list(turn.offers)}  # to the call alone (#2137), never stored
         return view
     finally:
         async with _lock(turn.cid):

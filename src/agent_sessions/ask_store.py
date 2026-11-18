@@ -51,7 +51,7 @@ import re
 import stat
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from . import ask_screen, hq_contacts, missions, template_secrets, template_suggest
@@ -120,9 +120,32 @@ VIAS = frozenset({"call", "card"})
 RECORD_TYPES = frozenset(
     {
         "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
-        "steps_more", "screen", "interjection",
+        "steps_more", "screen", "interjection", "heard", "heard_link", "said", "counts",
     }
 )  # fmt: skip
+
+# A call's own record of what it heard and said (#2137). `heard`: one per utterance the speech
+# worker delivered, written as it arrives, before anything routes it. A DROPPED utterance (HQ's
+# own echo, a language the call does not listen in, a stock no-speech phrase) keeps NO words: only
+# why, its heard language and its length, so a bystander's speech is never stored. `heard_link`:
+# appended once the call knows where those words went (the store is append-only, never rewritten):
+# the route, and the HQ turn they became part of. `said`: what HQ spoke outside an answer (the
+# greeting, a card read-back, a settle outcome, the still-there question). `counts`: how many of
+# each a call could not store past the bounds below.
+HEARD_ROUTES = frozenset(
+    {"hq", "held", "queued", "joined", "interject", "confirm", "stop", "muted", "dropped"}
+)
+HEARD_DROPS = frozenset({"echo", "foreign", "no_speech"})
+SAID_KINDS = frozenset({"greeting", "readback", "outcome", "still_there"})
+#: Bounds per conversation (#2137): past them a call counts instead of storing.
+HEARD_DROPPED_MAX = 200
+HEARD_SAID_MAX = 2_000
+#: `counts` records: at most one per call, and only past a bound; capped too, since calls are not.
+HEARD_COUNTS_MAX = 50
+_HEARD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+_LANG_RE = re.compile(r"^[a-z]{2}$")
+#: The worker's turn numbers, and an utterance's length in characters, are bounded like any number.
+HEARD_NUMBER_MAX = 10**9
 
 # A shared file's descriptor on a `user` record (#1707): the blob lives beside the conversation
 # (`ask_attachments`), this is only its metadata and is shape-checked here like every structural
@@ -604,6 +627,8 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         # their own words, through the same boundary as a question's text.
         out["turn_id"] = _turn_id(rec)
         out["text"] = text(rec.get("text"), TEXT_MAX)
+    elif kind in ("heard", "heard_link", "said", "counts"):
+        out.update(_admit_call_record(kind, rec, text))
     elif kind == "steps_more":
         # The steps a turn ran past its stored ones (#2076): numbers and tool names only.
         out["turn_id"] = _turn_id(rec)
@@ -626,6 +651,72 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                     raise ValueError("malformed step summary")
                 admitted_counts[name] = v
             out[k] = admitted_counts
+    return out
+
+
+def _bounded_int(value: object, what: str, *, low: int = 0) -> int:
+    if not (isinstance(value, int) and not isinstance(value, bool) and low <= value):
+        raise ValueError(f"malformed {what}")
+    if value > HEARD_NUMBER_MAX:
+        raise ValueError(f"malformed {what}")
+    return value
+
+
+def _admit_call_record(kind: str, rec: dict, text: Callable[[object, int], str]) -> dict:
+    """A call's own records (#2137), field by field. Free text is the Commander's kept words (a
+    `heard` routed anywhere but `dropped`) or HQ's own spoken line (`said`), both through the store
+    boundary (`guard_text`: redacted and checked WHOLE, then capped). A dropped `heard` refuses any
+    text: the words of an utterance the call did not take are never stored."""
+    out: dict = {}
+    if kind in ("heard", "heard_link"):
+        hid = rec.get("heard_id")
+        if not (isinstance(hid, str) and _HEARD_ID_RE.match(hid)):
+            raise ValueError("malformed heard id")
+        out["heard_id"] = hid
+    if kind == "heard":
+        route = rec.get("route")
+        if route not in ("received", "dropped"):
+            raise ValueError("a heard record is received or dropped")
+        out["route"] = route
+        turn = rec.get("turn")
+        if turn is not None:
+            out["turn"] = _bounded_int(turn, "turn number")
+        out["chars"] = _bounded_int(rec.get("chars"), "length")
+        lang = rec.get("lang")
+        if lang is not None:
+            if not (isinstance(lang, str) and _LANG_RE.match(lang)):
+                raise ValueError("malformed language")
+            out["lang"] = lang
+        if rec.get("late") is True:
+            out["late"] = True
+        if route == "dropped":
+            why = rec.get("why")
+            if why not in HEARD_DROPS:
+                raise ValueError("unknown drop reason")
+            if "text" in rec:
+                raise ValueError("a dropped utterance keeps no words")
+            out["why"] = why
+        else:
+            out["text"] = text(rec.get("text"), TEXT_MAX)
+    elif kind == "heard_link":
+        route = rec.get("route")
+        if route not in HEARD_ROUTES - {"dropped"}:
+            raise ValueError("unknown heard route")
+        out["route"] = route
+        tid = rec.get("turn_id")
+        if tid is not None:
+            out["turn_id"] = _turn_id(rec)
+    elif kind == "said":
+        skind = rec.get("kind")
+        if skind not in SAID_KINDS:
+            raise ValueError("unknown said kind")
+        out["kind"] = skind
+        out["text"] = text(rec.get("text"), TEXT_MAX)
+        if rec.get("turn_id") is not None:
+            out["turn_id"] = _turn_id(rec)
+    else:  # counts
+        for k in ("heard_dropped", "heard_said"):
+            out[k] = _bounded_int(rec.get(k, 0), "count")
     return out
 
 

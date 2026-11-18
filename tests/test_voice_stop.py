@@ -20,6 +20,18 @@ from test_ask_orchestrator import ai, answer, app  # noqa: F401 — fixtures
 from test_voice_confirm import Rig
 from test_voice_draft_turns import _speak, _until
 
+#: The call's own records (#2137): what it heard and where that went. Not an HQ turn.
+_CALL_RECORDS = ("heard", "heard_link", "said", "counts")
+
+
+def _only_the_call_heard(rig, words: list[str]) -> None:
+    """The conversation holds no HQ turn: only the call's record of the words it heard, and the
+    spoken stop linked as a stop (#2137). The discarded draft's words are linked to no turn."""
+    recs = ask_store.read(rig.call.cid)
+    assert [r["type"] for r in recs if r["type"] not in _CALL_RECORDS] == ["conversation"]
+    assert [r["text"] for r in recs if r["type"] == "heard"] == words
+    assert [r["route"] for r in recs if r["type"] == "heard_link"] == ["stop"]
+
 
 @pytest.fixture
 def rig(monkeypatch, app):  # noqa: F811
@@ -170,7 +182,7 @@ def test_stop_drops_a_draft_that_was_not_committed_yet(rig, held, monkeypatch): 
         await _until(lambda: not ask_orchestrator._RUNNING)
 
     run(scenario())
-    assert [r["type"] for r in ask_store.read(rig.call.cid)] == ["conversation"]
+    _only_the_call_heard(rig, ["How far are we with the epic?", "Never mind."])
     assert rig.said_text() == ["Stopped."] and rig.call.draft is None
 
 
@@ -254,7 +266,9 @@ def test_a_draft_the_quiet_timer_tries_to_commit_during_a_spoken_stop_is_still_d
 
     script = run(scenario())
     # The captured turn really ended: never stored, never answered, the endpoint never let go.
-    assert [r["type"] for r in ask_store.read(rig.call.cid)] == ["conversation"]
+    recs = ask_store.read(rig.call.cid)
+    assert [r["type"] for r in recs if r["type"] not in _CALL_RECORDS] == ["conversation"]
+    assert [r["route"] for r in recs if r["type"] == "heard_link"] == ["stop"]
     assert rig.said_text() == ["Stopped."] and not script.go.is_set()
 
 

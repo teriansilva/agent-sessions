@@ -41,8 +41,16 @@ from agent_sessions import (
 from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
 from test_permission_answer import CL_SID, GEOM, OC_SID, _escalate, _paint
-from test_voice_confirm import Rig, run
-from test_voice_needs_you import BASH_SAID, CONFIRM, MENU, _card, _escalation, _perm, _rows
+from test_voice_confirm import NEEDS_YOU_ANSWER, Rig, run
+from test_voice_needs_you import BASH_SAID, CONFIRM, MENU, _card, _escalation, _perm, _rows, _tool
+
+SCREEN_ONLY = "wants a permission I can't read out — it's on your screen."
+
+
+def _told(body: dict, monkeypatch) -> list[str]:
+    """What HQ's `needs_you` tool tells HQ about each row (#2137): HQ answers from these."""
+    return [row["what"] for row in _tool(body, monkeypatch)[0]["rows"]]
+
 
 DELIVERED = {"state": "rejected", "choice": {"state": "delivered"}}
 
@@ -173,11 +181,8 @@ def test_a_permission_is_read_back_and_allowed_once_through_choose(monkeypatch):
     async def go():
         await r.ask("What needs me?")
         # the WHOLE dialog — every option, the broader grant included — is SAID before "allow
-        # it" can settle (Hermes 7021): in the answer, and again in the read-back that arms
-        assert (
-            r.said_text()[-2]
-            == f"1 thing needs you. deploy in infra {BASH_SAID} Let's decide that one."
-        )
+        # it" can settle (Hermes 7021): in the read-back that arms, after HQ's answer (#2137)
+        assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert r.said_text()[-1] == (
             f"deploy in infra {BASH_SAID} Say allow it to allow it once, refuse it, or skip."
         )
@@ -253,7 +258,8 @@ def test_a_dialog_that_cannot_be_read_whole_is_never_offered_refuse_included(mon
         assert r.call.challenge is None
 
     run(go())
-    assert r.said_text()[-1].endswith("wants a permission I can't read out — it's on your screen.")
+    assert r.said_text()[-1] == NEEDS_YOU_ANSWER  # nothing read back: there was nothing to offer
+    assert _told(_permission_body(rec), monkeypatch)[0].endswith(SCREEN_ONLY)
 
 
 def test_a_route_refusal_is_read_as_the_route_gave_it(monkeypatch):
@@ -348,13 +354,7 @@ def test_rows_are_offered_one_at_a_time_and_an_ordinal_only_names_the_current_ro
 
     async def go():
         await r.ask("What needs me?")
-        assert r.said_text()[-2] == (
-            f"3 things need you. deploy in infra {BASH_SAID}"
-            " docs in web asks: Which branch should I rebase onto? The options are: one, main;"
-            " two, release 2.0."
-            " api-rebase in web asks a question. The suggested answer is: Use main."
-            " Let's take those one at a time."
-        )
+        assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert [c["id"] for c in r.call.challenge["cards"]] == [f"act-{P_SID}"]
         await r.readback_played()
         # a menu number while the PERMISSION row is offered: never the menu's option
@@ -712,7 +712,8 @@ def test_a_newer_question_during_a_settle_owns_the_call(newer, monkeypatch):
 @pytest.mark.parametrize("how", ["cancel", "expire", "talked_over", "new_question"])
 def test_every_item_was_told_in_full_however_the_first_offer_ends(how, monkeypatch):
     """Hermes 7021: the answer to "What needs me?" must not depend on getting through the queue.
-    Whatever ends the first offer, every row's content was already in the answer."""
+    Whatever ends the first offer, every row's content was already in what HQ read (#2137: HQ
+    answers from its `needs_you` tool, which carries each row whole)."""
     r = _rig(monkeypatch, _three())
     clock = [1000.0]
     monkeypatch.setattr(voice_calls.time, "monotonic", lambda: clock[0])
@@ -733,7 +734,7 @@ def test_every_item_was_told_in_full_however_the_first_offer_ends(how, monkeypat
             await r.ask("How is the docs refresh?")
 
     run(go())
-    told = next(t for t in r.said_text() if t.startswith("3 things need you."))
+    told = " ".join(_told(_three(), monkeypatch))
     for content in (
         "mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt",
         "The options are: one, Yes; two, Yes, and don't ask again",
@@ -765,4 +766,4 @@ def test_a_dialog_too_long_to_read_whole_is_screen_only(monkeypatch):
 
     run(go())
     assert r.call.challenge is None
-    assert r.said_text()[-1].endswith("wants a permission I can't read out — it's on your screen.")
+    assert _told(_permission_body(rec), monkeypatch)[0].endswith(SCREEN_ONLY)

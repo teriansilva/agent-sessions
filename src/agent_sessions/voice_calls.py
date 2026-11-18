@@ -122,10 +122,17 @@ CHALLENGE_S = 20.0
 #: How long a 202 (a session starting, an operation running) is followed to its end state.
 OUTCOME_POLL_S = 30.0
 OUTCOME_EVERY_S = 1.5
-#: "What needs me?" — answered from the server's Needs-you list, not by a model.
-NEEDS_YOU_ASK = re.compile(
-    r"\b(what|who|anything)\b.*\bneeds?\b.*\b(me|you|my attention|attention)\b"
-)
+#: The call panel's "What needs me?" chip (#2137): asked of HQ like any spoken question. There is
+#: no keyword shortcut any more — a phrase list once swallowed a whole spoken request because it
+#: contained "what … need … you" (2026-11-18), and HQ never saw it.
+NEEDS_YOU_CHIP = "What needs me?"
+#: The most Needs-you rows one HQ answer may put to the Commander by voice (`offer_decisions`).
+OFFERS_MAX = 4
+#: The call's record writer (#2137) retires after this long with nothing to write.
+RECORD_WRITER_IDLE_S = 30.0
+#: How long a question waits for the call's earlier records to be written before HQ reads the
+#: conversation, so a word dropped just before it is on record when HQ looks (#2137).
+RECORDS_BEFORE_ASK_S = 0.5
 LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
 #: What HQ says while a turn is still running (#1702): short, casual and FIXED. No durations and no
 #: step counts: the Commander asked for "let me check", not a stopwatch. The first line depends
@@ -420,6 +427,18 @@ class Call:
     worker_started: bool = False
     #: "brief" | "detailed" — Settings → HQ calls → answers (picks the registered call prompt).
     answers: str = "brief"
+    #: The call's own records (#2137): `heard`, `heard_link`, `said`, queued WITHOUT an await and
+    #: written in order by one writer task, so a record is taken at the instant it happens.
+    _records: asyncio.Queue | None = field(default=None, repr=False)
+    _records_loop: object = field(default=None, repr=False)  # the loop the queue belongs to
+    _writer: asyncio.Task | None = field(default=None, repr=False)
+    #: Records the conversation already holds, per bound; read once by the writer.
+    _rec_counts: dict | None = field(default=None, repr=False)
+    #: Records not stored past a bound, per bound, and the heard ids whose `heard` was skipped.
+    _rec_skipped: dict = field(
+        default_factory=lambda: {"heard_dropped": 0, "heard_said": 0}, repr=False
+    )
+    _rec_skipped_ids: set = field(default_factory=set, repr=False)
 
     def public(self) -> dict:
         return {
@@ -476,6 +495,13 @@ class Call:
         del self.audible[:-AUDIBLE_KEPT]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
+        if kind in ask_store.SAID_KINDS:
+            # What HQ said outside an answer (#2137): the greeting, a read-back, an outcome, the
+            # still-there question. Kept in the conversation so HQ's next turn knows it was said.
+            rec = {"type": "said", "kind": kind, "text": text}
+            if ask_store.valid_turn_id(turn_id):
+                rec["turn_id"] = turn_id
+            self._record(rec)
         lang = self.language if self.tts_takes_language else None
         # A voice per language (#1397 P3): the contact's voice for the call's language, if set.
         voice = (self.profile or {}).get("language_voices", {}).get(self.language or "")
@@ -574,9 +600,12 @@ class Call:
                 await self.set_state("thinking" if self._turn_running() else "listening")
         elif t == "utterance" and (why := self._not_the_operator(ev)):
             # Dropped BEFORE anything else (#1667, #1807): no HQ turn, no language change, and an
-            # armed confirmation keeps waiting for a real answer.
-            log.debug("voice call %s: dropped an utterance (%s)", self.id, why)
+            # armed confirmation keeps waiting for a real answer. Recorded without its words.
+            self._heard(ev, why)
         elif t == "utterance":
+            # Recorded as it arrives, before anything routes it (#2137): every word the
+            # Commander said leaves a record of where it went.
+            hid = self._heard(ev, None)
             n = _turn_number(ev.get("turn"))
             if n is None or n >= self.user_turn:
                 # Only the newest turn's words mean the Commander stopped: an older turn's
@@ -590,8 +619,9 @@ class Call:
             if text:
                 # `late`: its turn already went out; it began before anything now armed.
                 await self.on_utterance(
-                    text, late=bool(ev.get("late")), turn=_turn_number(ev.get("turn"))
-                )
+                    text, late=bool(ev.get("late")), turn=_turn_number(ev.get("turn")),
+                    heard_id=hid,
+                )  # fmt: skip
         elif t == "error":
             await self.end(
                 f"{ev.get('endpoint') or 'speech'}_failed",
@@ -641,13 +671,131 @@ class Call:
         if not raw.strip():
             return None
         if self._foreign(ev.get("heard_language")):
-            return "a language the call does not listen in"
+            return "foreign"  # a language the call does not listen in
         kept = self._without_echo(ev)
         if not kept:
-            return "HQ's own speech heard back"
+            return "echo"  # HQ's own speech heard back
         if is_no_speech_phrase(raw) or is_no_speech_phrase(kept):
-            return "a stock no-speech phrase"
+            return "no_speech"  # a stock no-speech phrase
         return None
+
+    # -- the call's own record (#2137) ----------------------------------------------------------
+
+    def _heard(self, ev: dict, why: str | None) -> str | None:
+        """Record one utterance as it arrives (#2137), before anything routes it; its id, or None
+        for an empty transcript (nothing was heard). A dropped one (`why`) keeps no words: only why,
+        its heard language and its length. One INFO line per utterance, never with its words."""
+        raw = str(ev.get("text") or "")
+        if not raw.strip():
+            return None
+        hid = uuid.uuid4().hex[:12]
+        rec: dict = {"type": "heard", "heard_id": hid, "chars": min(len(raw), 10**9)}
+        n = _turn_number(ev.get("turn"))
+        if n is not None and n <= 10**9:
+            rec["turn"] = n
+        lang = ev.get("heard_language")
+        if isinstance(lang, str) and LANG.match(lang):
+            rec["lang"] = lang
+        if ev.get("late"):
+            rec["late"] = True
+        if why is not None:
+            rec.update(route="dropped", why=why)
+        else:
+            rec.update(route="received", text=self._without_echo(ev))
+        self._record(rec)
+        log.info(
+            "voice call %s heard: turn %s, %s, %d words", self.id, n,
+            f"dropped ({why})" if why else "received", len(raw.split()),
+        )  # fmt: skip
+        return hid
+
+    def _link(self, hid: str | None, route: str, turn_id: str | None = None) -> None:
+        """Where heard words went (#2137): appended, never rewritten. Words only ever on `heard`."""
+        if hid is None:
+            return
+        rec: dict = {"type": "heard_link", "heard_id": hid, "route": route}
+        if turn_id is not None:
+            rec["turn_id"] = turn_id
+        self._record(rec)
+        log.info("voice call %s heard %s: %s%s", self.id, hid, route,
+                 f" (turn {turn_id})" if turn_id else "")  # fmt: skip
+
+    def _record(self, rec: dict) -> None:
+        """Queue one of the call's own records WITHOUT awaiting: the queue keeps them in the order
+        they happened, and one writer task appends them. Never fails the call."""
+        if not ask_store.valid_cid(self.cid):
+            return
+        if self._queue() is None:
+            loop = asyncio.get_running_loop()
+            self._records, self._records_loop, self._writer = asyncio.Queue(), loop, None
+        if self._writer is None or self._writer.done():
+            # Started on demand, and again for a record after the writer retired (a settlement's
+            # outcome that lands after the call ended): nothing queued is ever left unwritten.
+            self._writer = asyncio.create_task(self._write_records())
+        self._records.put_nowait(rec)
+
+    def _queue(self) -> asyncio.Queue | None:
+        """The record queue, if it belongs to the running loop (a queue is bound to one loop)."""
+        if self._records is None or self._records_loop is not asyncio.get_running_loop():
+            return None
+        return self._records
+
+    async def _write_records(self) -> None:
+        """Append queued records in order. Retires once idle for `RECORD_WRITER_IDLE_S`, or when
+        the call ends (`end`): it never outlives the call by more than that."""
+        q = self._records
+        assert q is not None
+        while True:
+            try:
+                rec = await asyncio.wait_for(q.get(), RECORD_WRITER_IDLE_S)
+            except TimeoutError:
+                if q.empty():
+                    return
+                continue
+            try:
+                await asyncio.to_thread(self._append_bounded, rec)
+            except Exception:  # noqa: BLE001 — a lost record never ends or stalls the call
+                log.warning("voice call %s: a call record was not stored", self.id, exc_info=True)
+            finally:
+                q.task_done()
+
+    def _append_bounded(self, rec: dict) -> None:
+        """Append `rec` unless its bound is reached (`ask_store.HEARD_*_MAX`, per conversation):
+        then it is counted, and a link to a heard record that was not stored is not stored either.
+        Runs on the writer's thread, one record at a time."""
+        kind = rec["type"]
+        if self._rec_counts is None:
+            self._rec_counts = _call_record_counts(ask_store.read(self.cid))
+        c = self._rec_counts
+        if kind == "counts":
+            if c["counts"] >= ask_store.HEARD_COUNTS_MAX:
+                return
+            c["counts"] += 1
+        else:
+            dropped = kind == "heard" and rec.get("route") == "dropped"
+            if (
+                c["heard_said"] >= ask_store.HEARD_SAID_MAX
+                or (dropped and c["heard_dropped"] >= ask_store.HEARD_DROPPED_MAX)
+                or (kind == "heard_link" and rec["heard_id"] in self._rec_skipped_ids)
+            ):
+                self._rec_skipped["heard_dropped" if dropped else "heard_said"] += 1
+                if kind == "heard":
+                    self._rec_skipped_ids.add(rec["heard_id"])
+                return
+            c["heard_said"] += 1
+            c["heard_dropped"] += int(dropped)
+        ask_store.append(self.cid, rec)
+
+    async def flush_records(self) -> None:
+        """Write what is queued, then how many records were not stored past a bound (#2137). The
+        queue drains first: the writer's thread is the only one that counts skips."""
+        if self._queue() is None:
+            return
+        await self._records.join()
+        if any(self._rec_skipped.values()):
+            skipped, self._rec_skipped = self._rec_skipped, {"heard_dropped": 0, "heard_said": 0}
+            self._record({"type": "counts", **skipped})
+            await self._records.join()
 
     def _foreign(self, heard: object) -> bool:
         """An utterance the STT heard in a language HQ does not listen in (#1807)."""
@@ -736,17 +884,25 @@ class Call:
             await self.client({"t": "challenge", "cards": []})
 
     async def on_needs_you_request(self) -> None:
-        """The call panel's "What needs me?" chip: the same path as saying it — answered from the
-        server's Needs-you list, never a model turn, and never over a running turn."""
-        if self.state == "ended" or self._turn_running():
+        """The call panel's "What needs me?" chip (#2137): the same question as saying it, asked of
+        HQ like any other. HQ reads the Needs-you list itself (`needs_you`) and puts what a voice
+        may decide to the Commander (`offer_decisions`). A turn already running queues it. A tap
+        is never a reply to a pending confirmation: it is a NEW question, so its generation is
+        taken BEFORE anything is awaited and any older offer still in flight is stale (#1631
+        review 6874)."""
+        if self.state == "ended":
             return
-        # A new question: its generation is taken BEFORE anything is awaited, so an older offer
-        # still in flight sees it is stale and never installs its challenge (#1631 review 6874).
+        self.touch()
         self.generation += 1
         gen = self.generation
         self.taken_turn = max(self.taken_turn, self.user_turn + 0.5)
         await self.void_challenge()
-        self._side(self.read_needs_you(gen))
+        await self.client(
+            {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": NEEDS_YOU_CHIP}
+        )
+        heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                 "began": None, "replying_to": None, "ids": []}  # fmt: skip
+        self._dispatch(NEEDS_YOU_CHIP, heard, gen)
 
     def _side(self, coro) -> None:
         """Run `coro` beside the relay loop; ended with the call."""
@@ -761,21 +917,36 @@ class Call:
         task.add_done_callback(done)
 
     async def on_utterance(
-        self, text: str, *, late: bool = False, turn: int | None = None, captioned: bool = False
+        self,
+        text: str,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        captioned: bool = False,
+        heard_id: str | None = None,
     ) -> None:
         # Claimed before the first await (Hermes 7631): while any utterance is still being
         # handled, a held first part waits for it, so its rest can never be asked separately.
         self.in_flight += 1
         try:
-            await self._on_utterance(text, late=late, turn=turn, captioned=captioned)
+            await self._on_utterance(
+                text, late=late, turn=turn, captioned=captioned, heard_id=heard_id
+            )
         finally:
             self.in_flight -= 1
             self._release_if_complete()
 
     async def _on_utterance(
-        self, text: str, *, late: bool = False, turn: int | None = None, captioned: bool = False
+        self,
+        text: str,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        captioned: bool = False,
+        heard_id: str | None = None,
     ) -> None:
         if self.muted:
+            self._link(heard_id, "muted")
             return
         # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
         # older HQ question is no longer what they reply to.
@@ -789,12 +960,14 @@ class Call:
             else None
         )
         self.touch()
-        if await self._answer_challenge(text, late=late, turn=turn):
+        if await self._answer_challenge(text, late=late, turn=turn, heard_id=heard_id):
+            self._link(heard_id, "confirm")
             return
         if not captioned and is_stop_phrase(text, self.listen_languages):
             # Nothing but "stop" while HQ works (#2076): the running turn is stopped and the
             # call stays open. With no turn running the words go to HQ like any others.
             if self.stop_turn(said=text):
+                self._link(heard_id, "stop")
                 return
         if not captioned and self._interjectable():
             # Words while HQ works on this call's own turn (#2113 P3): answered at once, judged
@@ -808,7 +981,9 @@ class Call:
                 "turn": None if late else turn,
                 "began": began,
                 "replying_to": replying_to,
+                "ids": [heard_id] if heard_id else [],  # #2137
             }
+            self._link(heard_id, "interject")
             # RESERVED before the caption is awaited (Hermes on #2124): the words join anything
             # still pending and take the newest sequence number now, so an older verdict is a
             # no-op from this instant, and Stop, mute or the end can take them back meanwhile.
@@ -840,6 +1015,8 @@ class Call:
             "turn": None if late else turn,
             "began": began,
             "replying_to": replying_to,
+            # The heard records these words came from (#2137): linked to the HQ turn they become.
+            "ids": [heard_id] if heard_id else [],
         }
         d = self.draft
         if d is not None and not captioned:
@@ -847,8 +1024,10 @@ class Call:
             # draft is dropped — nothing of it was stored, shown or said — and the whole is asked.
             if await self._drop_draft(d):
                 text = f"{d.text} {text}"[: ask_orchestrator.QUERY_MAX]
+                self._link(heard_id, "joined")
                 heard = {
                     **heard,
+                    "ids": [*d.heard.get("ids", []), *heard["ids"]],
                     # A LATE transcript is the tail of the draft's own turn: timed from it too.
                     "turn": d.turn if heard["turn"] is None else heard["turn"],
                     "began": d.heard["began"],
@@ -860,8 +1039,10 @@ class Call:
             first, first_heard = self.held
             self.held = None
             text = f"{first} {text}"[: ask_orchestrator.QUERY_MAX]
+            self._link(heard_id, "joined")
             heard = {
                 **heard,
+                "ids": [*first_heard.get("ids", []), *heard["ids"]],
                 "began": first_heard["began"],
                 "replying_to": first_heard["replying_to"],
             }
@@ -871,6 +1052,7 @@ class Call:
             self._continues(heard, late, turn) or (joined and self.turn_ended < self.user_turn)
         ):
             self.held = (text, heard)  # released by `_release_if_complete`, never by a timer
+            self._link(heard_id, "held")
             return
         self._dispatch(text, heard, gen)
 
@@ -913,13 +1095,12 @@ class Call:
             self._dispatch(text, heard, self.generation)
 
     def _dispatch(self, text: str, heard: dict, gen: int) -> None:
-        if NEEDS_YOU_ASK.search(text.lower()) and not self._turn_running():
-            self._side(self.read_needs_you(gen))
-            return
         if self._turn_running():
             # HQ is still answering the previous question: keep only the newest one and ask it
             # when the running turn settles; that turn's answer is no longer spoken.
             self.queued = (text, heard)
+            for hid in heard.get("ids", []):
+                self._link(hid, "queued")
             return
         # Drafted (#1845) where the setting waits at all and the words have a turn to time from.
         draft = self.commit_pause > 0 and heard.get("turn") is not None
@@ -1276,6 +1457,11 @@ class Call:
         self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
         progress = asyncio.create_task(self._report_progress(d))
         self.call_turn = (turn_id, text)
+        if self._queue() is not None:
+            # What the call heard before these words is written before HQ reads the conversation
+            # (#2137): a word dropped just now is on record for this very question. Bounded.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._records.join(), RECORDS_BEFORE_ASK_S)
         try:
             view = await self._run_turn(
                 turn_id, text, answers, option, replying_to=replying_to, draft=d
@@ -1296,6 +1482,11 @@ class Call:
                 self.call_turn = None
             if d is not None and self.draft is d:
                 self.draft = None  # a draft that failed before its commit is gone too
+        if d is None or not d.dropped:
+            # The heard words were asked as THIS turn (#2137): linked to it, whatever it answered.
+            # A dropped draft's words went on into the next request, and are linked there.
+            for hid in heard.get("ids", []):
+                self._link(hid, "hq", turn_id)
         # Words the Commander added that the turn settled without using (#2113 P3): asked next,
         # ahead of anything queued, exactly once. A stopped turn hands none back (the
         # orchestrator drops them at its settle; checked here too).
@@ -1313,6 +1504,9 @@ class Call:
         summaries = await draft_summaries(view) if ready else {}
         picks = await folder_picks(view) if ready else {}
         suggestions = await folder_suggestions(view) if ready else {}
+        # Needs-you rows HQ put to the Commander (`offer_decisions`, #2137), built from the LIVE
+        # list now: only a row still waiting on the very decision HQ read is offered.
+        offered = await self._offered_needs_you(view) if ready else []
         if gen != self.generation or self.state == "ended":
             pass  # a newer question superseded this one: its answer is on screen, not spoken
         elif view.get("status") == "done":
@@ -1366,7 +1560,15 @@ class Call:
                 await self.say(line, turn_id=view.get("turn_id"))
             picks = [c for c in cards if c["kind"] == "pick"]
             others = [c for c in cards if c["kind"] != "pick"]
-            if picks and (others or self.language in (None, "en")):
+            if offered and not cards:
+                # One Needs-you row per challenge (#1681 P2), in the order HQ named them.
+                await self.offer(offered[:1], turn_id=view.get("turn_id"), gen=gen,
+                                 queue=offered[1:])  # fmt: skip
+            elif offered:
+                # HQ's own cards first, as always; the Needs-you rows follow one at a time.
+                await self.offer(others or picks[:1], turn_id=view.get("turn_id"), gen=gen,
+                                 queue=[*(picks if others else picks[1:]), *offered])  # fmt: skip
+            elif picks and (others or self.language in (None, "en")):
                 # A pick is answered by ITS OWN numbers, so it is offered alone, after the turn's
                 # other cards — those together, as always (#1681). On a call in another language
                 # the other cards are judged (#1715) while the pick stays for the screen: mixed in
@@ -1439,7 +1641,7 @@ class Call:
             await self.void_challenge()
 
     async def _answer_challenge(
-        self, text: str, *, late: bool = False, turn: int | None = None
+        self, text: str, *, late: bool = False, turn: int | None = None, heard_id: str | None = None
     ) -> bool:
         """True when `text` was the reply to a pending confirmation (and was handled). False: it is
         a new question — awaiting nothing, so the caller supersedes before its first await."""
@@ -1500,12 +1702,21 @@ class Call:
                 await self.client(
                     {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
                 )
-                self._side(self._judge_reply(ch, text, snap, late=late, turn=turn))
+                self._side(
+                    self._judge_reply(ch, text, snap, late=late, turn=turn, heard_id=heard_id)
+                )
                 return True
         return await self._apply_verdict(ch, first, text, verdict, idx, snap=snap)
 
     async def _judge_reply(
-        self, ch: dict, text: str, snap: dict, *, late: bool = False, turn: int | None = None
+        self,
+        ch: dict,
+        text: str,
+        snap: dict,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        heard_id: str | None = None,
     ) -> None:
         """Ask the judge what `text` means for challenge `ch` (#1715 P1). A verdict that settles or
         re-arms acts ONLY if the challenge is still exactly as it was when the reply was heard
@@ -1549,7 +1760,7 @@ class Call:
         cleared = self.challenge is ch
         if cleared:
             self.challenge = None
-        await self.on_utterance(text, late=late, turn=turn, captioned=True)
+        await self.on_utterance(text, late=late, turn=turn, captioned=True, heard_id=heard_id)
         if cleared and self.challenge is None:
             await self.client({"t": "challenge", "cards": []})
 
@@ -1795,41 +2006,31 @@ class Call:
                 return state
         return None
 
-    async def read_needs_you(self, gen: int) -> None:
-        """Answer "what needs me?" from the server's own Needs-you list, as fixed sentences.
-        Fenced to the question that asked (`gen`, taken when it was asked): if anything newer was
-        said or offered meanwhile, this read-out is dropped (it must never replace a newer
-        challenge)."""
+    async def _offered_needs_you(self, view: dict) -> list[dict]:
+        """The Needs-you rows HQ put to the Commander in this answer (`offer_decisions`, #2137), as
+        voice cards, read from the server's LIVE list now: a row is offered only if the decision
+        HQ named is still the one it waits on (its pending action's id) and a voice may settle it
+        (`needs_you_cards`). Nothing read, or nothing still waiting: nothing offered."""
         from . import asgi_call
 
+        ids = view.get("offers")
+        if not isinstance(ids, list) or not ids:
+            return []
         try:
             resp = await asgi_call.call(
                 self.app, self.operator, "GET", "/api/pulse/needs-you", None
             )
-        except Exception:  # noqa: BLE001
-            resp = None
-        if gen != self.generation or self.state == "ended":
-            return  # superseded while reading: a newer question owns the call now
-        if resp is None or resp.status != 200 or not isinstance(resp.body, dict):
-            await self.say("I couldn't read what needs you just now.", kind="outcome")
-            return
+        except Exception:  # noqa: BLE001 — nothing offered; the rows stay on the screen
+            return []
+        if resp.status != 200 or not isinstance(resp.body, dict):
+            return []
         rows = [r for r in resp.body.get("rows") or [] if isinstance(r, dict)]
-        if not rows:
-            await self.say("Nothing needs you right now.", kind="outcome")
-            return
-        total = resp.body.get("total")
-        if not isinstance(total, int) or isinstance(total, bool) or total < len(rows):
-            total = len(rows)
-        told, cards = needs_you_readout(rows, total)
-        # ONE utterance, so nothing newer can land between its sentences; the cards a voice may
-        # settle are then read back by `offer` itself — the read-back that arms the challenge.
-        await self.say(told, kind="outcome")
-        if cards and gen == self.generation:
-            if self.language not in (None, "en"):
-                await self.offer(cards, gen=gen)  # read for the screen: nothing arms
-            else:
-                # ONE row per challenge (#1681 P2): a reply can only name something of THAT row.
-                await self.offer(cards[:1], gen=gen, queue=cards[1:])
+        by_id = {c["id"]: c for c in needs_you_cards(rows)}
+        out: list[dict] = []
+        for i in ids:
+            if isinstance(i, str) and i in by_id and by_id[i] not in out:
+                out.append(by_id[i])
+        return out[:OFFERS_MAX]
 
     async def _report_progress(self, d: _CallDraft | None = None) -> None:
         """While HQ's turn runs: a fixed status line whenever HQ has been quiet too long (#1702),
@@ -2057,6 +2258,14 @@ class Call:
         # (#1845). Bounded like the sends below.
         with contextlib.suppress(Exception):
             await asyncio.wait_for(self.drop_draft(), SEND_BUDGET_S)
+        # The call's own records (#2137) are written out, bounded like the sends below, and the
+        # writer retires: a record that arrives later (a settlement finishing) starts a new one.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.flush_records(), SEND_BUDGET_S)
+        w = self._writer
+        q = self._queue()
+        if w is not None and not w.done() and (q is None or q.empty()):
+            w.cancel()
         # Side tasks are NOT cancelled: a settlement checks the call before it starts, and one
         # already inside its card's route must finish that route, never stop half way.
         self.ended_reason = reason
@@ -2109,6 +2318,17 @@ class _CallDraft:
     commit_done: asyncio.Event = field(default_factory=asyncio.Event)
     #: Claimed for a discard (`Call._drop_draft`): it is never committed, said or shown.
     dropped: bool = False
+
+
+def _call_record_counts(records: list[dict]) -> dict:
+    """How many of the call records (#2137) a conversation already holds, per bound."""
+    total = dropped = counts = 0
+    for r in records:
+        if r.get("type") in ("heard", "heard_link", "said"):
+            total += 1
+            dropped += int(r.get("type") == "heard" and r.get("route") == "dropped")
+        counts += int(r.get("type") == "counts")
+    return {"heard_said": total, "heard_dropped": dropped, "counts": counts}
 
 
 def _stop_instant(at: object) -> float:
@@ -2605,7 +2825,6 @@ def screen_reasons(
 
 
 #: Needs-you items a call describes at most; the rest are counted ("and 7 more").
-NEEDS_YOU_TOLD = 5
 #: The longest permission dialog a call reads out (characters of the sentence): each part is read
 #: verbatim, and a dialog whose whole reading is longer is a screen decision.
 PERMISSION_TOLD_MAX = 900
@@ -2800,43 +3019,17 @@ def needs_you_sentence(row: dict) -> str:
     return f"{who}'s screen needs a look — I couldn't read it."
 
 
-def needs_you_readout(rows: list[dict], total: int) -> tuple[str, list[dict]]:
-    """ "What needs me?" answered with content (#1681): how many, then up to NEEDS_YOU_TOLD items
-    in Needs-you order, then how many more (from the list's own ``total``). An item a voice may
-    decide is told in full here AND returned as a card, which `offer` reads back again — the
-    read-back that arms its challenge."""
-    told = rows[:NEEDS_YOU_TOLD]
-    cards: list[dict] = []
-    parts = [f"{total} {'thing needs' if total == 1 else 'things need'} you."]
-    for r in told:
-        card = (
-            (_question_card(r) or _permission_card(r) or _menu_card(r)) if len(cards) < 4 else None
-        )
-        if card is not None:
-            # Named here in ONE line, in its place (#1683 review): if its offer is cancelled,
-            # expires or is talked over, the Commander still heard what it was.
-            # Its WHOLE content, in its place (Hermes 7021): if its offer is cancelled, expires or
-            # is talked over, the Commander still heard what it asks. The offer reads it again —
-            # the read-back that arms its challenge.
-            cards.append(card)
-            parts.append(card["line"])
-        else:
-            parts.append(needs_you_sentence(r))
-    if cards:
-        parts.append(
-            "Let's decide that one." if len(cards) == 1 else "Let's take those one at a time."
-        )
-    more = total - len(told)
-    if more > 0:
-        parts.append(f"And {more} more on your screen.")
-    return " ".join(parts), cards
-
-
 def needs_you_cards(rows: list[dict]) -> list[dict]:
     """The Needs-you rows a voice may settle, as cards (#1681 P2): a QUESTION whose pending action
     answers it with text, a permission dialog readable as a whole, a menu read in full. The rest
-    are described by :func:`needs_you_readout` and settled on the screen."""
-    return needs_you_readout(rows, len(rows))[1]
+    are settled on the screen. A card's id is its row's pending action id: what HQ names when it
+    offers the decision (`offer_decisions`, #2137)."""
+    cards: list[dict] = []
+    for r in rows:
+        card = _question_card(r) or _permission_card(r) or _menu_card(r)
+        if card is not None:
+            cards.append(card)
+    return cards
 
 
 #: Voice cards that settle through a proposal's decide route (`{"proposal": view}` back).

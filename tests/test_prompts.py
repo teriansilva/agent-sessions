@@ -166,7 +166,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "87e78bee1425d909",  # #1960 P2 (working, interrupt); #1950
+    "ask_orchestrator": "a94cb6d7151ee0ec",  # #2137 (needs_you, set-up); #1960 P2; #1950
     "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
@@ -242,6 +242,21 @@ def test_hq_prompt_creates_the_draft_and_keeps_new_mission_as_the_fallback():
         "a turn of your own naming the new mission",
     ):
         assert needle in text, needle
+
+
+def test_hq_prompt_reads_needs_you_and_never_searches_for_a_reference_phrase():
+    """#2137: "what needs me" is HQ's to answer (no phrase list does it), a set-up is a draft to
+    refine with the Commander, and a reference HQ cannot find is asked again, never searched."""
+    text = " ".join(prompts.get("ask_orchestrator").default.split())
+    for needle in (
+        "call needs_you",
+        "offer_decisions",
+        "propose the draft card and keep refining it with them",
+        "say what you last heard from them and ask them to say it again",
+        "never search for the phrase itself",
+    ):
+        assert needle in text, needle
+    assert len(prompts.get("ask_orchestrator").default) <= prompts.get("ask_orchestrator").max_chars
 
 
 def test_editable_falls_back_to_default_and_survives_a_blank(tmp_home):

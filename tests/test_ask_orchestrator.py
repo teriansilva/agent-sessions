@@ -279,6 +279,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "ask_operator": "ends_turn",
         # #1668: on a CALL turn only, refused elsewhere: ends that call after its farewell.
         "end_call": "call",
+        # #2137: the Needs-you list and the bell, read-only; and, on a CALL turn only, putting
+        # decisions this turn read to the Commander, who answers them aloud. HQ decides nothing.
+        "needs_you": "read",
+        "notifications": "read",
+        "offer_decisions": "call",
         "send_nudge": "send",
         # #2102: asks the asking device to show something. No platform state changes, no route
         # is called, and the target comes from a closed catalog — a kind of its own.
@@ -333,7 +338,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]
     assert on_call == list(ask_orchestrator.TOOLS)
     typed = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
-    assert typed == [n for n in ask_orchestrator.TOOLS if n != "end_call"]
+    assert typed == [n for n in ask_orchestrator.TOOLS if n not in ("end_call", "offer_decisions")]
 
 
 def test_every_request_offers_exactly_the_read_tools_and_the_guarded_prompt(app, ai):
@@ -1188,10 +1193,23 @@ def worst_case_bytes() -> int:
     )
     # …plus every update the follower may write (#1443 Phase 4), each at its caps.
     update = {"type": "update", "key": key, "kind": "needs_you", "title": big, "event_id": "e" * 32}
+    # …plus a call's own records (#2137), every one at its caps, as many as the bounds allow, and
+    # the `counts` records (one per call past a bound, capped per conversation).
+    heard = {"type": "heard", "heard_id": "a" * 12, "route": "received", "text": big,
+             "chars": ask_store.HEARD_NUMBER_MAX, "turn": ask_store.HEARD_NUMBER_MAX,
+             "lang": "en", "late": True}  # fmt: skip
+    said = {"type": "said", "kind": "still_there", "text": big, "turn_id": tid}
+    link = {"type": "heard_link", "heard_id": "a" * 12, "route": "interject", "turn_id": tid}
+    counts = {"type": "counts", "heard_dropped": ask_store.HEARD_NUMBER_MAX,
+              "heard_said": ask_store.HEARD_NUMBER_MAX}  # fmt: skip
+    call = max(size(heard), size(said), size(link)) * ask_store.HEARD_SAID_MAX + size(counts) * (
+        ask_store.HEARD_COUNTS_MAX
+    )
     return (
         (size(*turn) + steps) * ask_store.MAX_TURNS
         + card * ask_store.MAX_SESSION_PROPOSALS
         + size(update) * ask_store.MAX_UPDATES
+        + call
     )
 
 

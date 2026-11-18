@@ -29,6 +29,7 @@ GATED = {
     "clear_override",
     "set_override",
     "end_call",
+    "offer_decisions",  # #2137: puts decisions to the Commander, so it waits for the commit
     "propose_library",
     "propose_message",
     "send_nudge",

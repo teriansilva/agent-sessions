@@ -113,14 +113,14 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 #### Decisions, Needs you, notifications, Recent work, dashboard
 | Capability | Route(s) | HQ |
 |---|---|---|
-| Needs-you list and one item's details | GET /api/pulse/needs-you, …/{sid}/details | P2 R |
+| Needs-you list and one item's details | GET /api/pulse/needs-you, …/{sid}/details | have (`needs_you`, #2137; on a call `offer_decisions` puts a decision to the Commander, who answers it aloud); details P2 R |
 | Approve a staged decision (also with edited text) / choose an option | POST /api/pulse/actions/{id}/approve, …/choose | **never** (a tap HQ proposes to approve another tap removes the tap; HQ points to that card) |
 | Reject / dismiss a staged decision | POST /api/pulse/actions/{id}/reject | P2 W |
 | Dismiss a session from Needs you | POST /api/pulse/needs-you/{sid}/dismiss | P2 W |
 | Answer an agent's HQ report with one of its options (#1882) | POST /api/needs-you/{sid}/report/answer | **never** (the tap is the approval; HQ reads the report with `session_report` and points to the card) |
 | Dismiss an agent's HQ report (#1882) | POST /api/needs-you/{sid}/report/dismiss | P2 W |
 | Evidence behind a decision (screen / transcript / recap) | GET /api/pulse/evidence/{sid} | P2 R |
-| Notifications: list, mark read (all or some), dismiss one / all, clear settled | GET/POST /api/pulse/notifications/* | P2 R/W |
+| Notifications: list, mark read (all or some), dismiss one / all, clear settled | GET/POST /api/pulse/notifications/* | have to list (`notifications`, #2137); P2 W the rest |
 | Recent work recap (read, refresh) | GET/POST /api/pulse/recap | P2 R/W |
 | Pulse overview cards; orchestrator health | GET /api/pulse, GET /api/pulse/orchestrator | P2 R |
 | Pulse scan now | POST /api/pulse/scan | P2 W (external: AI) |
@@ -589,10 +589,10 @@ POST   /api/pulse/ask                                                           
 POST   /api/pulse/ask/stream                                                      n/a  # HQ's predecessors
 POST   /api/pulse/chat                                                            n/a  # HQ's predecessors
 GET    /api/pulse/evidence/{session_id:path}                                      P2
-GET    /api/pulse/needs-you                                                       P2
+GET    /api/pulse/needs-you                                                       have
 GET    /api/pulse/needs-you/{session_id:path}/details                             P2
 POST   /api/pulse/needs-you/{session_id:path}/dismiss                             P2
-GET    /api/pulse/notifications                                                   P2
+GET    /api/pulse/notifications                                                   have
 POST   /api/pulse/notifications/clear-settled                                     P2
 POST   /api/pulse/notifications/dismiss                                           P2
 POST   /api/pulse/notifications/read                                              P2

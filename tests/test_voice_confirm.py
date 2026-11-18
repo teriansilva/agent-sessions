@@ -24,6 +24,9 @@ import pytest
 
 from agent_sessions import asgi_call, ask_orchestrator, voice_calls, voice_text
 
+#: What the rig's HQ answers "What needs me?" with (#2137); the offered rows are read back after it.
+NEEDS_YOU_ANSWER = "Here is what is waiting on you."
+
 
 class Rig:
     def __init__(self, monkeypatch, view: dict | None = None, route_status: int = 200):
@@ -39,6 +42,15 @@ class Rig:
 
         async def fake_begin(cid, turn_id, text, **kw):
             self.asked.append(text)
+            if text == voice_calls.NEEDS_YOU_CHIP and not self.view:
+                # HQ, asked "What needs me?" (#2137): it reads the list with `needs_you` and puts
+                # every row a voice may decide to the Commander (`offer_decisions`). The rig plays
+                # the model; the call reads each offered row back from the LIVE list.
+                body = self.needs_body or {"rows": self.needs_rows}
+                rows = [r for r in body.get("rows") or [] if isinstance(r, dict)]
+                ids = [c["id"] for c in voice_calls.needs_you_cards(rows)]
+                return None, {"turn_id": turn_id, "status": "done", "answer": NEEDS_YOU_ANSWER,
+                              "offers": ids[: voice_calls.OFFERS_MAX]}  # fmt: skip
             return None, {"turn_id": turn_id, "status": "done", "answer": "Done.", **self.view}
 
         async def fake_call(app, operator, method, path, body, **kw):
@@ -404,13 +416,8 @@ def test_needs_you_offers_no_row_it_cannot_read_in_full(monkeypatch):
     ]  # fmt: skip
 
     async def go():
-        await r.ask("What needs me right now?")
-        assert r.said_text()[-2] == (
-            "3 things need you. api-rebase asks a question. The suggested answer is: Use main."
-            " deploy wants you to confirm something I can't read out — it's on your screen."
-            " docs is showing a menu I can't read out — it's on your screen."
-            " Let's decide that one."
-        )
+        await r.ask(voice_calls.NEEDS_YOU_CHIP)
+        assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert "api-rebase asks a question" in r.said_text()[-1]
         await r.readback_played()
         await r.ask("confirm")
@@ -418,7 +425,8 @@ def test_needs_you_offers_no_row_it_cannot_read_in_full(monkeypatch):
     run(go())
     assert ("POST", "/api/pulse/actions/act-q/approve", None) in r.routes
     assert not any("act-p" in p or "act-c" in p for _, p, _ in r.routes)
-    assert r.asked == []  # answered from the server's list, never a model turn
+    # HQ answered it (#2137): no phrase list routes the Commander's words around the model.
+    assert r.asked == [voice_calls.NEEDS_YOU_CHIP]
 
 
 @pytest.mark.parametrize(
@@ -439,8 +447,9 @@ def test_classifier(said, n, want):
     assert voice_text.classify_confirmation(said, n) == want
 
 
-def test_the_needs_you_chip_reads_the_same_list(monkeypatch):
-    """The call panel's chip ({"t": "needs_you"}) runs the spoken "what needs me?" path."""
+def test_the_needs_you_chip_asks_hq(monkeypatch):
+    """The call panel's chip ({"t": "needs_you"}) asks HQ "What needs me?" like a spoken question
+    (#2137); what HQ offers is read back and decided by voice as before."""
     r = Rig(monkeypatch)
     r.needs_rows = [
         {"title": "api-rebase", "kind": "question",
@@ -450,13 +459,14 @@ def test_the_needs_you_chip_reads_the_same_list(monkeypatch):
     async def go():
         await r.call.on_needs_you_request()
         await r.side()
+        assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert "api-rebase asks a question" in r.said_text()[-1]
         await r.readback_played()
         await r.ask("confirm")
 
     run(go())
     assert ("POST", "/api/pulse/actions/act-q/approve", None) in r.routes
-    assert r.asked == []
+    assert r.asked == [voice_calls.NEEDS_YOU_CHIP]
 
 
 # --- the #1631 reviews: what may settle a card by voice -----------------------------------------
@@ -727,7 +737,9 @@ def test_the_decide_routes_real_answer_shape_is_read(monkeypatch, state, said, o
 
 
 def test_an_older_needs_you_read_never_replaces_a_newer_challenge(monkeypatch):
-    r = Rig(monkeypatch, NUDGE)
+    """HQ's "What needs me?" turn reads its offers from the live list; a newer question asked
+    meanwhile owns the call, so the older offer is never read back (#2137)."""
+    r = Rig(monkeypatch)
     r.needs_rows = [
         {"title": "old", "kind": "question",
          "action": {"id": "old-action", "verb": "answer", "can_approve": True,
@@ -744,14 +756,14 @@ def test_an_older_needs_you_read_never_replaces_a_newer_challenge(monkeypatch):
     monkeypatch.setattr(asgi_call, "call", slow_needs)
 
     async def go():
-        await r.call.on_needs_you_request()  # the read-out waits on its GET …
-        await asyncio.sleep(0)
-        # … a newer question offers its own card (not `ask()`: that waits on the held read)
+        await r.call.on_needs_you_request()  # HQ's turn: reading its offer waits on the GET …
+        for _ in range(5):
+            await asyncio.sleep(0)
+        # … a newer question, whose answer has its own card, is asked meanwhile
+        r.view = NUDGE
         await r.ev(t="user_started")
         await r.ev(t="utterance", text="Rerun the tests")
-        await r.call.turn_task
-        assert r.call.challenge["cards"][0]["id"] == "act-1"
-        gate.set()  # the old read finishes last
+        gate.set()  # the old read finishes
         await r.side()
         assert r.call.challenge["cards"][0]["id"] == "act-1"
         await r.readback_played()
@@ -788,10 +800,8 @@ def test_an_old_read_back_paused_mid_send_never_arms_over_a_newer_one(monkeypatc
         for _ in range(20):
             await asyncio.sleep(0)  # the old read reaches its read-back send, and waits
         r.needs_rows = [row("new")]
-        await r.call.on_needs_you_request()
-        while r.call.challenge is None or r.call.challenge["cards"][0]["id"] != "new-action":
-            await asyncio.sleep(0)
-        gate.set()  # the old send completes last
+        await r.call.on_needs_you_request()  # newer: asked once the running turn settles
+        gate.set()  # the old send completes
         await r.side()
         assert r.call.challenge["cards"][0]["id"] == "new-action"
         await r.readback_played()
@@ -884,7 +894,9 @@ def test_a_new_question_whose_clear_is_paused_never_arms_an_older_card(monkeypat
     real = asgi_call.call
 
     async def held_get(app, operator, method, path, body, **kw):
-        if path == "/api/pulse/needs-you":
+        # Only the OLD read is held: the newer chip is an HQ turn of its own now (#2137), whose
+        # read must go through for that turn to settle.
+        if path == "/api/pulse/needs-you" and not gets:
             gate = asyncio.Event()
             gets.append(gate)
             await gate.wait()

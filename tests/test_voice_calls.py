@@ -557,7 +557,7 @@ def test_the_browsers_played_ack_arms_the_challenge_through_the_socket(ready, wo
 
 
 def test_the_needs_you_chip_reaches_the_call_through_the_socket(ready, worker):
-    """The chip's {"t": "needs_you"} is dispatched by the socket to the Needs-you read-out."""
+    """The chip's {"t": "needs_you"} is dispatched by the socket and asked of HQ (#2137)."""
     c, hdr, cfg = ready
     call = _admit(c, hdr)
     events: list[dict] = []
@@ -575,18 +575,17 @@ def test_the_needs_you_chip_reaches_the_call_through_the_socket(ready, worker):
             if ev.get("t") == "connected":
                 ws.send_text(json.dumps({"t": "needs_you"}))
                 ws.send_text(json.dumps({"t": "mute", "on": False}))  # bounded end marker
-            if ev.get("t") == "caption" and ev.get("kind") == "outcome":
+            if ev.get("t") == "caption" and ev.get("who") == "you":
                 break
             if ev.get("t") == "muted":
-                # The read-out runs beside the relay loop (it reads live screens): keep the
-                # socket turning until it speaks, for at most 15 s.
+                # Keep the socket turning until the question is captioned, for at most 15 s.
                 if time.monotonic() > deadline:
                     break
                 time.sleep(0.05)
                 ws.send_text(json.dumps({"t": "mute", "on": False}))
         ws.send_text(json.dumps({"t": "end"}))
-    outcome = [e["text"] for e in events if e.get("t") == "caption" and e.get("kind") == "outcome"]
-    assert outcome and "needs you" in outcome[0]
+    asked = [e["text"] for e in events if e.get("t") == "caption" and e.get("who") == "you"]
+    assert asked == [voice_calls.NEEDS_YOU_CHIP]
 
 
 def test_the_call_lock_outlives_the_worker(ready, worker, monkeypatch):

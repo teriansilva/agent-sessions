@@ -1,5 +1,9 @@
 """#1681 P1 — "What needs me?" on a call says WHAT and WHERE, never just a count.
 
+Since #2137 nothing answers it but HQ: no phrase list routes words around the model. HQ reads the
+list with its `needs_you` tool (these fixed sentences, and a `decision` id on what a voice may
+settle) and puts decisions to the Commander with `offer_decisions`; the call reads each back.
+
 The rows are real Needs-you rows: `needs_you.build` over session cards and ledger records, the
 permission dialogs parsed from the real captures (`tests/fixtures/*permission*`). Pinned:
 
@@ -9,17 +13,18 @@ permission dialogs parsed from the real captures (`tests/fixtures/*permission*`)
   identified by label (never by position), fail-closed on any malformed field;
 * a permission dialog is read only as a whole (tool, command, question, every label, and its
   refusal identified);
-* at most five items, then "and N more" from the list's own `total`;
-* the read-out stays fenced to the question that asked.
+* HQ is told the list's own `total` and at most `NEEDS_YOU_LISTED_MAX` rows, newest first;
+* an offer stays fenced to the question that asked.
 """
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
-from agent_sessions import asgi_call, needs_you, permission_prompts, voice_calls
+from agent_sessions import asgi_call, ask_orchestrator, needs_you, permission_prompts, voice_calls
 from test_permission_prompts import ALL, _frame
 from test_voice_confirm import Rig, run
 
@@ -64,8 +69,23 @@ def _rows(cards, pending, screens) -> dict:
     )
 
 
-def _say_readout(body: dict, monkeypatch) -> list[str]:
-    r = Rig(monkeypatch)
+def _tool(body: dict, monkeypatch, via: str = "call") -> tuple[dict, SimpleNamespace]:
+    """What HQ's `needs_you` tool returns over this Needs-you answer, and the turn it ran on."""
+
+    async def fake_call(app, operator, method, path, b, **kw):
+        assert (method, path) == ("GET", "/api/pulse/needs-you")
+        return asgi_call.Response(200, body)
+
+    monkeypatch.setattr(asgi_call, "call", fake_call)
+    turn = SimpleNamespace(operator=object(), app=object(), via=via, needs_you_seen=set(),
+                           offers=[])  # fmt: skip
+    result, _meta = run(ask_orchestrator._needs_you(turn, {}))
+    return result, turn
+
+
+def _say_offer(body: dict, ids: list[str], monkeypatch) -> list[str]:
+    """What the call says when HQ answers "What needs me?" and offers `ids` (#2137)."""
+    r = Rig(monkeypatch, {"answer": "Here is what waits on you.", "offers": ids})
     r.needs_body = body
 
     async def go():
@@ -182,14 +202,15 @@ def test_a_row_carries_the_recorded_dialog_and_only_a_projection_of_it():
 
 
 def _one(card, pending, screen, monkeypatch) -> str:
-    """What is said about the one item: in the read-out, or — for an item a voice may decide
-    (#1681 P2) — in the read-back that offers it."""
+    """What is said about the one item: what HQ's `needs_you` tells HQ about it, or — for an
+    item a voice may decide (#1681 P2) — the read-back that offers it once HQ puts it to the
+    Commander."""
     body = _rows([card], pending, {card["id"]: screen})
-    said = _say_readout(body, monkeypatch)
-    if said[-2:-1] and said[-2].endswith("Let's decide that one."):
-        return said[-1]
-    assert said[-1].startswith("1 thing needs you. "), said
-    return said[-1].removeprefix("1 thing needs you. ")
+    result, _turn = _tool(body, monkeypatch)
+    (row,) = result["rows"]
+    if "decision" in row:
+        return _say_offer(body, [row["decision"]], monkeypatch)[-1]
+    return row["what"]
 
 
 OFFER_PERMISSION = "Say allow it to allow it once, refuse it, or skip."
@@ -347,11 +368,12 @@ def test_a_question_with_a_readable_answer_is_offered_and_read_back(monkeypatch)
     sid = "claude:q1"
     body = _rows([_card(sid, "api-rebase")], [_answer(sid, "Use main.")], {
         sid: {"prompt_class": "question", "menu": None}})  # fmt: skip
-    said = _say_readout(body, monkeypatch)
-    assert said[-2] == (
-        "1 thing needs you. api-rebase in web asks a question. The suggested answer is: Use main."
-        " Let's decide that one."
-    )
+    result, _turn = _tool(body, monkeypatch)
+    assert result["rows"] == [{
+        "what": "api-rebase in web asks a question. The suggested answer is: Use main.",
+        "decision": f"ans-{sid}"}]  # fmt: skip
+    said = _say_offer(body, [f"ans-{sid}"], monkeypatch)
+    assert said[-2] == "Here is what waits on you."
     assert said[-1] == (
         "api-rebase in web asks a question. The suggested answer is: Use main."
         " Say confirm to send it, skip, or cancel."
@@ -384,18 +406,19 @@ def test_an_unreadable_screen_says_so(monkeypatch):
 # --- many and mixed ----------------------------------------------------------------------------
 
 
-def test_more_than_fifty_tells_five_and_counts_the_rest_from_total(monkeypatch):
+def test_more_than_fifty_tells_hq_the_newest_and_the_total(monkeypatch):
     cards = [_card(f"gemini:s{i:02d}", f"session {i:02d}") for i in range(60)]
     for i, c in enumerate(cards):
         c["last_activity"] = 100.0 + i  # newest first: session 59 leads
     body = _rows(cards, [], {})
     assert (len(body["rows"]), body["total"], body["truncated"]) == (50, 60, True)
-    said = _say_readout(body, monkeypatch)
-    told = said[-1]
-    assert told.startswith("60 things need you. session 59 in web's screen needs a look")
-    assert told.count("needs a look") == 5
-    assert "session 54" not in told
-    assert told.endswith("And 55 more on your screen.")
+    result, _turn = _tool(body, monkeypatch)
+    assert result["total"] == 60
+    assert len(result["rows"]) == ask_orchestrator.NEEDS_YOU_LISTED_MAX
+    assert (
+        result["rows"][0]["what"] == "session 59 in web's screen needs a look — I couldn't read it."
+    )
+    assert all("decision" not in r for r in result["rows"])
 
 
 def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(monkeypatch):
@@ -412,22 +435,24 @@ def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(mon
     screens = {p: CONFIRM, q: {"prompt_class": "question", "menu": None},
                m: {"prompt_class": "choice", "menu": MENU}}  # fmt: skip
     body = _rows(cards, pending, screens)
-    r = Rig(monkeypatch)
+    result, _turn = _tool(body, monkeypatch)
+    # HQ is told every row in Needs-you order; what a voice may decide carries its decision id.
+    assert result["rows"] == [
+        {"what": f"deploy in infra {BASH_SAID}", "decision": f"act-{p}"},
+        {"what": "api-rebase in web asks a question. The suggested answer is: Use main.",
+         "decision": f"ans-{q}"},
+        {"what": "docs in web asks: Which branch should I rebase onto? The options are: one, main;"
+                 " two, release 2.0.", "decision": "act-menu"},
+        {"what": "nightly in web's screen needs a look — I couldn't read it."},
+    ]  # fmt: skip
+    r = Rig(monkeypatch, {"answer": "Three wait on you.", "offers": [f"act-{p}", f"ans-{q}"]})
     r.needs_body = body
 
     async def go():
         await r.ask("What needs me?")
         told, readback = r.said_text()[-2:]
-        # What a voice may decide is offered, one row at a time, in Needs-you order; the rest is
-        # told (#1681 P2).
-        assert told == (
-            f"4 things need you. deploy in infra {BASH_SAID}"
-            " api-rebase in web asks a question. The suggested answer is: Use main."
-            " docs in web asks: Which branch should I rebase onto? The options are: one, main;"
-            " two, release 2.0."
-            " nightly in web's screen needs a look — I couldn't read it."
-            " Let's take those one at a time."
-        )
+        # What HQ offered is read back, one row at a time, in the order HQ named it (#1681 P2).
+        assert told == "Three wait on you."
         assert readback.startswith("deploy in infra asks permission for Bash command:")
         assert [c["id"] for c in r.call.challenge["cards"]] == [f"act-{p}"]
         await r.readback_played()
@@ -445,12 +470,12 @@ def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(mon
 # --- the fence ---------------------------------------------------------------------------------
 
 
-def test_a_read_out_overtaken_by_a_newer_question_is_never_said(monkeypatch):
+def test_an_offer_overtaken_by_a_newer_question_is_never_read_back(monkeypatch):
     sid = "claude:p1"
     body = _rows([_card(sid, "deploy")], [
         _escalation(sid, 900.0, permission=_perm("claude_permission_bash.raw"))], {
         sid: CONFIRM})  # fmt: skip
-    r = Rig(monkeypatch)
+    r = Rig(monkeypatch, {"offers": [f"act-{sid}"]})
     r.needs_body = body
     gate = asyncio.Event()
     real = asgi_call.call
@@ -463,16 +488,17 @@ def test_a_read_out_overtaken_by_a_newer_question_is_never_said(monkeypatch):
     monkeypatch.setattr(asgi_call, "call", slow)
 
     async def go():
-        await r.call.on_needs_you_request()  # its GET waits …
-        await asyncio.sleep(0)
+        await r.call.on_needs_you_request()  # HQ's turn runs; reading its offer waits …
+        for _ in range(5):
+            await asyncio.sleep(0)
         await r.ev(t="user_started")  # … while a newer question is asked
         await r.ev(t="utterance", text="How is the docs refresh?")
-        await r.call.turn_task
+        r.view = {}  # the newer question's answer offers nothing
         gate.set()
         await r.side()
 
     run(go())
-    assert not any("needs you" in t for t in r.said_text())
+    assert r.asked == ["What needs me?", "How is the docs refresh?"]
     assert not any("asks permission" in t for t in r.said_text())
 
 
@@ -493,17 +519,17 @@ def test_a_session_is_named_only_as_written(title, project, who):
     assert said == f"{who}'s screen needs a look — I couldn't read it."
 
 
-def test_questions_past_the_five_told_are_not_offered():
+def test_at_most_four_decisions_are_put_to_the_commander(monkeypatch):
     def q(i):
         return {"title": f"s{i}", "kind": "question",
                 "action": {"id": f"a{i}", "verb": "answer", "can_approve": True,
                            "answer": "Yes."}}  # fmt: skip
 
-    told, cards = voice_calls.needs_you_readout([q(i) for i in range(7)], 7)
-    assert [c["id"] for c in cards] == ["a0", "a1", "a2", "a3"]
-    assert told == (
-        "7 things need you."
-        + "".join(f" s{i} asks a question. The suggested answer is: Yes." for i in range(4))
-        + " s4 asks a question. The suggested answer is: Yes. It's on your screen."
-        " Let's take those one at a time. And 2 more on your screen."
+    rows = [q(i) for i in range(7)]
+    assert [c["id"] for c in voice_calls.needs_you_cards(rows)] == [f"a{i}" for i in range(7)]
+    result, turn = _tool({"rows": rows, "total": 7}, monkeypatch)
+    out, _ = run(
+        ask_orchestrator._offer_decisions(turn, {"decisions": [f"a{i}" for i in range(7)]})
     )
+    assert out["offered"] == 4
+    assert turn.offers == ["a0", "a1", "a2", "a3"]
