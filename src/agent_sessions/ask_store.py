@@ -120,7 +120,7 @@ VIAS = frozenset({"call", "card"})
 RECORD_TYPES = frozenset(
     {
         "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
-        "steps_more", "screen",
+        "steps_more", "screen", "interjection",
     }
 )  # fmt: skip
 
@@ -599,6 +599,11 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         # (an operation, a target by type and id, a section name) and nothing else. No free text.
         out["turn_id"] = _turn_id(rec)
         out.update(ask_screen.admit(rec))
+    elif kind == "interjection":
+        # The Commander's words heard on a call while HQ worked, carried into that turn (#2113 P3):
+        # their own words, through the same boundary as a question's text.
+        out["turn_id"] = _turn_id(rec)
+        out["text"] = text(rec.get("text"), TEXT_MAX)
     elif kind == "steps_more":
         # The steps a turn ran past its stored ones (#2076): numbers and tool names only.
         out["turn_id"] = _turn_id(rec)

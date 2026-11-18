@@ -108,7 +108,9 @@ def test_a_request_that_contains_stop_does_not_stop_the_turn(rig, held):  # noqa
         await _speak(rig, "How far are we with the epic?")
         await asyncio.wait_for(script.reached.wait(), 15)
         await _speak(rig, "Stop the staging deploy when it is done")
-        assert rig.call.queued is not None  # a new request, kept for when this turn settles
+        # A new request, kept for when this turn settles (#2113 P3: once the interjection
+        # judgement has answered — here, no verdict, so it waits as it always did).
+        await _until(lambda: rig.call.queued is not None)
         assert voice_calls.STOPPED_LINE not in rig.said_text()
         script.go.set()
         await _until(lambda: len(_statuses(rig.call.cid)) == 4)

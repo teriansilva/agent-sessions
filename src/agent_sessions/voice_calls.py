@@ -155,6 +155,23 @@ ASIDE_GAP_S = 8.0
 FIND_STEPS = frozenset({"catalog", "content"})
 #: What HQ says once the Commander stopped its running turn (#2076). The call stays open.
 STOPPED_LINE = "Stopped."
+#: What HQ says to words heard while it works when no verdict could be had (#2113 P3): the words
+#: then wait for the running work, as they always did.
+INTERJECT_FALLBACK = "One sec, I'll finish this first."
+
+
+def _doing(work: dict | None) -> str:
+    """What HQ is doing right now, for the interjection judgement (#2113 P3): its own newest
+    aside if it wrote one, else the running tool's NAME. Never a tool's arguments or output."""
+    if not work:
+        return "thinking about the answer"
+    aside = work.get("last_aside")
+    tool = work.get("tool") if work.get("phase") == "tool" else None
+    if aside and tool:
+        return f"{aside} (running its {tool} tool)"
+    if aside:
+        return str(aside)
+    return f"running its {tool} tool" if tool else "thinking about the answer"
 
 
 def progress_line(work: dict, now: float) -> str:
@@ -314,9 +331,18 @@ class Call:
     #: The newest worker turn whose transcript is all in (its `turn_end`, #1842): a held first part
     #: waits until every turn begun so far has delivered its words, or said it had none.
     turn_ended: int = 0
-    #: Bumped by every new utterance: an answer from an older generation is not spoken.
+    #: Bumped by every new utterance: an answer from an older generation is not spoken. Words
+    #: heard while this call's own turn works do NOT bump it (#2113 P3): they are answered beside
+    #: that turn, and its answer is still said — unless the verdict was to drop it.
     generation: int = 0
     turn_task: asyncio.Task | None = None
+    #: This call's own HQ turn while it runs (#2113 P3): ``(turn_id, the words it answers)``.
+    #: Words heard meanwhile steer or stop ONLY this turn, never a typed one on the conversation.
+    call_turn: tuple[str, str] | None = None
+    #: Words heard while that turn works, being judged (#2113 P3): ``{"seq", "text", "heard",
+    #: "turn_id"}``. More words join it and are judged again; only the newest judgement acts.
+    interjection: dict | None = None
+    interject_seq: int = 0
     #: The `ask_operator` question the Commander can answer by voice: one HQ asked on this call, or
     #: one a typed turn on its conversation put on screen (`on_typed_settled`)…
     ask: dict | None = None
@@ -770,6 +796,28 @@ class Call:
             # call stays open. With no turn running the words go to HQ like any others.
             if self.stop_turn(said=text):
                 return
+        if not captioned and self._interjectable():
+            # Words while HQ works on this call's own turn (#2113 P3): answered at once, judged
+            # beside the relay. No new generation: the running answer is still said. The turn is
+            # captured BEFORE the caption is awaited, and checked again after it (Hermes on #2124).
+            if turn is not None and not late:
+                self.taken_turn = max(self.taken_turn, turn)
+            heard = {
+                "starts": self.user_starts,
+                "typed": self.typed_turns,
+                "turn": None if late else turn,
+                "began": began,
+                "replying_to": replying_to,
+            }
+            # RESERVED before the caption is awaited (Hermes on #2124): the words join anything
+            # still pending and take the newest sequence number now, so an older verdict is a
+            # no-op from this instant, and Stop, mute or the end can take them back meanwhile.
+            seq = self._reserve_interjection(text, heard)
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+            )
+            self._start_interjection(seq)
+            return
         # A new question. Its generation is taken BEFORE anything is awaited — the void below
         # included — so an older offer still in flight sees it is stale and never installs its
         # challenge (#1631 review 6874).
@@ -877,7 +925,122 @@ class Call:
         draft = self.commit_pause > 0 and heard.get("turn") is not None
         self.turn_task = asyncio.create_task(self._ask(text, gen, heard, draft=draft))
 
-    def stop_turn(self, *, said: str | None = None) -> bool:
+    def _interjectable(self) -> bool:
+        """This call's own turn is running and visible, with no draft or commit in between and no
+        first part held (#2113 P3): only then are words answered beside it."""
+        ct = self.call_turn
+        return (
+            ct is not None
+            and self.draft is None
+            and self.committing is None
+            and self.held is None
+            and self._turn_running()
+            and ask_orchestrator.running_turn(self.cid) == ct[0]
+        )
+
+    def _reserve_interjection(self, text: str, heard: dict) -> int:
+        """Claim words heard while HQ works (#2113 P3), SYNCHRONOUSLY: they join words still
+        pending (reserved or being judged) and take the newest sequence number, so the older
+        judgement's verdict is a no-op from now on. `_start_interjection` judges them once
+        their caption is out — unless Stop, mute or the end took them back meanwhile."""
+        pending = self.interjection
+        if pending is not None:
+            text = f"{pending['text']} {text}"[: ask_orchestrator.QUERY_MAX]
+            heard = {
+                **heard,
+                "began": pending["heard"]["began"],
+                "replying_to": pending["heard"]["replying_to"],
+            }
+        assert self.call_turn is not None  # `_interjectable` said so; nothing awaited since
+        turn_id, question = self.call_turn
+        self.interject_seq += 1
+        seq = self.interject_seq
+        self.interjection = {
+            "seq": seq,
+            "text": text,
+            "heard": heard,
+            "turn_id": turn_id,
+            "question": question,
+        }
+        return seq
+
+    def _start_interjection(self, seq: int) -> None:
+        """After the caption: judge the reserved words, if they are still the newest and nothing
+        took them back. Gone (Stop, mute, the end) → dropped; superseded by newer words → those
+        words' own start judges the whole; their turn settled normally → a new question."""
+        cur = self.interjection
+        if cur is None or cur["seq"] != seq or self.state == "ended" or self.muted:
+            return
+        ct = self.call_turn
+        if ct is None or ct[0] != cur["turn_id"] or not self._interjectable():
+            self.interjection = None
+            self._dispatch(cur["text"], cur["heard"], self.generation)
+            return
+        self._side(
+            self._judge_interjection(
+                seq, cur["text"], cur["heard"], cur["turn_id"], cur["question"]
+            )
+        )
+
+    async def _judge_interjection(
+        self, seq: int, text: str, heard: dict, turn_id: str, question: str
+    ) -> None:
+        """The judgement, then its FENCE (#2113 P3): it acts only if it is still the newest one,
+        the call is open and unmuted, and THIS call's turn ``turn_id`` is still the one running.
+        A turn that settled meanwhile gets the words as a new question, whatever the verdict."""
+        from . import voice_judge
+
+        try:
+            verdict = await voice_judge.judge_interjection(question, _doing(self.work), text)
+            say = (
+                await asyncio.to_thread(ask_orchestrator.aside_text, verdict[1])
+                if verdict
+                else None
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — no verdict: the fallback, and the words wait
+            log.info("interjection judgement failed", exc_info=True)
+            verdict = say = None
+        cur = self.interjection
+        if cur is None or cur["seq"] != seq:
+            return  # newer words joined it, or Stop / the end dropped it
+        self.interjection = None
+        if self.state == "ended" or self.muted:
+            return
+        ct = self.call_turn
+        if ct is None or ct[0] != turn_id or ask_orchestrator.running_turn(self.cid) != turn_id:
+            self._dispatch(text, heard, self.generation)  # settled meanwhile: a new question
+            return
+        do = verdict[0] if verdict is not None and say else None
+        if do == "steer" and not ask_orchestrator.steer(self.cid, turn_id, text):
+            do = "later"  # it could not take them any more: they wait instead
+        if do == "switch":
+            if self.stop_turn(announce=False):
+                self.queued = (text, heard)  # asked once the stopped turn has settled
+                await self._interject_say(say or INTERJECT_FALLBACK)
+                return
+            do = "later"
+        if do in (None, "later"):
+            self.queued = (text, heard)  # the running answer is said first, then these
+        await self._interject_say(say if do is not None and say else INTERJECT_FALLBACK)
+
+    def on_mute(self, on: bool) -> None:
+        """The Commander muted or unmuted (#2113 P3, Hermes on #2124): muting drops a pending
+        interjection judgement, so a verdict that returns after a quick mute and unmute acts on
+        nothing. Synchronous: decided before the route awaits anything."""
+        self.muted = on
+        if on:
+            self.interjection = None
+
+    async def _interject_say(self, text: str) -> None:
+        work = self.work
+        if work is not None:
+            await self._say_status(work, text, time.monotonic())
+        else:
+            await self.say(text, kind="progress", heard=False)
+
+    def stop_turn(self, *, said: str | None = None, announce: bool = True) -> bool:
         """Stop the HQ turn running in this call's conversation (#2076): the Stop on the call
         screen, or a spoken stop phrase (`said`, captioned). HQ says `STOPPED_LINE`; the call
         NEVER ends by this. A draft not yet committed is dropped — nothing of it was stored or
@@ -909,7 +1072,8 @@ class Call:
             self.cid, turn_id, committing=committing is not None
         )
         self.queued = None  # "stop" also takes back what was asked while HQ was working
-        self._side(self._stop_turn(d, committing, turn_id, said, flagged))
+        self.interjection = None  # …and what was still being judged (#2113 P3)
+        self._side(self._stop_turn(d, committing, turn_id, said, flagged, announce))
         return True
 
     async def _stop_turn(
@@ -919,8 +1083,10 @@ class Call:
         turn_id: str | None,
         said: str | None,
         flagged: bool,
+        announce: bool = True,
     ) -> None:
-        """The waiting half of a stop. The fence itself was set in `stop_turn` (`flagged`)."""
+        """The waiting half of a stop. The fence itself was set in `stop_turn` (`flagged`).
+        `announce=False`: HQ already said why (an interjection's switch, #2113 P3)."""
         if said is not None:
             await self.client(
                 {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": said}
@@ -940,7 +1106,7 @@ class Call:
                 stopped = await ask_orchestrator.stop(self.cid, turn_id) or stopped
         # Said only when a turn really was stopped or discarded: one that answered first, or
         # whose commit failed, was not stopped, and its own outcome speaks for it.
-        if stopped:
+        if stopped and announce:
             await self.say(STOPPED_LINE, kind="status")
 
     def _take_draft(self, d: _CallDraft) -> bool:
@@ -1107,6 +1273,7 @@ class Call:
         now = time.monotonic()
         self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
         progress = asyncio.create_task(self._report_progress(d))
+        self.call_turn = (turn_id, text)
         try:
             view = await self._run_turn(
                 turn_id, text, answers, option, replying_to=replying_to, draft=d
@@ -1123,8 +1290,18 @@ class Call:
         finally:
             progress.cancel()
             self.work = None
+            if self.call_turn is not None and self.call_turn[0] == turn_id:
+                self.call_turn = None
             if d is not None and self.draft is d:
                 self.draft = None  # a draft that failed before its commit is gone too
+        # Words the Commander added that the turn settled without using (#2113 P3): asked next,
+        # ahead of anything queued, exactly once. A stopped turn hands none back (the
+        # orchestrator drops them at its settle; checked here too).
+        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        if left and self.state != "ended" and view.get("status") != "stopped":
+            words, q = " ".join(left), self.queued
+            joined = f"{words} {q[0]}" if q else words
+            self.queued = (joined[: ask_orchestrator.QUERY_MAX], q[1] if q else None)
         if self.state == "ended" or (d is not None and d.dropped):
             return
         await self.client({"t": "turn", "turn": view})
@@ -1675,7 +1852,7 @@ class Call:
             # text boundary: the newest waits to be said, an older unsaid one is dropped.
             text = ev.get("text")
             if isinstance(text, str) and text.strip():
-                work["aside"] = text.strip()
+                work["aside"] = work["last_aside"] = text.strip()
             return
         step = ev.get("step")
         now = time.monotonic()

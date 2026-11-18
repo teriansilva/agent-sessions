@@ -67,6 +67,19 @@ class Rig:
         from agent_sessions import voice_judge
 
         monkeypatch.setattr(voice_judge, "judge_cards", fake_judge)
+        # Words heard while HQ works (#2113 P3): by default NO verdict, so they wait for the
+        # running turn exactly as before (plus the fallback line). A test sets
+        # `self.interject_verdict` to `(do, say)` (or a callable); `self.interjected` records
+        # what the judgement saw.
+        self.interject_verdict: object = None
+        self.interjected: list[tuple[str, str, str]] = []
+
+        async def fake_interject(question, doing, said):
+            self.interjected.append((question, doing, said))
+            v = self.interject_verdict
+            return await v() if callable(v) else v
+
+        monkeypatch.setattr(voice_judge, "judge_interjection", fake_interject)
         self.call = voice_calls.Call(
             id="c", cid="conv", contact="asia-woman", voice="aria", operator=object(),
             app=object(), registry=None, state="listening",

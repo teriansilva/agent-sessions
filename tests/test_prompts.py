@@ -65,7 +65,8 @@ def test_registry_covers_every_system_prompt():
     # #1740 P2 mission_debrief (the finished mission's "what was done", from its records).
     # #2028 ask_route (HQ's question router on an endpoint without tools, guarded).
     # #1997 session_clusters (HQ groups a project's sessions by topic, guarded).
-    assert len(prompts.REGISTRY) == 47
+    # #2113 hq_call_interject (on a call: the Commander speaks while HQ works, guarded).
+    assert len(prompts.REGISTRY) == 48
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -89,6 +90,9 @@ def test_registry_covers_every_system_prompt():
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
+        # `hq_call_interject` (#2113) decides whether the Commander's words STEER or STOP the
+        # running turn, and what HQ is doing (its own aside) can echo what tools returned.
+        "hq_call_interject",
         # `hq_notify` (#1837) speaks as the persona sent before it; the guard stays its last word.
         "hq_notify",
         "orchestrator_pass",
@@ -182,6 +186,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_call_detailed": "affda45c6fc4e930",  # #1397 (#1626); #1668; #1681; #2113; #2120
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "voice_confirm_judge": "d0360ad9fd195a9a",  # #1715: did a spoken reply confirm a card?
+    "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
     "hq_notify": "172738181e0bcb1e",  # #1837: HQ's one line about a notification, facts only
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off

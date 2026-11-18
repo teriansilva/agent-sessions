@@ -84,6 +84,11 @@ enter that server's key again or remove it.
 - **HQ thinks out loud while it works.** On a longer question it says what it is doing in its own
   short words ("Let me look in Forgejo for that." … "Hm, not there, trying the issue list.")
   instead of a stock "Still on it". If the model writes nothing, the stock lines stay.
+- **Talk to HQ while it works.** Ask "what are you doing?" and it tells you and carries on. Give
+  it a hint ("it's issue 2059") and it uses it in what it is doing. Ask something else and it
+  says it will finish this first, answers, then takes your new question. Say "forget that, do X"
+  and it drops what it was doing and does X. If HQ cannot tell what you meant it says "One sec,
+  I'll finish this first." and your words wait their turn.
 - **Say "stop" to stop what HQ is doing.** While HQ works on an answer the call screen shows
   what it is doing and a **Stop** button above the call controls. Tapping it, or saying nothing
   but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;

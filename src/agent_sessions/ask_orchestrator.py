@@ -533,6 +533,10 @@ class _Turn:
     live: dict | None = None
     #: Whether the turn is still learning anything (#2113): not a cap, a circle detector.
     loop: _LoopGuard = field(default_factory=_LoopGuard)
+    #: The Commander's words heard on a call while this turn works (#2113 P3, `steer`), not yet
+    #: carried into a model request. Taken by `_take_steers`; any left at the settle are handed
+    #: back to the call (`take_unconsumed`), so each is used exactly once.
+    steers: list[str] = field(default_factory=list)
     #: Cards (proposal records, a nudge's own aside) this conversation holds, counted when the
     #: turn began and as its tools write them: a propose tool is refused at
     #: `ask_store.MAX_SESSION_PROPOSALS`, BEFORE it writes anything.
@@ -4037,6 +4041,12 @@ def _history(
             order.append(tid)
         elif r.get("type") == "assistant" and isinstance(r.get("text"), str):
             answers[tid] = r["text"]
+        elif (
+            r.get("type") == "interjection" and isinstance(r.get("text"), str) and tid in questions
+        ):
+            # Words the Commander added while that turn worked (#2113 P3), in order, with the
+            # question they belong to: a later "continue with that issue" still knows which one.
+            questions[tid] = f"{questions[tid]}\n\n{STEER_NOTE.format(words=r['text'])}"
     out: list[dict] = []
     switched = False
     ended = {t: statuses.get(t, {}).get("status") for t in order}
@@ -4918,6 +4928,7 @@ async def _run_turn(turn: _Turn) -> list[dict]:
     while True:
         if turn.stop.is_set():
             raise _Stopped
+        await _take_steers(turn, convo, question_at)
         turn.progress(
             {"type": "progress", "step": "thinking", "round": round_no, "steps": turn.steps}
         )
@@ -5034,6 +5045,60 @@ async def _run_turn(turn: _Turn) -> list[dict]:
         return [_assistant(turn, content.strip()), _status(turn, "done")]
 
 
+#: What the model reads when the Commander added words while it worked (#2113 P3).
+STEER_NOTE = "While you worked, the Commander added: {words}"
+#: Steer words handed back after their turn settled, keyed by (conversation, turn): the call
+#: takes them once. Bounded: a call that never asks drops the oldest.
+_UNTAKEN: dict[tuple[str, str], list[str]] = {}
+_UNTAKEN_MAX = 64
+
+
+async def _take_steers(turn: _Turn, convo: list[dict], question_at: int) -> None:
+    """Carry the Commander's waiting words into the next model request, once (#2113 P3): inside
+    the newest tool result as ``commander_said`` (a user message right after a tool message is
+    refused by some endpoints), or after the question when no tool has run yet. Stored as ONE
+    `interjection` record when carried — never before, so words a turn never used are not in
+    its transcript; they go back to the call instead."""
+    if not turn.steers:
+        return
+    words = " ".join(turn.steers)[:QUERY_MAX]
+    turn.steers = []
+    last = convo[-1]
+    if last.get("role") == "tool":
+        last["content"] = _with_note(last["content"], "commander_said", words)
+    else:
+        q = convo[question_at]
+        note = STEER_NOTE.format(words=words)
+        if isinstance(q.get("content"), list):  # a question with images (#1779)
+            q["content"] = [*q["content"], {"type": "text", "text": note}]
+        else:
+            q["content"] = f"{q.get('content') or ''}\n\n{note}"
+    await _turn_append(turn, {"type": "interjection", "turn_id": turn.turn_id, "text": words})
+
+
+def steer(cid: str, turn_id: str, text: str) -> bool:
+    """Add the Commander's words to the RUNNING turn ``turn_id`` (#2113 P3): its next model request
+    carries them. SYNCHRONOUS, no await: True means the turn will either use them or hand them
+    back (`take_unconsumed`) — never both, never neither. False, and nothing changes, for another
+    id, a turn not running here, a draft not yet committed, or one stopped or settled."""
+    r = _RUNNING.get(cid)
+    turn = r.turn if r is not None and r.turn_id == turn_id else None
+    if turn is None or turn.settled or turn.stop.is_set():
+        return False
+    if turn.draft is not None and not turn.draft.committed.is_set():
+        return False
+    words = " ".join(str(text or "").split())
+    if not words:
+        return False
+    turn.steers.append(words)
+    return True
+
+
+def take_unconsumed(cid: str, turn_id: str) -> list[str]:
+    """The steer words turn ``turn_id`` settled without using, once: the caller asks them next."""
+    return _UNTAKEN.pop((cid, turn_id), [])
+
+
 async def _wrap_up(
     turn: _Turn, cfg: dict, convo: list[dict], question_at: int, fit: _Fit, rounds: int
 ) -> list[dict]:
@@ -5050,6 +5115,7 @@ async def _wrap_up(
     convo[-1]["content"] = _with_note(
         convo[-1]["content"], "hq_note", LOOP_WRAP_NOTE.format(rounds=rounds)
     )
+    await _take_steers(turn, convo, question_at)
     tools = tool_specs(turn.via)
     _fit(convo, question_at, tools, fit)
     turn.progress({"type": "progress", "step": "thinking", "steps": turn.steps})
@@ -5258,6 +5324,9 @@ def turn_views(records: list[dict]) -> list[dict]:
                 t["elapsed_ms"] = max(0, int((at - asked) * 1000))
         elif kind == "tool":
             t["tools"].append(step_view(r))
+        elif kind == "interjection":
+            # Words the Commander added on a call while this turn worked (#2113 P3).
+            t.setdefault("interjections", []).append(r.get("text") or "")
         elif kind == "steps_more":
             t["steps"]["more"] = {
                 "count": r.get("count") or 0,
@@ -5596,6 +5665,16 @@ async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
             # Decided: marked in the same step as the read above (no await between), so a
             # `request_stop` — which takes no lock — can never land between the two.
             turn.settled = True
+            # Words the Commander added that no request carried go back to the call (#2113 P3):
+            # `steer` refuses from here on, so none is ever lost or used twice. A STOPPED turn
+            # hands nothing back: Stop (or a switch) takes back what was said for that work too,
+            # and a correction must never restart it as a new question (Hermes on #2124).
+            if turn.steers and not turn.stop.is_set():
+                _UNTAKEN[(turn.cid, turn.turn_id)] = turn.steers
+            if turn.steers:
+                turn.steers = []
+                while len(_UNTAKEN) > _UNTAKEN_MAX:
+                    del _UNTAKEN[next(iter(_UNTAKEN))]
             if intent is not None:
                 for rec in records:
                     if rec.get("type") == "status" and rec.get("status") == "done":

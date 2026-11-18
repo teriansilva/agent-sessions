@@ -601,7 +601,7 @@ def register(
                     if ev.get("t") == "card_decided":
                         await call.on_card_decided(ev.get("id"))
                     if ev.get("t") == "mute":
-                        call.muted = bool(ev.get("on"))
+                        call.on_mute(bool(ev.get("on")))
                         if call.muted:
                             await call.void_challenge()
                             # Their words came before the mute: what they said is asked (#1845).

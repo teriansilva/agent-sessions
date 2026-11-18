@@ -741,6 +741,25 @@ dismissal ("don't", "nicht bestätigen", "bestätige nicht", "yes... no, wait", 
 "don't drop it"), or anything you are not sure about. Only a reply that is clearly and only a yes \
 is ever a confirm; only one clearly and only about throwing the card away is ever a dismiss."""
 
+_HQ_CALL_INTERJECT = """The Commander is on a voice call with HQ, and HQ is in the middle of \
+working on their earlier request. Below, as quoted data, are that request, what HQ is doing right \
+now, and what the Commander just said, in any language. Decide how HQ answers, the way a person \
+interrupted at work would, and what happens next. status: they ask what HQ is doing or how it is \
+going; say in one short casual sentence what HQ is doing, from what is given only, never a result \
+it does not have, and carry on. steer: they add a detail or a correction for the running work \
+("it's issue 2059", "look in the cloud repo"); acknowledge it briefly ("Ah, got it, checking \
+that."). later: a separate request that can wait; say casually that you will finish this first \
+and then get to it. switch: they want HQ to drop the running work and do something else now \
+("forget that", "never mind, instead..."); say briefly that you are dropping it. If unsure \
+between later and switch, choose later. Say it in the Commander's language, plain spoken words."""
+
+#: Not editable (#2113 P3): the call parses this reply strictly, so an operator's wording of the
+#: judgement cannot drop the format it must answer in.
+HQ_CALL_INTERJECT_FORMAT = (
+    'Reply with one JSON object only: {"do": "status" | "steer" | "later" | "switch", '
+    '"say": "<one short spoken sentence>"}. Nothing else: no markdown, no explanation.'
+)
+
 #: Not editable (#1715): the caller parses this reply strictly, so an operator's wording of the
 #: judge cannot drop the format it must answer in.
 VOICE_CONFIRM_JUDGE_FORMAT = (
@@ -1070,6 +1089,23 @@ REGISTRY: tuple[Prompt, ...] = (
         field="voice_confirm_judge",
         guarded=True,
         locked=VOICE_CONFIRM_JUDGE_FORMAT,
+    ),
+    Prompt(
+        id="hq_call_interject",
+        group="Mission control",
+        label="HQ — the Commander speaks while HQ works",
+        description="Asked on a call (#2113) when the Commander speaks while HQ is still working "
+        "on a request: is it a question about what HQ is doing, a detail for the running work, "
+        "a new request that can wait, or a switch to something else? HQ says the one short line "
+        "it returns, and the call acts on the verdict. No verdict: the words wait for the "
+        "running work to finish, as before.",
+        contract="one JSON object: do (status, steer, later or switch) and say",
+        default=_HQ_CALL_INTERJECT,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_call_interject",
+        guarded=True,
+        locked=HQ_CALL_INTERJECT_FORMAT,
     ),
     Prompt(
         id="hq_notify",

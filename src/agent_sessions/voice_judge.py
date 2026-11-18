@@ -103,3 +103,81 @@ async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int |
         log.info("voice confirmation judge gave no verdict", exc_info=True)
         return None
     return parse_card_verdict(content, cards)
+
+
+# ---- the Commander speaks while HQ works (#2113 P3) ---------------------------------------------
+
+#: What the call may do with words heard while HQ works.
+INTERJECT_VERDICTS = frozenset({"status", "steer", "later", "switch"})
+#: The spoken line a verdict carries, before the call's own text boundary (`aside_text`).
+INTERJECT_SAY_MAX = 300
+_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def parse_interjection(content: object) -> tuple[str, str] | None:
+    """The judgement's answer as ``(do, say)``, or ``None``: no verdict. Strict: one JSON object
+    (a single code fence around it is tolerated), ``do`` in the closed set, ``say`` a non-empty
+    string of at most `INTERJECT_SAY_MAX` characters; anything else is no verdict."""
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    m = _FENCE.match(text)
+    if m:
+        text = m.group(1)
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    do, say = value.get("do"), value.get("say")
+    if not isinstance(do, str) or do not in INTERJECT_VERDICTS or not isinstance(say, str):
+        return None
+    say = " ".join(say.split())
+    if not say or len(say) > INTERJECT_SAY_MAX:
+        return None
+    return do, say
+
+
+def _interject_message(question: str, doing: str, said: str) -> str:
+    # JSON-quoted: the texts are data, never instructions (the guard clause says so as well).
+    q, d, s = (json.dumps(t, ensure_ascii=False) for t in (question, doing, said))
+    return (
+        f"The Commander's request HQ is working on (quoted): {q}\n"
+        f"What HQ is doing right now (quoted): {d}\n"
+        f"The Commander just said (quoted): {s}"
+    )
+
+
+async def judge_interjection(question: str, doing: str, said: str) -> tuple[str, str] | None:
+    """Ask the HQ model how to answer `said`, heard while HQ works on `question` and is `doing`
+    something. ``(do, say)`` or ``None`` — no verdict, the caller falls back. Never acts."""
+    from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
+
+    try:
+        cfg = review._require_config()
+        body = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": prompts.effective("hq_call_interject")},
+                {"role": "user", "content": _interject_message(question, doing, said)},
+            ],
+            "temperature": 0,
+            "stream": False,
+            "max_tokens": JUDGE_MAX_TOKENS,
+        }
+        with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+            r = await asyncio.wait_for(review.post_chat_response(cfg, body), JUDGE_TIMEOUT_S)
+        if r.status_code != 200:
+            return None
+        choice = r.json()["choices"][0]
+        message = choice["message"]
+        if choice.get("finish_reason") != "stop" or message.get("refusal"):
+            return None
+        content = message.get("content")
+        return parse_interjection(content)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — no verdict: the words wait, as before
+        log.info("interjection judgement gave no verdict", exc_info=True)
+        return None
