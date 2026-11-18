@@ -29,41 +29,56 @@ create-returning-id). So opencode new-session uses **launch-then-reconcile** wit
 stable alias layer — never a physical rename of a live dtach socket:
 
 1. **Placeholder.** The client mints `new-<uuid>` and opens
-   `/s/opencode/new-<uuid>?new=1&cwd=…`. `new-<uuid>` is a valid opencode id **only**
-   on the `new=1` launch path (`parse_key(allow_new_placeholder=True)`); resume/attach
-   still requires `ses_…`. The socket, lock, buffer, and metadata are all keyed by this
-   placeholder — it is the **physical key**.
-2. **Snapshot + launch.** Before launch the route snapshots the set of `ses_…` ids in
-   that `cwd` from `opencode.db` (read-only). It launches `opencode <dir>` (no
-   `--session` → opencode mints its own id) under the placeholder dtach socket.
-3. **Reconcile (alias).** A coroutine running alongside the PTY bridge polls
-   `opencode.db` (read-only) for an id in that `cwd` not in the snapshot:
-   - **exactly one new id** → ours: persist `opencode:new-<uuid> → opencode:<ses_…>` in
-     the metadata sidecar (`metadata.set_alias`), then push `{"t":"id","sid":…}` to the
-     client.
+   `/s/<engine>/new-<uuid>?new=1&cwd=…`. `new=1` is required to **launch** a fresh
+   placeholder master; reloading `/s/<engine>/new-<uuid>` without `new=1` is
+   **ATTACH-only** while the placeholder master is live (authorized against its
+   persisted private pre-launch `cwd` under `ptybridge.runtime_dir()/placeholders/`)
+   and resolves forward through `metadata.load_aliases()` once adopted (#2097). A reload
+   without `new=1` when no master is live and no alias exists is refused `4404` and
+   never spawns a fresh agent. The socket, lock, buffer, and metadata are all keyed by
+   this placeholder — it is the **physical key**.
+2. **Snapshot + launch.** Before launch the route snapshots the set of ids in that `cwd`
+   from the engine's store (read-only) and persists `{cwd, snapshot}` in the private
+   launch context file (`0600`). It launches the agent under the placeholder dtach
+   socket.
+3. **Reconcile (alias).** A single server-owned coroutine per `phys_key` polls the
+   engine's store (read-only) for an id in that `cwd` not in the snapshot:
+   - **exactly one new id** → ours: persist `<engine>:new-<uuid> → <engine>:<real_id>` in
+     the metadata sidecar (`admission.publish_alias`), remove the placeholder launch
+     context, then broadcast `{"t":"id","sid":…}` to all subscribed viewers.
    - **≥2 new ids** (two same-cwd launches in the window) → **ambiguous**: do **not**
-     guess (never attach to the wrong session); keep serving under the placeholder.
-   - **none yet** (opencode may not write the row until first input) → keep polling; if
-     the poll budget exhausts, keep serving under the placeholder forever (never blocks
-     the terminal).
+     guess (never attach to the wrong session); mark `reconcile_stopped=True` in the
+     launch context (preserving `cwd` for `ATTACH` scope checks) and keep serving under
+     the placeholder.
+   - **none yet** (e.g. `codex`, `antigravity`, `opencode` may not write the row until
+     the first user turn, even many minutes after TUI launch) → keep polling (`0.5 s`
+     for the first 120 polls, then `2.0 s` backoff) for as long as the placeholder
+     `dtach` master remains alive (`ptybridge.session_exists`), stopping only once
+     adopted, ambiguous, permanently refused, or the master exits (#2097).
 4. **Resolve through the alias EVERYWHERE.** The stored map is `placeholder → real`. The
    live resources are under the **placeholder**, so an attach by the *real* id resolves
    **real → placeholder** (`engines.physical_key`, the inverse of the stored map) before
-   any socket / single-writer-lock / scrollback-buffer / metadata derivation. The session
-   list resolves each scanned `ses_…` row's metadata via its physical key, so a title set
-   while on the placeholder follows the real row — **one row, no placeholder/ghost row**
-   (the #64 failure mode). The placeholder is never scanned (it isn't in `opencode.db`),
-   so it can't appear as a second row.
-5. **Client converge.** On `{"t":"id","sid":"opencode:ses_…"}` the SessionView replaces
-   the URL `/s/opencode/new-<uuid>` → `/s/opencode/ses_…` (history replace, no reload) and
-   drops the fresh-launch state, while keeping the terminal mounted under its original key
-   — the live socket is preserved (no relaunch/flicker). A later reload attaches by the
-   real id and resolves back to the placeholder socket via the persisted alias.
-6. **Restart survival.** The alias lives in the on-disk sidecar, and the dtach
+   any socket / single-writer-lock / scrollback-buffer / metadata derivation. Conversely,
+   a reload or deep link on `/s/<engine>/new-<uuid>` after adoption resolves
+   **placeholder → real** (`GET /api/sessions/<engine>:new-<uuid>` returns the resolved
+   row with `resolved_from`, and `/ws/term/<engine>:new-<uuid>` resolves the logical
+   identity and sends `{"t":"id"}`). The session list resolves each scanned row's
+   metadata via its physical key, so a title set while on the placeholder follows the
+   real row — **one row, no placeholder/ghost row** (the #64 failure mode). The
+   placeholder is never scanned, so it can't appear as a second row.
+5. **Client converge.** On `{"t":"id","sid":"<engine>:<real_id>"}` (or when a reload on
+   `/s/<engine>/new-<uuid>` resolves `GET /api/sessions/<engine>:new-<uuid>`) the
+   SessionView replaces the URL `/s/<engine>/new-<uuid>` → `/s/<engine>/<real_id>`
+   (history replace, no reload) and drops the fresh-launch state, while keeping the
+   terminal mounted under its original key — the live socket is preserved (no
+   relaunch/flicker). A later reload attaches by the real id and resolves back to the
+   placeholder socket via the persisted alias.
+6. **Restart survival.** The alias lives in the on-disk sidecar, the pre-adoption
+   `{cwd, snapshot}` lives in `ptybridge.runtime_dir()/placeholders/`, and the dtach
    socket/lock stay under the placeholder for the master's lifetime. After an app restart
-   a fresh instance reads the alias and still resolves real → placeholder, so an attach by
-   the real id finds the running master. `opencode.db` is **strictly read-only**
-   throughout.
+   before adoption, a viewer reattaching to `/s/<engine>/new-<uuid>` re-arms
+   reconciliation from the persisted snapshot; after adoption, a fresh instance reads the
+   alias and still resolves real ↔ placeholder.
 
 ## The single-writer lock (the core guarantee)
 

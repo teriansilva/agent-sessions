@@ -53,12 +53,14 @@ from .. import (
     hq_report_broker,
     launchtiming,
     memory,
+    metadata,
     missions,
     model_choice,
     native_ownership,
     opencode_admission,
     owner,
     perfstats,
+    placeholder_launch,
     prefs,
     project_dirs,
     ptybridge,
@@ -109,6 +111,25 @@ async def resolve_physical_key(prov, native: str, *, is_new: bool) -> str | None
         log.warning("terminal %s: the mission store's session mapping could not be read", logical)
         return None
     return stored or logical
+
+
+async def resolve_logical_key(prov, native: str) -> str | None:
+    """The LOGICAL key a ``new-<uuid>`` placeholder has reconciled to (#2097), or its own
+    placeholder key when not reconciled yet, or ``None`` when the alias index is unreadable."""
+    key = f"{prov.engine_id}:{native}"
+    if not engines.is_new_session_placeholder(key):
+        return key
+    try:
+        _, aliases, _ = await asyncio.to_thread(metadata.load_checked)
+    except metadata.MetadataUnreadable:
+        log.warning("terminal %s: metadata alias index could not be read", key)
+        return None
+    resolved = aliases.get(key, key)
+    if resolved != key:
+        eng, sep, log_native = resolved.partition(":")
+        if not sep or eng != prov.engine_id or not prov.manifest.session_id.accepts(log_native):
+            return None
+    return resolved
 
 
 # How often the active viewer re-asserts its lease (#293). Must be < owner.LEASE_S so a
@@ -426,11 +447,14 @@ def register(
             return await reject(4403)  # forced password change pending — no sessions yet
         is_new = ws.query_params.get("new") == "1"
         try:
-            # The opencode new-session placeholder (``new-<uuid>``) is a valid id ONLY on
-            # the new=1 launch path (#127); resume/attach still requires the native shape.
-            prov, native = engines.parse_key(sid, allow_new_placeholder=is_new)
+            # #2097: accept the ``new-<uuid>`` placeholder at parse time so a reload or
+            # reconnect without ``new=1`` can resolve via its forward alias or attach to its
+            # live dtach master; an un-aliased placeholder with no live master is still refused
+            # 4404 below before any launch can run.
+            prov, native = engines.parse_key(sid, allow_new_placeholder=True)
         except engines.EngineError:
             return await reject(4404)
+        is_placeholder = engines.is_new_session_placeholder(f"{prov.engine_id}:{native}")
         try:
             # Everything below is a dtach master and a PTY (#853 §7): an engine that does not
             # run in a terminal is refused here, never treated as one.
@@ -444,29 +468,35 @@ def register(
                 return await reject(4415, "not a terminal session")
             return await reject(4404)
 
-        # Alias resolution (#127): for opencode new-session we launch under a placeholder
-        # and reconcile to opencode's real ``ses_…`` id, persisting a placeholder→real
-        # alias. When a client later attaches by the *real* id (after the URL converged or
-        # an app restart), its live resources (dtach socket / single-writer lock / buffer)
-        # are still under the placeholder — so resolve the real id back to the physical
-        # placeholder key before any socket/lock/buffer derivation. No-op for everything
-        # else. Skipped on the new=1 launch (the placeholder IS the physical key).
-        # Two ids, kept distinct (#127 review): `native` is the LOGICAL/real id from the
-        # URL (a real ``ses_…`` or, on new=1, the placeholder) — used for scanned-session
-        # matching + ``launch_argv`` (so a real id still resumes via ``opencode --session``
-        # even when the placeholder master is gone). `phys_native` is the PHYSICAL key the
-        # live resources (dtach socket / single-writer lock / scrollback buffer) sit under
-        # — the placeholder for a reconciled opencode session, else == native. Never
-        # overwrite `native` with the placeholder, or a real URL would 4404 on LAUNCH.
+        # Alias resolution (#127 / #2097): for opencode/codex/antigravity new-session we launch
+        # under a placeholder and reconcile to the engine's real id, persisting a
+        # placeholder→real alias. When a client later attaches by the *real* id (after the URL
+        # converged or an app restart), its live resources (dtach socket / single-writer lock /
+        # buffer) are still under the placeholder — so resolve the real id back to the physical
+        # placeholder key before any socket/lock/buffer derivation. Conversely (#2097), when a
+        # client reloads `/s/<engine>/new-<uuid>` without `new=1` AFTER adoption, resolve the
+        # placeholder forward to its real logical id while keeping `phys_native` on the
+        # placeholder, and send `{"t":"id"}` once authorized so the URL converges.
         phys_native = native
-        # The alias first, then — for a late-id engine with no alias — the mission store's own
-        # mapping (#994 review 1, finding 2). `None` is a store we could not read for a key that
-        # may be mapped: refused retryably, because resolving it to itself is the duplicate writer.
-        resolved = await resolve_physical_key(prov, native, is_new=is_new)
-        if resolved is None:
-            return await reject(4502)
-        if resolved != f"{prov.engine_id}:{native}":
-            _eng, _, phys_native = resolved.partition(":")
+        placeholder_aliased_to: str | None = None
+        if is_placeholder and not is_new:
+            logical_resolved = await resolve_logical_key(prov, native)
+            if logical_resolved is None:
+                return await reject(4502)
+            if logical_resolved != f"{prov.engine_id}:{native}":
+                _eng, _, native = logical_resolved.partition(":")
+                placeholder_aliased_to = logical_resolved
+                is_placeholder = False
+        if not is_placeholder:
+            # The alias first, then — for a late-id engine with no alias — the mission store's own
+            # mapping (#994 review 1, finding 2). `None` is a store we could not read for a key
+            # that may be mapped: refused retryably, because resolving it to itself is the
+            # duplicate writer.
+            resolved = await resolve_physical_key(prov, native, is_new=is_new)
+            if resolved is None:
+                return await reject(4502)
+            if resolved != f"{prov.engine_id}:{native}":
+                _eng, _, phys_native = resolved.partition(":")
         phys_key = f"{prov.engine_id}:{phys_native}"
         transcript_key = f"{prov.engine_id}:{native}"
 
@@ -484,6 +514,13 @@ def register(
         action, lock = await _open_action_offloop(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
+        # #2097: an un-aliased `new-<uuid>` placeholder without `new=1` is ATTACH-ONLY. If the
+        # master died before or during this connect (`action != sessions.ATTACH`), release the
+        # lock and reject 4404 so a reload without `new=1` never starts a fresh agent.
+        if is_placeholder and not is_new and action != sessions.ATTACH:
+            if lock is not None:
+                lock.release()
+            return await reject(4404)
         timings = None
         if action == sessions.LAUNCH:
             # One INFO line per launch (#1505), timed from the connect's arrival; it is emitted
@@ -596,7 +633,72 @@ def register(
                 _roots = project_dirs.effective_roots()
                 _exclusions = prefs.get_folder_exclusions()
                 _boundary_configured = bool(_roots) or bool(_exclusions)
-                if (
+                if is_placeholder:
+                    # #2097: an un-adopted placeholder has no scanned store row yet; authorize
+                    # ATTACH against its persisted pre-launch `cwd` and subscribe this viewer to
+                    # the server-owned reconciliation task. If adoption completed concurrently,
+                    # resolve the alias now.
+                    concurrent_logical = await resolve_logical_key(prov, phys_native)
+                    if concurrent_logical is None:
+                        if lock is not None:
+                            lock.release()
+                        return await reject(4502)
+                    if concurrent_logical == phys_key:
+                        launch_ctx = await asyncio.to_thread(
+                            placeholder_launch.read_context, prov.engine_id, phys_native
+                        )
+                        if launch_ctx is None:
+                            # Adoption may have published the alias and removed the context file
+                            # between the first `resolve_logical_key` above and `read_context`.
+                            # Re-read the forward alias before deciding 4404 (Hermes on #2099).
+                            concurrent_logical = await resolve_logical_key(prov, phys_native)
+                            if concurrent_logical is None:
+                                if lock is not None:
+                                    lock.release()
+                                return await reject(4502)
+                    else:
+                        launch_ctx = None
+                    if concurrent_logical != phys_key:
+                        _eng, _, native = concurrent_logical.partition(":")
+                        transcript_key = concurrent_logical
+                        placeholder_aliased_to = concurrent_logical
+                        is_placeholder = False
+                        scanned = await asyncio.to_thread(
+                            engines.resolve_session,
+                            prov.engine_id,
+                            native,
+                            arrival=accept_at,
+                        )
+                        cwd = scanned.cwd if scanned else str(Path.home())
+                if is_placeholder:
+                    if launch_ctx is None:
+                        if not is_new or _boundary_configured:
+                            if lock is not None:
+                                lock.release()
+                            return await reject(4404)
+                    else:
+                        cwd = launch_ctx.cwd
+                        if not project_dirs.in_scope(cwd, roots=_roots, exclusions=_exclusions):
+                            if lock is not None:
+                                lock.release()
+                            return await reject(4404)
+                        placeholder_launch.subscribe(phys_key, ws)
+                        if not launch_ctx.reconcile_stopped and launch_ctx.snapshot is not None:
+                            reconcile_task = placeholder_launch.ensure_task(
+                                phys_key,
+                                lambda: reconcile_new_session(
+                                    None,
+                                    prov,
+                                    phys_native,
+                                    launch_ctx.cwd,
+                                    launch_ctx.snapshot,
+                                ),
+                            )
+                        # Re-check after subscribing in case adoption finished in the gap.
+                        post_sub_logical = await resolve_logical_key(prov, phys_native)
+                        if post_sub_logical and post_sub_logical != phys_key:
+                            placeholder_aliased_to = post_sub_logical
+                elif (
                     scanned is None
                     and _boundary_configured
                     or scanned is not None
@@ -759,9 +861,19 @@ def register(
 
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(_include_new_cwd)
+                if getattr(prov, "new_session_reconciles", False):
+                    await asyncio.to_thread(
+                        placeholder_launch.record_launch,
+                        prov.engine_id,
+                        native,
+                        cwd=new_cwd,
+                        snapshot=new_snapshot,
+                    )
                 if new_snapshot is not None:
-                    reconcile_task = asyncio.create_task(
-                        reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)
+                    placeholder_launch.subscribe(phys_key, ws)
+                    reconcile_task = placeholder_launch.ensure_task(
+                        phys_key,
+                        lambda: reconcile_new_session(ws, prov, native, new_cwd, new_snapshot),
                     )
                 if not getattr(prov, "new_session_reconciles", False):
                     # Pinned-id new session (e.g. claude, shell): the key is final at launch.
@@ -1076,6 +1188,11 @@ def register(
                 watch = asyncio.create_task(_handoff_spawn_watch(prov.engine_id, phys_native))
                 _HANDOFF_WATCHES.add(watch)
                 watch.add_done_callback(_HANDOFF_WATCHES.discard)
+            if placeholder_aliased_to is not None:
+                # #2097: a client that connected under `/s/<engine>/new-<uuid>` after adoption
+                # gets the `{"t":"id"}` converge frame so its URL replaces to the real id.
+                with contextlib.suppress(Exception):
+                    await ws.send_text(json.dumps({"t": "id", "sid": placeholder_aliased_to}))
             # Single-active-viewer + explicit take-over (#293), flag-gated (default OFF →
             # the #184 path below is byte-identical, so merging this is a prod no-op). The
             # flag-on path anchors ownership in a runtime-dir file so prod + staging — which
@@ -1216,14 +1333,37 @@ def register(
                     master_up = bool(ptybridge.session_exists(prov.engine_id, phys_native))
                 if not master_up:
                     model_watch.cancel()
-            # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
-            # not Exception) bypass the lock handoff below — nest it in its own try/finally
-            # and suppress CancelledError too (#127 review).
+            # Unsubscribe this viewer from placeholder notifications (#2097). The server-owned
+            # reconciliation task stays alive while any viewer remains subscribed or the spawned
+            # dtach master is not confirmed DEAD (an UNKNOWN probe timeout under load or an
+            # unexpected probe error must never cancel shared reconciliation — Hermes on #2099).
+            placeholder_launch.unsubscribe(phys_key, ws)
             try:
                 if reconcile_task is not None:
-                    reconcile_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await reconcile_task
+                    keep_reconciling = bool(placeholder_launch.subscribers(phys_key))
+                    if not keep_reconciling and (
+                        launch_started_at is not None or action == sessions.ATTACH
+                    ):
+                        try:
+                            if ptybridge.session_exists(prov.engine_id, phys_native):
+                                keep_reconciling = True
+                            else:
+                                sock = ptybridge.socket_path(prov.engine_id, phys_native)
+                                keep_reconciling = ptybridge.probe_master(sock) != ptybridge.DEAD
+                        except ptybridge.PtyBridgeError:
+                            keep_reconciling = False
+                        except Exception:
+                            keep_reconciling = True
+                    if not keep_reconciling:
+                        if action == sessions.LAUNCH and launch_started_at is None:
+                            with contextlib.suppress(Exception):
+                                placeholder_launch.remove_context(prov.engine_id, phys_native)
+                        reconcile_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await reconcile_task
+                elif action == sessions.LAUNCH and launch_started_at is None and is_placeholder:
+                    with contextlib.suppress(Exception):
+                        placeholder_launch.remove_context(prov.engine_id, phys_native)
             finally:
                 # Hand the launch lock to the dtach master we spawned (it inherited the
                 # fd), so the flock lives for the master's lifetime — closing our fd

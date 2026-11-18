@@ -9,6 +9,7 @@ import { useIsMobile } from "../lib/useIsMobile";
 import { runsInTerminal, useEngineRoster } from "../app/engineRoster";
 import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
+import { api } from "../lib/api";
 import { sessionPathFromKey } from "../lib/format";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { MapFullNotice } from "../components/overview/MapFullNotice";
@@ -157,6 +158,26 @@ export function SessionView() {
     const to = sessionPathFromKey(aliasTarget);
     if (to) navigate(to, { replace: true, state: null });
   }, [aliasTarget, navigate]);
+
+  // #2097: a reload or deep link to `/s/<engine>/new-<uuid>` has no `fresh` launch state, and
+  // `useSessionRow` skips placeholders to avoid 404s during `new=1` launches. Ask once when
+  // `!fresh && isNewSessionPlaceholder(liveKey)` so an already-adopted placeholder converges
+  // its URL in place (`onReconcileId`, keeping the mounted terminal socket).
+  useEffect(() => {
+    if (fresh || !isNewSessionPlaceholder(liveKey)) return;
+    let cancelled = false;
+    api
+      .session(liveKey)
+      .then((res) => {
+        if (!cancelled && res && res.id !== liveKey && res.resolved_from === liveKey) {
+          onReconcileId(res.id);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fresh, liveKey, onReconcileId]);
 
   // "To map" (#936) — put this session on the map as a window and go there, the inverse of a
   // window's ⤢.

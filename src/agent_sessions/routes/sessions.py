@@ -1142,6 +1142,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return row  # None (scope refusal) or _NOT_FOUND — both answer 404
         return {**row, "resolved_from": key}
 
+    def _placeholder_row_sync(placeholder_key: str):
+        """An already-adopted ``<engine>:new-<uuid>`` placeholder's resolved row (#2097), marked
+        ``resolved_from`` so ``SessionView`` replaces ``/s/<engine>/new-<uuid>`` with the real URL.
+        An un-adopted placeholder or an out-of-scope target returns ``None`` (404)."""
+        try:
+            _, aliases, _ = metadata.load_checked()
+        except metadata.MetadataUnreadable:
+            return None
+        real_key = aliases.get(placeholder_key)
+        if not real_key or real_key == placeholder_key:
+            return None
+        try:
+            canonical = engines.canonical_key(real_key)
+        except engines.EngineError:
+            return None
+        row = _session_row_sync(canonical)
+        if not isinstance(row, dict):
+            return None
+        return {**row, "resolved_from": placeholder_key}
+
     def _assessment_activity(row: dict) -> float | None:
         """The session's own clock, for the assessment's freshness (#1020): its newest
         conversation record (`last_mtime`). A screen-only engine keeps no conversation, so its
@@ -1230,10 +1250,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         try:
             key = engines.canonical_key(sid)
+            is_placeholder = False
         except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
+            try:
+                prov, native = engines.parse_key(sid, allow_new_placeholder=True)
+            except engines.EngineError:
+                raise HTTPException(status_code=404, detail="unknown session") from None
+            key = f"{prov.engine_id}:{native}"
+            if not engines.is_new_session_placeholder(key):
+                raise HTTPException(status_code=404, detail="unknown session") from None
+            is_placeholder = True
         with perfstats.timed("api_session_ms"):
-            row = await asyncio.to_thread(_session_row_sync, key)
+            row = await asyncio.to_thread(
+                _placeholder_row_sync if is_placeholder else _session_row_sync, key
+            )
         if row is None:
             raise HTTPException(status_code=404, detail="unknown session")
         return JSONResponse(row)

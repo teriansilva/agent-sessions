@@ -318,7 +318,7 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
     in-memory ring state, so ``_buffer_append`` never writes to the real ``$HOME`` and no
     cache bytes leak between tests (``_SCROLLBACK_DIR`` is captured at import from
     ``Path.home()``, so setting ``$HOME`` later is not enough)."""
-    from agent_sessions import webterm
+    from agent_sessions import placeholder_launch, webterm
 
     monkeypatch.setattr(webterm.scrollback, "_SCROLLBACK_DIR", tmp_path / "scrollback-cache")
     for d in (
@@ -334,6 +334,9 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
         webterm.scrollback._READY,
         webterm.scrollback._READY_SOURCE,
         webterm.scrollback._SANITIZE_CARRY,
+        placeholder_launch._TASKS,
+        placeholder_launch._VIEWERS,
+        placeholder_launch._STOPPED,
     ):
         d.clear()
     webterm._LOADED_FROM_DISK.clear()

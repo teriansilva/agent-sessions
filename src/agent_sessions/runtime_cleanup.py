@@ -154,6 +154,11 @@ async def cleanup_runtime(
         scrollback.clear_scrollback([phys_key])
     with contextlib.suppress(Exception):
         owner.clear_owner(engine, phys_native)
+    with contextlib.suppress(Exception):
+        from . import placeholder_launch
+
+        await placeholder_launch.stop_task(phys_key)
+        await asyncio.to_thread(placeholder_launch.remove_context, engine, phys_native)
     # Its equipment grants (#1951 slice B) are revoked, then the copies made for them, before its
     # capabilities and brokers below, so the broker refuses the session from here on. Never
     # raises.

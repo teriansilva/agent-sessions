@@ -158,86 +158,117 @@ _SPA_RESERVED = (
     "api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p", "r", "artifacts"
 )  # fmt: skip
 
-# New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
-# ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``) may not write that id until the
-# first message/output, so we poll the engine's store (read-only) for the new id rather than
-# blocking the terminal. Bounded interval; no hard deadline — if the id never appears we keep
-# serving under the placeholder (the timeout path). These + ``_reconcile_new_session`` stay
-# here (not routes/terminal.py) because tests monkeypatch them on ``main`` and call
-# ``main._reconcile_new_session`` directly (#265).
+# New-session reconcile tunables (#127/#315/#2097). Engines that mint their own id (opencode →
+# ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``; antigravity → ``<uuid>.db``) do not
+# write that id until the first message/output, which may be >5 min after launch or after a WS
+# reload/reconnect. While the placeholder's ``dtach`` master is alive, one server-owned task per
+# physical key keeps polling (backing off after the fast window); when no master is alive (e.g. a
+# direct unit-test call), ``_RECONCILE_MAX_POLLS`` bounds the poll loop.
 _RECONCILE_INTERVAL_S = 0.5
-# ~5 min of polling, then give up (session still served under the placeholder; no URL converge).
+_RECONCILE_SLOW_INTERVAL_S = 2.0
+_RECONCILE_FAST_POLLS = 120
 _RECONCILE_MAX_POLLS = 600
+_RECONCILE_APPEAR_MARGIN_S = 3.0
 
 
-async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot) -> str | None:
+async def _reconcile_new_session(
+    ws, prov, placeholder: str, cwd: str, snapshot, *, keep_alive: bool = False
+) -> str | None:
     """Discover a mint-its-own-id engine's real session id for a placeholder launch, persist
-    the alias, converge the client (#127 opencode / #315 codex). Engine-agnostic: drives any
-    provider exposing ``reconcile_new_session`` (the per-engine store diff lives in the provider).
+    the alias, converge subscribed viewers (#127 opencode / #315 codex / #2097). Engine-agnostic:
+    drives any provider exposing ``reconcile_new_session``.
 
-    ``ws`` may be ``None`` for a HEADLESS launch (#739). Everything before the client frame is
-    identical and is the part that matters — the alias write is what lets a later attach by the
-    real id resolve back to the placeholder's socket and lock, and skipping it would leave a
-    dispatched session invisible to the app, which is exactly why #732 refused these engines
-    outright. Only the ``{"t":"id"}`` converge is a viewer concern, and it is skipped rather than
-    faked.
-
-    Returns the real session id when one was resolved, otherwise ``None`` — a headless caller
-    needs the answer, where a viewer only needed the side effects.
-
-    Runs concurrently with the PTY bridge. Polls ``prov.reconcile_new_session(cwd, snapshot)``
-    (read-only, fail-soft) for a session id in ``cwd`` not in ``snapshot``:
-      * exactly one new id → that's ours: persist ``<engine>:<placeholder> → <engine>:<real>``
-        and send ``{"t":"id","sid":"<engine>:<real>"}`` so the client replaces the URL and the
-        sidebar de-dupes. One-shot, then stop.
-      * ≥2 new ids (two same-cwd launches in the window) → AMBIGUOUS: do NOT guess; keep
-        serving under the placeholder and stop reconciling (fail-safe — never the wrong
-        session).
-      * none yet → the engine hasn't written the id (may wait for first input); poll again.
-    If the id never appears within the poll budget we stop quietly; the session keeps running
-    under the placeholder (timeout path, never blocks the terminal).
+    ``ws`` may be ``None`` for a HEADLESS launch (#739) or a server-owned task whose viewers
+    subscribe through ``placeholder_launch``. When a ``dtach`` master is live for the placeholder
+    (or ``keep_alive=True`` during its spawn-appearance window), polling continues past
+    ``_RECONCILE_MAX_POLLS`` (backing off to ``_RECONCILE_SLOW_INTERVAL_S`` after
+    ``_RECONCILE_FAST_POLLS``) until:
+      * exactly one new id → persist ``<engine>:<placeholder> → <engine>:<real>`` via
+        ``admission.publish_alias``, remove the launch context file, and send
+        ``{"t":"id","sid":"<engine>:<real>"}`` to all subscribed viewers (plus ``ws``).
+      * ≥2 new ids (ambiguous) → mark ``reconcile_stopped = True`` in the launch context file
+        (retaining ``cwd`` for ``ATTACH`` authorization) and stop without guessing.
+      * permanent ``admission.publish_alias`` refusal → mark ``reconcile_stopped = True`` (retaining
+        ``cwd``) and stop; transient errors keep the context file and retry while the master lives.
+      * confirmed ``dtach`` master exit (``ptybridge.DEAD`` after the spawn-appearance window) →
+        remove the launch context file and stop.
     """
+    import time
+
+    from . import placeholder_launch, ptybridge, webterm
+    from .plugins import admission
+
     placeholder_key = f"{prov.engine_id}:{placeholder}"
-    for _ in range(_RECONCILE_MAX_POLLS):
-        await asyncio.sleep(_RECONCILE_INTERVAL_S)
+    poll = 0
+    seen_alive = False
+    appear_deadline = time.monotonic() + webterm.SPAWN_TIMEOUT_S + _RECONCILE_APPEAR_MARGIN_S
+    while True:
+        if not seen_alive and not keep_alive and poll >= _RECONCILE_MAX_POLLS:
+            return None
+        interval = (
+            _RECONCILE_INTERVAL_S
+            if poll < _RECONCILE_FAST_POLLS or _RECONCILE_INTERVAL_S == 0
+            else max(_RECONCILE_INTERVAL_S, _RECONCILE_SLOW_INTERVAL_S)
+        )
+        await asyncio.sleep(interval)
+        poll += 1
+        if await asyncio.to_thread(placeholder_launch.is_stopped, placeholder_key):
+            return None
+        try:
+            sock = ptybridge.socket_path(prov.engine_id, placeholder)
+            master_state = await asyncio.to_thread(ptybridge.probe_master, sock)
+        except ptybridge.PtyBridgeError:
+            master_state = ptybridge.DEAD
+        except Exception:
+            master_state = ptybridge.UNKNOWN
+        if master_state == ptybridge.ALIVE:
+            seen_alive = True
+        elif master_state == ptybridge.DEAD:
+            if seen_alive:
+                await asyncio.to_thread(
+                    placeholder_launch.remove_context, prov.engine_id, placeholder
+                )
+                return None
+            if keep_alive and time.monotonic() >= appear_deadline and poll >= _RECONCILE_MAX_POLLS:
+                await asyncio.to_thread(
+                    placeholder_launch.remove_context, prov.engine_id, placeholder
+                )
+                return None
         result = await asyncio.to_thread(prov.reconcile_new_session, cwd, snapshot)
         if result is None:
-            continue  # not written yet → keep polling
+            if (
+                not seen_alive
+                and poll >= _RECONCILE_MAX_POLLS
+                and (not keep_alive or time.monotonic() >= appear_deadline)
+            ):
+                return None
+            continue  # not written yet → keep polling while master lives
         if isinstance(result, list):
-            return None  # ambiguous → fail safe, stay on the placeholder
+            # Ambiguous → keep `cwd` on disk for ATTACH authorization, stop automatic adoption.
+            await asyncio.to_thread(placeholder_launch.mark_stopped, prov.engine_id, placeholder)
+            return None
         real_key = f"{prov.engine_id}:{result}"
-        # Persist the alias FIRST, and ONLY converge the client if that write succeeds. The
-        # alias (real → placeholder) is what lets a later attach by the real id resolve back
-        # to the placeholder's socket/lock/buffer (it survives an app restart). If we sent the
-        # id frame without it, the browser URL would become /s/opencode/ses_… with no alias on
-        # disk, so a reload/reattach by the real id could not find the placeholder and might
-        # launch a SECOND writer for the same opencode session. On persist failure (full disk,
-        # permissions, …) we stay quietly on the placeholder — the session keeps running there.
+        # Persist the alias FIRST, and ONLY converge viewers if that write succeeds.
         try:
-            from .plugins import admission
-
             await asyncio.to_thread(admission.publish_alias, prov, placeholder_key, real_key)
+        except admission.Refused as exc:
+            if str(exc) == admission.UNAVAILABLE and (seen_alive or poll < _RECONCILE_MAX_POLLS):
+                continue  # transient launch-lock unavailability → retry on next tick
+            # Permanent identity/ownership refusal → stop adoption, retain `cwd` for ATTACH.
+            await asyncio.to_thread(placeholder_launch.mark_stopped, prov.engine_id, placeholder)
+            return None
         except Exception:
+            if seen_alive and (_RECONCILE_INTERVAL_S > 0 or poll < _RECONCILE_MAX_POLLS):
+                continue  # transient storage error while master is live → retry on next tick
             return None  # alias not durable → never converge; keep serving under the placeholder
-        # The real (mint-its-own-id) session is now durable + discoverable → bust the sidebar's
-        # scan snapshot so the just-reconciled row shows on the next /api/sessions without the TTL
-        # lag (#561). The pinned-id path invalidates at launch in routes/terminal.py; reconciling
-        # engines (opencode/codex/antigravity) only become discoverable here, after the alias write.
+        await asyncio.to_thread(placeholder_launch.remove_context, prov.engine_id, placeholder)
         engines.invalidate_scan_cache()
-        # Handoff backlink (#597): if this placeholder was a handoff target, the source's
-        # ``handoff_to`` can now point at the REAL id (never the placeholder). Inherits this
-        # coroutine's fail-safe by construction — an ambiguous/timed-out reconcile never
-        # reaches here, so the backlink is simply absent. Best-effort: a sidecar write
-        # failure must not break the id converge below.
         with contextlib.suppress(Exception):
             await asyncio.to_thread(handoff_mod.note_reconciled, placeholder_key, real_key)
-        # Then converge the client: it replaces /s/opencode/new-… → /s/opencode/ses_…
-        # (history replace, no reload, keep the socket) and the sidebar shows one row.
-        if ws is not None:
+        frame = json.dumps({"t": "id", "sid": real_key})
+        for viewer in placeholder_launch.subscribers(placeholder_key, extra=ws):
             with contextlib.suppress(Exception):
-                await ws.send_text(json.dumps({"t": "id", "sid": real_key}))
-        # The real session now exists + is durable — wake the AI-review loop to summarize it
-        # promptly instead of waiting out the interval (#413). Gated/deduped inside the sweep.
+                await viewer.send_text(frame)
         ai_review_loop.request_review_soon()
         return result
 
@@ -612,6 +643,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
             with contextlib.suppress(Exception):
+                from . import placeholder_launch
+
+                await placeholder_launch.shutdown()
+            with contextlib.suppress(Exception):
                 await registry.stop_all()
 
     app = FastAPI(
@@ -887,7 +922,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         cfg=cfg,
         registry=registry,
         must_change=_must_change,
-        reconcile_new_session=_reconcile_new_session,
+        reconcile_new_session=lambda *a, **kw: _reconcile_new_session(*a, **kw),
     )
 
     # Upload route (save a pasted/dropped file to the shared uploads dir). Registered

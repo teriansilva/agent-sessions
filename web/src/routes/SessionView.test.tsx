@@ -322,3 +322,26 @@ test("the map-full notice stays with the handed-back session: another session do
   await user.click(screen.getByRole("button", { name: "go-back" }));
   expect(screen.queryByTestId("map-full-notice")).toBeNull();
 });
+
+test("reloading /s/<engine>/new-<uuid> without fresh state resolves adopted alias and converges URL (#2097)", async () => {
+  const phId = "new-11111111-1111-4111-8111-111111111111";
+  const realId = "a02a8694-40a5-4eb7-aaef-60359c1a8695";
+  const spy = vi.spyOn(api, "session").mockResolvedValue({
+    id: `antigravity:${realId}`,
+    resolved_from: `antigravity:${phId}`,
+    engine: "antigravity",
+    uuid: realId,
+    short_uuid: realId.slice(0, 8),
+    cwd: "/home/u/proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
+    last_mtime: 1,
+  } as unknown as Session);
+  renderAt(`/s/antigravity/${phId}`);
+  expect(spy).toHaveBeenCalledWith(`antigravity:${phId}`);
+  await waitFor(() =>
+    expect(screen.getByTestId("loc").textContent).toBe(`/s/antigravity/${realId}`),
+  );
+  // Terminal stays frozen on the placeholder key so its live socket is not remounted.
+  expect(screen.getByTestId("term").textContent).toBe(`antigravity:${phId}`);
+  expect(screen.getByTestId("term-rowkey").textContent).toBe(`antigravity:${realId}`);
+});
