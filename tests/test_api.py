@@ -11,6 +11,7 @@ import stat
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions.auth import AuthConfig
@@ -2037,21 +2038,31 @@ def test_archive_route_reaps_runtime_then_archives(auth_cfg, fake_jsonl, monkeyp
     assert order == [("cleanup", "claude", uuid), ("archive", uuid)]
 
 
-def test_archive_succeeds_even_if_cleanup_raises(auth_cfg, fake_jsonl, monkeypatch):
-    # #523: teardown is best-effort — a cleanup failure must never block the archive itself.
+@pytest.mark.parametrize("outcome", ["raise", "leaked"])
+def test_archive_refuses_when_the_runtime_is_not_confirmed_stopped(
+    auth_cfg, fake_jsonl, monkeypatch, outcome
+):
+    # #2064 (replacing #523's best-effort teardown): a session reported archived has had its
+    # runtime CONFIRMED stopped. A teardown that raised, or one that left a process alive after
+    # SIGKILL (`leaked`), refuses the archive and records nothing — the session stays active.
     from agent_sessions.routes import sessions as sroutes
 
-    async def boom_cleanup(engine, native, *, spare_if=None, **_kw):
-        raise RuntimeError("teardown blew up")
+    async def cleanup(engine, native, *, spare_if=None, **_kw):
+        if outcome == "raise":
+            raise RuntimeError("teardown blew up")
+        return "leaked"
 
-    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", cleanup)
 
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     uuid = "11111111-1111-1111-1111-111111111111"
     r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
-    assert r.status_code == 200 and r.json()["archived"] is True
+    assert r.status_code == 503
+    assert "nothing was archived" in r.json()["detail"]
+    live = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{uuid}.jsonl"
+    assert live.exists()  # not moved into the archive tree
 
 
 def test_archive_route_refuses_when_a_late_bound_runtime_cannot_be_located(
@@ -2116,8 +2127,9 @@ def test_unarchive_does_not_reap_runtime(auth_cfg, fake_jsonl, monkeypatch):
 
 
 def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_jsonl, monkeypatch):
-    # #523: bulk archive reaps per session and is best-effort — one session's teardown failure
-    # must not abort the batch, and the archive still lands.
+    # #523: bulk archive reaps per session; one session's teardown failure must not abort the
+    # batch. #2064: but that session is skipped, never archived past a runtime not confirmed
+    # stopped.
     import os
     import time
 
@@ -2140,8 +2152,10 @@ def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_
 
     r = c.post("/api/sessions/archive-older", json={"hours": 5}, headers=hdr)
     assert r.status_code == 200
-    assert r.json()["archived"] == 1  # archived despite the cleanup error
+    assert r.json()["archived"] == 0  # NOT archived past the failed teardown
+    assert r.json()["skipped"] >= 1
     assert ("claude", "11111111-1111-1111-1111-111111111111") in seen
+    assert (proj / "11111111-1111-1111-1111-111111111111.jsonl").exists()
 
 
 # ---- background-agent archive guard (#631) ------------------------------------

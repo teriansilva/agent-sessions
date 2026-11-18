@@ -213,22 +213,29 @@ def test_project_archive_reaps_each_member_runtime(auth_cfg, fake_jsonl, monkeyp
 
 
 def test_project_archive_cleanup_failure_does_not_abort_batch(auth_cfg, fake_jsonl, monkeypatch):
-    # #631 Phase B: per-member teardown is best-effort — one member's cleanup failure must not
-    # abort the batch, and every member still archives.
+    # #631 Phase B: one member's teardown failure must not abort the batch. #2064: but that member
+    # is NOT archived — a session reported archived has had its runtime confirmed stopped — and
+    # it is reported failed with the reason, while the rest of the batch archives.
     from agent_sessions.routes import sessions as sroutes
 
-    async def boom_cleanup(engine, native, *, spare_if=None, **_kw):
-        raise RuntimeError("teardown failed")
+    failing = _SID_1.split(":", 1)[1]
 
-    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
+    async def cleanup(engine, native, *, spare_if=None, **_kw):
+        if native == failing:
+            raise RuntimeError("teardown failed")
+        return "gone"
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", cleanup)
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     h = _hdr(csrf, auth_cfg)
     pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
     d = c.post(f"/api/projects/{pid}/archive", headers=h).json()
     res = _results(d)
-    assert res[_SID_1] == "archived" and res[_SID_2] == "archived"
-    assert d["counts"]["failed"] == 0
+    assert res[_SID_1] == "failed" and res[_SID_2] == "archived"
+    reason = next(r.get("reason", "") for r in d["sessions"] if r["id"] == _SID_1)
+    assert "could not confirm it stopped" in reason
+    assert d["counts"]["failed"] == 1
 
 
 def test_project_archive_skips_owned_background_agent_member(

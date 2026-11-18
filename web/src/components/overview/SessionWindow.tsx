@@ -74,13 +74,15 @@ const PANE_TO_SESSION_KEYS: Record<string, string[]> = {
 
 
 /** The footer's link word (#1600), from the pane's own socket status. */
-type LinkState = "live" | "linking" | "down";
+type LinkState = "live" | "linking" | "down" | "idle";
 const LINK_WORD: Record<LinkState, string> = {
   live: "Live",
   linking: "Linking",
   down: "Down",
+  idle: "Ready",
 };
 function linkState(s: TermStatus): LinkState {
+  if (s.kind === "idle") return "idle";
   if (s.kind === "connected") return "live";
   return s.kind === "connecting" || s.kind === "reconnecting" ? "linking" : "down";
 }

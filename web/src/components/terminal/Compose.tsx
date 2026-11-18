@@ -244,6 +244,13 @@ export const Compose = forwardRef<
   const taRef = useRef<HTMLTextAreaElement>(null);
   // #533: token guarding the fresh-launch readiness hold — a newer Send supersedes a pending one.
   const holdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const sendChainRef = useRef<Promise<unknown>>(Promise.resolve()); // one send transaction at a time
   // The DELIVERY window — clear → paste → deferred Enter — is the part of a transaction no other
   // pty write may enter: a key-bar Up, or a keystroke typed into the terminal, landing between the
@@ -598,6 +605,12 @@ export const Compose = forwardRef<
     rev: number,
   ): Promise<SendOutcome> =>
     new Promise<SendOutcome>((resolve) => {
+      // Archive removes this composer while Terminal survives. A queued send must not call the
+      // readiness hook after removal: that hook can now start an unarchived terminal (#2064).
+      if (!mountedRef.current) {
+        resolve("failed");
+        return;
+      }
       const savedText = payload.text; // restore exactly these if a (re)paste can't be delivered (#287)
       const savedAttachments = payload.attachments;
       // Every exit of a delivery releases the raw-input hold and writes what was held, in order,
@@ -606,8 +619,15 @@ export const Compose = forwardRef<
         deliveringRef.current = false;
         const held = pendingRawRef.current;
         pendingRawRef.current = [];
-        for (const h of held) if (!sendInput(h.data)) h.onDropped?.();
+        if (mountedRef.current) {
+          for (const h of held) if (!sendInput(h.data)) h.onDropped?.();
+        }
         resolve(outcome);
+      };
+      const cancelled = () => {
+        if (mountedRef.current) return false;
+        settle("failed");
+        return true;
       };
       // The same helper the template editor's preview uses (#905): what the preview shows is,
       // by construction, what this paste carries.
@@ -690,6 +710,7 @@ export const Compose = forwardRef<
         // socket is not on the fresh one, so a bare Enter there would submit an EMPTY turn (#287).
         // Every step therefore gates on the socket id and restarts the attempt when it moved.
         const submitEnter = (epoch: number | undefined) => {
+          if (cancelled()) return;
           if (epoch !== undefined && connEpoch?.() !== epoch) {
             redeliver();
             return;
@@ -737,10 +758,12 @@ export const Compose = forwardRef<
         // of the trailing \r, applied to the boundary that was never split.
         let restarts = 1;
         const attempt = () => {
+          if (cancelled()) return;
           // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover console input can't mix in.
           sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
           const epoch = connEpoch?.();
           setTimeout(() => {
+            if (cancelled()) return;
             if (epoch !== undefined && connEpoch?.() !== epoch) {
               redeliver();
               return;
@@ -782,8 +805,8 @@ export const Compose = forwardRef<
       const token = ++holdRef.current;
       setNote("waiting for agent…");
       void ready.then((ok) => {
-        if (holdRef.current !== token) {
-          resolve("failed"); // superseded by a newer Send
+        if (!mountedRef.current || holdRef.current !== token) {
+          resolve("failed"); // removed (archive / navigation), or superseded by a newer Send
           return;
         }
         if (!ok) {

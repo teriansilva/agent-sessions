@@ -1524,7 +1524,56 @@ def pending_start_view(record: dict, live_worker: str | None = None) -> dict:
     }
 
 
+@contextlib.contextmanager
+def _archive_admission(engine_id: str, session_id: str):
+    """The start-path gate (#2064): an archived session is frozen, and nothing launches it.
+
+    The freeze fence is held SHARED across "read the archive state → launch → pinned", so an archive
+    (which holds it exclusively across "Stop everything → record the archive") can never interleave
+    with a launch. Taken before the lifecycle lock — the documented order (`freeze_lock`)."""
+    from . import archive_gate, engines, freeze_lock
+
+    key = f"{engine_id}:{session_id}"
+    try:
+        held = freeze_lock.acquire(key, exclusive=False, timeout=freeze_lock.SHARED_TIMEOUT)
+    except freeze_lock.FreezeBusy:
+        raise NativeError(
+            409, "this session is being archived or unarchived — try again", remedy="retry"
+        ) from None
+    try:
+        prov = engines.get_any(engine_id)
+        if prov is not None:
+            try:
+                archive_gate.check(prov, session_id)
+            except archive_gate.Refused as exc:
+                raise NativeError(exc.status, exc.detail) from None
+        yield
+    finally:
+        held.release()
+
+
+def archive_refusal(engine_id: str, session_id: str) -> None:
+    """Check-only form for paths that feed a running worker (submit, send now): raises the same
+    `NativeError` an archived session gets from a launch. Blocking."""
+    from . import archive_gate, engines
+
+    prov = engines.get_any(engine_id)
+    if prov is None:
+        return
+    try:
+        archive_gate.check(prov, session_id)
+    except archive_gate.Refused as exc:
+        raise NativeError(exc.status, exc.detail) from None
+
+
 def _start_sync(engine_id: str, session_id: str, record_launch: bool = False) -> str | None:
+    with _archive_admission(engine_id, session_id):
+        return _start_sync_admitted(engine_id, session_id, record_launch)
+
+
+def _start_sync_admitted(
+    engine_id: str, session_id: str, record_launch: bool = False
+) -> str | None:
     """The worker id this call launched, or None when the start is already complete.
 
     ``record_launch`` (#1505, the HTTP route only): the launched generation's view is recorded
@@ -2212,6 +2261,13 @@ def _claude_history_exists(source, native_id: str) -> bool:
 
 
 def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | None) -> str | None:
+    with _archive_admission(engine_id, session_id):
+        return _relaunch_sync_admitted(engine_id, session_id, permission_operation)
+
+
+def _relaunch_sync_admitted(
+    engine_id: str, session_id: str, permission_operation: str | None
+) -> str | None:
     prov, _ = _session(engine_id, session_id)
     try:
         binding = api_source.resolve(prov)
@@ -4004,6 +4060,8 @@ async def submit(
     while that question is still open."""
     if execution_admission is not None and getattr(execution_admission, "admit", None) is None:
         raise NativeError(409, "this caller's authority can't be checked across processes")
+    # An archived session takes no message, live worker or not (#2064).
+    await asyncio.to_thread(archive_refusal, engine_id, session_id)
     try:
         native_protocol.validate_text(text, allow_empty=bool(attachments))
     except native_protocol.ProtocolError as exc:

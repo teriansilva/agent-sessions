@@ -2093,11 +2093,14 @@ test("the Return chip rides the send fence: pressed inside a template's paste→
 test("a send queued behind a readiness hold is in the sent ring the moment it is accepted, and survives an unmount (#908 round 4)", async () => {
   vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
   const user = userEvent.setup();
+  let resolveReady!: (ok: boolean) => void;
+  const ready = new Promise<boolean>((resolve) => { resolveReady = resolve; });
+  const waitInputReady = vi.fn(() => ready);
   const { unmount } = render(
     <Compose
       sendInput={sendInput}
       connEpoch={() => 1}
-      waitInputReady={() => new Promise<boolean>(() => {})} // the hold never settles
+      waitInputReady={waitInputReady}
     />,
   );
   await user.type(screen.getByRole("textbox"), "first");
@@ -2111,7 +2114,12 @@ test("a send queued behind a readiness hold is in the sent ring the moment it is
   );
   expect(readSent().every((e) => !e.confirmed)).toBe(true);
   unmount();
+  // Archive removes Compose while the pane survives (#2064). Neither an old hold nor its queued
+  // template may deliver or start a terminal if readiness arrives after that removal.
+  await act(async () => { resolveReady(true); });
   expect(readSent()).toHaveLength(2);
+  expect(readSent().every((e) => !e.confirmed)).toBe(true);
+  expect(waitInputReady).toHaveBeenCalledTimes(1);
   expect(sendInput).not.toHaveBeenCalled();
 });
 

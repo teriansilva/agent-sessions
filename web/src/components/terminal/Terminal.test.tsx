@@ -28,6 +28,9 @@ vi.mock("../../lib/api", () => ({
     saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
     // #1502: a 4415 asks for the roster at once (`reloadRoster`). Never answers by default.
     engines: vi.fn(() => new Promise(() => {})),
+    // #2064: a 4410 re-reads the row; Unarchive posts, then re-reads. Never answer by default.
+    session: vi.fn(() => new Promise(() => {})),
+    unarchive: vi.fn(() => new Promise(() => {})),
     // "Review now" in the session brief. Asserted by the #867 action-identity test below: it is
     // the cheapest place to observe WHICH session id an action actually targets.
     reviewNow: vi.fn().mockResolvedValue({
@@ -782,4 +785,35 @@ test("an alias resolving after the give-up bound still reads 'Opening…', never
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- #2064: an archived session is frozen ---------------------------------------------------------
+
+test("an archived row opens no socket: the area says so and the compose bar is the ARCHIVED strip (#2064)", () => {
+  renderTerminal(headerRow({ archived: true }));
+  expect(sockets).toHaveLength(0);
+  expect(xterms).toHaveLength(0);
+  expect(screen.getByTestId("term-archived")).toHaveTextContent(
+    "Archived — read-only. No terminal is running.",
+  );
+  expect(screen.getByTestId("archived-strip")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Unarchive" })).toHaveFocus();
+  // No socket status chip, and the running-terminal head actions are gone.
+  expect(screen.queryByText(/connecting/i)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Repaint screen" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Hand off/ })).toBeNull();
+});
+
+test("a 4410 close mid-session freezes the pane — no reconnect, the strip replaces the composer (#2064)", () => {
+  renderTerminal(headerRow());
+  expect(sockets).toHaveLength(1);
+  act(() =>
+    sockets[0].emitStatus({ kind: "rejected", reason: "session archived — read-only", code: 4410 }),
+  );
+  expect(screen.getByTestId("archived-strip")).toBeInTheDocument();
+  expect(screen.getByTestId("term-archived")).toBeInTheDocument();
+  expect(sockets[0].close).toHaveBeenCalled();
+  expect(sockets).toHaveLength(1);
+  // The pane re-reads the row so its header catches up.
+  expect(api.session).toHaveBeenCalledWith("claude:abc");
 });

@@ -11,3 +11,6 @@ export const CLOSE_NOT_A_TERMINAL = 4415;
 export const CLOSE_STALE_DEFAULT = 4412;
 /** #1819: the session limit is reached. Nothing was launched; the operator frees a slot and retries. */
 export const CLOSE_SESSION_LIMIT = 4429;
+/** #2064: the session is archived, so it is frozen and nothing may start it. Terminal for the
+ *  client — never retried — and the pane shows its archived state with Unarchive. */
+export const CLOSE_ARCHIVED = 4410;

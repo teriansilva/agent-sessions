@@ -331,6 +331,48 @@ test("4415 reports wrong-runtime, never 'not found', and is not retried (#1502)"
   }
 });
 
+// #2064: an archived session is frozen. Its refusal is 4410, terminal for the client — a reconnect
+// would only be refused again (and, before the server gate, would have LAUNCHED it). 4409 BUSY
+// keeps retrying exactly as before.
+describe("4410 archived (#2064)", () => {
+  test("4410 is terminal: rejected with its code, never reconnected, not even by a wake", () => {
+    vi.useFakeTimers();
+    try {
+      const { ts, statuses } = makeSocket();
+      ts.connect();
+      FakeWS.instances[0].drop(4410, "this session is archived");
+      expect(statuses.at(-1)).toEqual({
+        kind: "rejected",
+        reason: "session archived — read-only",
+        code: 4410,
+      });
+      vi.advanceTimersByTime(60_000);
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(FakeWS.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("4409 (busy) still reconnects with backoff — unchanged by the archived code", () => {
+    vi.useFakeTimers();
+    try {
+      const { ts, statuses } = makeSocket();
+      ts.connect();
+      FakeWS.instances[0].drop(4409);
+      expect(statuses.at(-1)).toMatchObject({ kind: "reconnecting" });
+      vi.advanceTimersByTime(ts.backoffMs(0));
+      expect(FakeWS.instances).toHaveLength(2);
+      FakeWS.instances[1].drop(4409);
+      vi.advanceTimersByTime(ts.backoffMs(1));
+      expect(FakeWS.instances).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 test("a 4404 carries its code, so the pane can tell it from other refusals (#1502)", () => {
   const { ts, statuses } = makeSocket();
   ts.connect();

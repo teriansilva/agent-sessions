@@ -293,3 +293,60 @@ button.micOn:focus-visible {
 :root:not([data-motion="full"]) .micOn > svg {
   animation: none;
 }
+
+/* ARCHIVED · READ-ONLY (#2064): the compose bar's archived state, shared by the terminal pane and
+ * the API-session pane (`session/ArchivedStrip.tsx`). The bar's own ground and top edge, a title in
+ * the display caps, one line of copy, and UNARCHIVE on THE ACTION BUTTON's primary plate (the 44px
+ * floor at every width). A failure is `--danger-text`; nothing here is a status colour otherwise.
+ * In a narrow pane (a phone, a small map window) the button drops under the text, full width. */
+.archived {
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  container: archived / inline-size;
+}
+.archivedInner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+.archivedText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.archivedTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.archivedCopy {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.archivedError {
+  color: var(--danger-text);
+}
+.archivedBtn {
+  composes: primary from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+  min-width: 9rem;
+}
+@container archived (max-width: 560px) {
+  .archivedInner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .archivedBtn {
+    width: 100%;
+  }
+}

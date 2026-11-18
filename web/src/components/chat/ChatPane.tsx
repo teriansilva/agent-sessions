@@ -4,6 +4,10 @@ import type { KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { engineBadge, engineInfo, engineLabel, useEngineRoster } from "../../app/engineRoster";
 import { ApiError, api } from "../../lib/api";
+import { isArchivedRefusal } from "../../lib/archived";
+import { useSessionLookup } from "../../app/useSessionRow";
+import { ArchivedStrip } from "../session/ArchivedStrip";
+import { useArchivedSession } from "../session/useArchivedSession";
 import { reloadRoster } from "../../app/reloadRoster";
 import { agentPath } from "../../routes/settingsTabs";
 import { OpeningPanel } from "../terminal/SessionOpening";
@@ -157,6 +161,10 @@ export function ChatPane({
   // The API-session look (#1494 P3), on the conversation log only: `{}` for the default look.
   const logLook = useApiLogProps();
   const sid = `${engine}:${id}`;
+  // #2064: an archived conversation is frozen — readable, nothing posts until it is unarchived.
+  const { row } = useSessionLookup(sid);
+  const arch = useArchivedSession(sid, row);
+  const archived = arch.archived;
   const [session, setSession] = useState<ChatSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [endpoint, setEndpoint] = useState<AgentEndpoint | null>(null);
@@ -322,6 +330,8 @@ export function ChatPane({
       await load(); // its turn replaces the entry
     } catch (e) {
       if (!alive.current) return;
+      // Refused as archived (another device archived it): freeze the pane; the entry stays.
+      if (isArchivedRefusal(e)) arch.markArchived();
       const latest = await load();
       if (!alive.current) return;
       if (latest?.turns.some((t) => t.turn_id === id)) return; // the conversation has it
@@ -386,11 +396,12 @@ export function ChatPane({
     return () => clearTimeout(timer);
   }, [hold, load, backOff, alive]);
   useEffect(() => {
+    if (archived) return; // #2064: nothing posts to a frozen conversation
     const head = nextToPost(outboxRef.current, admitted);
     if (head) void post(head);
     // `post` is per render; the outbox and the admission are the triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outbox, admitted]);
+  }, [outbox, admitted, archived]);
 
   // Anything the server does not have yet is lost on a reload or close: ask first.
   useLeaveGuard(unrecorded(outbox));
@@ -605,32 +616,42 @@ export function ChatPane({
           {sendError}
         </p>
       )}
-      <form
-        className={styles.comp}
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <textarea
-          ref={taRef}
-          className={styles.ta}
-          aria-label="Message the agent"
-          placeholder={configured ? "Message the agent…" : "This agent has no endpoint"}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKey}
-          rows={2}
-          disabled={!configured}
+      {archived ? (
+        <ArchivedStrip
+          pane="api"
+          state={arch.state}
+          onUnarchive={() => void arch.unarchive()}
         />
-        <button
-          type="submit"
-          className={styles.send}
-          disabled={!configured || !draft.trim()}
+      ) : (
+        <form
+          className={styles.comp}
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
         >
-          Send
-        </button>
-      </form>
+          <textarea
+            ref={taRef}
+            className={styles.ta}
+            aria-label="Message the agent"
+            placeholder={
+              configured ? "Message the agent…" : "This agent has no endpoint"
+            }
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKey}
+            rows={2}
+            disabled={!configured}
+          />
+          <button
+            type="submit"
+            className={styles.send}
+            disabled={!configured || !draft.trim()}
+          >
+            Send
+          </button>
+        </form>
+      )}
     </div>
   );
 }

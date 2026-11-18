@@ -343,6 +343,52 @@ async def test_archiving_an_api_session_stops_its_worker_before_recording_it(
 
 
 @pytest.mark.anyio
+async def test_an_archived_api_session_is_never_relaunched_and_unarchive_starts_nothing(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    auth_cfg,
+):
+    # #2064, the reported bug: archive stopped the worker once, and the next send started a new
+    # generation under an archived session. Now every start path refuses it; unarchive starts
+    # nothing; only the next send after unarchive launches, through the normal path.
+    import asyncio
+
+    from agent_sessions import archive_gate
+
+    key = await _live_session(host, project)
+    engine, _, native = key.partition(":")
+    c = _client(auth_cfg)
+    r = await asyncio.to_thread(c.post, f"/api/sessions/{key}/archive")
+    assert r.status_code == 200, r.text
+    workers = set(host.procs)
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.submit_turn(key, operation_id=ident(), text="still there?")
+    assert refused.value.status == 409 and refused.value.detail == archive_gate.ARCHIVED_DETAIL
+    # An internal caller going straight to the native runtime is refused too.
+    with pytest.raises(native_runtime.NativeError) as refused:
+        await native_runtime.submit(engine, native, ident(), "still there?")
+    assert refused.value.status == 409
+    r = await asyncio.to_thread(
+        c.post,
+        f"/api/structured/sessions/{key}/turns",
+        json={"operation_id": ident(), "text": "via the route"},
+    )
+    assert r.status_code == 409 and r.json()["detail"] == archive_gate.ARCHIVED_DETAIL
+    assert set(host.procs) == workers, "no worker was launched for the archived session"
+    assert (await runtime.probe(key))["containment"] == "gone"
+
+    r = await asyncio.to_thread(c.post, f"/api/sessions/{key}/unarchive")
+    assert r.status_code == 200, r.text
+    assert set(host.procs) == workers, "unarchive starts nothing"
+    assert (await runtime.probe(key))["containment"] == "gone"
+
+    turn_id = ident()
+    await runtime.submit_turn(key, operation_id=turn_id, text="back again")
+    await settle(key, turn_id)
+    assert (await runtime.probe(key))["containment"] == "live"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("outcome", ["unknown", "live"])
 async def test_archive_refuses_when_the_worker_is_not_proved_gone(
     host,  # noqa: F811
@@ -357,12 +403,18 @@ async def test_archive_refuses_when_the_worker_is_not_proved_gone(
 
     key = await _live_session(host, project)
 
-    async def stop(session_key):
-        return {"session_key": session_key, "containment": outcome}
+    calls: list = []
 
-    monkeypatch.setattr(runtime, "stop", stop)
+    # Archive runs the operator's Stop everything (#2064): `native_runtime.stop` confirmed with
+    # `everything` for the live generation.
+    async def stop(engine, native, *, discard=True, confirm=None):
+        calls.append(confirm)
+        return {"containment": outcome}
+
+    monkeypatch.setattr(native_runtime, "stop", stop)
     c = _client(auth_cfg)
     r = await asyncio.to_thread(c.post, f"/api/sessions/{key}/archive")
+    assert calls and calls[0] and calls[0]["everything"] is True
     assert r.status_code == 503 and outcome in r.json()["detail"]
     assert metadata.archive_override_under_lock(key) != "archived"
     # The bulk sweep skips it rather than archiving past it.

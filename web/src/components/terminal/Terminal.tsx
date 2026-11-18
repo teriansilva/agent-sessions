@@ -51,7 +51,9 @@ import {
   useSessionsStore,
 } from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
-import { CLOSE_NOT_FOUND, CLOSE_SESSION_LIMIT } from "../../lib/termCloseCodes";
+import { CLOSE_ARCHIVED, CLOSE_NOT_FOUND, CLOSE_SESSION_LIMIT } from "../../lib/termCloseCodes";
+import { ArchivedStrip } from "../session/ArchivedStrip";
+import { useArchivedSession } from "../session/useArchivedSession";
 import {
   TermSocket,
   type TermGateHolder,
@@ -101,6 +103,14 @@ import {
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
+/** What an archived session's pane reports as its socket status (#2064) — the same words the 4410
+ *  refusal carries — while no socket is opened for it. */
+const ARCHIVED_STATUS: TermStatus = {
+  kind: "rejected",
+  reason: "session archived — read-only",
+  code: CLOSE_ARCHIVED,
+};
+const IDLE_STATUS: TermStatus = { kind: "idle" };
 // #617: the failure toast asks the operator to do something ("use a secure origin"), so it needs
 // longer to read than the success flash. Matches .copyFailed's animation-duration.
 const COPY_FAILED_TOAST_MS = 2600;
@@ -113,6 +123,7 @@ function statusText(s: TermStatus): string {
       return "reconnecting…";
     case "rejected":
       return s.reason;
+    case "idle":
     case "connected":
     case "wrong-runtime": // #1502: the Opening panel says it, not the corner chip
       return "";
@@ -324,6 +335,26 @@ export function Terminal({
   // `id` left it hidden for the entire life of a converged opencode/codex session, because that
   // id keeps its `new-` prefix forever.
   const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
+  // #2064: an archived session is frozen. Known archived (its row, or the server's 4410 on this
+  // pane's socket) → no socket is opened at all, the area says so, and the compose bar is the
+  // ARCHIVED strip with Unarchive. A row that resolves archived after a socket was opened (a cold
+  // deep link) tears that socket down; the server refuses it with 4410 regardless.
+  const arch = useArchivedSession(actionKey, row);
+  const frozen = arch.archived;
+  // Unarchive restores the composer, not a runtime. Only its next content delivery mounts the
+  // terminal. No TermSocket exists while waiting, so online/visibility wakes cannot launch it.
+  const [resumeOnSend, setResumeOnSend] = useState(frozen);
+  const [wasFrozen, setWasFrozen] = useState(frozen);
+  if (wasFrozen !== frozen) {
+    setWasFrozen(frozen);
+    if (frozen) setResumeOnSend(true);
+  }
+  const resumeOnSendRef = useRef(frozen);
+  const terminalInactive = frozen || resumeOnSend;
+  const markArchivedRef = useRef(arch.markArchived);
+  useEffect(() => {
+    markArchivedRef.current = arch.markArchived;
+  });
   // #1109: the socket status is also PUBLISHED to a host that renders the LED for this pane
   // (the window chrome) — through the SAME write, not a second effect: the React compiler
   // refuses the component outright when `status` is both an effect dep and a HeadFacts prop,
@@ -331,7 +362,8 @@ export function Terminal({
   // by the onRole idiom below.
   const [status, setStatusRaw] = useState<TermStatus>({ kind: "connecting" });
   // #1570: the uplink veil over the viewport, past its 3 s (connect) / 5 s (lost) grace.
-  const veil = useUplinkVeil(status);
+  const paneStatus = frozen ? ARCHIVED_STATUS : resumeOnSend ? IDLE_STATUS : status;
+  const veil = useUplinkVeil(paneStatus);
   const [coarse] = useState(
     () => window.matchMedia?.("(pointer: coarse)")?.matches ?? false,
   );
@@ -446,8 +478,16 @@ export function Terminal({
   // (ESC[?2004h) only shortens the quiet window — it is not itself readiness, because claude emits
   // it before switching to the alternate screen and clearing it, wiping anything pasted on it.
   // Attaches to already-running sessions are ready immediately.
-  const inputReadyRef = useRef<boolean>(!fresh);
+  const inputReadyRef = useRef<boolean>(!fresh && !frozen);
   const readyWaitersRef = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    if (!frozen) return;
+    // This identity already exists. Even a pane originally opened by Start must resume it,
+    // including through a placeholder alias (#2097), never repeat the new=1 launch parameters.
+    freshRef.current = undefined;
+    resumeOnSendRef.current = true;
+    inputReadyRef.current = false;
+  }, [frozen]);
   const markInputReady = useCallback(() => {
     if (inputReadyRef.current) return;
     inputReadyRef.current = true;
@@ -458,6 +498,12 @@ export function Terminal({
   // resolves true on readiness / false when `timeoutMs` expires first.
   const waitInputReady = useCallback(
     (timeoutMs: number): true | Promise<boolean> => {
+      if (resumeOnSendRef.current) {
+        resumeOnSendRef.current = false;
+        inputReadyRef.current = false;
+        setStatus({ kind: "connecting" });
+        setResumeOnSend(false);
+      }
       if (inputReadyRef.current) return true;
       return new Promise<boolean>((resolve) => {
         const t = setTimeout(() => resolve(false), timeoutMs);
@@ -467,7 +513,7 @@ export function Terminal({
         });
       });
     },
-    [],
+    [setStatus],
   );
 
   // Send raw input to the PTY (used by the mobile action bar / compose). Returns whether the frame
@@ -480,6 +526,8 @@ export function Terminal({
   // Current socket id (bumped each reconnect) so Compose can detect a reconnect between its frames.
   const connEpoch = useCallback(() => sockRef.current?.connectionId ?? -1, []);
   useEffect(() => {
+    // #2064: archived sessions, and unarchived sessions awaiting their first Send, have no host.
+    // The first Send mounts it and waits for boot readiness before delivering the held message.
     const host = hostRef.current;
     if (!host) return;
 
@@ -1374,6 +1422,9 @@ export function Terminal({
           // Refused at the session limit (#1819): the socket opened but nothing launched, so a
           // retry must still ask for the launch. Without its new=1 it is a resume of nothing: 4404.
           if (s.kind === "rejected" && s.code === CLOSE_SESSION_LIMIT) freshConsumed = false;
+          // #2064: archived (another device, or a row this pane had not read yet). Terminal: the
+          // socket never retries it, and the pane freezes and re-reads the row.
+          if (s.kind === "rejected" && s.code === CLOSE_ARCHIVED) markArchivedRef.current();
           setStatus(s);
           if (s.kind === "connected") {
             // The socket OPENED → the server received new=1 and launched. Only NOW stop sending the
@@ -1804,8 +1855,16 @@ export function Terminal({
     // Identity-only deps: this socket lives and dies with the terminal's `key` (engine:id).
     // `fresh` is intentionally excluded — it's read once via freshRef so self-convergence
     // (which clears route state) can't tear down + relaunch the live terminal. See freshRef.
+    // `terminalInactive` (#2064) closes on archive and opens only on the first Send after unarchive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, id, takeoverEpoch]);
+  }, [engine, id, takeoverEpoch, terminalInactive]);
+
+  // A host that renders this pane's LED (a map window's chrome) hears the archived state too: no
+  // socket runs to publish it.
+  useEffect(() => {
+    if (frozen) onTermStatusRef.current?.(ARCHIVED_STATUS);
+    else if (resumeOnSend) onTermStatusRef.current?.(IDLE_STATUS);
+  }, [frozen, resumeOnSend]);
 
   // Re-theme, re-size AND re-FACE the live terminal WITHOUT tearing it down. Colours apply
   // immediately; a size or family change recomputes the grid, and xterm's onResize handler
@@ -1834,7 +1893,8 @@ export function Terminal({
   // (#1405): the route replaces the URL next, so this 4404 is not a verdict either.
   const askedKey = rowKey || `${engine}:${id}`;
   const aliased = !!row && row.id !== askedKey && row.resolved_from === askedKey;
-  const rawCover = termCover(status, lookupPhase, aliased);
+  // Archived (#2064): no socket, so no socket status — its own body below, never a cover or chip.
+  const rawCover = terminalInactive ? null : termCover(status, lookupPhase, aliased);
   // A lookup that never answers (a hung request) must not hold "Opening…" for ever: after the
   // same bound the roster wait has, it reads as the lookup failure it is.
   const [lookupGaveUp, setLookupGaveUp] = useState(false);
@@ -1848,7 +1908,7 @@ export function Terminal({
   // latched give-up there flashed the 4404 text for the frame before the replace (Hermes, #1522).
   const cover =
     rawCover === "opening" && lookupPhase === "pending" && lookupGaveUp ? null : rawCover;
-  const text = cover
+  const text = cover || terminalInactive
     ? ""
     : status.kind === "rejected" &&
         status.code === CLOSE_NOT_FOUND &&
@@ -1872,7 +1932,8 @@ export function Terminal({
   );
   // An engine with no agent behind it (the plain shell, `kind = "terminal"` in its manifest —
   // #853 P4) has nothing to hand off; read from the roster, never an id.
-  const canHandoff = isAgent(engine) && !actionNative.startsWith("new-");
+  // Not while archived (#2064): a hand-off reads a session that can run.
+  const canHandoff = isAgent(engine) && !actionNative.startsWith("new-") && !frozen;
   const scrollToTail = useCallback(() => {
     // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
     // scroll-up fling is still decaying scrolls to the tail for one frame and is then dragged
@@ -1981,7 +2042,8 @@ export function Terminal({
       : []),
     // Repaint stays ahead of the fold: burying the recovery control when the screen is blank
     // would be the wrong trade.
-    ...(role === "owner"
+    // Repaint drives a running terminal; an archived session has none (#2064).
+    ...(role === "owner" && !terminalInactive
       ? [
           {
             id: "repaint",
@@ -2121,24 +2183,29 @@ export function Terminal({
     // least critical pair last means it is these two and never Hand off. Inserting them earlier
     // pushed Hand off into the overflow and turned session-recap.spec.ts red — which is the
     // contract working, not a stale test.
-    {
-      id: "text-smaller",
-      label: "Smaller text",
-      aria: "Smaller terminal text",
-      title: `Smaller terminal text — a wider terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
-      icon: <AArrowDown size={13} aria-hidden="true" />,
-      disabled: termFontSize <= TERM_FONT_SIZE_MIN,
-      run: () => setTermFontSize(stepTermFontSize(termFontSize, -1)),
-    },
-    {
-      id: "text-bigger",
-      label: "Bigger text",
-      aria: "Bigger terminal text",
-      title: `Bigger terminal text — a narrower terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
-      icon: <AArrowUp size={13} aria-hidden="true" />,
-      disabled: termFontSize >= TERM_FONT_SIZE_MAX,
-      run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
-    },
+    // Text size is the terminal's column count (#859): with no terminal (archived, #2064) it is gone.
+    ...(terminalInactive
+      ? []
+      : [
+          {
+            id: "text-smaller",
+            label: "Smaller text",
+            aria: "Smaller terminal text",
+            title: `Smaller terminal text — a wider terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
+            icon: <AArrowDown size={13} aria-hidden="true" />,
+            disabled: termFontSize <= TERM_FONT_SIZE_MIN,
+            run: () => setTermFontSize(stepTermFontSize(termFontSize, -1)),
+          },
+          {
+            id: "text-bigger",
+            label: "Bigger text",
+            aria: "Bigger terminal text",
+            title: `Bigger terminal text — a narrower terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
+            icon: <AArrowUp size={13} aria-hidden="true" />,
+            disabled: termFontSize >= TERM_FONT_SIZE_MAX,
+            run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
+          },
+        ]),
   ];
 
   return (
@@ -2155,7 +2222,7 @@ export function Terminal({
       {!suppressHead && (
         <div className={styles.panelHead} data-panel-head="">
           <span className={styles.headLeft}>
-            <HeadFacts engine={engine} status={status} row={row} />
+            <HeadFacts engine={engine} status={paneStatus} row={row} />
           </span>
           {/* Actions with measured overflow (#783). A fourth labelled button breaks the header's
               own measured contract (see Terminal.module.css), so trailing actions fold into a "…"
@@ -2247,13 +2314,23 @@ export function Terminal({
         )}
         {/* #1570: busy is the terminal content's own state — never an ancestor of the veil's live
             heading, which assistive tech may otherwise hold back until the link is restored. */}
-        <div
-          ref={hostRef}
-          className={styles.term}
-          data-term-scheme={scheme}
-          aria-busy={veil && veil.phase !== "restored" ? true : undefined}
-        />
-        {veil && !cover && <TermUplinkVeil veil={veil} title={row?.title} />}
+        {frozen ? (
+          <div className={styles.archivedBody} role="status" data-testid="term-archived">
+            Archived — read-only. No terminal is running.
+          </div>
+        ) : resumeOnSend ? (
+          <div className={styles.archivedBody} role="status">
+            Send a message to resume this session.
+          </div>
+        ) : (
+          <div
+            ref={hostRef}
+            className={styles.term}
+            data-term-scheme={scheme}
+            aria-busy={veil && veil.phase !== "restored" ? true : undefined}
+          />
+        )}
+        {veil && !cover && !terminalInactive && <TermUplinkVeil veil={veil} title={row?.title} />}
         {cover === "reopening" && <OpeningPanel overlay reload={reloadRoster} reloadOnMount />}
         {cover === "opening" && <OpeningPanel overlay />}
         {cover === "missing" && <NotFoundPanel overlay />}
@@ -2289,7 +2366,7 @@ export function Terminal({
         {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely
             positioned overlays at the terminal top — never buffer rows, so a page
             prepend can't shift them. */}
-        {histState === "loading" && (
+        {histState === "loading" && !terminalInactive && (
           <div className={styles.histPillRow}>
             <span
               className={styles.histPill}
@@ -2329,7 +2406,7 @@ export function Terminal({
             </span>
           </div>
         )}
-        {histState === "error" && (
+        {histState === "error" && !terminalInactive && (
           <div className={styles.histPillRow}>
             <button
               type="button"
@@ -2350,7 +2427,7 @@ export function Terminal({
             agent owns so xterm's `atBottom` stays true — there the tap forwards a jump-to-tail (#559).
             `appTailUnknown` extends it further to a FRESH attach of such a session, which opens off
             its live tail with nothing yet scrolled — so the user has a one-tap way back (#584). */}
-        {(!atBottom || appScrolledUp || appTailUnknown) && (
+        {!terminalInactive && (!atBottom || appScrolledUp || appTailUnknown) && (
           <button
             ref={fabRef}
             type="button"
@@ -2364,7 +2441,7 @@ export function Terminal({
         )}
         {/* Read-only take-over banner (#184/#293/#434): a secondary viewer streams read-only
             (never blank) behind this banner. "Take over" force-reconnects to promote this tab. */}
-        {role === "secondary" && (
+        {role === "secondary" && !terminalInactive && (
           <div className={styles.secondaryBanner} role="status">
             <span>
               {holder?.label?.trim()
@@ -2387,16 +2464,22 @@ export function Terminal({
       {/* #477: persist the compose draft server-side per session, under the DURABLE key —
           the converged `rowKey`, never this pane's frozen placeholder identity (#908 round 5).
           A not-yet-real `new-…` placeholder has no metadata key → drafts disabled until then. */}
-      <Compose
-        ref={composeRef}
-        sendInput={sendInput}
-        connEpoch={connEpoch}
-        waitInputReady={waitInputReady}
-        defaultOpen={composeDefaultOpen}
-        sessionId={draftSessionKey(engine, id, rowKey)}
-        onSaveAsTemplate={onSaveAsTemplate}
-        onOpenGallery={onOpenGallery}
-      />
+      {/* #2064: an archived session takes no input — the ARCHIVED strip takes the bar's place, and
+          Unarchive restores the composer; its next Send starts the terminal. */}
+      {frozen ? (
+        <ArchivedStrip pane="terminal" state={arch.state} onUnarchive={() => void arch.unarchive()} />
+      ) : (
+        <Compose
+          ref={composeRef}
+          sendInput={sendInput}
+          connEpoch={connEpoch}
+          waitInputReady={waitInputReady}
+          defaultOpen={resumeOnSend || composeDefaultOpen}
+          sessionId={draftSessionKey(engine, id, rowKey)}
+          onSaveAsTemplate={onSaveAsTemplate}
+          onOpenGallery={onOpenGallery}
+        />
+      )}
     </div>
   );
 }

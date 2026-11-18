@@ -19,6 +19,7 @@ from functools import partial
 from types import MappingProxyType
 
 from . import (
+    archive_gate,
     chat_config,
     chat_runtime,
     chat_store,
@@ -360,6 +361,16 @@ def require(engine_id: str, operation: str) -> ClientDescriptor:
 def _adapter(engine_id: str, operation: str):
     descriptor = require(engine_id, operation)
     return _ADAPTERS[(descriptor.runtime, descriptor.adapter)]
+
+
+async def _refuse_archived(engine: str, native: str) -> None:
+    """An archived session is frozen (#2064): nothing feeds or starts it until it is unarchived.
+    The runtimes enforce this at every launch under the freeze fence; this is the facade's early,
+    uniform refusal for the operations that act on a session."""
+    try:
+        await asyncio.to_thread(archive_gate.check_key, f"{engine}:{native}")
+    except archive_gate.Refused as exc:
+        raise StructuredError(exc.status, exc.detail) from None
 
 
 def _key(session_key: str) -> tuple[str, str]:
@@ -810,6 +821,7 @@ async def submit_turn(
     ``reply_to``: the async question this message answers (#1463), native clients only."""
     engine, native = _key(session_key)
     adapter = _adapter(engine, "submit")
+    await _refuse_archived(engine, native)
     try:
         context = normalize_context(context)
     except ValueError as exc:
@@ -935,6 +947,7 @@ async def decide(
 ) -> dict:
     engine, native = _key(session_key)
     adapter = _adapter(engine, "decide")
+    await _refuse_archived(engine, native)
     if answers is not None and not isinstance(adapter, _NativeAdapter):
         raise StructuredError(422, "this client's requests take no answer")
     if decision not in _DECLINES:
@@ -1107,6 +1120,7 @@ async def start_session(session_key: str, *, wait_ready: bool = True) -> dict:
     ``wait_ready`` as for :func:`create_session` (#1505)."""
     engine, native = await asyncio.to_thread(_key, session_key)  # fresh roster reads: off-loop
     adapter = await asyncio.to_thread(_adapter, engine, "start")
+    await _refuse_archived(engine, native)
     await adapter.start(engine, native, wait_ready=wait_ready)
     return await snapshot(f"{engine}:{native}")
 
@@ -1133,6 +1147,7 @@ async def interrupt(
 async def enable_bypass(session_key: str, *, operation_id: str, user: str) -> dict:
     """Enable prompts bypass only after containing the previous worker; resume on next Send."""
     engine, native = _key(session_key)
+    await _refuse_archived(engine, native)
     await _adapter(engine, "enable_bypass").enable_bypass(
         engine, native, operation_id=_operation_id(operation_id), user=user
     )
@@ -1166,6 +1181,7 @@ async def send_now(
 ) -> dict:
     """Deliver queued guidance sooner using the live adapter's declared native behavior."""
     engine, native = _key(session_key)
+    await _refuse_archived(engine, native)
     confirm = _stop_all(stop_all)
     result = await _adapter(engine, "send_now").send_now(
         engine,

@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions import archive as archive_mod
-from agent_sessions import maintenance, metadata, mission_archive, missions
+from agent_sessions import maintenance, metadata, mission_archive, missions, runtime_cleanup
 from agent_sessions.main import create_app
 
 A = "11111111-1111-1111-1111-111111111111"
@@ -85,7 +85,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mission_archive.engines, "parse_key", _parse)
     monkeypatch.setattr(mission_archive.engines, "invalidate_scan_cache", lambda: None)
-    monkeypatch.setattr(mission_archive.runtime_cleanup, "cleanup_runtime", _cleanup)
+    monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", _cleanup)
     monkeypatch.setattr(mission_archive.transcript_owner, "transcript_is_owned", lambda n: False)
     monkeypatch.setattr(maintenance, "_session_live", lambda key: key in live)
 

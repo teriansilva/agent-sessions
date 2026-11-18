@@ -42,10 +42,11 @@ import time
 from . import archive as archive_mod
 from . import (
     engines,
+    freeze_lock,
     metadata,
     mission_turn_reconcile,
     missions,
-    runtime_cleanup,
+    runtime_freeze,
     session_input,
     shares,
     transcript_owner,
@@ -243,44 +244,27 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
         )
         return "failed"
 
-    # WHERE ITS RUNTIME LIVES, established before anything is stopped (#994 review 2, finding 1).
-    # A late-bound session whose alias was never published runs under a placeholder only the
-    # mission store names; a store that cannot be read is a refusal, never an archived session.
+    # FROZEN FIRST (#2064): archive does what Stop does — every process the session owns is stopped
+    # and CONFIRMED stopped, under the session's freeze fence so no launch can interleave, or the
+    # member settles `failed` with the reason and nothing is recorded archived. Where its runtime
+    # lives is still established before anything is stopped (#994 review 2): `frozen` resolves it
+    # and refuses when it cannot.
     try:
-        runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
-        await runtime_cleanup.contain_native(prov.engine_id, native)  # API sessions (#1311)
-    except runtime_cleanup.UnresolvableRuntime as e:
-        why = str(e)
-        await missions.run_admitted(
-            lambda: missions.settle_session_archive(
-                mission_id, session_key, "failed", reason=why, token=token
-            )
-        )
-        return "failed"
-    with contextlib.suppress(Exception):
-        await runtime_cleanup.cleanup_runtime(prov.engine_id, native, physical_key=runtime_key)
-
-    # Background-agent guard (#631): with our own master gone, a live process STILL holding this
-    # transcript is a Claude background agent we don't manage. Moving its open JSONL would make
-    # the file diverge between the live and archive trees — refuse rather than corrupt.
-    if transcript_owner.owned_elsewhere(prov, native):
-        await missions.run_admitted(
-            lambda: missions.settle_session_archive(
-                mission_id,
-                session_key,
-                "failed",
-                reason="running background agent — not archivable",
-                token=token,
-            )
-        )
-        return "failed"
-
-    # Its public links end with it, or it is not archived (#1404).
-    try:
-        async with shares.archiving(f"{prov.engine_id}:{native}"):
-            outcome, reason = _archive_idempotent(prov, native)
-    except shares.SharesUnavailable as e:
-        outcome, reason = "failed", str(e)
+        async with runtime_freeze.frozen(prov, native):
+            # Background-agent guard (#631): with our own master gone, a live process STILL holding
+            # this transcript is a Claude background agent we don't manage. Moving its open JSONL
+            # would make the file diverge between the live and archive trees — refuse.
+            if transcript_owner.owned_elsewhere(prov, native):
+                outcome, reason = "failed", "running background agent — not archivable"
+            else:
+                # Its public links end with it, or it is not archived (#1404).
+                try:
+                    async with shares.archiving(f"{prov.engine_id}:{native}"):
+                        outcome, reason = _archive_idempotent(prov, native)
+                except shares.SharesUnavailable as e:
+                    outcome, reason = "failed", str(e)
+    except runtime_freeze.FreezeFailed as e:
+        outcome, reason = "failed", f"could not confirm it stopped: {e.reason}"
     await missions.run_admitted(
         lambda: missions.settle_session_archive(
             mission_id, session_key, outcome, reason=reason, token=token
@@ -469,7 +453,12 @@ async def _restore_sessions(mission_id: str) -> list[dict]:
         async with missions.holding(key, token):
             try:
                 prov, native = engines.parse_key(key)
-                outcome, reason = _unarchive_idempotent(prov, native)
+                # Under the session's freeze fence, exclusively (#2064): serialised with any
+                # archive or sweep of it. A restore starts nothing.
+                async with freeze_lock.exclusive_async(engines.physical_key(key)):
+                    outcome, reason = _unarchive_idempotent(prov, native)
+            except freeze_lock.FreezeBusy as e:
+                outcome, reason = "restore_failed", str(e)
             except engines.EngineError as e:
                 outcome, reason = "restore_failed", str(e) or type(e).__name__
             except BaseException as e:

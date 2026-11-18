@@ -699,7 +699,7 @@ def test_the_abrupt_end_gap_work_between_two_observations_is_never_claimed(conve
     # (pid 77 `cc1` started here, and the OOM kill took it before the next tick)
     (row,) = _project(root, sid, None, lambda w: "killed: out of memory")["worker_ends"]
     assert row["reason"] == "oom" and [p["pid"] for p in row["processes"]] == [40]
-    assert "cc1" not in json.dumps(row)
+    assert [p["comm"] for p in row["processes"]] == ["node"]
 
 
 def test_the_live_worker_projects_processes_and_its_stop_inventory(conversation):

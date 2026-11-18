@@ -6,7 +6,6 @@ archive/unarchive, and bulk archive-older. Moved verbatim from ``main.create_app
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import threading
@@ -22,6 +21,7 @@ from .. import (
     assessment,
     autosort,
     engines,
+    freeze_lock,
     fsbrowse,
     metadata,
     missions,
@@ -35,6 +35,7 @@ from .. import (
     resource_limits,
     review,
     runtime_cleanup,
+    runtime_freeze,
     scanner,
     session_capacity,
     session_clusters,
@@ -290,6 +291,15 @@ def _scope_filter():
         )
 
     return keep
+
+
+async def _fence_key(engine: str, native: str) -> str:
+    """The key a session's freeze fence is taken under (#2064): its runtime's physical key, as
+    `runtime_freeze.frozen` and the launchers resolve it."""
+    try:
+        return await runtime_cleanup.resolve_runtime_key(engine, native)
+    except runtime_cleanup.UnresolvableRuntime:
+        return engines.physical_key(f"{engine}:{native}")
 
 
 def _reserve_or_refuse(session_key: str) -> str:
@@ -1481,46 +1491,43 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 try:
                     async with missions.holding(key, member_hold):
                         if archive_members:
-                            # Free each member's live runtime footprint before recording the
-                            # archive (#523/#631) — project archive used to skip this, leaving
-                            # every member's dtach master + agent running. Best-effort per member
-                            # (mirrors ``archive_older``) so one teardown hiccup never aborts the
-                            # batch; unarchive NEVER reaps (it restores a session).
-                            # Where the runtime lives first, and a refusal if that cannot be told
-                            # (#994 review 2): a member archived past an unresolved late-bound
-                            # runtime leaves its agent running.
+                            # Each member frozen first (#2064): every process stopped and
+                            # confirmed, or the member is reported failed with the reason and the
+                            # rest of the batch goes on. Unarchive NEVER reaps (it starts nothing).
                             try:
-                                runtime_key = await runtime_cleanup.resolve_runtime_key(
-                                    prov.engine_id, native
-                                )
-                                await runtime_cleanup.contain_native(prov.engine_id, native)
-                            except runtime_cleanup.UnresolvableRuntime as e:
-                                results.append({"id": key, "result": failed, "reason": str(e)})
-                                continue
-                            with contextlib.suppress(Exception):
-                                await runtime_cleanup.cleanup_runtime(
-                                    prov.engine_id, native, physical_key=runtime_key
-                                )
-                            # Background-agent guard (#631, Hermes): even inside a PROJECT
-                            # archive, never ``shutil.move`` a Claude transcript a live process
-                            # still owns. cleanup can't reap a background agent (it has no
-                            # app-owned master), so the JSONL is still open — report the member
-                            # failed and leave it in the live tree (mirrors the single-session
-                            # archive's 409). The batch stays retryable; the rest archive.
-                            if transcript_owner.owned_elsewhere(prov, native):
+                                async with runtime_freeze.frozen(prov, native):
+                                    # Background-agent guard (#631, Hermes): even inside a PROJECT
+                                    # archive, never ``shutil.move`` a Claude transcript a live
+                                    # process still owns — report the member failed and leave it
+                                    # in the live tree (mirrors the single-session archive's 409).
+                                    if transcript_owner.owned_elsewhere(prov, native):
+                                        results.append(
+                                            {
+                                                "id": key,
+                                                "result": failed,
+                                                "reason": (
+                                                    "running background agent — not archivable"
+                                                ),
+                                            }
+                                        )
+                                        continue
+                                    # Its public links end with it, or it is not archived (#1404).
+                                    async with shares.archiving(f"{prov.engine_id}:{native}"):
+                                        prov.archive(native)
+                            except runtime_freeze.FreezeFailed as e:
                                 results.append(
                                     {
                                         "id": key,
                                         "result": failed,
-                                        "reason": "running background agent — not archivable",
+                                        "reason": f"could not confirm it stopped: {e.reason}",
                                     }
                                 )
                                 continue
-                            # Its public links end with it, or it is not archived (#1404).
-                            async with shares.archiving(f"{prov.engine_id}:{native}"):
-                                prov.archive(native)
                         else:
-                            prov.unarchive(native)
+                            async with freeze_lock.exclusive_async(
+                                await _fence_key(prov.engine_id, native)
+                            ):
+                                prov.unarchive(native)
                         results.append({"id": key, "result": done})
                 finally:
                     missions.release_session(key, member_hold)
@@ -1529,6 +1536,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 engines.EngineError,
                 NotImplementedError,
                 shares.SharesUnavailable,  # its public links could not be ended (#1404)
+                freeze_lock.FreezeBusy,  # an archive / launch of it is in progress (#2064)
             ) as e:
                 results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
         engines.invalidate_scan_cache()  # members' JSONLs moved → next list must re-walk (#561)
@@ -1906,28 +1914,33 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # WHERE ITS RUNTIME LIVES, established first (#994 review 2, finding 1). The teardown below
         # stays best-effort; not being able to name its target does not, because archiving past it
         # records a session archived while its late-bound agent keeps running.
+        #
+        # ARCHIVE DOES WHAT STOP DOES — EVERYTHING (#2064). `runtime_freeze.frozen` holds the
+        # session's freeze fence exclusively, so no launch can interleave, stops every process the
+        # session owns (Stop everything for an API session, the tree + scope teardown for a
+        # terminal, cancelled-and-settled turns for a chat agent) and CONFIRMS it, or refuses
+        # before anything is recorded: a session reported archived has no runtime.
         try:
-            runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
-            # A native API session's worker is stopped and proved gone first (#1311).
-            await runtime_cleanup.contain_native(prov.engine_id, native)
-        except runtime_cleanup.UnresolvableRuntime as e:
-            raise HTTPException(status_code=503, detail=str(e)) from None
-        with contextlib.suppress(Exception):
-            await runtime_cleanup.cleanup_runtime(prov.engine_id, native, physical_key=runtime_key)
-        # Background-agent guard (#631): with our own master now gone, a live process STILL
-        # holding this transcript is a Claude background agent (a ``claude daemon`` fork) we
-        # don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out from under it,
-        # so the file diverges between the live + archive trees — refuse instead. Claude-only:
-        # background agents (and the ``<uuid>.jsonl`` transcript) are a Claude concept.
-        if transcript_owner.owned_elsewhere(prov, native):
+            async with runtime_freeze.frozen(prov, native):
+                # Background-agent guard (#631): with our own master now gone, a live process
+                # STILL holding this transcript is a Claude background agent (a ``claude daemon``
+                # fork) we don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out
+                # from under it, so the file diverges between the live + archive trees — refuse
+                # instead. Claude-only: background agents are a Claude concept.
+                if transcript_owner.owned_elsewhere(prov, native):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="session is a running background agent — not archivable",
+                    )
+                # Its public links end with it, or it is not archived (#1404): `archiving` revokes
+                # them under the session's lock before the move and refuses when it cannot.
+                async with shares.archiving(key):
+                    prov.archive(native)
+        except runtime_freeze.FreezeFailed as e:
             raise HTTPException(
-                status_code=409, detail="session is a running background agent — not archivable"
-            )
-        # Its public links end with it, or it is not archived (#1404): `archiving` revokes them
-        # under the session's lock before the move and refuses when it cannot.
-        try:
-            async with shares.archiving(key):
-                prov.archive(native)
+                status_code=503,
+                detail=f"could not confirm the session stopped: {e.reason} — nothing was archived",
+            ) from None
         except shares.SharesUnavailable as e:
             raise HTTPException(status_code=503, detail=f"{e} — not archived") from None
         except archive.ArchiveError as e:
@@ -1955,7 +1968,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         reservation = _reserve_or_refuse(key)
         try:
             async with missions.holding(key, reservation):
-                prov.unarchive(native)
+                # Under the session's freeze fence (#2064), exclusively: an archive or a sweep of
+                # this session is serialised with it, and a sweep queued behind it re-reads the
+                # state and sees it active. Unarchive itself starts nothing.
+                async with freeze_lock.exclusive_async(await _fence_key(prov.engine_id, native)):
+                    prov.unarchive(native)
+        except freeze_lock.FreezeBusy:
+            raise HTTPException(
+                status_code=409,
+                detail="this session is being archived or started — try again",
+            ) from None
         except archive.ArchiveError as e:
             raise HTTPException(status_code=404, detail=str(e)) from None
         except NotImplementedError:
@@ -2009,30 +2031,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 # ordinary archive, unarchive and adopt on a session nothing was doing anything to.
                 try:
                     async with missions.holding(key, hold):
-                        # Free runtime resources before recording the archive (#523), best-effort
-                        # per session so one teardown hiccup never aborts the batch.
-                        # Where the runtime lives first (#994 review 2): an unresolvable late-bound
-                        # runtime is skipped, never archived past.
+                        # Frozen first (#2064): every process stopped and confirmed, or the
+                        # session is skipped — never archived past a runtime still running.
                         try:
-                            runtime_key = await runtime_cleanup.resolve_runtime_key(
-                                prov.engine_id, native
-                            )
-                            await runtime_cleanup.contain_native(prov.engine_id, native)
-                        except runtime_cleanup.UnresolvableRuntime:
+                            async with runtime_freeze.frozen(prov, native):
+                                # Background-agent guard (#631): never move a Claude transcript a
+                                # live process still owns — skip it, as single/project archive do.
+                                if transcript_owner.owned_elsewhere(prov, native):
+                                    skipped += 1
+                                    continue
+                                # Its public links end with it, or it is not archived (#1404).
+                                async with shares.archiving(f"{prov.engine_id}:{native}"):
+                                    prov.archive(native)
+                        except runtime_freeze.FreezeFailed as e:
+                            log.warning("archive-older: %s not archived: %s", key, e.reason)
                             skipped += 1
                             continue
-                        with contextlib.suppress(Exception):
-                            await runtime_cleanup.cleanup_runtime(
-                                prov.engine_id, native, physical_key=runtime_key
-                            )
-                        # Background-agent guard (#631): never move a Claude transcript a live
-                        # process still owns — skip it, exactly as single/project archive do.
-                        if transcript_owner.owned_elsewhere(prov, native):
-                            skipped += 1
-                            continue
-                        # Its public links end with it, or it is not archived (#1404).
-                        async with shares.archiving(f"{prov.engine_id}:{native}"):
-                            prov.archive(native)
                         archived += 1
                 finally:
                     missions.release_session(key, hold)

@@ -42,6 +42,17 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("useUplinkVeil — opening / switching to a session (#1570)", () => {
+  it("stays quiet after Unarchive and gives the first Send a full connection grace (#2064)", () => {
+    const h = mount({ kind: "idle" });
+    advance(30_000);
+    expect(h.result.current).toBeNull();
+    h.rerender({ s: connecting });
+    advance(CONNECT_GRACE_MS - 1);
+    expect(h.result.current).toBeNull();
+    advance(1);
+    expect(h.result.current).toMatchObject({ phase: "establishing", attempt: 1 });
+  });
+
   it("shows nothing when the first connect opens inside the 3 s grace", () => {
     const h = mount();
     advance(CONNECT_GRACE_MS - 100);

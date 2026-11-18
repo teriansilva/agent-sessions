@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import time
+from functools import partial
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -45,9 +46,11 @@ from .. import (
     agent_account_store,
     agent_tools,
     ai_review_loop,
+    archive_gate,
     artifact_broker,
     engine_choice,
     engines,
+    freeze_lock,
     fsbrowse,
     handoff,
     hq_report_broker,
@@ -81,6 +84,10 @@ from ..auth import AuthConfig, origin_matches, session_uid
 from ..plugins import admission
 
 log = logging.getLogger("agent_sessions.terminal")
+
+#: The websocket close code for an archived session (#2064): terminal for the client, never
+#: retried — distinct from 4409 (BUSY, retryable). `web/src/lib/termSocket.ts` maps it.
+ARCHIVED_CLOSE_CODE = 4410
 
 
 async def resolve_physical_key(prov, native: str, *, is_new: bool) -> str | None:
@@ -412,6 +419,60 @@ async def _serve_takeover(
                 await registry.on_detach(engine, phys_native, viewer_id=ws)
 
 
+class _OpenRefused(Exception):
+    def __init__(self, code: int, reason: str = ""):
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+async def _admit_open(prov, native: str, phys_key: str, phys_native: str, *, is_new: bool):
+    """The ATTACH / LAUNCH / BUSY decision, refused for an archived session (#2064).
+
+    Made under the session's freeze fence, held SHARED: an archive holds it exclusively across
+    "stop the runtime → record the archive", so no launch can slip between the two. The fence is
+    released once the decision is made; from there the single-writer lock (held by a LAUNCH until
+    its master owns it) is what an archive waits on and then holds.
+
+    EVERY open is checked, ``new=1`` included: the flag is the caller's claim, not proof the id is
+    fresh, and it never exempts an ATTACH (Hermes on #2073). And the LAUNCH lock — which has no
+    finalizer — is released on every exit that does not hand it to the caller, cancellation
+    included, or the session would stay BUSY for the life of the process."""
+    try:
+        freeze = await freeze_lock.acquire_async(
+            phys_key, exclusive=False, timeout=freeze_lock.SHARED_TIMEOUT
+        )
+    except freeze_lock.FreezeBusy:
+        raise _OpenRefused(4409) from None  # being archived / unarchived right now: retry
+    try:
+        action, lock = await _open_action_offloop(prov.engine_id, phys_native)
+        if action == sessions.BUSY:
+            return action, lock
+        try:
+            await asyncio.to_thread(
+                partial(
+                    archive_gate.check,
+                    prov,
+                    native,
+                    new_session=is_new and action == sessions.LAUNCH,
+                )
+            )
+        except archive_gate.Refused as refused:
+            if lock is not None:
+                lock.release()
+            if refused.state == archive_gate.ARCHIVED:
+                # Terminal for the client (never retried): the pane shows its archived state.
+                raise _OpenRefused(ARCHIVED_CLOSE_CODE, "session is archived") from None
+            raise _OpenRefused(4502) from None  # state unreadable: fail closed, retryable
+        except BaseException:
+            if lock is not None:
+                lock.release()
+            raise
+        return action, lock
+    finally:
+        freeze.release()
+
+
 def register(
     app: FastAPI,
     *,
@@ -511,7 +572,11 @@ def register(
         # the rest BUSY. Never split the check/acquire across awaits — that would reopen the race.
         # `_open_action_offloop` also makes the dispatch cancellation-safe: a client that vanishes
         # mid-connect must not orphan a LAUNCH lock (its flock has no finalizer → session BUSY).
-        action, lock = await _open_action_offloop(prov.engine_id, phys_native)
+        # AN ARCHIVED SESSION IS FROZEN (#2064): never launched, never attached — `_admit_open`.
+        try:
+            action, lock = await _admit_open(prov, native, phys_key, phys_native, is_new=is_new)
+        except _OpenRefused as refused:
+            return await reject(refused.code, refused.reason)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
         # #2097: an un-aliased `new-<uuid>` placeholder without `new=1` is ATTACH-ONLY. If the
@@ -532,9 +597,16 @@ def register(
         # terminal code, so the client stops retrying instead of hammering a launch that cannot be.
         # The admission check takes a FRESH roster snapshot (state files, the roster lock): off the
         # event loop with the rest of the launch path (#1505).
-        if action != sessions.ATTACH and (
-            engines.is_retiring(prov) or not await asyncio.to_thread(engines.registry.admits, prov)
-        ):
+        try:
+            refused_engine = action != sessions.ATTACH and (
+                engines.is_retiring(prov)
+                or not await asyncio.to_thread(engines.registry.admits, prov)
+            )
+        except BaseException:
+            if lock is not None:  # the same no-finalizer rule as the archive check above
+                lock.release()
+            raise
+        if refused_engine:
             if lock is not None:
                 lock.release()
             return await reject(4404)
@@ -557,6 +629,10 @@ def register(
                 if lock is not None:
                     lock.release()
                 return await reject(session_capacity.CLOSE_CODE, str(e))
+            except BaseException:
+                if lock is not None:  # cancelled or failed before the launch owns the lock
+                    lock.release()
+                raise
         # Set once we are actually about to run a fresh master (past every reject) so the finally
         # can record whether that launch exited instantly (backstop bookkeeping, #631).
         launch_started_at: float | None = None

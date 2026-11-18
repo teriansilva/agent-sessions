@@ -127,8 +127,8 @@ export function useUplinkVeil(status: TermStatus): UplinkVeil | null {
     st.prevKind = status.kind;
     const cur = st.veil;
 
-    // A deliberate reject and a wrong runtime have their own panels; the veil never covers them.
-    if (status.kind === "rejected" || status.kind === "wrong-runtime") {
+    // No connection is attempted while idle; rejects and wrong runtimes have their own panels.
+    if (status.kind === "idle" || status.kind === "rejected" || status.kind === "wrong-runtime") {
       publish(null);
       return;
     }
@@ -155,7 +155,11 @@ export function useUplinkVeil(status: TermStatus): UplinkVeil | null {
 
     // connecting / reconnecting. A drop from a live link starts a new outage clock; retries inside
     // one outage keep it.
-    if (prev === "connected") {
+    if (prev === "idle") {
+      st.downSince = Date.now();
+      st.everConnected = false;
+      st.tries = 1;
+    } else if (prev === "connected") {
       const held = Date.now() - st.connectedAt;
       if (held >= STABLE_MS) {
         // A real drop from a link that had held: a new outage, on its own clock and try count.

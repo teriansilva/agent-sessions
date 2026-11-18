@@ -101,7 +101,9 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mission_archive.engines, "parse_key", _parse)
     monkeypatch.setattr(mission_archive.engines, "invalidate_scan_cache", lambda: None)
-    monkeypatch.setattr(mission_archive.runtime_cleanup, "cleanup_runtime", _async_noop("cleanup"))
+    from agent_sessions import runtime_cleanup
+
+    monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", _async_noop("cleanup"))
     monkeypatch.setattr(
         mission_archive.transcript_owner, "transcript_is_owned", lambda native: False
     )

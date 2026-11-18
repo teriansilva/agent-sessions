@@ -17,6 +17,7 @@ import signal
 import socket
 import subprocess
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -42,10 +43,12 @@ kill -STOP $$
 """
 
 
-def _start_hold(seed: int, shard: int, lock_root: Path) -> subprocess.Popen:
+def _start_hold(
+    seed: int, shard: int, lock_root: Path, *, base: int = TEST_BASE
+) -> subprocess.Popen:
     """Start a bash that will acquire a port and FREEZE holding it. Returns immediately."""
     script = _ACQUIRE_HOLD.format(
-        script=SCRIPT, lock_root=lock_root, base=TEST_BASE, seed=seed, shard=shard
+        script=SCRIPT, lock_root=lock_root, base=base, seed=seed, shard=shard
     )
     return subprocess.Popen(
         ["bash", "-c", script],
@@ -80,6 +83,24 @@ def lock_root(tmp_path: Path) -> Path:
     root = tmp_path / "ports"
     root.mkdir()
     return root
+
+
+@pytest.fixture()
+def reclaim_port() -> Iterator[int]:
+    # Reserve a kernel-chosen port without listening: the script's connect probe must see
+    # it as free, while another test/run cannot start a listener on our first candidate.
+    with socket.socket() as guard:
+        guard.bind(("127.0.0.1", 0))
+        port = guard.getsockname()[1]
+        seek = int(os.environ.get("E2E_PORT_SEEK", "50"))
+        assert port + 4 * (seek - 1) < 65536
+        yield port
+
+
+@pytest.fixture()
+def dead_pid() -> int:
+    # 999999 can be a real process on a busy runner; use a value above its PID limit.
+    return int(Path("/proc/sys/kernel/pid_max").read_text()) + 1
 
 
 def test_concurrent_jobs_with_identical_seeds_get_distinct_held_ports(lock_root: Path) -> None:
@@ -181,27 +202,27 @@ def test_overlapping_fixture_invocations_with_independent_roots(lock_root: Path)
     assert set(results) == {"a", "b"}
 
 
-def test_a_dead_run_leak_is_reclaimed(lock_root: Path) -> None:
+def test_a_dead_run_leak_is_reclaimed(lock_root: Path, reclaim_port: int, dead_pid: int) -> None:
     # A run killed before its release trap fired leaves the lock behind. A later job must be
     # able to take the port back — the whole point of the pid-file liveness anchor.
-    stale = lock_root / str(TEST_BASE)
+    stale = lock_root / str(reclaim_port)
     stale.mkdir()
-    (stale / "pid").write_text("999999")  # no such process
+    (stale / "pid").write_text(str(dead_pid))
     proc = subprocess.run(
         [
             "bash",
             "-c",
             f"source {SCRIPT}; export E2E_PORT_LOCK_ROOT={lock_root}; "
-            f"export E2E_PORT_BASE={TEST_BASE}; E2E_PORT_SEED=0 e2e_port_acquire 1",
+            f"export E2E_PORT_BASE={reclaim_port}; E2E_PORT_SEED=0 e2e_port_acquire 1",
         ],
         capture_output=True,
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert int(proc.stdout.strip()) == TEST_BASE
+    assert int(proc.stdout.strip()) == reclaim_port
     # And the reclaimed lock now names the reclaiming shell.
     holder = int((stale / "pid").read_text())
-    assert holder != 999999
+    assert holder != dead_pid
 
 
 def test_release_drops_the_reservation(lock_root: Path) -> None:
@@ -221,16 +242,18 @@ def test_release_drops_the_reservation(lock_root: Path) -> None:
         _release(again)
 
 
-def test_concurrent_stale_reclaim_hands_the_port_to_exactly_one_job(lock_root: Path) -> None:
+def test_concurrent_stale_reclaim_hands_the_port_to_exactly_one_job(
+    lock_root: Path, reclaim_port: int, dead_pid: int
+) -> None:
     # Review 5313's reproduced race: a stale (dead-pid) lock on the shared first candidate,
     # and several reclaimers arriving together. Unsynchronized, both pass the dead check and
     # both end up owning the port. The acquire lock must serialize the reclaim: one winner,
     # the others walk away with DIFFERENT ports.
-    first = TEST_BASE  # seed 0, shard 1
+    first = reclaim_port  # seed 0, shard 1
     stale = lock_root / str(first)
     stale.mkdir()
-    (stale / "pid").write_text("999999")  # no such process
-    procs = [_start_hold(seed=0, shard=1, lock_root=lock_root) for _ in range(4)]
+    (stale / "pid").write_text(str(dead_pid))
+    procs = [_start_hold(seed=0, shard=1, lock_root=lock_root, base=first) for _ in range(4)]
     try:
         ports = [_read_port(p) for p in procs]
         assert len(set(ports)) == 4, f"stale reclaim double-handed a port: {ports}"

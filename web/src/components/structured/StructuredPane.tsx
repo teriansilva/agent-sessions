@@ -39,6 +39,10 @@ import { settingsPath } from "../../routes/settingsTabs";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionLookup } from "../../app/useSessionRow";
+import { isArchivedRefusal } from "../../lib/archived";
+import { CLOSE_ARCHIVED } from "../../lib/termCloseCodes";
+import { ArchivedStrip } from "../session/ArchivedStrip";
+import { useArchivedSession } from "../session/useArchivedSession";
 import { ApiError, api } from "../../lib/api";
 import {
   filesFromData,
@@ -1614,6 +1618,12 @@ export function StructuredPane({
     if (filesNowOpen && rail.open) setRail({ open: false, trigger: null });
   }
   const { row, phase: rowPhase } = useSessionLookup(key, host.rowKey);
+  // #2064: an archived session is frozen — history stays readable, nothing can be sent or decided,
+  // and the composer is the ARCHIVED strip with Unarchive. A request the server refuses as
+  // archived (another device archived it) freezes the pane the same way (`act` below).
+  const arch = useArchivedSession(actionKey, row);
+  const archived = arch.archived;
+  const { markArchived } = arch;
   const isMobile = useIsMobile();
   // The in-pane head folds on touch tablets too (#1589); the window chrome keeps `isMobile`.
   const compactHead = useCompactHead();
@@ -1863,11 +1873,16 @@ export function StructuredPane({
         const value = await request;
         if (own) apply(own(value), sent);
         return value;
+      } catch (e) {
+        // Refused as archived (#2064): every caller keeps its own handling (an outbox entry stays
+        // in the outbox, refused, with its words), and the pane freezes.
+        if (isArchivedRefusal(e)) markArchived();
+        throw e;
       } finally {
         floorSeq.current = Math.max(floorSeq.current, sentSeq.current);
       }
     },
-    [apply],
+    [apply, markArchived],
   );
   const failed = useCallback((e: unknown) => {
     if (e instanceof ApiError && e.status === 404)
@@ -2076,7 +2091,10 @@ export function StructuredPane({
     if (hadFocus) taRef.current?.focus({ preventScroll: true });
   };
 
-  const readOnly = !!snap?.read_only;
+  // The client's own read-only state (the snapshot says why), and the pane's: an archived session
+  // (#2064) is read-only too, so every send, decision and composer tool below is off with it.
+  const clientReadOnly = !!snap?.read_only;
+  const readOnly = clientReadOnly || archived;
   // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
   // Nor does a discarded one (#1647): the server refuses every send to it, so the box is off.
   const notStarted = !!snap?.pending_start || !!snap?.start_expired || !!snap?.start_discarded;
@@ -3128,13 +3146,20 @@ export function StructuredPane({
   useEffect(() => {
     if (!onTermStatus) return;
     onTermStatus(
-      statusKind === "rejected"
-        ? { kind: "rejected", reason: statusReason }
-        : statusKind === "reconnecting"
-          ? { kind: "reconnecting", attempt: 1 }
-          : { kind: statusKind },
+      // An archived session's chrome LED reads ARCHIVED, neutral (#2064) — not the journal read.
+      archived
+        ? {
+            kind: "rejected",
+            reason: "session archived — read-only",
+            code: CLOSE_ARCHIVED,
+          }
+        : statusKind === "rejected"
+          ? { kind: "rejected", reason: statusReason }
+          : statusKind === "reconnecting"
+            ? { kind: "reconnecting", attempt: 1 }
+            : { kind: statusKind },
     );
-  }, [onTermStatus, statusKind, statusReason]);
+  }, [onTermStatus, statusKind, statusReason, archived]);
 
   // The plan & tools rail (#1726). Where it goes follows the Files drawer's measured-width rule
   // (`filePanelLayout`): docked on the pane's right edge when the pane can spare the column,
@@ -3212,7 +3237,8 @@ export function StructuredPane({
           trigger: trigger ?? (document.activeElement as HTMLElement | null),
         }),
     },
-    ...(isAgent(engine) && !placeholder
+    // Not while archived (#2064): Hand off, Stop and Skip permissions need a session that can run.
+    ...(isAgent(engine) && !placeholder && !archived
       ? [
           {
             id: "handoff",
@@ -3276,7 +3302,7 @@ export function StructuredPane({
       : []),
     // Stop is a head action while a worker runs, in the pane's own bar and in a window's chrome
     // (and either one's ⋯): a running worker is never stranded behind a missing button.
-    ...(live
+    ...(live && !archived
       ? [
           {
             id: "stop",
@@ -3346,7 +3372,19 @@ export function StructuredPane({
   const header = host.suppressHead ? null : (
     <div className={term.panelHead} data-panel-head="">
       <span className={term.headLeft} ref={headLeftRef}>
-        <HeadFacts engine={engine} status={status} row={row} />
+        <HeadFacts
+          engine={engine}
+          status={
+            archived
+              ? {
+                  kind: "rejected",
+                  reason: "session archived — read-only",
+                  code: CLOSE_ARCHIVED,
+                }
+              : status
+          }
+          row={row}
+        />
         {presence && (presence.shared || presence.visitors.length > 0) && (
           // #1931: who has this session open — you, and anyone on one of its links.
           <span
@@ -3791,10 +3829,14 @@ export function StructuredPane({
           )}
         </div>
       )}
-      {readOnly && (
-        <p className={styles.banner} role="status" data-testid="structured-read-only">
-          Read only — {snap?.read_only}. The history stays; new messages and decisions are off until
-          the client is available again.
+      {clientReadOnly && (
+        <p
+          className={styles.banner}
+          role="status"
+          data-testid="structured-read-only"
+        >
+          Read only — {snap?.read_only}. The history stays; new messages and
+          decisions are off until the client is available again.
         </p>
       )}
       {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
@@ -3926,11 +3968,13 @@ export function StructuredPane({
             entries={outbox}
             agent={agent}
             headHold={
-              readOnly
-                ? "Can’t go out while this conversation is read only."
-                : permissionPending
-                  ? "Goes out once the permission change has finished."
-                  : null
+              archived
+                ? "Can’t go out while this session is archived. Unarchive it, then Retry."
+                : readOnly
+                  ? "Can’t go out while this conversation is read only."
+                  : permissionPending
+                    ? "Goes out once the permission change has finished."
+                    : null
             }
             editBlocked={composerHolds}
             onRetry={retryEntry}
@@ -4015,165 +4059,202 @@ export function StructuredPane({
         </p>
       )}
       {/* The terminal session's composer (#1348): Compose.module.css itself, so the two cannot
-          drift — pills, the text box, then ONE row of chips, the push-to-talk chip and Send. */}
-      <form
-        className={compose.compose}
-        aria-label="Compose message"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-      >
-        <div className={compose.fields}>
-          {attachments.length > 0 && (
-            <div className={compose.pills} aria-label="Attachments" role="list">
-              {attachments.map((a) => (
-                <span
-                  key={a.stored}
-                  className={compose.pill}
-                  title={a.name}
-                  role="listitem"
-                  data-testid="structured-attachment"
-                >
-                  <span className={compose.pn}>{a.name}</span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${a.name}`}
-                    disabled={busy}
-                    onClick={() => removeAttachment(a.stored)}
+          drift — pills, the text box, then ONE row of chips, the push-to-talk chip and Send.
+          Archived (#2064): the ARCHIVED strip takes its place; the draft is kept for the composer
+          that comes back once the row reads active. */}
+      {archived ? (
+        <ArchivedStrip
+          pane="api"
+          state={arch.state}
+          onUnarchive={() => void arch.unarchive()}
+        />
+      ) : (
+        <form
+          className={compose.compose}
+          aria-label="Compose message"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send();
+          }}
+        >
+          <div className={compose.fields}>
+            {attachments.length > 0 && (
+              <div
+                className={compose.pills}
+                aria-label="Attachments"
+                role="list"
+              >
+                {attachments.map((a) => (
+                  <span
+                    key={a.stored}
+                    className={compose.pill}
+                    title={a.name}
+                    role="listitem"
+                    data-testid="structured-attachment"
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    <span className={compose.pn}>{a.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${a.name}`}
+                      disabled={busy}
+                      onClick={() => removeAttachment(a.stored)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={taRef}
+              className={compose.textarea}
+              aria-label={`Message ${agent}`}
+              placeholder={
+                readOnly
+                  ? "This conversation is read only"
+                  : createFailed
+                    ? "This session didn’t start"
+                    : snap?.start_discarded
+                      ? "This session was discarded"
+                      : notStarted
+                        ? "Start this session first"
+                        : active &&
+                            alwaysSendNow &&
+                            sendNowTarget(snap) &&
+                            snap?.native?.send_now_state ===
+                              "would_stop_background"
+                          ? `Message ${agent} — queues behind the agent’s current turn.`
+                          : active && alwaysSendNow && sendNowTarget(snap)
+                            ? sendNowTarget(snap)?.mode === "steer"
+                              ? `Message ${agent} — sends now, into the current turn.`
+                              : `Message ${agent} — sends now, stopping the current reply.`
+                            : active
+                              ? `Message ${agent} — sends after earlier turns.`
+                              : `Message ${agent} — Enter sends, Shift+Enter = newline.`
+              }
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKey}
+              onPaste={onPaste}
+              readOnly={busy}
+              rows={2}
+              disabled={
+                readOnly || notStarted || createFailed || permissionPending
+              }
+            />
+          </div>
+          <div className={`${compose.row} ${styles.composeRow}`}>
+            <div className={styles.composeTools}>
+              <KeyBar actions={keyActions} />
+              {!readOnly && (alwaysSendNow || snap?.native?.send_now) && (
+                <button
+                  type="button"
+                  className={styles.alwaysChip}
+                  aria-pressed={alwaysSendNow}
+                  title={
+                    alwaysSendNow
+                      ? "Always send now is on. Click to queue messages again."
+                      : snap?.native?.send_now === "steer"
+                        ? "Send each queued message into the current turn while the agent works."
+                        : "Stop the current reply and send each queued message while the agent works."
+                  }
+                  onClick={() => setAlwaysSendNow(!alwaysSendNow)}
+                  data-testid="structured-always-send-now"
+                >
+                  <Zap size={14} aria-hidden />
+                  <span className={styles.alwaysLabel}>Always send now</span>
+                </button>
+              )}
             </div>
-          )}
-          <textarea
-            ref={taRef}
-            className={compose.textarea}
-            aria-label={`Message ${agent}`}
-            placeholder={
-              readOnly
-                ? "This conversation is read only"
-                : createFailed
-                  ? "This session didn’t start"
-                  : snap?.start_discarded
-                  ? "This session was discarded"
-                  : notStarted
-                  ? "Start this session first"
-                  : active && alwaysSendNow && sendNowTarget(snap)
-                      && snap?.native?.send_now_state === "would_stop_background"
-                    ? `Message ${agent} — queues behind the agent’s current turn.`
-                  : active && alwaysSendNow && sendNowTarget(snap)
-                    ? sendNowTarget(snap)?.mode === "steer"
-                      ? `Message ${agent} — sends now, into the current turn.`
-                      : `Message ${agent} — sends now, stopping the current reply.`
-                    : active
-                    ? `Message ${agent} — sends after earlier turns.`
-                    : `Message ${agent} — Enter sends, Shift+Enter = newline.`
-            }
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKey}
-            onPaste={onPaste}
-            readOnly={busy}
-            rows={2}
-            disabled={readOnly || notStarted || createFailed || permissionPending}
-          />
-        </div>
-        <div className={`${compose.row} ${styles.composeRow}`}>
-          <div className={styles.composeTools}>
-            <KeyBar actions={keyActions} />
-            {!readOnly && (alwaysSendNow || snap?.native?.send_now) && (
+            <span
+              className={`${compose.spacer} ${styles.composeNote}`}
+              role="status"
+            >
+              {dictNote ||
+                (launchStarting && !readOnly
+                  ? "Type now — Send unlocks when the agent is ready."
+                  : "")}
+            </span>
+            {!readOnly && snap && dictSupported && (
               <button
                 type="button"
-                className={styles.alwaysChip}
-                aria-pressed={alwaysSendNow}
-                title={alwaysSendNow
-                  ? "Always send now is on. Click to queue messages again."
-                  : snap?.native?.send_now === "steer"
-                    ? "Send each queued message into the current turn while the agent works."
-                    : "Stop the current reply and send each queued message while the agent works."}
-                onClick={() => setAlwaysSendNow(!alwaysSendNow)}
-                data-testid="structured-always-send-now"
+                ref={micBtnRef}
+                className={
+                  dictListening
+                    ? `${compose.mic} ${compose.micOn}`
+                    : dictFinalizing
+                      ? `${compose.mic} ${compose.micFinalizing}`
+                      : compose.mic
+                }
+                aria-label={
+                  dictListening
+                    ? "Stop voice input — release to finish"
+                    : dictFinalizing
+                      ? "Finishing voice input"
+                      : "Start voice input — hold to talk"
+                }
+                aria-pressed={dictListening}
+                aria-disabled={dictFinalizing || busy || notStarted}
+                title={
+                  dictListening
+                    ? "Release to stop — the last phrase still lands"
+                    : dictFinalizing
+                      ? "Finishing transcription…"
+                      : "Hold to talk"
+                }
+                disabled={busy || notStarted}
+                {...micHandlers}
               >
-                <Zap size={14} aria-hidden />
-                <span className={styles.alwaysLabel}>Always send now</span>
+                <Mic size={16} aria-hidden />
+                <span className={`${compose.micLabel} ${styles.actionLabel}`}>
+                  Talk
+                </span>
               </button>
             )}
-          </div>
-          <span className={`${compose.spacer} ${styles.composeNote}`} role="status">
-            {dictNote || (launchStarting && !readOnly ? "Type now — Send unlocks when the agent is ready." : "")}
-          </span>
-          {!readOnly && snap && dictSupported && (
             <button
-              type="button"
-              ref={micBtnRef}
-              className={
-                dictListening
-                  ? `${compose.mic} ${compose.micOn}`
-                  : dictFinalizing
-                    ? `${compose.mic} ${compose.micFinalizing}`
-                    : compose.mic
+              type="submit"
+              className={`${compose.send} shine`}
+              title="Send + Enter"
+              disabled={
+                readOnly ||
+                notStarted ||
+                createFailed ||
+                launchStarting ||
+                permissionPending ||
+                busy ||
+                uploading ||
+                !snap ||
+                (!draft.trim() && attachments.length === 0)
               }
-              aria-label={
-                dictListening
-                  ? "Stop voice input — release to finish"
-                  : dictFinalizing
-                    ? "Finishing voice input"
-                    : "Start voice input — hold to talk"
-              }
-              aria-pressed={dictListening}
-              aria-disabled={dictFinalizing || busy || notStarted}
-              title={
-                dictListening
-                  ? "Release to stop — the last phrase still lands"
-                  : dictFinalizing
-                    ? "Finishing transcription…"
-                    : "Hold to talk"
-              }
-              disabled={busy || notStarted}
-              {...micHandlers}
+              data-testid="structured-send"
             >
-              <Mic size={16} aria-hidden />
-              <span className={`${compose.micLabel} ${styles.actionLabel}`}>Talk</span>
+              <Send size={15} aria-hidden />
+              <span className={styles.actionLabel}>
+                {uploading
+                  ? "Uploading"
+                  : launchStarting
+                    ? "Starting…"
+                    : "Send"}
+              </span>
             </button>
+          </div>
+          {(snap?.files || snap?.images) && !readOnly && (
+            <input
+              ref={fileRef}
+              type="file"
+              accept={
+                snap.files
+                  ? undefined
+                  : "image/png,image/jpeg,image/gif,image/webp"
+              }
+              multiple
+              hidden
+              data-testid="structured-file-input"
+              onChange={(e) => void attach(Array.from(e.target.files ?? []))}
+            />
           )}
-          <button
-            type="submit"
-            className={`${compose.send} shine`}
-            title="Send + Enter"
-            disabled={
-              readOnly ||
-              notStarted ||
-              createFailed ||
-              launchStarting ||
-              permissionPending ||
-              busy ||
-              uploading ||
-              !snap ||
-              (!draft.trim() && attachments.length === 0)
-            }
-            data-testid="structured-send"
-          >
-            <Send size={15} aria-hidden />
-            <span className={styles.actionLabel}>
-              {uploading ? "Uploading" : launchStarting ? "Starting…" : "Send"}
-            </span>
-          </button>
-        </div>
-        {(snap?.files || snap?.images) && !readOnly && (
-          <input
-            ref={fileRef}
-            type="file"
-            accept={snap.files ? undefined : "image/png,image/jpeg,image/gif,image/webp"}
-            multiple
-            hidden
-            data-testid="structured-file-input"
-            onChange={(e) => void attach(Array.from(e.target.files ?? []))}
-          />
-        )}
-      </form>
+        </form>
+      )}
       {historyOpen && (
         <SentMessagesModal
           entries={history}

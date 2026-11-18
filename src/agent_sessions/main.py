@@ -68,6 +68,7 @@ from . import (
     projects,
     pulse_loop,
     reaper,
+    runtime_freeze,
     scrollback,
     secrets_broker,
     security_headers,
@@ -544,6 +545,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Specialist capacity (#1693): reconcile reservations at boot and every minute, releasing
         # only those whose session is proven dead. Env kill-switch AGENT_SESSIONS_SPECIALIST_LOOP=0.
         capacity_task = asyncio.create_task(specialist_capacity.run())
+        # Archived sessions are frozen (#2064): a boot pass, then every minute, stops anything still
+        # running under an archived session (one archived before this shipped, or a runtime that
+        # slipped past). Never on an unreadable state. AGENT_SESSIONS_ARCHIVE_SWEEP_INTERVAL=0 keeps
+        # only the boot pass.
+        archive_sweep_task = asyncio.create_task(runtime_freeze.run())
         # API sessions answer at launch (#1505): a launch the previous process left `starting`
         # is settled from its worker's own lifecycle and liveness. A drained task, not an await.
         with contextlib.suppress(Exception):
@@ -636,6 +642,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 memory_broker_task,
                 memory_capture_task,
                 capacity_task,
+                archive_sweep_task,
                 ask_follow_task,
                 models_task,
             ):

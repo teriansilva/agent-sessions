@@ -46,9 +46,19 @@ import json
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 
-from . import chat_config, chat_edits, chat_store, chat_tools, prompts, review
+from . import (
+    archive_gate,
+    chat_config,
+    chat_edits,
+    chat_store,
+    chat_tools,
+    freeze_lock,
+    prompts,
+    review,
+)
 from .plugins import admission
 from .structured_types import ExecutionGuard, normalize_context
 
@@ -75,6 +85,12 @@ _TOOLS_REFUSED_MARKERS = ("tool", "function")
 #: request that started it (and what `_reconcile` asks to tell "pending" from "interrupted").
 _TASKS: dict[str, asyncio.Task] = {}
 _LOCKS: dict[str, asyncio.Lock] = {}
+#: Turn tasks cancelled because their session is being archived (#2064): `_run` settles them as
+#: `failed: archived` instead of propagating the cancellation.
+_ARCHIVE_CANCELLED: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
+#: How often a running turn's watcher looks for a freeze's cancel request (#2064).
+ARCHIVE_WATCH_INTERVAL = 0.5
+ARCHIVED_REASON = "stopped — the session was archived"
 
 
 class ChatError(Exception):
@@ -133,6 +149,58 @@ def _start(key: str, coroutine, fence: chat_edits.TurnFence) -> None:
     fence.handed_off = True
     # A callback runs even if the task is cancelled BEFORE its first coroutine instruction.
     task.add_done_callback(lambda _done: fence.release())
+    # Archive reaches a turn in ANY process through this watcher (#2064): it cancels the turn when a
+    # freeze of this session posts its cancel request, and the freeze then waits for the turn fence
+    # above — released only once the task (and any in-flight write) has settled.
+    watcher = asyncio.create_task(_watch_archive(key, task))
+    task.add_done_callback(lambda _done: watcher.cancel())
+
+
+def _cancel_archived(task: asyncio.Task) -> None:
+    _ARCHIVE_CANCELLED.add(task)
+    task.cancel()
+
+
+async def _watch_archive(key: str, task: asyncio.Task) -> None:
+    while not task.done():
+        await asyncio.sleep(ARCHIVE_WATCH_INTERVAL)
+        if not task.done() and freeze_lock.cancel_requested(key):
+            _cancel_archived(task)
+            return
+
+
+def cancel_for_archive(key: str) -> None:
+    """This process's running turn of ``key``, cancelled at once for a freeze (#2064). Turns in
+    other processes are reached by their own watchers."""
+    task = _TASKS.get(key)
+    if task is not None and not task.done():
+        _cancel_archived(task)
+
+
+def running_keys() -> set[str]:
+    """Every session key with a turn running in this process (the archive sweep's view)."""
+    return {k for k, task in list(_TASKS.items()) if not task.done()}
+
+
+@contextlib.asynccontextmanager
+async def _archive_admission(prov, session_id: str):
+    """The start-path gate (#2064): the freeze fence shared, the archive state read under it.
+    Held across the transition into a running task, then released."""
+    key = _key(prov.engine_id, session_id)
+    try:
+        held = await freeze_lock.acquire_async(
+            key, exclusive=False, timeout=freeze_lock.SHARED_TIMEOUT
+        )
+    except freeze_lock.FreezeBusy:
+        raise ChatError(409, "this session is being archived or unarchived — try again") from None
+    try:
+        try:
+            await asyncio.to_thread(archive_gate.check, prov, session_id)
+        except archive_gate.Refused as exc:
+            raise ChatError(exc.status, exc.detail) from None
+        yield
+    finally:
+        held.release()
 
 
 def _root(prov) -> Path:
@@ -486,6 +554,34 @@ async def decide(
         raise ChatError(422, "decision_id must be a UUID")
     _binding(execution_admission)
     prov = _chat_provider(engine_id)
+    async with _archive_admission(prov, session_id):
+        return await _decide_admitted(
+            engine_id,
+            session_id,
+            turn_id,
+            proposal_id,
+            decision,
+            user,
+            prov,
+            decision_id=decision_id,
+            expected_revision=expected_revision,
+            execution_admission=execution_admission,
+        )
+
+
+async def _decide_admitted(
+    engine_id,
+    session_id,
+    turn_id,
+    proposal_id,
+    decision,
+    user,
+    prov,
+    *,
+    decision_id=None,
+    expected_revision=None,
+    execution_admission=None,
+):
     key, root = _key(engine_id, session_id), _root(prov)
     async with _lock(key):
         fence = await _fence(root, session_id)
@@ -673,6 +769,32 @@ async def _begin(
 ) -> dict:
     """THE transition into ``pending`` — send (``text``) and retry (``text is None``) alike."""
     prov = _chat_provider(engine_id)
+    async with _archive_admission(prov, session_id):
+        return await _begin_admitted(
+            engine_id,
+            session_id,
+            turn_id,
+            text,
+            prov,
+            expected_revision=expected_revision,
+            execution_admission=execution_admission,
+            context=context,
+            idempotent=idempotent,
+        )
+
+
+async def _begin_admitted(
+    engine_id,
+    session_id,
+    turn_id,
+    text,
+    prov,
+    *,
+    expected_revision=None,
+    execution_admission=None,
+    context=None,
+    idempotent=False,
+):
     key, root = _key(engine_id, session_id), _root(prov)
     async with _lock(key):
         fence = await _fence(root, session_id)
@@ -870,6 +992,14 @@ async def _run(
             execution_admission=execution_admission,
             provider=provider,
         )
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is None or task not in _ARCHIVE_CANCELLED:
+            raise
+        # Cancelled by a freeze (#2064): settle the turn as stopped, so the fence is released only
+        # after its outcome is written. The tool loop already let any in-flight effect settle.
+        task.uncancel()
+        records = [_status(turn_id, "failed", ARCHIVED_REASON, code="archived")]
     except (admission.Refused, ChatError) as exc:
         records = [_status(turn_id, "failed", str(exc))]
     except Exception as e:  # noqa: BLE001 — a turn must always settle, whatever went wrong

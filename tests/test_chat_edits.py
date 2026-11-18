@@ -569,8 +569,13 @@ async def test_concurrent_opposing_decisions_have_one_outcome(endpoint, project,
 
     monkeypatch.setattr(fileedit, "save", counted)
     results = await asyncio.gather(decide(sid, tid, view), decide(sid, tid, view, "reject"))
-    assert results[0]["proposal"]["status"] == results[1]["proposal"]["status"]
-    assert len(writes) == 1
+    status = results[0]["proposal"]["status"]
+    assert status == results[1]["proposal"]["status"]  # ONE outcome, whichever was first
+    # Which decision is first is not arrival order: each passes the archive gate (#2064) off the
+    # event loop before the conversation's lock, so either may win. Exactly one wins, and the file
+    # is written once if approval won and never if rejection did.
+    assert status in ("approved", "rejected")
+    assert len(writes) == (1 if status == "approved" else 0)
 
 
 @pytest.mark.anyio

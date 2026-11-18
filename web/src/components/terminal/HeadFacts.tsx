@@ -1,6 +1,13 @@
 import { Crosshair } from "lucide-react";
 import type { CSSProperties } from "react";
-import { engineBadge, engineName, projectColor, relTime, shortCwd } from "../../lib/format";
+import {
+  engineBadge,
+  engineName,
+  projectColor,
+  relTime,
+  shortCwd,
+} from "../../lib/format";
+import { CLOSE_ARCHIVED } from "../../lib/termCloseCodes";
 import type { TermStatus } from "../../lib/termSocket";
 import type { Session } from "../../types/api";
 import styles from "./Terminal.module.css";
@@ -12,6 +19,8 @@ import styles from "./Terminal.module.css";
  *  own bar and a window's chrome render the same run, so the resolver lives beside the run. */
 function headStatus(s: TermStatus): { label: string; led: string } {
   switch (s.kind) {
+    case "idle":
+      return { label: "READY", led: "idle" };
     case "connected":
       return { label: "LIVE", led: "up" };
     case "connecting":
@@ -20,7 +29,10 @@ function headStatus(s: TermStatus): { label: string; led: string } {
     case "reconnecting":
       return { label: "RECONNECTING", led: "" };
     case "rejected":
-      return { label: "OFFLINE", led: "down" };
+      // An archived session (#2064) is not down — it is frozen on purpose: neutral, steady.
+      return s.code === CLOSE_ARCHIVED
+        ? { label: "ARCHIVED", led: "idle" }
+        : { label: "OFFLINE", led: "down" };
   }
 }
 

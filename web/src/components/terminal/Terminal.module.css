@@ -210,6 +210,22 @@
 .statusRadar {
   --radar-size: 12px;
 }
+/* An archived session (#2064): no socket is opened, so the terminal area holds one quiet mono line
+ * in its centre — "Archived — read-only. No terminal is running." — and the compose bar below is
+ * the ARCHIVED strip. Not a refusal: the session is frozen on purpose, so no danger hue. */
+.archivedBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
 /* A refusal is a failure: the semantic down hue as text (AA on both grounds) and edge — never the
  * brand accent, never the old literal pinks. */
 .rejected {
