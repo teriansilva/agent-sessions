@@ -182,9 +182,11 @@ _ASK_CATALOG = (
     'a kind: a "session" (id, title, project, working-directory tail, a summary which may '
     "be a short chronological recap of what happened, one step per line, age in hours) or "
     'a "mission" (a multi-session piece of work: id, title, state, project, a summary of '
-    "its instruction or brief, age in hours). Pick the entries that best answer the "
-    "question, best match first, and answer in one short sentence. Only use ids that "
-    "appear in the catalog; return an empty matches list when nothing fits. Reply with "
+    "its instruction or brief, age in hours). Pick only the entries that answer the "
+    "question, best match first, and answer in one short sentence. An empty matches list "
+    "beats a weak match: a match must be about what the question asks, not merely about "
+    "the same person, project or kind of work. Only use ids that appear in the catalog; "
+    "return an empty matches list when nothing fits. Reply with "
     'ONLY a JSON object: {"answer": "<one short sentence, max 500 chars>", "matches": '
     '[{"id": "<catalog id>", "why": "<one line, max 140 chars>"}]}.'
 )
@@ -194,8 +196,10 @@ _ASK_VERIFY = (
     "the developer's question. You are given the question and, per candidate: id, kind, "
     "title, the catalog-stage reason, and its content: for a session an excerpt of its "
     "actual transcript, for a mission its instruction or brief. Confirm, re-rank, or drop "
-    "candidates based on what that content really says, best match first, and refine the "
-    "one-sentence answer. Only use ids from the candidate list; return an empty matches "
+    "candidates based on whether that content really answers the question, best match "
+    "first, and refine the one-sentence answer. Drop a candidate whose content is about "
+    "something else, however well it matches its catalog-stage reason; an empty matches "
+    "list beats a weak match. Only use ids from the candidate list; return an empty matches "
     "list when none truly fit. You cannot read or save durable memory on this path; "
     "for memory requests say so and direct the operator to Library → Memory or enable "
     "Question routing in Settings → AI → HQ. Never claim to have remembered a fact. "

@@ -138,8 +138,11 @@ EXPECTED_DEFAULT_SHA = {
     "pulse_session_line": "2c5ed998d9df3d00",
     "pulse_recap": "9be97db184a142c7",  # #1086
     # #1069: Ask covers missions too — both stages name the mission kind and its content.
-    "ask_catalog": "4a0cadec55d2678b",
-    "ask_verify": "b5b6dc93e4f11a4b",
+    # #2016: an empty list beats a weak match; a match is about what the question asks, not
+    # merely the same person, project or kind of work; Stage 2 drops a candidate whose content
+    # is about something else however well it fits its catalog-stage reason.
+    "ask_catalog": "1ca269c1486ded4c",
+    "ask_verify": "ffc8adb7de69d104",
     "orchestrator_pass": "8d4e95045fb09670",  # #1086 P2: the deeper digest fields
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",

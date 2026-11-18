@@ -23,6 +23,16 @@ to the model in that stage (never the whole catalog) and shape-checked via
 ``engines.parse_key``; unknowns are dropped, duplicates collapsed, the list capped. All
 model output is server-capped and rendered as plain text by the UI (model output is DATA).
 
+Grounding floor (#2016): a Stage-1 match is shown only if the entry's own text contains at
+least one keyword of the question (or of the user's earlier turns). The slice is padded with
+recent entries so the model has context for follow-ups, and "best match first" tempts it to
+return the nearest one when nothing fits; the floor refuses a pick the user's words never
+touched, before the provisional answer, Stage 2 and the fallback see it. Whenever it drops a
+match the model's Stage-1 line goes with it (it described that pick): ``NO_MATCH_ANSWER`` when
+nothing survives, the neutral ``GROUNDED_ANSWER`` when something does, until Stage 2 — which
+sees only the survivors — writes the final line. A scoped ask (a mission's own question) is
+exempt — the operator chose those candidates.
+
 Conversation state is the frontend's: it replays a bounded history tail per request — no
 server-side persistence (matching the repo's no-per-conversation-store ethos). Transcript
 snippets go ONLY to the operator-configured AI endpoint, entirely server-side
@@ -80,16 +90,48 @@ WHY_MAX = 160
 
 # Tokens shorter than this are noise ("a", "on", "ws" survives at 2 — keep it permissive).
 _WORD_RE = re.compile(r"[a-z0-9_\-./]{2,}")
-# Question words / glue that would match everything and starve the real keywords.
+# Question words / glue that would match everything and starve the real keywords. The catalog's
+# own kind nouns are in here too (#2016): a question that names the kind of thing it wants
+# ("the marcus-privat application mission") is not grounded by that kind, and an entry whose
+# text happens to say "mission" is not a hit for every mission question.
 _STOPWORDS = frozenset(
     "the a an i on in at of to for was were is are did do done with which what when where "
     "who how that this it its my me we our you your session sessions worked working work "
-    "one about and or not".split()
+    "one about and or not mission missions project projects agent agents".split()
 )
+# The server's own lines when the grounding floor (#2016) drops a match the model picked: the
+# model's answer described the candidates it chose, dropped ones included, so it is replaced —
+# never edited down, since redaction heuristics do not converge. Stage 2 sees only the survivors
+# and writes the final line itself when it runs.
+NO_MATCH_ANSWER = "Nothing in your sessions or missions mentions what you asked about."
+GROUNDED_ANSWER = "Showing only the sessions and missions that mention what you asked about."
 
 
 def _keywords(query: str) -> list[str]:
     return [w for w in _WORD_RE.findall(query.lower()) if w not in _STOPWORDS]
+
+
+def _grounding_keywords(query: str, turns: list[dict]) -> list[str]:
+    """What a match must share a word with (#2016): the question, plus the user's earlier turns
+    in the bounded history so a follow-up ("and the second one?") is grounded by the question it
+    follows. Same tokenizer and stopwords as the prefilter."""
+    said = [query, *(t["content"] for t in turns if t["role"] == "user")]
+    return _keywords(" ".join(said))
+
+
+def _grounded(
+    matches: list[tuple[str, str]], by_id: dict[str, dict], keywords: list[str]
+) -> list[tuple[str, str]]:
+    """The relevance floor (#2016): a model-returned match is shown only if at least one grounding
+    keyword occurs in the entry's own text (the same haystack the prefilter searches). The model
+    judges relevance; this only refuses a pick the user's words never touched — the recency
+    padding in the slice, or an entry that shared nothing but a generic kind noun. With no
+    keywords there is nothing to check against, and the model's picks stand as before."""
+    if not keywords:
+        return matches
+    return [
+        (mid, why) for mid, why in matches if any(k in _card_haystack(by_id[mid]) for k in keywords)
+    ]
 
 
 def build_catalog(*, now: float | None = None, working_keys: set[str] | None = None) -> list[dict]:
@@ -470,6 +512,15 @@ async def ask_events(
             ]
         )
     answer, matches = _validate_matches(obj, set(by_id))
+    # The grounding floor (#2016), applied HERE so the provisional answer below, the Stage-2
+    # candidate set, the Stage-1 fallback and the final answer all pass through the one filter.
+    # A scoped ask is exempt: the operator already chose the candidates (#1213).
+    if scope is None:
+        grounded = _grounded(matches, by_id, _grounding_keywords(query, turns))
+        if len(grounded) < len(matches):
+            # The model's line described what it picked, the dropped candidate included.
+            answer = GROUNDED_ANSWER if grounded else NO_MATCH_ANSWER
+        matches = grounded
     if not matches:
         yield {"type": "answer", "final": True, **_result(answer, [], by_id, "catalog")}
         return
@@ -487,12 +538,11 @@ async def ask_events(
         yield {"type": "answer", "final": True, **_result(answer, matches, by_id, "catalog")}
         return
     answer2, matches2 = refined
-    # A refine that verified but returned no usable answer keeps the Stage-1 line.
-    yield {
-        "type": "answer",
-        "final": True,
-        **_result(answer2 or answer, matches2, by_id, "content"),
-    }
+    # A refine that verified but returned no usable answer keeps the Stage-1 line — unless it
+    # also kept no match, when that line is about candidates it has just rejected (#2016).
+    if not answer2:
+        answer2 = answer if matches2 else NO_MATCH_ANSWER
+    yield {"type": "answer", "final": True, **_result(answer2, matches2, by_id, "content")}
 
 
 async def ask(

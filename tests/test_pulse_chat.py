@@ -267,7 +267,9 @@ def test_no_matches_is_one_call_stage_catalog(configured_ai, monkeypatch):
 
 
 def test_happy_path_is_exactly_two_calls_and_cards_carry_why(configured_ai, monkeypatch):
-    _setup(monkeypatch, _sessions(3))
+    sessions = _sessions(3)
+    sessions[1].first_user_message = "the websocket reconnect bug"  # grounds the pick (#2016)
+    _setup(monkeypatch, sessions)
     target = f"claude:{_uuid(1)}"
     calls: list = []
     monkeypatch.setattr(
@@ -345,7 +347,9 @@ def _mission(title: str, instruction: str) -> str:
 
 
 def test_missions_join_the_catalog_and_come_back_as_mission_matches(configured_ai, monkeypatch):
-    _setup(monkeypatch, _sessions(2))
+    sessions = _sessions(2)
+    sessions[1].first_user_message = "p1 does the reconnect work"  # grounds the pick (#2016)
+    _setup(monkeypatch, sessions)
     mid = _mission("Stabilise terminal reconnects", "fix the websocket reconnect storm")
     key = f"mission:{mid}"
     session = f"claude:{_uuid(1)}"
@@ -479,6 +483,284 @@ def test_an_operator_prompt_that_never_mentions_missions_still_works(configured_
     result = asyncio.run(pulse_chat.ask("which?"))
     assert [m["id"] for m in result["matches"]] == [session]
     assert result["mission_matches"] == []
+
+
+# ---- the grounding floor (#2016) ------------------------------------------------------
+
+# The query HQ sent in #1950's acceptance run, and the mission it wrongly got back: the real
+# row's title and instruction shape (no brief, the mailbox named, "mission" as a plain word).
+UNRELATED_QUERY = "marcus-privat application mission"
+EMAIL_TITLE = "Please setup email and email box, marcus@battlelabos.com through romania"
+EMAIL_INSTRUCTION = (
+    "Please setup email and email box, marcus@battlelabos.com through romania, ro-stalward "
+    "and postal email edge server. Store the mailbox settings in nextcloud. Give me a "
+    "comprehensive report in mission at the end."
+)
+
+
+def _collect(query: str, history: object = None, **kw) -> list[dict]:
+    async def run():
+        return [ev async for ev in pulse_chat.ask_events(query, history, **kw)]
+
+    return asyncio.run(run())
+
+
+def _names_mission(events: list[dict], mid: str) -> bool:
+    return any(
+        any(m["id"] == mid for m in ev.get("mission_matches") or [])
+        for ev in events
+        if ev["type"] == "answer"
+    )
+
+
+def test_kind_nouns_are_stopwords_so_the_query_is_two_grounding_tokens():
+    # Hermes on the issue: the hyphenated project id stays ONE token; "mission" grounds nothing.
+    assert pulse_chat._keywords(UNRELATED_QUERY) == ["marcus-privat", "application"]
+    assert pulse_chat._keywords("which agent runs the zephyr project?") == [
+        "runs",
+        "zephyr",
+    ]
+    # With nothing to check against, the model's picks stand untouched (the same list object).
+    matches = [("claude:x", "w")]
+    assert pulse_chat._grounded(matches, {}, []) is matches
+
+
+def test_a_mission_sharing_only_a_kind_noun_with_the_query_is_no_match(configured_ai, monkeypatch):
+    """#1950's run: the email mission reached the slice because its instruction says "mission",
+    the model picked it as the best of what it had, and Stage 2 confirmed it against its own
+    text. Scripted here to pick it in BOTH stages — the floor never lets Stage 2 see it."""
+    _setup(monkeypatch, _sessions(2))
+    mid = _mission(EMAIL_TITLE, EMAIL_INSTRUCTION)
+    key = f"mission:{mid}"
+    calls: list = []
+    pick = {
+        "answer": "The email-setup mission covers marcus@battlelabos.com.",
+        "matches": [{"id": key, "why": "Mission brief directly covers marcus@ email setup"}],
+    }
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([pick, pick], calls))
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("tail", "fp"))
+
+    events = _collect(UNRELATED_QUERY)
+
+    # The mission was in the slice as padding, not a hit — and the slice was still sent.
+    (catalog,) = [e for e in events if e["type"] == "progress" and e["step"] == "catalog"]
+    assert catalog["missions"] == 1 and catalog["mission_hits"] == 0
+    assert any(e["id"] == key for e in json.loads(calls[0]["messages"][-1]["content"])["catalog"])
+    # One call: the floor emptied the Stage-1 list, so there was no provisional answer, no
+    # content step and no Stage 2. No emitted answer names the mission, and the answer is the
+    # server's line, not the model's sentence about the candidate it picked.
+    assert len(calls) == 1
+    assert [e["type"] for e in events] == ["progress", "answer"]
+    assert not _names_mission(events, mid)
+    final = events[-1]
+    assert final["final"] is True and final["stage"] == "catalog"
+    assert final["matches"] == [] and final["mission_matches"] == []
+    assert final["answer"] == pulse_chat.NO_MATCH_ANSWER
+    assert "marcus@" not in final["answer"]
+
+
+def test_a_genuine_match_passes_the_floor_on_a_project_or_topic_word(configured_ai, monkeypatch):
+    """Recall check: the same query, a session whose cwd carries the project id and a mission
+    whose brief carries the topic word. Both grounded, both returned, Stage 2 runs as before."""
+    sessions = _sessions(2)
+    sessions[0].cwd = "/home/m/marcus-privat"
+    _setup(monkeypatch, sessions)
+    session = f"claude:{_uuid(0)}"
+    mid = _mission("Job hunt", "write the application for the platform engineer position")
+    key = f"mission:{mid}"
+    calls: list = []
+    pick = {
+        "answer": "Your job-application mission; p0 drafted in marcus-privat.",
+        "matches": [{"id": key, "why": "brief: the application"}, {"id": session, "why": "cwd"}],
+    }
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([pick, pick], calls))
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: cover letter", "fp"))
+
+    result = asyncio.run(pulse_chat.ask(UNRELATED_QUERY))
+    assert len(calls) == 2 and result["stage"] == "content"
+    assert [m["id"] for m in result["matches"]] == [session]
+    assert [m["id"] for m in result["mission_matches"]] == [mid]
+    assert result["answer"] == pick["answer"]
+
+
+def test_a_stage2_failure_keeps_only_the_grounded_stage1_matches(configured_ai, monkeypatch):
+    """The Stage-1 fallback (and the provisional answer before it) carries the grounded session
+    and never the unrelated mission the model listed beside it. A partial drop keeps the model's
+    answer: the remaining match is what it is about."""
+    sessions = _sessions(2)
+    sessions[0].first_user_message = "the websocket reconnect bug"
+    _setup(monkeypatch, sessions)
+    session = f"claude:{_uuid(0)}"
+    mid = _mission(EMAIL_TITLE, EMAIL_INSTRUCTION)
+    key = f"mission:{mid}"
+    seen = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            payload = {
+                "answer": "p0 and the email mission",
+                "matches": [{"id": session, "why": "title"}, {"id": key, "why": "mailbox"}],
+            }
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+            )
+        return httpx.Response(502)
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("tail", "fp"))
+
+    events = _collect("which session had the websocket reconnect bug?")
+    assert seen["n"] == 2
+    assert not _names_mission(events, mid)
+    provisional, final = [e for e in events if e["type"] == "answer"]
+    assert provisional["final"] is False and final["final"] is True
+    for ev in (provisional, final):
+        assert [m["id"] for m in ev["matches"]] == [session]
+        assert ev["mission_matches"] == []
+        assert ev["stage"] == "catalog"
+        # The model's line named the dropped mission, so it went with it: the neutral server
+        # line stands in, in the provisional answer and in the fallback alike.
+        assert ev["answer"] == pulse_chat.GROUNDED_ANSWER
+        assert "email" not in ev["answer"]
+    # Stage 2 was asked about the grounded session only.
+    (content,) = [e for e in events if e["type"] == "progress" and e["step"] == "content"]
+    assert content["candidates"] == 1
+
+
+def test_a_mixed_reply_naming_the_dropped_mission_gets_stage2s_line(configured_ai, monkeypatch):
+    """Stage 1 lists a grounded session and the unrelated mission and its prose recommends the
+    mission. Stage 2 sees the survivor only, so its line is the final answer; nothing emitted —
+    rows or prose — carries the mission."""
+    sessions = _sessions(2)
+    sessions[0].first_user_message = "the websocket reconnect bug"
+    _setup(monkeypatch, sessions)
+    session = f"claude:{_uuid(0)}"
+    mid = _mission(EMAIL_TITLE, EMAIL_INSTRUCTION)
+    calls: list = []
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {
+                    "answer": "Start with the email-setup mission; p0 is related.",
+                    "matches": [
+                        {"id": f"mission:{mid}", "why": "covers marcus@ email setup"},
+                        {"id": session, "why": "title"},
+                    ],
+                },
+                {"answer": "p0 fixed the reconnect bug.", "matches": [{"id": session, "why": "t"}]},
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: reconnect", "fp"))
+
+    events = _collect("which session had the websocket reconnect bug?")
+    assert len(calls) == 2
+    assert not _names_mission(events, mid)
+    provisional, final = [e for e in events if e["type"] == "answer"]
+    assert provisional["answer"] == pulse_chat.GROUNDED_ANSWER
+    assert final["answer"] == "p0 fixed the reconnect bug." and final["stage"] == "content"
+    assert [m["id"] for m in final["matches"]] == [session] and final["mission_matches"] == []
+    for ev in (provisional, final):
+        assert "email" not in ev["answer"]
+    # Stage 2 never saw the dropped mission.
+    cands = json.loads(calls[1]["messages"][-1]["content"])["candidates"]
+    assert [c["id"] for c in cands] == [session]
+
+
+def test_stage2_keeping_nothing_and_saying_nothing_is_the_no_match_line(configured_ai, monkeypatch):
+    """Hermes on the issue: a verify that rejects every survivor with an empty answer must not
+    fall back to the Stage-1 prose about the candidates it has just rejected."""
+    sessions = _sessions(2)
+    sessions[0].first_user_message = "the websocket reconnect bug"
+    _setup(monkeypatch, sessions)
+    session = f"claude:{_uuid(0)}"
+    calls: list = []
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {"answer": "p0 looks like it.", "matches": [{"id": session, "why": "title"}]},
+                {"answer": "", "matches": []},
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: unrelated", "fp"))
+    result = asyncio.run(pulse_chat.ask("which session had the websocket reconnect bug?"))
+    assert len(calls) == 2
+    assert result["stage"] == "content" and result["matches"] == []
+    assert result["answer"] == pulse_chat.NO_MATCH_ANSWER
+
+
+def test_a_follow_up_is_grounded_by_the_users_earlier_turns(configured_ai, monkeypatch):
+    """ "And the second one?" shares no word with any card; the question it follows does."""
+    sessions = _sessions(3)
+    sessions[1].first_user_message = "websocket reconnect, another attempt"
+    _setup(monkeypatch, sessions)
+    target = f"claude:{_uuid(1)}"
+    pick = {"answer": "p1", "matches": [{"id": target, "why": "the second reconnect session"}]}
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([pick]))
+    monkeypatch.setattr(
+        review, "gather_input", lambda *a: (_ for _ in ()).throw(review.ReviewError("none"))
+    )
+    history = [
+        {"role": "user", "content": "which sessions fixed the websocket reconnect?"},
+        {"role": "assistant", "content": "p0 and p1."},
+    ]
+    with_history = asyncio.run(pulse_chat.ask("and the second one?", history))
+    assert [m["id"] for m in with_history["matches"]] == [target]
+    # The same pick with no history to ground it is refused: "second" is in no card.
+    alone = asyncio.run(pulse_chat.ask("and the second one?"))
+    assert alone["matches"] == [] and alone["answer"] == pulse_chat.NO_MATCH_ANSWER
+
+
+def test_a_scoped_ask_is_never_filtered(configured_ai, monkeypatch):
+    """A mission's own question (#1213): the operator chose the candidates, so "what is the
+    decision?" keeps the model's pick even though no card says "decision"."""
+    _setup(monkeypatch, _sessions(2))
+    mid = _mission("Scoped", "x")
+    target = f"claude:{_uuid(0)}"
+    pick = {"answer": "p0 decided", "matches": [{"id": target, "why": "the decision"}]}
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([pick]))
+    monkeypatch.setattr(
+        review, "gather_input", lambda *a: (_ for _ in ()).throw(review.ReviewError("none"))
+    )
+    result = asyncio.run(pulse_chat.ask("what is the decision?", scope=({target}, mid)))
+    assert [m["id"] for m in result["matches"]] == [target]
+    assert result["answer"] == "p0 decided"
+
+
+def test_hq_find_sessions_reports_zero_rows_for_the_unrelated_mission(configured_ai, monkeypatch):
+    """HQ's wrapper, through the real pipeline: the tool result HQ reads has no mission row,
+    the turn learns no mission id (so no later tool can act on it), and the answer is the
+    server's no-match line."""
+    import uuid
+
+    from agent_sessions import ask_orchestrator
+
+    _setup(monkeypatch, _sessions(2))
+    mid = _mission(EMAIL_TITLE, EMAIL_INSTRUCTION)
+    pick = {
+        "answer": "The email-setup mission.",
+        "matches": [{"id": f"mission:{mid}", "why": "covers marcus@ email setup"}],
+    }
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([pick, pick]))
+    turn = ask_orchestrator._Turn(
+        cid="ask_" + "0" * 32,
+        turn_id=str(uuid.uuid4()),
+        question=UNRELATED_QUERY,
+        working_keys=set(),
+        progress=lambda ev: None,
+    )
+    out, meta = asyncio.run(ask_orchestrator._find_sessions(turn, {"query": UNRELATED_QUERY}))
+    assert out == {"answer": pulse_chat.NO_MATCH_ANSWER, "sessions": [], "missions": []}
+    assert meta == {"count": 0, "keys": [], "missions": []}
+    assert turn.mission_ids == set() and turn.mission_matches == {}
 
 
 def test_malformed_model_output_raises_review_error(configured_ai, monkeypatch):
@@ -670,7 +952,9 @@ def test_concurrent_ask_is_409_with_activity_snapshot(auth_cfg, fake_jsonl, monk
 
 
 def _two_stage(monkeypatch, calls: list) -> str:
-    _setup(monkeypatch, _sessions(3))
+    sessions = _sessions(3)
+    sessions[1].first_user_message = "reconnect storm"  # grounds the pick (#2016)
+    _setup(monkeypatch, sessions)
     target = f"claude:{_uuid(1)}"
     monkeypatch.setattr(
         review,
