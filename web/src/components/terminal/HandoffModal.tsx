@@ -6,7 +6,9 @@ import { useConfig } from "../../app/config";
 import { isActive, resolveDefault } from "../../app/engineRoster";
 import { unavailableDefaultNotice } from "../../lib/agentDefaults";
 import { api, ApiError } from "../../lib/api";
+import { pickHandoffTarget } from "../../lib/handoffTarget";
 import type { EngineInfo, HandoffMode } from "../../types/api";
+import { handStart } from "../structured/startHandoff";
 import styles from "./HandoffModal.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 
@@ -47,7 +49,16 @@ export function HandoffModal({
 }) {
   const navigate = useNavigate();
   // The operator's default agent (#1128) — the default target when it can take a handoff.
-  const storedDefault = useConfig()?.agent_defaults?.default_engine ?? null;
+  const config = useConfig();
+  const storedDefault = config?.agent_defaults?.default_engine ?? null;
+  // Skip permission prompts for an API target (#2141), as New session offers it (#1473): only for a
+  // client that maps it, starting at the stored default and FAILING CLOSED (ticked only when a
+  // loaded config says `bypass === true`). The choice is bound to the target it was made for, so
+  // a target switch falls back to the default.
+  const storedBypass = config?.agent_defaults?.bypass === true;
+  const [bypassChoice, setBypassChoice] = useState<{ engine: string; value: boolean } | null>(
+    null,
+  );
   const [tiles, setTiles] = useState<EngineInfo[] | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [mode, setMode] = useState<HandoffMode>("quick");
@@ -98,6 +109,17 @@ export function HandoffModal({
     archive: boolean;
   } | null>(null);
   const [committing, setCommitting] = useState(false);
+  // An API commit that was SENT (#2141, Hermes on #2149): its exact request, frozen. The server binds
+  // the handle on the first commit and may already have delivered the brief even when the answer
+  // was lost, so every later "Hand off" resends THIS request (the server replays it) and nothing
+  // that shapes it can change. Leaving it takes an explicit "New handoff", never a silent renewal.
+  const [apiAttempt, setApiAttempt] = useState<{
+    handle: string;
+    seed?: string;
+    bypass: boolean;
+    archive_source: boolean;
+  } | null>(null);
+  const frozen = committing || apiAttempt !== null;
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<{
     stored: string;
@@ -214,15 +236,12 @@ export function HandoffModal({
         // A retiring engine (#1126) is listed but takes no new work, so it is never a target.
         const list = r.engines.filter((e) => e.kind === "agent" && isActive(e));
         setTiles(list);
-        const enabled = list.filter((e) => e.supports_seed_start);
         const storedDefault = storedDefaultRef.current;
         const stored = resolveDefault(list, storedDefault, "handoff");
-        const def =
-          (stored.engine === storedDefault && storedDefault !== engine
-            ? enabled.find((e) => e.id === storedDefault)
-            : undefined) ??
-          enabled.find((e) => e.id !== engine) ??
-          enabled[0];
+        // API first (#2141): the stored default via its family's default client, then the
+        // source's own API client, then any API client, then any target (`pickHandoffTarget`).
+        const defId = pickHandoffTarget(list, r.families, engine, storedDefault);
+        const def = defId ? list.find((e) => e.id === defId) : undefined;
         if (def) setTarget(String(def.id));
         else setError("No engine on this host can accept a handoff yet.");
         // Say so when the stored default is not the one in effect (#1128) — but not when it is
@@ -328,6 +347,13 @@ export function HandoffModal({
     setPendingSwitch(null);
   };
 
+  const targetInfo = tiles?.find((e) => e.id === target);
+  const apiTarget = targetInfo?.runtime === "api";
+  const canBypass = apiTarget && targetInfo?.api?.can_bypass === true;
+  const bypass =
+    canBypass &&
+    (bypassChoice?.engine === target ? bypassChoice.value : storedBypass);
+
   const confirm = async () => {
     // A pending discard decision suspends the action entirely: the handle/target on screen
     // is the one the user may be about to abandon, and committing it mid-decision would
@@ -337,6 +363,54 @@ export function HandoffModal({
     setError(null);
     setRenewalNotice(null);
     try {
+      if (apiTarget || apiAttempt) {
+        // An API target (#2141): the SERVER sends the brief as the new session's first turn and
+        // archives the source once it is accepted. The request is frozen BEFORE it is sent (a
+        // lost answer may still have delivered it), and a repeat resends it unchanged, which the
+        // server replays: one session, one brief, whatever the network did.
+        const req = apiAttempt ?? {
+          handle: prep.handle,
+          ...(edited !== null ? { seed: edited } : {}),
+          bypass,
+          archive_source: archiveSource,
+        };
+        setApiAttempt(req);
+        let r;
+        try {
+          r = await api.commitHandoff(req.handle, req.seed, {
+            bypass: req.bypass,
+            archive_source: req.archive_source,
+          });
+        } catch (e) {
+          if (!mountedRef.current) return;
+          // Never a silent renewal here: the binding may hold a delivered brief. Say what is
+          // known, keep the frozen request, and leave "New handoff" as the explicit way out.
+          setError(
+            e instanceof ApiError && e.status === 404
+              ? "This handoff expired before BattleLab confirmed it. If the new session appeared in your list, continue there; otherwise start a new handoff."
+              : e instanceof ApiError && e.status < 500
+                ? `${e.message} Start a new handoff to change it.`
+                : "Couldn't confirm the handoff. Hand off again retries the same one — it never makes a second session.",
+          );
+          setCommitting(false);
+          return;
+        }
+        if (r.delivery === null || r.delivery === undefined) {
+          if (!mountedRef.current) return;
+          setError(r.detail ?? "The new session did not take the brief yet. Hand off again.");
+          setCommitting(false);
+          return;
+        }
+        if (r.delivery === "pending_start") {
+          // Skip permissions: started only now that the commit's answer is here, exactly as New
+          // session starts a skip create (#1339, #1505); the server sends the brief once ready.
+          handStart(r.id, api.structuredStart(r.id));
+        }
+        if (!mountedRef.current) return;
+        navigate(`/s/${r.engine}/${r.native}`);
+        onClose();
+        return;
+      }
       const r = await api.commitHandoff(prep.handle, edited ?? undefined);
       // Archive the source session (#1274) once the handoff is COMMITTED — before the
       // unmount check, so an operator who left mid-request still gets the archive they asked
@@ -442,7 +516,7 @@ export function HandoffModal({
                   role="radio"
                   aria-checked={target === e.id}
                   className={`${styles.tile} ${target === e.id ? styles.tileOn : ""}`}
-                  disabled={!e.supports_seed_start || committing}
+                  disabled={!e.supports_seed_start || frozen}
                   title={e.seed_reason ?? undefined}
                   onClick={() => requestSwitch({ target: String(e.id) })}
                 >
@@ -475,7 +549,7 @@ export function HandoffModal({
               role="radio"
               aria-checked={mode === "quick"}
               className={`${styles.tile} ${mode === "quick" ? styles.tileOn : ""}`}
-              disabled={committing}
+              disabled={frozen}
               onClick={() => requestSwitch({ mode: "quick" })}
             >
               <span className={styles.tileName}>Quick tail</span>
@@ -485,7 +559,7 @@ export function HandoffModal({
               role="radio"
               aria-checked={mode === "ai"}
               className={`${styles.tile} ${mode === "ai" ? styles.tileOn : ""}`}
-              disabled={committing}
+              disabled={frozen}
               onClick={() => requestSwitch({ mode: "ai" })}
             >
               <span className={styles.tileName}>AI summary</span>
@@ -497,6 +571,39 @@ export function HandoffModal({
               : "Quick tail builds the seed locally — no AI endpoint is called."}
           </p>
         </div>
+
+        {/* Permissions for an API target (#2141): shown for every API target, enabled only for a
+            client that maps "Skip permission prompts", and disabled with that reason otherwise. */}
+        {apiTarget && (
+          <div className={styles.section}>
+            <span className={styles.label}>Permissions //</span>
+            <label
+              className={`${styles.optRow} ${bypass ? styles.optRowOn : ""} ${
+                canBypass ? "" : styles.optRowOff
+              }`}
+            >
+              <input
+                type="checkbox"
+                className={styles.optBox}
+                checked={bypass}
+                disabled={frozen || !canBypass}
+                onChange={(e) =>
+                  target && setBypassChoice({ engine: target, value: e.target.checked })
+                }
+              />
+              <span className={styles.optText}>
+                Skip permission prompts
+                <span className={styles.optHint}>
+                  {!canBypass
+                    ? `Not available for ${target}: it can't skip prompts yet. It runs guarded.`
+                    : bypass
+                      ? "The agent runs tools without asking. The brief is sent once the session is ready."
+                      : "The agent asks before running tools."}
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
 
         {/* Archive the source session (#1274). On by default — a handed-off session usually
             has no further job. The copy states the commit-time promise and the row-menu
@@ -510,13 +617,16 @@ export function HandoffModal({
               type="checkbox"
               className={styles.optBox}
               checked={archiveSource}
-              disabled={committing}
+              disabled={frozen}
               onChange={(e) => requestArchive(e.target.checked)}
             />
             <span className={styles.optText}>
               Archive current session after handoff
               <span className={styles.optHint}>
-                Archived once the handoff is committed. Its history is kept — you
+                {apiTarget
+                  ? "Archived once the new session has the brief. "
+                  : "Archived once the handoff is committed. "}
+                Its history is kept — you
                 can unarchive it later. If it can&apos;t be archived (a mission
                 owns it, or a background agent is running), it stays active —
                 archive it from the row menu.
@@ -543,7 +653,7 @@ export function HandoffModal({
               type="checkbox"
               className={styles.optBox}
               checked={srcRef}
-              disabled={committing || archiveSource}
+              disabled={frozen || archiveSource}
               onChange={(e) => requestSwitch({ srcRef: e.target.checked })}
             />
             <span className={styles.optText}>
@@ -579,7 +689,7 @@ export function HandoffModal({
               onChange={(e) =>
                 setEditState({ for: editKey, text: e.target.value })
               }
-              disabled={committing}
+              disabled={frozen}
               aria-label="Handoff seed preview"
               spellCheck={false}
             />
@@ -617,9 +727,29 @@ export function HandoffModal({
           )}
         </div>
 
+        {apiAttempt && !shownError && !committing && (
+          <p className={styles.hint} role="status">
+            This handoff is committed: Hand off again retries the same one.
+          </p>
+        )}
+
         {shownError && (
           <p className={styles.error} role="alert">
             {shownError}
+            {/* Leaving a sent API commit is explicit (#2141): a fresh handle, a fresh session. */}
+            {apiAttempt && !committing && (
+              <button
+                type="button"
+                className={styles.retry}
+                onClick={() => {
+                  setApiAttempt(null);
+                  setError(null);
+                  setNonce((n) => n + 1);
+                }}
+              >
+                New handoff
+              </button>
+            )}
             {/* A prepare failure (including a failed renewal) can be retried in place —
                 the recovery path the modal previously lacked (#703 review follow-up). */}
             {prepError && !committing && (

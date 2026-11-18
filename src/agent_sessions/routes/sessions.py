@@ -317,6 +317,80 @@ def _reserve_or_refuse(session_key: str) -> str:
         raise HTTPException(status_code=e.status, detail=str(e)) from None
 
 
+async def _archive_reserved(prov, native, key) -> JSONResponse:
+    # Reclaim the session's live runtime footprint BEFORE recording the archive (#523):
+    # kill the dtach master + agent group, clear scrollback/VT + owner lease, unlink the
+    # stale socket, release the single-writer lock. Terminate-first so a still-running
+    # claude can't recreate its JSONL under projects/ between the move and the kill.
+    # Best-effort — a teardown hiccup must never block the archive itself.
+    # WHERE ITS RUNTIME LIVES, established first (#994 review 2, finding 1). The teardown below
+    # stays best-effort; not being able to name its target does not, because archiving past it
+    # records a session archived while its late-bound agent keeps running.
+    #
+    # ARCHIVE DOES WHAT STOP DOES — EVERYTHING (#2064). `runtime_freeze.frozen` holds the
+    # session's freeze fence exclusively, so no launch can interleave, stops every process the
+    # session owns (Stop everything for an API session, the tree + scope teardown for a
+    # terminal, cancelled-and-settled turns for a chat agent) and CONFIRMS it, or refuses
+    # before anything is recorded: a session reported archived has no runtime.
+    try:
+        async with runtime_freeze.frozen(prov, native):
+            # Background-agent guard (#631): with our own master now gone, a live process
+            # STILL holding this transcript is a Claude background agent (a ``claude daemon``
+            # fork) we don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out
+            # from under it, so the file diverges between the live + archive trees — refuse
+            # instead. Claude-only: background agents are a Claude concept.
+            if transcript_owner.owned_elsewhere(prov, native):
+                raise HTTPException(
+                    status_code=409,
+                    detail="session is a running background agent — not archivable",
+                )
+            # Its public links end with it, or it is not archived (#1404): `archiving` revokes
+            # them under the session's lock before the move and refuses when it cannot.
+            async with shares.archiving(key):
+                prov.archive(native)
+    except runtime_freeze.FreezeFailed as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"could not confirm the session stopped: {e.reason} — nothing was archived",
+        ) from None
+    except shares.SharesUnavailable as e:
+        raise HTTPException(status_code=503, detail=f"{e} — not archived") from None
+    except archive.ArchiveError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
+        ) from None
+    engines.invalidate_scan_cache()  # Claude moved the JSONL → next list must re-walk (#561)
+    # An archived session no longer needs anyone: retract its notification now (#1086 P4).
+    needs_you_notify.poke()
+    return JSONResponse({"id": key, "archived": True})
+
+
+async def archive_key(key: str) -> tuple[bool, str | None]:
+    """Archive session ``key`` exactly as its archive route does, for a server-side caller
+    (#2141: a handoff into an API session archives its source once the brief is accepted).
+    Never raises for a refusal: ``(False, why)`` leaves the session active, as the route's
+    refusal does."""
+    try:
+        prov, native = engines.parse_key(key)
+    except engines.EngineError:
+        return False, "unknown session"
+    key = f"{prov.engine_id}:{native}"
+    try:
+        reservation = _reserve_or_refuse(key)
+    except HTTPException as e:
+        return False, str(e.detail)
+    try:
+        async with missions.holding(key, reservation):
+            await _archive_reserved(prov, native, key)
+        return True, None
+    except HTTPException as e:
+        return False, str(e.detail)
+    finally:
+        missions.release_session(key, reservation)
+
+
 def project_members(pid: str, index: dict) -> list[tuple[object, str, metadata.SessionMeta]]:
     """THE membership a project archive / unarchive acts on: every session the resolver places in
     ``pid`` — explicitly assigned or folder-resolved — over a FRESH, unscoped ``scan_all()``.
@@ -1904,55 +1978,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 return await _archive_reserved(prov, native, key)
         finally:
             missions.release_session(key, reservation)
-
-    async def _archive_reserved(prov, native, key) -> JSONResponse:
-        # Reclaim the session's live runtime footprint BEFORE recording the archive (#523):
-        # kill the dtach master + agent group, clear scrollback/VT + owner lease, unlink the
-        # stale socket, release the single-writer lock. Terminate-first so a still-running
-        # claude can't recreate its JSONL under projects/ between the move and the kill.
-        # Best-effort — a teardown hiccup must never block the archive itself.
-        # WHERE ITS RUNTIME LIVES, established first (#994 review 2, finding 1). The teardown below
-        # stays best-effort; not being able to name its target does not, because archiving past it
-        # records a session archived while its late-bound agent keeps running.
-        #
-        # ARCHIVE DOES WHAT STOP DOES — EVERYTHING (#2064). `runtime_freeze.frozen` holds the
-        # session's freeze fence exclusively, so no launch can interleave, stops every process the
-        # session owns (Stop everything for an API session, the tree + scope teardown for a
-        # terminal, cancelled-and-settled turns for a chat agent) and CONFIRMS it, or refuses
-        # before anything is recorded: a session reported archived has no runtime.
-        try:
-            async with runtime_freeze.frozen(prov, native):
-                # Background-agent guard (#631): with our own master now gone, a live process
-                # STILL holding this transcript is a Claude background agent (a ``claude daemon``
-                # fork) we don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out
-                # from under it, so the file diverges between the live + archive trees — refuse
-                # instead. Claude-only: background agents are a Claude concept.
-                if transcript_owner.owned_elsewhere(prov, native):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="session is a running background agent — not archivable",
-                    )
-                # Its public links end with it, or it is not archived (#1404): `archiving` revokes
-                # them under the session's lock before the move and refuses when it cannot.
-                async with shares.archiving(key):
-                    prov.archive(native)
-        except runtime_freeze.FreezeFailed as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"could not confirm the session stopped: {e.reason} — nothing was archived",
-            ) from None
-        except shares.SharesUnavailable as e:
-            raise HTTPException(status_code=503, detail=f"{e} — not archived") from None
-        except archive.ArchiveError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from None
-        except NotImplementedError:
-            raise HTTPException(
-                status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
-            ) from None
-        engines.invalidate_scan_cache()  # Claude moved the JSONL → next list must re-walk (#561)
-        # An archived session no longer needs anyone: retract its notification now (#1086 P4).
-        needs_you_notify.poke()
-        return JSONResponse({"id": key, "archived": True})
 
     @app.post("/api/sessions/{sid}/unarchive")
     async def unarchive_session(

@@ -29,7 +29,8 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import engines, handoff, metadata, prefs, project_dirs, projects, review
+from .. import engines, handoff, handoff_api, metadata, prefs, project_dirs, projects, review
+from ..plugins import kinds
 
 _MODES = {"quick", "ai"}  # "ai" (Phase 2) degrades to "quick" when the endpoint is absent
 
@@ -80,7 +81,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             if why is not None:  # it existed: say so, rather than "unknown" (#853 P3)
                 raise HTTPException(status_code=422, detail=f"target engine unavailable: {why}")
             raise HTTPException(status_code=404, detail="unknown engine")
-        present = bool(await asyncio.to_thread(engines.launchable_bin, tprov))
+        present = await asyncio.to_thread(handoff.target_present, tprov)
         ok, reason = handoff.handoff_target_state(tprov, present=present)
         if not ok:
             raise HTTPException(status_code=422, detail=f"target engine unavailable: {reason}")
@@ -183,11 +184,47 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="body must be an object")
         handle = str(payload.get("handle", ""))
         # The edited preview (#597 Phase 2). Untrusted input: handoff.commit re-sanitizes
         # it (control-strip + byte cap) before it can ever reach a PTY.
         raw_seed = payload.get("seed")
         seed = str(raw_seed) if isinstance(raw_seed, str) else None
+        # API targets only (#2141). Real booleans, never coerced: `bypass` is a permission choice.
+        bypass = payload.get("bypass", False)
+        archive_source = payload.get("archive_source", False)
+        if not isinstance(bypass, bool) or not isinstance(archive_source, bool):
+            raise HTTPException(
+                status_code=422, detail="bypass and archive_source must be booleans"
+            )
+        try:
+            target_engine = handoff.target_engine_of(handle)
+        except handoff.HandoffError as e:
+            raise HTTPException(status_code=e.status, detail=e.detail) from None
+        tprov = engines.get(target_engine)
+        if tprov is not None and handoff.is_api_target(tprov):
+            # Readiness is checked AGAIN here, not only at prepare: a client that stopped being
+            # startable in between refuses before anything is created.
+            present = await asyncio.to_thread(handoff.target_present, tprov)
+            ok, reason = handoff.handoff_target_state(tprov, present=present)
+            if not ok:
+                raise HTTPException(status_code=422, detail=f"target engine unavailable: {reason}")
+            if bypass and engines.manifest_of(tprov).api.kind not in kinds.API_BYPASS_KINDS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{target_engine} can't skip permission prompts",
+                )
+            try:
+                res = await handoff_api.commit(
+                    handle, seed, bypass=bypass, archive_source=archive_source
+                )
+            except handoff.HandoffError as e:
+                raise HTTPException(status_code=e.status, detail=e.detail) from None
+            return JSONResponse(res)
+        if bypass:
+            # A console target's permission mode is its launch's (the fresh-launch route).
+            raise HTTPException(status_code=422, detail="bypass applies to API targets only")
         try:
             res = handoff.commit(handle, seed)
         except handoff.HandoffError as e:

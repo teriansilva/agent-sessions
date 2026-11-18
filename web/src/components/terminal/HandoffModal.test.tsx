@@ -28,9 +28,15 @@ vi.mock("../../lib/api", async (importOriginal) => {
       prepareHandoff: vi.fn(),
       commitHandoff: vi.fn(),
       archive: vi.fn(),
+      structuredStart: vi.fn(),
     },
   };
 });
+
+const mockHandStart = vi.fn();
+vi.mock("../structured/startHandoff", () => ({
+  handStart: (...a: unknown[]) => mockHandStart(...a),
+}));
 
 const mockNavigate = vi.fn();
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -879,3 +885,197 @@ test.each([
     else expect(screen.queryByText(/your default/i)).toBeNull();
   },
 );
+
+
+// --- API targets (#2141) -------------------------------------------------------------------------
+
+const API_NATIVE = "22222222-2222-2222-2222-222222222222";
+
+function renderApi(opts: { bypass?: boolean; ready?: string[] } = {}) {
+  const ready = opts.ready ?? ["codex", "claude-api", "opencode2-api"];
+  vi.mocked(api.engines).mockResolvedValue({
+    engines: (rosterFixture.engines as EngineInfo[])
+      .filter((e) => ["claude", "claude-api", "codex", "opencode2-api", "shell"].includes(e.id))
+      .map((e) => ({
+        ...e,
+        supports_seed_start: ready.includes(e.id),
+        seed_reason: ready.includes(e.id) ? null : e.seed_reason,
+      })),
+    families: [
+      {
+        family: "claude",
+        clients: ["claude", "claude-api"],
+        interactive_default: { engine: "claude-api", reason: "api_ready" },
+        unattended_admitted: [],
+        reasons: {},
+      },
+    ],
+  } as never);
+  const config = {
+    csrf: "x",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    agent_defaults: { default_engine: null, bypass: opts.bypass ?? false },
+  } as unknown as AppConfig;
+  return render(
+    <ConfigCtx.Provider value={config}>
+      <MemoryRouter>
+        <HandoffModal
+          sessionId="claude:11111111-1111-1111-1111-111111111111"
+          engine="claude"
+          title="Fix the auth race"
+          onClose={() => {}}
+        />
+      </MemoryRouter>
+    </ConfigCtx.Provider>,
+  );
+}
+
+async function handOff() {
+  const go = await screen.findByRole("button", { name: /hand off session|^hand off$/i });
+  await waitFor(() => expect(go).toBeEnabled());
+  await userEvent.click(go);
+}
+
+test("a terminal source preselects its own agent's API client (#2141)", async () => {
+  renderApi();
+  const tile = await screen.findByRole("radio", { name: /^claude-api$/i });
+  await waitFor(() => expect(tile).toHaveAttribute("aria-checked", "true"));
+  expect(api.prepareHandoff).toHaveBeenCalledWith(
+    "claude:11111111-1111-1111-1111-111111111111",
+    "claude-api",
+    "quick",
+    false,
+  );
+});
+
+test("an API target commits its options, lets the server archive, and opens the session", async () => {
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: `claude-api:${API_NATIVE}`,
+    engine: "claude-api",
+    native: API_NATIVE,
+    cwd: "/repo",
+    api: true,
+    bypass: false,
+    delivery: "sent",
+  } as never);
+  renderApi();
+  const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
+  expect(skip).not.toBeChecked(); // the stored default (false) — fail closed
+  expect(skip).toBeEnabled();
+  await handOff();
+  expect(api.commitHandoff).toHaveBeenCalledWith("h-1", undefined, {
+    bypass: false,
+    archive_source: true,
+  });
+  expect(api.archive).not.toHaveBeenCalled(); // the server archives once the brief is accepted
+  expect(mockHandStart).not.toHaveBeenCalled();
+  expect(mockNavigate).toHaveBeenCalledWith(`/s/claude-api/${API_NATIVE}`);
+});
+
+test("a skip handoff is started only after the commit answered, like New session (#1339)", async () => {
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: `claude-api:${API_NATIVE}`,
+    engine: "claude-api",
+    native: API_NATIVE,
+    cwd: "/repo",
+    api: true,
+    bypass: true,
+    delivery: "pending_start",
+  } as never);
+  vi.mocked(api.structuredStart).mockResolvedValue({} as never);
+  renderApi({ bypass: true });
+  const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
+  await waitFor(() => expect(skip).toBeChecked()); // stored default true
+  expect(api.structuredStart).not.toHaveBeenCalled();
+  await handOff();
+  expect(api.commitHandoff).toHaveBeenCalledWith("h-1", undefined, {
+    bypass: true,
+    archive_source: true,
+  });
+  expect(api.structuredStart).toHaveBeenCalledWith(`claude-api:${API_NATIVE}`);
+  expect(mockHandStart).toHaveBeenCalledWith(`claude-api:${API_NATIVE}`, expect.any(Promise));
+  expect(mockNavigate).toHaveBeenCalledWith(`/s/claude-api/${API_NATIVE}`);
+});
+
+test("a brief the new session did not take yet keeps the dialog open to hand off again", async () => {
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: `claude-api:${API_NATIVE}`,
+    engine: "claude-api",
+    native: API_NATIVE,
+    cwd: "/repo",
+    api: true,
+    delivery: null,
+    detail: "the new session did not take the brief yet; hand off again to retry",
+  } as never);
+  renderApi();
+  await handOff();
+  expect(await screen.findByText(/did not take the brief yet/i)).toBeInTheDocument();
+  expect(mockNavigate).not.toHaveBeenCalled();
+});
+
+test("a client that cannot skip shows the row disabled with its reason", async () => {
+  renderApi();
+  const oc2 = await screen.findByRole("radio", { name: /^opencode2-api$/i });
+  await userEvent.click(oc2);
+  const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
+  expect(skip).toBeDisabled();
+  expect(skip).not.toBeChecked();
+  expect(screen.getByText(/can't skip prompts yet/i)).toBeInTheDocument();
+});
+
+test("a console target shows no Permissions row and commits as before", async () => {
+  renderApi({ ready: ["codex"] });
+  const codex = await screen.findByRole("radio", { name: /^codex$/i });
+  await waitFor(() => expect(codex).toHaveAttribute("aria-checked", "true"));
+  expect(screen.queryByRole("checkbox", { name: /skip permission prompts/i })).toBeNull();
+});
+
+test("a lost API answer freezes the request: options lock and a retry resends it unchanged (Hermes on #2149)", async () => {
+  vi.mocked(api.commitHandoff)
+    .mockRejectedValueOnce(new TypeError("network down")) // delivered, but the answer was lost
+    .mockResolvedValueOnce({
+      id: `claude-api:${API_NATIVE}`,
+      engine: "claude-api",
+      native: API_NATIVE,
+      cwd: "/repo",
+      api: true,
+      delivery: "sent",
+    } as never);
+  renderApi();
+  await handOff();
+  expect(await screen.findByText(/retries the same one/i)).toBeInTheDocument();
+  // Nothing that shapes the request can change now; no silent re-prepare happened.
+  const archive = screen.getByRole("checkbox", { name: /archive current session/i });
+  expect(archive).toBeDisabled();
+  await userEvent.click(archive); // ignored
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeDisabled();
+  expect(screen.getByRole("radio", { name: /^codex$/i })).toBeDisabled();
+  expect(screen.getByLabelText(/seed preview/i)).toBeDisabled();
+  expect(api.prepareHandoff).toHaveBeenCalledTimes(1);
+  await handOff();
+  expect(api.commitHandoff).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(api.commitHandoff).mock.calls[1]).toEqual(
+    vi.mocked(api.commitHandoff).mock.calls[0],
+  );
+  expect(vi.mocked(api.commitHandoff).mock.calls[1]).toEqual(["h-1", undefined, {
+    bypass: false,
+    archive_source: true,
+  }]);
+  expect(mockNavigate).toHaveBeenCalledWith(`/s/claude-api/${API_NATIVE}`);
+});
+
+test("an API binding conflict never re-prepares silently; New handoff is the explicit way out", async () => {
+  vi.mocked(api.commitHandoff).mockRejectedValueOnce(
+    new ApiError(409, "this handoff was already committed with other options"),
+  );
+  renderApi();
+  await handOff();
+  expect(await screen.findByText(/already committed with other options/i)).toBeInTheDocument();
+  expect(api.prepareHandoff).toHaveBeenCalledTimes(1); // no automatic renewal
+  await userEvent.click(screen.getByRole("button", { name: /new handoff/i }));
+  await waitFor(() => expect(api.prepareHandoff).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(screen.getByRole("checkbox", { name: /archive current session/i })).toBeEnabled(),
+  );
+});

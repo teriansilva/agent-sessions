@@ -1545,12 +1545,19 @@ export const api = {
    *  re-sanitizes it. The caller then navigates to /s/{engine}/{native} (fresh launch) and
    *  the server redeems the seed at spawn time — never through the URL. 404/409 = the
    *  handle expired or was already committed; the modal re-prepares. */
-  commitHandoff: (handle: string, seed?: string) =>
-    mutateJson<HandoffCommitted>(
-      "POST",
-      "/api/handoff",
-      seed === undefined ? { handle } : { handle, seed },
-    ),
+  /** `apiTarget` (#2141): only for an API target — its permission mode and whether the server
+   *  archives the source once the brief is accepted. Omitted for a console target, whose body is
+   *  what it always was. */
+  commitHandoff: (
+    handle: string,
+    seed?: string,
+    apiTarget?: { bypass: boolean; archive_source: boolean },
+  ) =>
+    mutateJson<HandoffCommitted>("POST", "/api/handoff", {
+      handle,
+      ...(seed === undefined ? {} : { seed }),
+      ...(apiTarget ?? {}),
+    }),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
   /** The NIGHTJAR footer's live readout (#1531): host CPU / RAM and HQ's token use. */

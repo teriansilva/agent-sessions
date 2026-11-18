@@ -102,6 +102,19 @@ API_MISSION_REFUSAL = {
     # end-to-end proof, as #1903 gave 1.x.
     "opencode2-acp": "not yet proved end to end for missions (follow-up of #2084, as #1903)",
 }
+#: Which API kinds may be a HANDOFF target (#2141): a fact about BattleLab's structured delivery,
+#: never a value a manifest chooses. A handoff into an API client sends its brief as the new
+#: session's first structured turn, not a terminal paste, so the PTY-only `seed_start` /
+#: `handoff_target` bits never apply to runtime `api`. Every kind takes a plain first turn, so all
+#: are true; setting one false is the rollback (its tile disables, the route refuses). A test pins
+#: the keys to `API_KINDS`, so a new adapter cannot ship without saying.
+API_HANDOFF_READY = {
+    "codex-app-server": True,
+    "claude-stream-json": True,
+    "opencode-acp": True,
+    "opencode2-acp": True,
+    "copilot-acp": True,
+}
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are

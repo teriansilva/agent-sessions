@@ -827,6 +827,15 @@ async def submit_turn(
     except ValueError as exc:
         raise StructuredError(422, str(exc)) from None
     tid = _operation_id(operation_id)
+    # THE SEED-FIRST FENCE (#2141): while a handoff's brief is bound to this session and not yet
+    # sent or recorded, nothing else is admitted, whoever sends it (the pane, HQ, a mission, a
+    # share). Checked before anything durable, so a refusal here claimed nothing.
+    from . import handoff as handoff_store  # at call time; `handoff` below is the receipt code
+
+    if handoff_store.api_blocks(f"{engine}:{native}", tid):
+        raise StructuredError(
+            409, "this session's handoff brief is being delivered first; send again in a moment"
+        )
     uploaded = {}
     if attachments:
         if not isinstance(adapter, _NativeAdapter):
@@ -867,6 +876,11 @@ async def submit_turn(
     handoff = receipt.get("handoff") if isinstance(receipt, dict) else None
     if handoff in native_journal.HANDOFFS:
         out["handoff"] = handoff
+    # A handoff brief re-sent by Send again after a recorded refusal (#2141): finish that handoff
+    # (provenance, the archive the operator asked for) exactly once. Never raises.
+    from . import handoff_api
+
+    await handoff_api.reconcile_successor(f"{engine}:{native}", tid, text, out.get("handoff"))
     return out
 
 

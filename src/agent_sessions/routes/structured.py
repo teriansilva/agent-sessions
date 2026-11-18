@@ -178,7 +178,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # has received the create response, so a lost response can never launch unobserved.
         # It answers at launch (#1505); a refusal before any worker exists is recorded in the
         # snapshot's `launch` view too, so a lost answer still has a truthful state to read.
-        return JSONResponse(await _run(structured_runtime.start_session(key, wait_ready=False)))
+        out = await _run(structured_runtime.start_session(key, wait_ready=False))
+        # A handoff's brief bound to this session (#2141) is sent once this launch is ready.
+        from .. import handoff_api
+
+        handoff_api.after_start(out.get("session_key") or key)
+        return JSONResponse(out)
 
     async def _presence(key: str) -> dict:
         """Who has this session open (#1931). Reading the operator's own pane counts the

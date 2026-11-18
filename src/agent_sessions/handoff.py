@@ -110,11 +110,48 @@ def seed_start_state(prov, *, present: bool) -> tuple[bool, str | None]:
     return True, None
 
 
-def handoff_target_state(prov, *, present: bool) -> tuple[bool, str | None]:
-    """``(supported, reason)`` for ``prov`` as a handoff TARGET: seedable (above) AND declaring
-    `capabilities.handoff_target`. The source for the handoff route and `/api/engines`."""
+def is_api_target(prov) -> bool:
+    """A native API client (#2141): its brief is a structured first turn, never a PTY paste."""
     from . import engines
 
+    m = engines.manifest_of(prov)
+    return m is not None and m.runtime == "api" and m.api is not None
+
+
+def target_present(prov) -> bool:
+    """Whether ``prov`` could start a session on this host right now: the same answer
+    `/api/engines` gives its tile. A console agent needs its binary; an API client runs its
+    source's binary through a contained worker, so it is present when that worker could start."""
+    from . import engines
+
+    if is_api_target(prov):
+        return engines.registry.can_start(prov)
+    return bool(engines.launchable_bin(prov))
+
+
+def handoff_target_state(prov, *, present: bool) -> tuple[bool, str | None]:
+    """``(supported, reason)`` for ``prov`` as a handoff TARGET. The source for the handoff route
+    and `/api/engines`.
+
+    A console agent: seedable (above) AND declaring `capabilities.handoff_target`. A native API
+    client (#2141): its kind is in `kinds.API_HANDOFF_READY` and it can start now. The PTY-only
+    manifest bits never apply to it; its brief is delivered as its first structured turn."""
+    from . import engines
+    from .plugins import kinds
+
+    if is_api_target(prov):
+        if not engines.is_agent(prov):
+            return False, _REASON_NOT_AGENT
+        if not kinds.API_HANDOFF_READY.get(engines.manifest_of(prov).api.kind, False):
+            return False, _REASON_NO_SEED
+        if not present:
+            reason = None
+            try:
+                reason = engines.registry.api_unavailable_reason(prov)
+            except Exception:  # noqa: BLE001 — the reason is display; "not installed" is safe
+                reason = None
+            return False, reason or _REASON_NOT_INSTALLED
+        return True, None
     ok, why = seed_start_state(prov, present=present)
     if not ok:
         return ok, why
@@ -565,6 +602,19 @@ class _Handoff:
     # of stranding one-sided provenance forever.
     target_published: bool = False  # target's handoff_from/mode/at written
     backlink_published: bool = False  # source's handoff_to written
+    # --- a native API target (#2141): the brief is the new session's first structured turn ---
+    #: The first turn's operation id, derived ONCE from the handle (`api_turn_id`) and reused by
+    #: every retry and a deferred Start. ``None`` for a console target.
+    api_turn_id: str | None = None
+    api_bypass: bool = False
+    api_archive_source: bool = False
+    #: ``None`` (not delivered yet: retryable), ``sending`` (a claim is outstanding), or a terminal
+    #: outcome: ``sent`` / ``queued`` (in the session), ``not_sent`` (recorded refusal: the pane's
+    #: Send again owns it), ``uncertain`` (never resent), ``released`` (the start was discarded).
+    api_delivery: str | None = None
+    #: The brief exactly as committed, kept after the text is dropped: a recorded refusal is
+    #: re-sent by the pane's Send again under a SUCCESSOR id, and only this text identifies it.
+    api_brief: str | None = None
 
 
 _lock = threading.Lock()
@@ -584,6 +634,10 @@ def _release_if_done_locked(h: _Handoff) -> None:
     PTY injector may legitimately wait tens of seconds for the TUI to arm bracketed paste —
     and on an injector timeout the unconsumed seed must survive for the next attach. The
     TTL sweep stays the backstop for entries that never fully settle."""
+    if h.api_turn_id is not None:
+        # An API binding stays until its TTL: a repeated commit must find it and replay the same
+        # target and outcome, never mint a second session (#2141).
+        return
     if (
         h.seed is None
         and h.spawned
@@ -698,6 +752,179 @@ def bind_target(handle: str, target_key: str) -> None:
         _BY_TARGET[target_key] = handle
 
 
+# --- native API targets (#2141) -----------------------------------------------------------------
+#
+# The brief is the first structured turn of a new API session, sent through the operator path
+# (`structured_runtime.submit_turn`), never pasted into a PTY. One binding per handle, minted at the
+# first commit and REPLAYED by every later one: the target id, the turn's operation id and the
+# options are fixed then, so a lost response, a double tap or two tabs can never create a second
+# session or send the brief twice. Duplicate prevention, not durability: the store is in memory,
+# and a broker restart loses an undelivered brief (#709).
+
+#: Namespace for the first turn's operation id (`uuid5(namespace, handle)`): a stable UUID, which
+#: the shared operation-id boundary requires (`structured_runtime._operation_id`).
+API_TURN_NAMESPACE = uuid.UUID("6a1f2c4e-2141-4b7e-9d3a-0f5c8e7b2141")
+#: Delivery outcomes after which the binding sends nothing more.
+API_SETTLED = frozenset({"sent", "queued", "not_sent", "uncertain", "released"})
+
+
+def api_turn_id(handle: str) -> str:
+    return str(uuid.uuid5(API_TURN_NAMESPACE, handle))
+
+
+def target_engine_of(handle: str) -> str:
+    """The target engine a prepared handle names (404 when unknown or expired)."""
+    with _lock:
+        _sweep_locked()
+        h = _HANDLES.get(handle)
+        if h is None:
+            raise HandoffError(404, "unknown or expired handoff handle")
+        return h.target_engine
+
+
+def _api_view_locked(h: _Handoff) -> dict:
+    native = (h.target_key or "").partition(":")[2]
+    return {
+        "id": h.target_key,
+        "engine": h.target_engine,
+        "native": native,
+        "cwd": h.cwd,
+        "api": True,
+        "bypass": h.api_bypass,
+        "delivery": h.api_delivery,
+    }
+
+
+def commit_api(handle: str, seed: str | None = None, *, bypass: bool, archive_source: bool) -> dict:
+    """Bind ``handle`` to a new API session id (pinned UUID) and its first turn's operation id, or
+    REPLAY the binding a previous commit made. A replay with other options is a 409: the first
+    commit fixed them. ``seed`` is the edited preview, re-sanitized like :func:`commit`'s."""
+    edited = sanitize_seed(seed) if seed is not None else None
+    with _lock:
+        _sweep_locked()
+        h = _HANDLES.get(handle)
+        if h is None:
+            raise HandoffError(404, "unknown or expired handoff handle")
+        if h.target_key is not None:
+            if h.api_turn_id is None:
+                raise HandoffError(409, "handoff already committed")
+            if h.api_bypass != bypass or h.api_archive_source != archive_source:
+                raise HandoffError(409, "this handoff was already committed with other options")
+            if edited is not None and h.api_delivery is None and edited != h.seed:
+                raise HandoffError(409, "this handoff was already committed with another brief")
+            h.created_at = time.monotonic()
+            return _api_view_locked(h)
+        if edited is not None:
+            h.seed = edited
+            h.mode = f"{h.mode}+edited" if not h.mode.endswith("+edited") else h.mode
+        h.target_key = f"{h.target_engine}:{uuid.uuid4()}"
+        h.api_turn_id = api_turn_id(handle)
+        h.api_brief = h.seed
+        h.api_bypass = bypass
+        h.api_archive_source = archive_source
+        h.created_at = time.monotonic()
+        _BY_TARGET[h.target_key] = handle
+        return _api_view_locked(h)
+
+
+def api_binding(target_key: str) -> dict | None:
+    """The API binding for ``target_key`` (its view plus the source), or None."""
+    with _lock:
+        _sweep_locked()
+        h = _entry_locked(target_key)
+        if h is None or h.api_turn_id is None:
+            return None
+        return {
+            **_api_view_locked(h),
+            "source_key": h.source_key,
+            "archive_source": h.api_archive_source,
+        }
+
+
+def api_touch(target_key: str) -> None:
+    """A full TTL again (a deferred Start): the brief must still be there when it runs."""
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is not None and h.api_turn_id is not None:
+            h.created_at = time.monotonic()
+
+
+def api_claim(target_key: str) -> tuple[str, str] | None:
+    """``(seed, operation_id)`` for the ONE delivery attempt allowed now, or None (nothing bound,
+    already settled, or another attempt is outstanding)."""
+    with _lock:
+        _sweep_locked()
+        h = _entry_locked(target_key)
+        if h is None or h.api_turn_id is None or h.seed is None or h.api_delivery is not None:
+            return None
+        h.api_delivery = "sending"
+        return h.seed, h.api_turn_id
+
+
+def api_settle(target_key: str, outcome: str) -> None:
+    """Settle the outstanding attempt. ``retry``: refused before any claim, nothing recorded, so
+    the brief stays bound and the next attempt uses the same operation id. Any outcome in
+    `API_SETTLED` drops the text: nothing can send it again under this binding."""
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None or h.api_turn_id is None:
+            return
+        if outcome == "retry":
+            if h.api_delivery == "sending":
+                h.api_delivery = None
+            return
+        if outcome not in API_SETTLED:
+            raise ValueError(f"unknown API handoff outcome: {outcome!r}")
+        h.api_delivery = outcome
+        h.seed = None
+        if outcome == "not_sent":
+            # A full TTL for the pane's Send again to be reconciled (`api_successor_accepted`).
+            h.created_at = time.monotonic()
+
+
+def api_successor_accepted(
+    target_key: str, operation_id: str, text: str, code: str | None
+) -> str | None:
+    """A submit to ``target_key`` was accepted with ``code``. When it is the brief's own Send
+    again after a recorded refusal (another operation id, the exact committed text), settle the
+    binding ``sent`` / ``queued`` ONCE and return that outcome, so the caller completes what the
+    original delivery would have (provenance; the archive only on ``sent``). Anything else, an
+    uncertain result included, returns None and changes nothing."""
+    if code not in ("sent", "queued"):
+        return None
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None or h.api_turn_id is None or h.api_delivery != "not_sent":
+            return None
+        if operation_id == h.api_turn_id or text != h.api_brief:
+            return None
+        h.api_delivery = code
+        return code
+
+
+def api_blocks(target_key: str, operation_id: str) -> bool:
+    """THE SEED-FIRST FENCE (#2141): True while ``target_key`` holds a bound brief that has not
+    been sent or recorded, and ``operation_id`` is not that brief's own. Every structured submit
+    asks this before anything durable, so the brief is always the session's first turn."""
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None or h.api_turn_id is None or h.seed is None:
+            return False
+        if h.api_delivery not in (None, "sending"):
+            return False
+        return operation_id != h.api_turn_id
+
+
+def api_mark_accepted(target_key: str) -> None:
+    """The brief is in the session: publish provenance as a console target's spawn gate does."""
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None:
+            return
+        h.spawned = True
+    _publish(target_key)
+
+
 def has_pending_seed(target_key: str) -> bool:
     """True while a committed-but-unredeemed seed exists for ``target_key`` (cheap check the
     ws route uses to decide whether to hand ``webterm.run`` a seed source)."""
@@ -705,7 +932,8 @@ def has_pending_seed(target_key: str) -> bool:
         _sweep_locked()
         handle = _BY_TARGET.get(target_key)
         h = _HANDLES.get(handle) if handle else None
-        return bool(h and h.seed is not None)
+        # An API binding's brief is a structured turn (#2141), never a PTY seed.
+        return bool(h and h.seed is not None and h.api_turn_id is None)
 
 
 def claim_seed(target_key: str) -> str | None:
@@ -725,7 +953,7 @@ def claim_seed_guarded(target_key: str) -> tuple[str, bool] | None:
     with _lock:
         _sweep_locked()
         h = _entry_locked(target_key)
-        if h is None or h.seed is None or h.seed_claimed:
+        if h is None or h.seed is None or h.seed_claimed or h.api_turn_id is not None:
             return None
         h.seed_claimed = True
         h.seed_claims += 1

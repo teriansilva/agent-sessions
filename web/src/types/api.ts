@@ -2724,6 +2724,15 @@ export interface HandoffCommitted {
   engine: string;
   native: string;
   cwd: string;
+  /** An API target (#2141): the brief is the new session's first structured turn, sent by the
+   *  server. `delivery`: `sent` / `queued` (it is in the session), `not_sent` (the pane's Send
+   *  again owns it), `uncertain` (never resent), `pending_start` (a skip session: the client
+   *  starts it, the server sends the brief once it is ready), `released`, or null with `detail`
+   *  (not taken yet: commit the same handle again). Absent for a console target. */
+  api?: boolean;
+  bypass?: boolean;
+  delivery?: "sent" | "queued" | "not_sent" | "uncertain" | "pending_start" | "released" | null;
+  detail?: string;
 }
 
 /** One entry from GET /api/files/list (#783). `kind` is the entry's OWN kind (lstat), so a

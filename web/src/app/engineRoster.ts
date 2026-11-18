@@ -316,9 +316,8 @@ export function isAgent(id: string): boolean {
 /** May this engine be offered as a handoff target? (The server re-checks.) */
 export function canBeHandoffTarget(id: string): boolean {
   const e = byId.get(id);
-  return (
-    !!e && e.capabilities.handoff_target && e.supports_seed_start && isActive(e)
-  );
+  // The server's one answer (#2141): an API client is a target without the PTY-only manifest bit.
+  return !!e && e.supports_seed_start === true && isActive(e);
 }
 
 /** Does this engine mint its own id, so a new session launches under a `new-<uuid>` placeholder
@@ -484,7 +483,7 @@ export type EngineAction = "new" | "handoff";
 export function eligibleFor(e: EngineInfo, action: EngineAction): boolean {
   if (!isActive(e)) return false;
   if (action === "new") return e.present && e.supports_new;
-  return e.capabilities.handoff_target && e.supports_seed_start;
+  return e.supports_seed_start === true; // the server's answer, API clients included (#2141)
 }
 
 export interface DefaultChoice {
