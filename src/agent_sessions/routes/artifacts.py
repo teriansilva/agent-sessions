@@ -117,6 +117,33 @@ def _listing_page(aid: str, files: list[dict]) -> Response:
     return HTMLResponse(body, headers=SANDBOX_HEADERS)
 
 
+#: A browser opening a page (top level or in a frame) says so in ``Sec-Fetch-Dest``.
+_PAGE_DESTS = frozenset({"document", "iframe", "frame"})
+
+
+def _media_page(name: str, media: str) -> Response:
+    """An audio or video file opened AS A PAGE gets a one-element player, not the bare bytes.
+
+    A bare media file becomes the browser's own media document, and its player re-fetches the file
+    from that document's origin. Under ``CSP: sandbox`` that origin is ``null``, and Chrome 157
+    makes that re-fetch in CORS mode, so with no ``Access-Control-Allow-Origin`` it is blocked and
+    nothing plays. A plain ``<audio>``/``<video>`` element fetches without CORS (as in any hosted
+    site), which an opaque origin may do. Answering ``Allow-Origin: null`` instead would open the
+    file to every sandboxed page anywhere, so the player page it is. The element's own request is
+    not a page (``Sec-Fetch-Dest: audio``/``video``) and gets the bytes."""
+    tag = "video" if media.startswith("video/") else "audio"
+    src = html.escape(quote(name))
+    body = (
+        f'<!doctype html><meta charset="utf-8"><title>{html.escape(name)}</title>'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<style>html,body{margin:0;height:100%;background:#000}"
+        "body{display:grid;place-items:center}"
+        "audio{width:min(640px,92vw)}video{max-width:100%;max-height:100vh}</style>"
+        f'<{tag} controls playsinline preload="metadata" src="{src}"></{tag}>'
+    )
+    return HTMLResponse(body, headers={**SANDBOX_HEADERS, "Vary": "Sec-Fetch-Dest"})
+
+
 async def _serve(aid: str, rel: str, revision: int | None, request: Request) -> Response:
     try:
         served = await asyncio.to_thread(artifact_store.resolve, aid, rel, revision=revision)
@@ -133,6 +160,10 @@ async def _serve(aid: str, rel: str, revision: int | None, request: Request) -> 
         media = "application/octet-stream"
     else:
         media = served.type
+        if media.startswith(("audio/", "video/")):
+            if request.headers.get("sec-fetch-dest") in _PAGE_DESTS:
+                return _media_page(served.name, media)
+            headers["Vary"] = "Sec-Fetch-Dest"
     return FileResponse(served.blob, media_type=media, headers=headers)
 
 

@@ -586,6 +586,47 @@ def test_every_hosted_response_is_sandboxed(client, auth_cfg, origin, proj):
         assert "cross-origin-resource-policy" not in r.headers
 
 
+def test_a_media_file_opened_as_a_page_is_a_player_and_its_element_gets_the_bytes(
+    client, auth_cfg, origin, proj
+):
+    """Chrome 157's own media document re-fetches the file in CORS mode from the sandbox's `null`
+    origin and is blocked; a page-load of audio/video answers a player whose element fetches
+    without CORS. Never `Access-Control-Allow-Origin` (it would open the file to any sandbox)."""
+    mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb" * 64
+    site(proj / "media", {"song one.mp3": mp3, "clip.mp4": b"\x00\x00\x00\x18ftypmp42"})
+    a = artifact_store.publish(origin, {"path": "media/song one.mp3", "title": "S", "why": "w"})
+    b = artifact_store.publish(origin, {"path": "media", "title": "M", "why": "w"})
+    _login(client, auth_cfg)
+    loc = client.get(f"/artifacts/{a['id']}/", follow_redirects=False).headers["location"]
+    for dest in ("document", "iframe"):
+        page = client.get(loc, headers={"Sec-Fetch-Dest": dest})
+        assert page.headers["content-type"].startswith("text/html")
+        assert '<audio controls playsinline preload="metadata" src="song%20one.mp3">' in page.text
+        assert "allow-same-origin" not in page.headers["content-security-policy"]
+        assert page.headers["vary"] == "Sec-Fetch-Dest"
+        assert "access-control-allow-origin" not in page.headers
+    # The element's own request (relative to the page) and a dest-less client get the file.
+    for headers in ({"Sec-Fetch-Dest": "audio"}, {}):
+        raw = client.get(loc + "song%20one.mp3", headers=headers)
+        assert raw.content == mp3 and raw.headers["content-type"] == "audio/mpeg"
+        assert raw.headers["vary"] == "Sec-Fetch-Dest"
+        assert "access-control-allow-origin" not in raw.headers
+    ranged = client.get(
+        loc + "song%20one.mp3", headers={"Sec-Fetch-Dest": "audio", "Range": "bytes=0-1"}
+    )
+    assert ranged.status_code == 206 and ranged.content == mp3[:2]
+    # A video inside a site: the player is a <video>, its src the file's own name.
+    loc_b = client.get(f"/artifacts/{b['id']}/", follow_redirects=False).headers["location"]
+    page = client.get(loc_b + "clip.mp4", headers={"Sec-Fetch-Dest": "document"})
+    assert '<video controls playsinline preload="metadata" src="clip.mp4">' in page.text
+    # Everything else is served as before, whatever the destination.
+    (proj / "n.txt").write_text("plain")
+    t = artifact_store.publish(origin, {"path": "n.txt", "title": "T", "why": "w"})
+    loc_t = client.get(f"/artifacts/{t['id']}/", follow_redirects=False).headers["location"]
+    r = client.get(loc_t, headers={"Sec-Fetch-Dest": "document"})
+    assert r.text == "plain" and "vary" not in r.headers
+
+
 def test_a_path_is_looked_up_never_joined(client, auth_cfg, origin, proj):
     a = _published(origin, proj)
     _login(client, auth_cfg)
