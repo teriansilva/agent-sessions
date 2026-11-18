@@ -22,6 +22,7 @@
  *  keeps it one tap away on a phone once the cluster collapses into the drawer).
  */
 import {
+  Bell,
   BookMarked,
   Brain,
   Braces,
@@ -88,6 +89,9 @@ export interface Subsection {
   Icon: LucideIcon;
   /** `null` for the session view, whose target is whichever session path was last on screen. */
   to: string | null;
+  /** A live count the sub-menu draws beside the label (#2146): `notifications` is the bell's
+   *  unread count, from the same store the badge reads. */
+  count?: "notifications";
 }
 
 export interface Section {
@@ -102,11 +106,13 @@ export interface Section {
   beta?: boolean;
 }
 
-/** Shared by shell navigation and the page's HQ view switcher. */
+/** HQ's views (#2037), switched from the top bar's HQ sub-menu (a bottom sheet on a phone) — the
+ *  only switcher since the in-page strip went (#2146). `dispatches` keeps its id (a wire key shared
+ *  with the server's screen directives); the view it names is Notifications, at the same URL. */
 export const HQ_VIEWS: Subsection[] = [
   { id: "hq", label: "Conversations", Icon: Crosshair, to: HQ_PATH },
   { id: "missions", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
-  { id: "dispatches", label: "Dispatches", Icon: FileText, to: HQ_DISPATCHES_PATH },
+  { id: "dispatches", label: "Notifications", Icon: Bell, to: HQ_DISPATCHES_PATH, count: "notifications" },
 ];
 
 export const SECTIONS: Section[] = [

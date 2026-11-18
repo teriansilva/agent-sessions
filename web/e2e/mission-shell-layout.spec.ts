@@ -158,8 +158,9 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
 
     await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
+    // The rail's own heading (the page's h1 also says Missions since #2146).
     await expect(
-      page.getByRole("heading", { name: "Missions" }),
+      page.getByRole("complementary").getByRole("heading", { name: "Missions" }),
     ).toBeAttached();
     await expect(page.getByRole("heading", { name: "Sessions" })).toHaveCount(
       0,

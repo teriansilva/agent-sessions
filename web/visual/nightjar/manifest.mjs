@@ -280,6 +280,43 @@ const CHECKLISTS_CONFIG = {
 };
 
 /** Artifacts (#1932 P2): the board 1–5 sample, over the promo fixtures' sessions and missions. */
+// HQ // Notifications (#2146): the bell's rows joined with HQ's dispatches by event tag.
+const HQN_NOW = Math.floor(Date.now() / 1000);
+const HQN_SID = "claude:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4001";
+const HQN_TAG1 = `needs-you:${HQN_SID}:1`;
+const HQN_TAG2 = "automation:nightly:r7";
+const HQN_TAG3 = `needs-you:claude:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4002:3`;
+const HQN_BID = "d_00000000000000a1";
+const HQN_LINE = "Two things want you: a release session is waiting for approval to tag, and the nightly audit failed again on a Forgejo timeout.";
+const HQN_DISPATCH = { id: HQN_BID, line: HQN_LINE, by: "Gen. Vidal", bundled: 3 };
+const HQ_NOTIFY_API = {
+  "/api/pulse/notifications": {
+    notifications: [
+      { id: "n1", ts: HQN_NOW - 120, read: false, title: "Tag v0.31.3 and push to origin?", project: "BattleLab", reason: "Waiting for your approval", session_id: HQN_SID, engine: "claude", action_id: "", needs_you: true, dispatch: { ...HQN_DISPATCH, tag: HQN_TAG1 } },
+      { id: "n2", ts: HQN_NOW - 300, read: true, title: "Automation failed: Nightly dependency audit", project: "", reason: "failed: the Forgejo API timed out after 60 s", session_id: "", engine: "", action_id: HQN_TAG2, dispatch: { ...HQN_DISPATCH, tag: HQN_TAG2 } },
+      { id: "n3", ts: HQN_NOW - 1500, read: false, title: "“CI green on main” has not moved in 40 minutes and the session is idle", project: "acme-app", reason: "mission supervisor", session_id: HQN_SID, engine: "claude", action_id: "", escalation: true },
+    ],
+    unread: 2,
+    uncertain: 0,
+    settled: [],
+  },
+  "/api/hq/dispatches": {
+    new: 1,
+    unreadable: false,
+    dispatches: [
+      {
+        id: HQN_BID, at: HQN_NOW - 60, opened_at: HQN_NOW - 180, line: HQN_LINE,
+        contact: "General Claire Vidal", by: "Gen. Vidal",
+        members: [
+          { class: "needs you", title: "Tag v0.31.3 and push to origin?", reason: "Waiting for your approval", link: "/s/claude/7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4001", ts: HQN_NOW - 120, tag: HQN_TAG1 },
+          { class: "automation failed", title: "Automation failed: Nightly dependency audit", reason: "failed: the Forgejo API timed out after 60 s", link: "/mission/automations/nightly", ts: HQN_NOW - 300, tag: HQN_TAG2 },
+          { class: "needs you", title: "In-place or blue/green for the Postgres 17 migration?", reason: "Asks you to choose", link: "/s/claude/7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4002", ts: HQN_NOW - 400, tag: HQN_TAG3 },
+        ],
+      },
+    ],
+  },
+};
+
 const ART_NOW = Math.floor(Date.now() / 1000);
 const ART_ORIGIN = (session_key, engine, mission_id = null) => ({ engine, session_key, cwd: "/home/commander/code/orbital-api", project_id: "p-orbital", mission_id });
 const ART = (id, kind, title, why, rev, entry, files, bytes, ageS, extra = {}) => ({
@@ -598,6 +635,10 @@ export const SWEEP = [
   { id: "route:hq", path: "/hq", present: "[data-testid='hq-page']" },
   { id: "headers:hq-views", path: "/hq", open: [{ role: "button", name: "HQ menu" }], expect: "menu" },
   { id: "route:hq-missing", path: "/hq/c/not-a-conversation", present: "[data-testid='hq-missing']" },
+  // HQ // Notifications (#2146): a bundle HQ wrote about (two live rows, one member no longer in
+  // the bell), a row on its own, and the view opened from a /hq/d/<id> link (LINKED).
+  { id: "route:hq-notifications", path: "/hq/d", api: HQ_NOTIFY_API, present: "[data-testid='notifications-feed']", fullPage: true },
+  { id: "route:hq-notifications-linked", path: "/hq/d/d_00000000000000a1", api: HQ_NOTIFY_API, present: "[data-testid='hq-dispatch-linked']", fullPage: true },
   // ---- PR3 dashboard ----
   // Phase 5's dashboard states: every first read in flight (Acquiring), two reads that failed
   // (a dash and the words, never a zero), and Recent work opened (the grid-rows disclosure).

@@ -2,7 +2,7 @@
 import { ASK_CID_RE, HQ_DISPATCH_ID_RE, HQ_DISPATCHES_PATH, HQ_PATH } from "../../lib/routes";
 
 /** The route as the page reads it: the list (`/hq`), one conversation (`/hq/c/<id>`), the
- *  Dispatches (`/hq/d`, or `/hq/d/<id>` linked to one, #1837), or a path that names nothing the
+ *  Notifications view (`/hq/d`, or `/hq/d/<id>` linked to one bundle; #1837, #2146), or a path that names nothing the
  *  page can open. A malformed id is decided HERE, so it asks the server nothing: a malformed
  *  dispatch id is `dispatches` with `id: null` and `malformed`, the view's own "isn't here". */
 export type HqTarget =

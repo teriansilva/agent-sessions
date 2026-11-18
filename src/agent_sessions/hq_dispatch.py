@@ -1193,6 +1193,8 @@ def _new_count(doc: dict) -> int:
 
 
 def _entry(doc: dict, bid: str, secrets: list[str] | None, routes_doc: dict | None = None) -> dict:
+    from . import notifications
+
     rec = doc["bundles"][bid]
     line = doc["lines"][bid]
     members = []
@@ -1206,6 +1208,10 @@ def _entry(doc: dict, bid: str, secrets: list[str] | None, routes_doc: dict | No
                 "reason": _guard(d.get("reason"), REASON_MAX, secrets),
                 "link": link if _valid_link(link) else "",
                 "ts": float(d["ts"]) if _num(d.get("ts")) else 0.0,
+                # The member's event tag (#2146), read-only: the key the Notifications view joins
+                # a live bell row on. Built from ids this entry's links already carry; one that is
+                # not a valid dispatch tag is never echoed.
+                "tag": tag if notifications.valid_dispatch_tag(tag) else "",
             }
         )
     contact = str(line.get("contact") or "HQ")
@@ -1276,8 +1282,10 @@ def mark_seen(through: object, path: Path | None = None) -> dict:
 
 def join_listing(out: dict, path: Path | None = None) -> dict:
     """The bell's listing with HQ's line joined into each row as ``dispatch: {id, line, by,
-    bundled}`` — only for a written bundle. A row's stored tag never reaches the client, and an
-    unreadable dispatch store shows the rows without lines, never an error."""
+    bundled, tag}`` — only for a written bundle. ``tag`` (#2146) is the row's own stored event tag,
+    read-only, the key the Notifications view matches against the bundle's member tags; a row
+    whose bundle is not written carries no ``dispatch`` at all. An unreadable dispatch store shows
+    the rows without lines, never an error."""
     try:
         doc: dict | None = _read_strict(path)
     except Exception:  # noqa: BLE001 — fail soft: rows without lines
@@ -1299,6 +1307,7 @@ def join_listing(out: dict, path: Path | None = None) -> dict:
                 "line": _guard(line.get("text"), LINE_MAX, secrets),
                 "by": _short(contact),
                 "bundled": len(doc["bundles"][bid]["members"]),
+                "tag": tag,
             }
         return r
 

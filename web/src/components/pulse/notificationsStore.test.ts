@@ -13,6 +13,7 @@ import {
   type NotificationsAnswer,
   getNotifications,
   mutateNotifications,
+  refreshNotifications,
   subscribeNotifications,
 } from "./notificationsStore";
 
@@ -67,5 +68,52 @@ test("a failed action rejects, so the bell keeps what it shows", async () => {
   await flush();
   await expect(mutateNotifications(() => Promise.reject(new Error("500")), true)).rejects.toThrow();
   expect(getNotifications().unread).toBe(1);
+  leave();
+});
+
+test("a failed read keeps the last good list and says so; the next good read clears it (#2146)", async () => {
+  vi.mocked(api.notifications).mockRejectedValueOnce(new Error("offline"));
+  const leave = subscribeNotifications(() => {});
+  await flush();
+  // Never read: unknown, not "nothing".
+  expect(getNotifications()).toMatchObject({ loaded: false, failed: true, items: [] });
+  vi.mocked(api.notifications).mockResolvedValue({ notifications: [row("a")], unread: 1 });
+  await refreshNotifications();
+  expect(getNotifications()).toMatchObject({ loaded: true, failed: false, unread: 1 });
+  vi.mocked(api.notifications).mockRejectedValue(new Error("500"));
+  await refreshNotifications();
+  expect(getNotifications()).toMatchObject({ loaded: true, failed: true, unread: 1 });
+  expect(getNotifications().items.map((n) => n.title)).toEqual(["a"]);
+  leave();
+  expect(getNotifications()).toMatchObject({ loaded: false, failed: false });
+});
+
+test("an older read never overrides a newer one's result, in either order (Hermes 8458)", async () => {
+  // Older success after a newer failure: the failure stands, and no all-clear comes back.
+  const first = deferred();
+  vi.mocked(api.notifications).mockReturnValueOnce(first.promise);
+  const leave = subscribeNotifications(() => {}); // read #1, held
+  await flush();
+  vi.mocked(api.notifications).mockRejectedValueOnce(new Error("500"));
+  await refreshNotifications(); // read #2 fails first
+  expect(getNotifications()).toMatchObject({ failed: true, loaded: false });
+  first.resolve({ notifications: [], unread: 0 });
+  await flush();
+  expect(getNotifications()).toMatchObject({ failed: true, loaded: false });
+
+  // Older failure after a newer success: the success stands.
+  let rejectOld: (e: Error) => void = () => {};
+  vi.mocked(api.notifications).mockReturnValueOnce(
+    new Promise<NotificationsAnswer>((_r, rej) => (rejectOld = rej)),
+  );
+  const older = refreshNotifications(); // read #3, held
+  await flush();
+  vi.mocked(api.notifications).mockResolvedValueOnce({ notifications: [row("b")], unread: 1 });
+  await refreshNotifications(); // read #4 succeeds
+  expect(getNotifications()).toMatchObject({ failed: false, loaded: true, unread: 1 });
+  rejectOld(new Error("offline"));
+  await older;
+  expect(getNotifications()).toMatchObject({ failed: false, loaded: true, unread: 1 });
+  expect(getNotifications().items.map((n) => n.title)).toEqual(["b"]);
   leave();
 });

@@ -78,7 +78,7 @@ export const SCREEN_SECTIONS: Record<string, ScreenSection> = {
   dashboard: { label: "Dashboard", to: DASHBOARD_PATH },
   hq: { label: "HQ", to: HQ_PATH },
   missions: { label: "Missions", to: MISSION_PATH },
-  dispatches: { label: "Dispatches", group: "HQ", to: HQ_DISPATCHES_PATH },
+  dispatches: { label: "Notifications", group: "HQ", to: HQ_DISPATCHES_PATH },
   sessions: { label: "New session", group: "Sessions", to: SESSIONS_PATH },
   map: { label: "Sessions map", to: MAP_PATH },
   templates: { label: "Prompt Templates", group: "Library", to: TEMPLATES_PATH },

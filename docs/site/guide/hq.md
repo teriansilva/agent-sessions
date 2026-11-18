@@ -3,7 +3,9 @@
 **Ask is now HQ** (#1525): the same sidebar and conversations under a new name, now with a face.
 
 **HQ** answers questions about your work from the transcripts and missions this install can already
-see. The **HQ** section opens Conversations; its menu also opens **Missions** and **Dispatches**.
+see. The **HQ** section opens Conversations; its menu (the chevron beside **HQ** in the top bar, a
+bottom sheet on a phone) also opens **Missions**, **Notifications** and the other HQ views. Each
+view is its own page with its own header; there is no button row inside HQ to switch between them.
 The speech-bubble icon beside the notification bell (labelled **HQ**) opens the conversation sidebar
 from any page. The [Dashboard](/guide/dashboard)'s
 **primary HQ contact** card opens the same sidebar. **Enter** sends; **Shift+Enter** starts a new
@@ -97,7 +99,29 @@ conversation that was deleted, or that never existed, says **This conversation i
   back to the list.
 - Old `/ask` links open the HQ page on a new conversation.
 
-## Dispatches
+## Notifications {#notifications}
+
+**HQ → Notifications** (`/hq/d`) is every notification in one list, newest first, with HQ's
+**dispatch** lines (below) placed at the head of the events they cover. It replaces the separate
+Dispatches list: each event appears once.
+
+- **The rows are the bell's rows**, with the same facts and actions: project, agent, age, **Open**,
+  and ✕ to dismiss (a dismiss deletes the row, as in the bell). Each row says what kind of event it
+  is: **Needs you**, **Escalated** or **Failed**.
+- **Filters:** All · Unread · Needs you · Escalations · Automations, each with its count. The unread
+  count is the bell's; it also shows on **Notifications** in the HQ menu.
+- **Mark all read** marks the bell's rows read. **Clear all** asks first (in place, there is no
+  undo) and clears the **bell's rows only**: HQ's lines stay. Opening the view refreshes the list
+  but never marks anything read.
+- **No longer in the bell.** An event HQ wrote about whose bell row is gone (dismissed, cleared,
+  retracted, or pushed out of the bell's last 200) is still listed under HQ's line, from what HQ
+  kept of it, marked *No longer in the bell*, with its **Open**. It is never unread, and Mark all
+  read and Clear all don't touch it.
+- If the notifications can't be read, the view says **Couldn't read the notifications** with
+  **Retry**, never "nothing needs you". If HQ's lines can't be read, every row still shows,
+  ungrouped. *Recent decisions* stays a closed section at the bottom.
+
+## Dispatches {#dispatches}
 
 HQ writes **one short line about each notification**, as your [HQ contact](#hq-contacts), so the
 bell says what happened in a voice and not only in fixed text. It covers three kinds of event: a
@@ -112,17 +136,17 @@ session that **needs you**, a **mission escalation**, and an **automation failur
   how long ago, and the mission or automation's own name. Never a notification's text, a session's
   content or a run's reason. The line is at most **240** characters; a longer, empty or refused
   answer writes nothing, and a line that looks like a credential is withheld.
-- **In the bell**, the line sits under the row's own text, labelled with who wrote it (*Gen. Okafor
-  wrote · 1 of 3 events* for a bundle), with **In HQ →** to the dispatch. The row's **Open** goes
-  where it always did.
-- **On the HQ page**, a pinned **Dispatches** entry sits above your conversations once there is
-  one, with **N new** since you last opened it. It opens the dispatches, newest last, each with
-  its events and their own **Open** links (a session, a mission, or an automation's run history).
-  Each dispatch has its own address, `/hq/d/…`; opened from a link it is scrolled into view and
-  marked **LINKED**. A dispatch that was pruned, or a link HQ didn't make, says **This dispatch
-  isn't here**.
-- Dispatches are **read only**: to talk about one, ask in a conversation. They are kept for **30
-  days** (at most **2,000**). Written dispatches stay readable while HQ isn't set up.
+- **In the bell**, the rows one line covers sit together, and the line follows them **once**,
+  labelled with who wrote it (*Gen. Okafor wrote · 3 events*), with **In HQ →** to those events in
+  [Notifications](#notifications). The row's **Open** goes where it always did, and **All
+  notifications →** at the foot of the bell opens the whole list.
+- **In HQ → Notifications**, the line heads its events, signed by the contact. Each dispatch has
+  its own address, `/hq/d/…` (pushes and connector messages link there); opened from a link, the
+  view scrolls to it and marks it **LINKED**. A dispatch that was pruned, or a link HQ didn't make,
+  says **This dispatch isn't here**.
+- Dispatches are **read only**: to talk about one, ask in a conversation. They are kept for up to
+  **30 days**, and at most **2,000** are kept, whichever limit comes first. Written dispatches stay
+  readable while HQ isn't set up.
 
 ## The sidebar
 
@@ -526,7 +550,7 @@ sent later.
 edited: the line gains a ✓, and the message reads "✓ resolved" once everything in it is handled.
 Mail can't be taken back, so a mail stays as it was. A message is never sent twice: if BattleLab
 can't tell whether one arrived, it says **Not confirmed** and doesn't send it again. **Recent**
-lists what was sent and skipped, and the Dispatches view says where each dispatch's events went
+lists what was sent and skipped, and HQ → Notifications says where each dispatch's events went
 ("Telegram · sent · ✓ resolved").
 
 Notifications need `AGENT_SESSIONS_ORIGIN` set, because every link starts with it. The API:

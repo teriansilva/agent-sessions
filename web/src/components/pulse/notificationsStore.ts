@@ -29,9 +29,21 @@ export interface NotificationsState {
   settled: PulseNotification[];
   /** Unread escalations whose ledger state could not be established (#852 rule 5). */
   uncertain: number;
+  /** A read has succeeded since the poll started: `items` is an answer, not the empty start. */
+  loaded: boolean;
+  /** The NEWEST read failed (#2146). What is shown is still the last good answer; the bell keeps
+   *  drawing it, the Notifications view says it couldn't read and offers Retry. */
+  failed: boolean;
 }
 
-const EMPTY: NotificationsState = { items: [], unread: 0, settled: [], uncertain: 0 };
+const EMPTY: NotificationsState = {
+  items: [],
+  unread: 0,
+  settled: [],
+  uncertain: 0,
+  loaded: false,
+  failed: false,
+};
 
 /** The fields a server answer carries; a mutation's answer may omit the settled window. */
 export interface NotificationsAnswer {
@@ -47,6 +59,12 @@ const listeners = new Set<() => void>();
  *  not applied. */
 let gen = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
+/** Reads are numbered when they START; a completion (success or failure) applies only if no read
+ *  that started later has already completed (Hermes 8458). The generation fences sessions; this
+ *  fences overlapping reads inside one: an older empty success can never erase a newer failure and
+ *  bring the all-clear back, and an older failure never marks a newer success failed. */
+let readSeq = 0;
+let settledSeq = 0;
 
 function emit(): void {
   for (const fn of listeners) fn();
@@ -56,7 +74,14 @@ function emit(): void {
  *  the others (mark read, dismiss one) leave it, as the bell always did. */
 function apply(r: NotificationsAnswer, full: boolean): void {
   state = full
-    ? { items: r.notifications, unread: r.unread, settled: r.settled ?? [], uncertain: r.uncertain ?? 0 }
+    ? {
+        items: r.notifications,
+        unread: r.unread,
+        settled: r.settled ?? [],
+        uncertain: r.uncertain ?? 0,
+        loaded: true,
+        failed: false,
+      }
     : { ...state, items: r.notifications, unread: r.unread };
   emit();
 }
@@ -91,13 +116,28 @@ function reconcileDevice(closeTags: string[] | undefined) {
 
 function read(poll: boolean): Promise<void> {
   const g = gen;
+  const mine = ++readSeq;
+  /** Whether this completion is still the newest: claims the slot when it is. */
+  const newest = () => {
+    if (g !== gen || listeners.size === 0 || mine <= settledSeq) return false;
+    settledSeq = mine;
+    return true;
+  };
   return Promise.resolve()
     .then(() => api.notifications())
-    .then((r) => {
-      if (g !== gen || listeners.size === 0) return;
-      apply(r, true);
-      if (poll) reconcileDevice(r.close_tags);
-    })
+    .then(
+      (r) => {
+        if (!newest()) return;
+        apply(r, true);
+        if (poll) reconcileDevice(r.close_tags);
+      },
+      () => {
+        // Keep what is shown; only say the newest read failed (#2146).
+        if (!newest() || state.failed) return;
+        state = { ...state, failed: true };
+        emit();
+      },
+    )
     .catch(() => undefined);
 }
 

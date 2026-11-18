@@ -128,35 +128,53 @@ test("an unreadable policy disables its editor until a successful reload", async
   expect(f.saves[0].body.revision).toBe("mission-readable");
 });
 
-test("HQ opens Missions and legacy mission links keep the HQ navigation", async ({ page }) => {
+test("HQ has no in-page view strip; every HQ view is reachable from the top bar's HQ sub-menu (#2146)", async ({ page, isMobile }) => {
   await fixture(page);
+  await page.route("**/api/pulse/notifications", (r) =>
+    r.fulfill({ json: { notifications: [], unread: 3, uncertain: 0, settled: [] } }));
+  await page.route(/\/api\/hq\/dispatches$/, (r) => r.fulfill({ json: { dispatches: [], new: 0, unreadable: false } }));
   await page.goto("/hq");
-  await page.getByRole("navigation", { name: "HQ views" }).getByRole("link", { name: "Missions", exact: true }).click();
-  await expect(page).toHaveURL(/\/mission$/);
-  await expect(page.getByRole("navigation", { name: "HQ views" })).toBeVisible();
+  await expect(page.getByTestId("hq-page")).toBeVisible();
+  const views = [
+    ["Conversations", /\/hq$/, "hq-page"],
+    ["Missions", /\/mission$/, null],
+    ["Notifications", /\/hq\/d$/, "hq-notifications"],
+    ["Conversations", /\/hq$/, "hq-list"],
+  ] as const;
+  for (const [name, url, testId] of views) {
+    await page.locator(".hud-topbar").getByRole("button", { name: "HQ menu" }).click();
+    const menu = page.getByRole("menu", { name: "HQ menu" });
+    // Desktop: the anchored popover; a phone: AnchoredMenu's bottom sheet (the drawer holds sessions only).
+    const panel = page.getByTestId("section-menu-mission-panel");
+    if (isMobile) await expect(panel).toHaveAttribute("data-sheet", "");
+    else await expect(panel).not.toHaveAttribute("data-sheet");
+    const items = menu.getByRole("menuitem");
+    expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute("href")))).toEqual(["/hq", "/mission", "/hq/d"]);
+    // The unread count rides on Notifications, in words for assistive tech.
+    await expect(menu.getByRole("menuitem", { name: /^Notifications\W*3 unread$/ })).toBeVisible();
+    if (isMobile)
+      for (const box of await items.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height)))
+        expect(box).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    await menu.getByRole("menuitem", { name: new RegExp(`^${name}`) }).click();
+    await expect(page).toHaveURL(url);
+    if (testId) await expect(page.getByTestId(testId)).toBeVisible();
+    // No view strip anywhere: the sub-menu is the only switcher.
+    await expect(page.getByRole("navigation", { name: "HQ views" })).toHaveCount(0);
+  }
+  // Each view says which one it is.
+  await page.goto("/mission");
+  await expect(page.getByRole("heading", { level: 1, name: "Missions" })).toBeVisible();
+  await expect(page.getByText("HQ // Missions")).toBeVisible();
+  await page.goto("/hq/d");
+  await expect(page.getByRole("heading", { level: 1, name: "Notifications" })).toBeVisible();
+  await expect(page.getByText("HQ // Notifications")).toBeVisible();
+  // The old pinned Dispatches entry above the conversations is gone too.
+  await page.goto("/hq");
+  await expect(page.getByTestId("hq-list")).toBeVisible();
+  await expect(page.getByTestId("hq-dispatches-entry")).toHaveCount(0);
   await page.goto("/pulse");
   await expect(page).toHaveURL(/\/mission$/);
-  await page.getByRole("navigation", { name: "HQ views" }).getByRole("link", { name: "Conversations" }).click();
-  await expect(page).toHaveURL(/\/hq$/);
-  await expect(page.getByTestId("hq-page")).toBeVisible();
-  for (const width of [320, 390]) {
-    await page.setViewportSize({ width, height: 844 });
-    const views = page.getByRole("navigation", { name: "HQ views" }).getByRole("link");
-    // Wait for the responsive route frame before measuring its links.
-    await expect.poll(() => views.evaluateAll((links, floor) =>
-      links.length === 3 && links.every((link) => link.getBoundingClientRect().height >= floor),
-    TOUCH_FLOOR)).toBe(true);
-    const boxes = await views.evaluateAll((links) => links.map((link) => {
-      const { x, y, width, height } = link.getBoundingClientRect();
-      return { x, y, width, height };
-    }));
-    expect(boxes).toHaveLength(3);
-    for (const box of boxes) {
-      expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
-      expect(Math.abs(box.y - boxes[0].y)).toBeLessThanOrEqual(1);
-      expect(box.x + box.width).toBeLessThanOrEqual(width);
-    }
-  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("a 503 and a failed conflict refresh require a successful reload before editing", async ({ page }) => {
@@ -249,7 +267,8 @@ for (const theme of ["dark", "light"]) {
     await expect(page.getByRole("region", { name: "Mission orchestration", exact: true }).getByRole("alert")).toBeInViewport();
     await page.screenshot({ path: info.outputPath(`unavailable-${theme}.png`) });
     await page.goto("/mission");
-    await expect(page.getByRole("navigation", { name: "HQ views" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Missions" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "HQ views" })).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`missions-${theme}.png`) });
     await openMissionRail(page);
     await expect(page.getByTestId("rail-mission")).toHaveCount(1);

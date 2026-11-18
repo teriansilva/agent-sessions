@@ -5,27 +5,14 @@ import { createPortal } from "react-dom";
 import { useModalDrawer } from "./useModalDrawer";
 import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
-import { engineBadge, relTime } from "../../lib/format";
-import type { PulseNotification } from "../../types/api";
+import { relTime } from "../../lib/format";
 import styles from "./NotificationBell.module.css";
-import { MISSION_PATH } from "../../lib/missionLink";
-import { automationPath, hqDispatchPath } from "../../lib/routes";
+import { HQ_DISPATCHES_PATH, hqDispatchPath } from "../../lib/routes";
 import { useEngineRoster } from "../../app/engineRoster";
+import { bellGroups } from "./notificationFeed";
+import { targetPath } from "./notificationLinks";
+import { NotificationRow } from "./NotificationRow";
 import { mutateNotifications, refreshNotifications, useNotifications } from "./notificationsStore";
-
-/** An automation's failure episode (`automation:<id>:<run>`, #1201) opens that automation's run
- *  history — the same link the server puts in its push (`notifications._link`). */
-const AUTOMATION_ACTION_RE = /^automation:([a-z0-9]{1,64}):/;
-
-/** Deep link for a notification: the session it concerns, an automation's run history, or mission
- *  control when it has neither. */
-function targetPath(n: PulseNotification): string {
-  const auto = !n.session_id && AUTOMATION_ACTION_RE.exec(n.action_id ?? "");
-  if (auto) return automationPath(auto[1]);
-  if (!n.session_id) return MISSION_PATH;
-  const uuid = n.session_id.slice(n.session_id.indexOf(":") + 1);
-  return `/s/${encodeURIComponent(n.engine)}/${encodeURIComponent(uuid)}`;
-}
 
 /** The notification bell (#726 Phase 3), beside the Pulse chip in the top bar.
  *
@@ -309,57 +296,47 @@ export function NotificationBell() {
         </p>
       ) : (
         <ul className={styles.list}>
-          {items.map((n) => (
-            <li
-              key={n.id}
-              className={`${styles.row} ${n.read ? "" : styles.unread} ${arrived.has(n.id) ? styles.arrived : ""}`}
-            >
-              <button
-                type="button"
-                className={styles.rowX}
-                onClick={() => void dismissOne(n.id)}
-                aria-label={`Dismiss: ${n.title}`}
-              >
-                <X size={16} aria-hidden="true" />
-              </button>
-              <div className={styles.title}>{n.title}</div>
-              {n.reason && <div className={styles.reason}>{n.reason}</div>}
-              {/* HQ's line (#1837): beside the row's own text, which it never replaces. It links
-                  to the dispatch on HQ's page; the row's Open below is unchanged. */}
-              {n.dispatch ? (
+          {/* Rows one HQ line covers sit together, and the line is drawn ONCE, after them (#2146).
+              It links to them in HQ's Notifications view; each row's own Open is unchanged. */}
+          {bellGroups(items).flatMap((g) => {
+            const d = g.rows[0].dispatch;
+            const rows = g.rows.map((n) => (
+              <NotificationRow
+                key={n.id}
+                title={n.title}
+                reason={n.reason}
+                project={n.project}
+                engine={n.engine}
+                ts={n.ts}
+                unread={!n.read}
+                arrived={arrived.has(n.id)}
+                member={Boolean(d)}
+                open={targetPath(n)}
+                onOpen={() => setOpen(false)}
+                onDismiss={() => void dismissOne(n.id)}
+              />
+            ));
+            if (!d || g.bid === null) return rows;
+            return [
+              ...rows,
+              <li key={`hq:${g.bid}`} className={styles.bellHq}>
                 <Link
                   className={styles.hqLine}
-                  to={hqDispatchPath(n.dispatch.id)}
+                  to={hqDispatchPath(g.bid)}
                   onClick={() => setOpen(false)}
                   data-testid="bell-hq-line"
                 >
                   <span className={styles.hqBy}>
-                    {n.dispatch.by} wrote
-                    {n.dispatch.bundled > 1 ? ` · 1 of ${n.dispatch.bundled} events` : ""}
+                    {d.by} wrote · {d.bundled} {d.bundled === 1 ? "event" : "events"}
                   </span>
-                  <span className={styles.hqText}>{n.dispatch.line}</span>
+                  <span className={styles.hqText}>{d.line}</span>
                   <span className={styles.hqGo}>
                     In HQ <ArrowRight size={13} aria-hidden="true" />
                   </span>
                 </Link>
-              ) : null}
-              <div className={styles.foot}>
-                {n.project && <span className={styles.proj}>{n.project}</span>}
-                <span className={styles.eng} aria-hidden="true">
-                  {engineBadge(n.engine)}
-                </span>
-                <span className={styles.age}>{relTime(n.ts)}</span>
-                <Link
-                  className={styles.open}
-                  to={targetPath(n)}
-                  onClick={() => setOpen(false)}
-                >
-                  Open
-                  <ArrowRight size={15} aria-hidden="true" />
-                </Link>
-              </div>
-            </li>
-          ))}
+              </li>,
+            ];
+          })}
         </ul>
       )}
 
@@ -409,6 +386,18 @@ export function NotificationBell() {
           </ul>
         </div>
       )}
+
+      {/* The whole list, HQ's lines with the events they cover (#2146): pinned to the panel's
+          foot, so it is one tap from any route however long the list is. */}
+      <Link
+        className={styles.allLink}
+        to={HQ_DISPATCHES_PATH}
+        onClick={() => setOpen(false)}
+        data-testid="bell-all-notifications"
+      >
+        All notifications
+        <ArrowRight size={15} aria-hidden="true" />
+      </Link>
     </>
   );
 

@@ -578,8 +578,10 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
 test("the route carries no scan chrome — that lives in Settings now (#929)", async () => {
   renderPulse();
   // The route's heading — by role, since the new-mission page's own copy also says "Mission
-  // control" (#948).
-  await screen.findByRole("heading", { level: 1, name: /^HQ$/i });
+  // control" (#948). HQ's Missions view has its own header (#2146): HQ // Missions.
+  await screen.findByRole("heading", { level: 1, name: /^Missions$/i });
+  // No in-page view strip: HQ's views are switched from the top bar's HQ sub-menu (#2146).
+  expect(screen.queryByRole("navigation", { name: "HQ views" })).toBeNull();
   expect(screen.queryByRole("button", { name: /scan now/i })).toBeNull();
   for (const d of ["FAST", "MED", "SLOW"]) {
     expect(screen.queryByRole("button", { name: d })).toBeNull();

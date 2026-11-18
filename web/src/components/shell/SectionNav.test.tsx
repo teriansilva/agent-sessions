@@ -7,8 +7,9 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { api } from "../../lib/api";
 import { SectionNav } from "./SectionNav";
 import { activeSection, activeSubsection, SECTIONS } from "./sections";
 
@@ -141,12 +142,29 @@ describe("SectionNav", () => {
     );
   });
 
-  test("HQ exposes Conversations, Missions and Dispatches with Missions current", async () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("HQ exposes Conversations, Missions and Notifications with Missions current (#2146)", async () => {
+    vi.spyOn(api, "notifications").mockResolvedValue({ notifications: [], unread: 0 });
     render(<MemoryRouter><SectionNav active="mission" activeSub="missions" sessionsPath="/new" onNavigate={() => {}} /></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: "HQ menu" }));
     const menu = await screen.findByRole("menu", { name: "HQ menu" });
     expect(within(menu).getAllByRole("menuitem").map((a) => a.getAttribute("href"))).toEqual(["/hq", "/mission", "/hq/d"]);
+    expect(within(menu).getAllByRole("menuitem").map((a) => a.textContent)).toEqual(["Conversations", "Missions", "Notifications"]);
     expect(within(menu).getByRole("menuitem", { name: "Missions" })).toHaveAttribute("aria-current", "page");
+    // Nothing unread: no count.
+    expect(within(menu).queryByTestId("section-sub-count")).toBeNull();
+  });
+
+  test("HQ → Notifications carries the bell's unread count, in words too (#2146)", async () => {
+    vi.spyOn(api, "notifications").mockResolvedValue({ notifications: [], unread: 3 });
+    render(<MemoryRouter><SectionNav active="mission" activeSub="dispatches" sessionsPath="/new" onNavigate={() => {}} /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "HQ menu" }));
+    const menu = await screen.findByRole("menu", { name: "HQ menu" });
+    const item = within(menu).getByRole("menuitem", { name: /^Notifications/ });
+    expect(item).toHaveAttribute("aria-current", "page");
+    expect(await within(item).findByTestId("section-sub-count")).toHaveTextContent("3, 3 unread");
+    expect(item).toHaveAccessibleName("Notifications, 3 unread");
   });
 
   test("Library holds Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Dashboard has no menu", async () => {

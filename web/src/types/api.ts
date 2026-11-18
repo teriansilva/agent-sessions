@@ -763,9 +763,15 @@ export interface PulseNotification {
   session_id: string;
   engine: string;
   action_id: string;
+  /** A needs-you episode row (#1086) / an escalation (#852): stored flags the listing already
+   *  returns. The Notifications view (#2146) files a row under its class filter from them. */
+  needs_you?: boolean;
+  escalation?: boolean;
   /** HQ's line about this row (#1837), joined from the Dispatches store — present only once the
-   *  line is written. `bundled` is how many events the dispatch is about. Never on a push. */
-  dispatch?: { id: string; line: string; by: string; bundled: number };
+   *  line is written. `bundled` is how many events the dispatch is about. `tag` (#2146) is the
+   *  row's own event tag, read-only: it names which of the bundle's members this row IS. Never on
+   *  a push. */
+  dispatch?: { id: string; line: string; by: string; bundled: number; tag?: string };
 }
 
 /** One event in a dispatch (#1837): the row's fixed text and Open target, as announced. */
@@ -776,6 +782,9 @@ export interface HqDispatchMember {
   /** The row's own Open target, re-validated by the server ("" when it has none). */
   link: string;
   ts: number;
+  /** The event's tag (#2146), read-only: equal to the live bell row's `dispatch.tag` while that
+   *  row exists. "" when the server could not vouch for it. */
+  tag?: string;
 }
 
 /** A written dispatch (#1837): HQ's line about one bundle of events. */

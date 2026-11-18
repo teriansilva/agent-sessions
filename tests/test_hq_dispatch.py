@@ -558,7 +558,7 @@ def test_the_store_is_private():
 # ---- the bell's join ----------------------------------------------------------------------------
 
 
-def test_the_listing_joins_only_written_lines_and_never_the_tag(hq, monkeypatch):
+def test_the_listing_joins_only_written_lines_with_the_rows_own_tag(hq, monkeypatch):
     announce_automation(aid="a", rid="1")
     run_pass(later())
     hq.status = 500
@@ -575,6 +575,8 @@ def test_the_listing_joins_only_written_lines_and_never_the_tag(hq, monkeypatch)
         "line": "HQ's line.",
         "by": rows["automation:a:1"]["dispatch"]["by"],
         "bundled": 1,
+        # #2146: exactly the row's stored tag, read-only — the Notifications view's join key.
+        "tag": "automation:a:1",
     }
     assert "dispatch" not in rows["automation:b:2"] and "dispatch" not in rows["automation:c:3"]
     # The stored row is unchanged: the tag, never text.
@@ -709,6 +711,7 @@ def test_the_routes_list_and_read_one(client, hq):
             "reason": "failed: boom",
             "link": "/mission/automations/abc",
             "ts": pytest.approx(time.time(), abs=60),
+            "tag": "automation:abc:r1",
         }
     ]
     for missing in ("d_" + "0" * 16, "not-an-id", "d_XYZ"):
@@ -716,6 +719,56 @@ def test_the_routes_list_and_read_one(client, hq):
         assert r.status_code == 404 and r.json() == {"detail": "that dispatch isn't here"}
     bell = c.get("/api/pulse/notifications").json()["notifications"]
     assert bell[0]["dispatch"]["id"] == bid
+    # #2146: both projections carry the SAME tag, so the view joins a live row to its member.
+    assert bell[0]["dispatch"]["tag"] == one["members"][0]["tag"] == "automation:abc:r1"
+
+
+# ---- #2146: the read-only tag on both projections -----------------------------------------------
+
+
+def test_every_member_and_row_tag_is_exactly_the_stored_one_and_a_valid_dispatch_tag(
+    hq, monkeypatch
+):
+    """Present on every member and every joined row, equal to what the stores keep, and always a
+    `DISPATCH_TAG_RES` tag: built from ids the same answers already carry, never a new id class."""
+    announce_automation(aid="a", rid="1")
+    announce_needs_you(monkeypatch)
+    announce_escalation()
+    run_pass(later())
+    d = doc()
+    (bid,) = d["lines"]
+    one = hq_dispatch.one_view(bid)["dispatch"]
+    assert [m["tag"] for m in one["members"]] == list(d["bundles"][bid]["members"])
+    listed = hq_dispatch.list_view()["dispatches"][0]
+    assert [m["tag"] for m in listed["members"]] == list(d["bundles"][bid]["members"])
+    kept = notifications._read(notifications._notifications_path())
+    stored = {r["id"]: r["dispatch"] for r in kept}
+    rows = hq_dispatch.join_listing(notifications.listing())["notifications"]
+    assert len(rows) == 3
+    for r in rows:
+        assert r["dispatch"]["tag"] == stored[r["id"]]
+        assert d["member_of"][r["dispatch"]["tag"]] == r["dispatch"]["id"] == bid
+    for tag in [m["tag"] for m in one["members"]]:
+        assert notifications.valid_dispatch_tag(tag)
+    # Each tag's ids already ride on the same answer: the session, the mission, the automation run.
+    by_class = {m["class"]: m for m in one["members"]}
+    assert by_class["automation failed"]["tag"] == "automation:a:1"
+    assert by_class["needs you"]["tag"].startswith(f"needs-you:{SID}:")
+    assert by_class["mission escalation"]["tag"].startswith("escalation:msn_")
+
+
+def test_a_member_tag_that_is_not_a_dispatch_tag_is_never_echoed(hq):
+    announce_automation()
+    run_pass(later())
+    (bid,) = doc()["lines"]
+    with hq_dispatch.json_write_lock(hq_dispatch._path()):
+        d = doc()
+        (tag,) = d["bundles"][bid]["members"]
+        bad = "not a tag <script>"
+        d["bundles"][bid]["members"] = [bad]
+        d["display"][bad] = d["display"].pop(tag)
+        hq_dispatch._write(d)
+    assert hq_dispatch.one_view(bid)["dispatch"]["members"][0]["tag"] == ""
 
 
 # ---- Hermes 7619 ------------------------------------------------------------------------------

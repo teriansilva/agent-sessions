@@ -48,3 +48,17 @@
 .icon {
   composes: itemIcon from "../ui/menu.module.css";
 }
+
+/* The bell's unread count on HQ → Notifications (#2146): the badge's own look (status fill, dark
+ * ink) — unread is a state the badge already means. Words ride beside it for assistive tech. */
+.count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--status-degraded);
+  color: var(--on-accent);
+  font: 700 var(--fs-micro) / 18px var(--font-mono);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

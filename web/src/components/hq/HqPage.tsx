@@ -27,18 +27,16 @@
  *  show the same rows, under the same generation guard. Search filters the loaded titles here, in
  *  the browser.
  *
- *  **Dispatches** (#1837): a pinned entry above the conversations, hidden while there are none, with
- *  "N new" since the operator last opened them; it opens the read-only view in the thread column
- *  (`/hq/d`, or `/hq/d/<id>` scrolled to one and marked LINKED). The console stays mounted, hidden,
- *  behind it. */
-import { Inbox, Plus, Search } from "lucide-react";
+ *  **Notifications** (#2146, was Dispatches #1837): its own view at `/hq/d` (or `/hq/d/<id>` scrolled
+ *  to one bundle and marked LINKED), a full page in place of the list and the thread. The console
+ *  stays mounted, hidden, behind it. There is no in-page view strip: HQ's views are switched from
+ *  the top bar's HQ sub-menu (a bottom sheet on a phone). */
+import { Plus, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useConfig } from "../../app/config";
-import { api } from "../../lib/api";
-import { HQ_DISPATCHES_PATH, HQ_PATH, hqConversationPath } from "../../lib/routes";
-import type { HqDispatchList } from "../../types/api";
+import { HQ_PATH, hqConversationPath } from "../../lib/routes";
 import { settingsPath } from "../../routes/settingsTabs";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { AskConsole } from "../ask/AskConsole";
@@ -48,10 +46,8 @@ import {
   useAskConversations,
 } from "../ask/askConversationsStore";
 import { HQ_FOCUS_COMPOSER_EVENT } from "../ask/askPanel";
-import { DISPATCH_POLL_MS, nextDispatchRead } from "./dispatchReads";
-import { DispatchesView } from "./DispatchesView";
-import { HqViews } from "./HqViews";
 import { hqTarget } from "./hqRoute";
+import { NotificationsView } from "./NotificationsView";
 import s from "./HqPage.module.css";
 
 function when(ts: number): string {
@@ -60,66 +56,6 @@ function when(ts: number): string {
   const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   if (d.toDateString() === now.toDateString()) return `Today ${time}`;
   return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
-}
-
-/** "N new", as the entry shows it: 50+ above 50. */
-const newLabel = (n: number) => (n > 50 ? "50+ new" : `${n} new`);
-
-/** The Dispatches list behind the pinned entry: re-read on every route change, when the view moved
- *  the cursor, and every `DISPATCH_POLL_MS` while the page is visible (paused while the tab is
- *  hidden, read at once when it comes back — `MissionNowStrip`'s pattern). A read never marks
- *  anything seen. Only the newest read applies, so an older answer never restores a count. */
-function useDispatches(key: string): [HqDispatchList | null, number, () => void] {
-  const [read, setRead] = useState<{ list: HqDispatchList; seq: number } | null>(null);
-  const gen = useRef(0);
-  const refresh = useCallback(() => {
-    const mine = ++gen.current;
-    // Numbered when it STARTS, on the counter the Dispatches view's own reads share.
-    const seq = nextDispatchRead();
-    api.hqDispatches().then(
-      (l) => {
-        // Only a list the page can read: anything else keeps the entry hidden.
-        if (mine !== gen.current || !Array.isArray(l?.dispatches)) return;
-        // A poll that could not read the store keeps the last readable list, marked unreadable
-        // (Hermes 7681, finding 4): a passing read failure is never shown as "no dispatches".
-        setRead((prev) =>
-          l.unreadable
-            ? { list: { ...(prev?.list ?? l), unreadable: true }, seq }
-            : { list: { ...l, unreadable: false }, seq },
-        );
-      },
-      () => undefined, // the entry keeps what it last showed
-    );
-  }, []);
-  useEffect(() => {
-    refresh();
-  }, [key, refresh]);
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const arm = () => {
-      if (!document.hidden) timer = setTimeout(tick, DISPATCH_POLL_MS);
-    };
-    const tick = () => {
-      timer = null;
-      refresh();
-      arm();
-    };
-    const onVis = () => {
-      if (document.hidden) {
-        if (timer) clearTimeout(timer);
-        timer = null;
-      } else if (!timer) {
-        tick();
-      }
-    };
-    arm();
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      if (timer) clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-  }, [refresh]);
-  return [read?.list ?? null, read?.seq ?? 0, refresh];
 }
 
 export default function HqPage() {
@@ -133,7 +69,6 @@ export default function HqPage() {
 
   const target = hqTarget(location.pathname);
   const onDispatches = target.kind === "dispatches";
-  const [dispatches, dispatchesSeq, refreshDispatches] = useDispatches(location.key);
   const routeId = target.kind === "conversation" ? target.id : null;
   /** The id the server said it does not have. Cleared as soon as the route names another. */
   const [missingId, setMissingId] = useState<string | null>(null);
@@ -162,15 +97,15 @@ export default function HqPage() {
     [navigate],
   );
 
-  const showThread = !isMobile || target.kind !== "list" || composing;
-  const showList = !isMobile || !showThread;
+  const showThread = !onDispatches && (!isMobile || target.kind !== "list" || composing);
+  const showList = !onDispatches && (!isMobile || !showThread);
 
   // The corner icon on this page (#1776): to the composer, opening the thread first on a phone.
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [focusAsked, setFocusAsked] = useState(0);
   useEffect(() => {
     const on = () => {
-      // The Dispatches are read only: the composer is a new conversation's.
+      // Notifications are read only: the composer is a new conversation's.
       if ((isMobile && !showThread) || onDispatches) navigate(HQ_PATH, { state: { hqCompose: true } });
       setFocusAsked((n) => n + 1);
     };
@@ -192,8 +127,7 @@ export default function HqPage() {
 
   return (
     <div className={s.frame} ref={pageRef} data-testid="hq-page">
-      <HqViews />
-      <div className={s.page}>
+      <div className={onDispatches ? s.solo : s.page}>
       {showList ? (
         <nav className={s.list} aria-label="HQ conversations" data-testid="hq-list">
           <div className={s.listHead}>
@@ -228,30 +162,6 @@ export default function HqPage() {
               data-testid="hq-search"
             />
           </label>
-          {dispatches && (dispatches.dispatches.length > 0 || dispatches.unreadable) ? (
-            <Link
-              className={`${s.pin} ${onDispatches ? s.rowCur : ""}`}
-              to={HQ_DISPATCHES_PATH}
-              aria-current={onDispatches ? "page" : undefined}
-              data-testid="hq-dispatches-entry"
-            >
-              <span className={s.pinTitle}>
-                <Inbox size={14} aria-hidden="true" /> Dispatches
-              </span>
-              {dispatches.new > 0 && !dispatches.unreadable ? (
-                <span className={s.pinNew} data-testid="hq-dispatches-new-count">
-                  {newLabel(dispatches.new)}
-                </span>
-              ) : (
-                <span />
-              )}
-              <span className={s.pinMeta} data-testid="hq-dispatches-entry-meta">
-                {dispatches.unreadable
-                  ? "Can't be read right now"
-                  : `Written by HQ · last ${when(dispatches.dispatches[0].at)}`}
-              </span>
-            </Link>
-          ) : null}
           {conversations !== null && conversations.length === 0 ? (
             <p className={s.empty} data-testid="hq-list-empty">
               No conversations yet. Ask HQ anything: your first question starts one.
@@ -287,17 +197,12 @@ export default function HqPage() {
           )}
         </nav>
       ) : null}
-      {onDispatches && showThread ? (
-        <DispatchesView
+      {target.kind === "dispatches" ? (
+        <NotificationsView
           linkedId={target.id}
           malformed={target.malformed}
           openKey={location.key}
           configured={configured}
-          onBack={back}
-          onSeen={refreshDispatches}
-          latest={dispatches?.dispatches ?? null}
-          latestSeq={dispatchesSeq}
-          latestUnreadable={dispatches?.unreadable === true}
         />
       ) : null}
       {missing && showThread ? (
@@ -324,14 +229,14 @@ export default function HqPage() {
           is what this screen shows. */}
       <div
         className={s.thread}
-        hidden={!showThread || missing || onDispatches}
+        hidden={!showThread || missing}
         data-hq-thread=""
         data-testid="hq-thread"
       >
         <AskConsole
           chrome="page"
           configured={configured}
-          visible={showThread && !missing && !onDispatches}
+          visible={showThread && !missing}
           conversationId={conversationId}
           onConversationChange={onChange}
           onBack={back}

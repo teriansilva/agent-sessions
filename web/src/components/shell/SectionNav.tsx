@@ -29,6 +29,7 @@ import { ChevronDown } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { useNotifications } from "../pulse/notificationsStore";
 import {
   SECTIONS,
   type Section,
@@ -143,6 +144,7 @@ export function SectionNav({
                       <c.Icon size={15} />
                     </span>
                     {c.label}
+                    {c.count ? <SubCount /> : null}
                   </Link>
                 ))
               }
@@ -151,5 +153,19 @@ export function SectionNav({
         );
       })}
     </nav>
+  );
+}
+
+/** The bell's unread count on its HQ entry (#2146): the badge's look, plus words for assistive
+ *  tech. Read from the store the bell already polls, so it is the same number, never a second one.
+ *  Mounted only while the menu is open. */
+function SubCount() {
+  const { unread } = useNotifications();
+  if (unread <= 0) return null;
+  return (
+    <span className={styles.count} data-testid="section-sub-count">
+      <span aria-hidden="true">{unread > 99 ? "99+" : unread}</span>
+      <span className="nj-sr-only">, {unread} unread</span>
+    </span>
   );
 }
