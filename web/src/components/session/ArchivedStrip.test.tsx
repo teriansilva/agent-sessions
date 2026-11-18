@@ -22,10 +22,10 @@ test("idle: the title, the frozen copy and UNARCHIVE, which takes focus when the
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("the terminal pane's copy says the terminal reopens", () => {
+test("the terminal pane's copy says the agent resumes on the next send", () => {
   strip({ phase: "idle" }, vi.fn(), "terminal");
   expect(screen.getByRole("region", { name: "Archived session" })).toHaveTextContent(
-    /Unarchive it to reopen the terminal/,
+    /Unarchive it to send a message — the agent resumes on your next send/,
   );
 });
 

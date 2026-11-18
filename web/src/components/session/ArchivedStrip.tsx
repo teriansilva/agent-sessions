@@ -2,17 +2,16 @@ import { useEffect, useRef } from "react";
 import compose from "../terminal/Compose.module.css";
 import type { UnarchiveState } from "./useArchivedSession";
 
-/** The copy under the title, per pane: an API session resumes on the next send, a terminal session
- *  when its terminal opens again. */
+/** Both panes restore their composer on Unarchive and resume the agent on the next send. */
 const ARCHIVED_COPY = {
   api: "This session is frozen: no processes, no memory. Unarchive it to send a message — the agent resumes on your next send.",
   terminal:
-    "This session is frozen: no processes, no memory. Unarchive it to reopen the terminal — the agent resumes when it opens.",
+    "This session is frozen: no processes, no memory. Unarchive it to send a message — the agent resumes on your next send.",
 } as const;
 
 const BUSY_COPY = {
   api: "Unarchiving… the composer comes back once the session reads active.",
-  terminal: "Unarchiving… the terminal comes back once the session reads active.",
+  terminal: "Unarchiving… the composer comes back once the session reads active.",
 } as const;
 
 /** Is focus somewhere the operator is typing (outside this strip)? Then the strip does not take it. */
