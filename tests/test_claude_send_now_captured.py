@@ -111,6 +111,39 @@ def test_send_now_cuts_an_agent_turn_without_stopping_background_tasks(name):
     assert codec.lifecycle_proven
 
 
+@pytest.mark.parametrize(
+    "name", ["claude_send_now_agent_turn_bash", "claude_send_now_agent_turn_monitor"]
+)
+def test_send_now_on_an_agent_turn_with_the_fence_lost_still_stops_nothing(name):
+    """#2164: the same captures, the fence deliberately lost just before the operator writes.
+    Send now is still the CLI's own (no Stop), the message completes exactly once, every
+    background task survives the cut, and a later clean cycle proves the fence again."""
+    seen = {}
+
+    def watch(codec, row):
+        if row["frame"]["type"] != "user":
+            return
+        if codec.unowned_turn:
+            codec._distrust()
+            assert codec.frames_inputs  # the CLI framed earlier inputs: an anomaly keeps that
+            seen["ready"] = codec.send_now_ready()
+            seen["would_stop"] = codec.send_now_would_stop_background()
+            seen["tasks"] = set(codec._background)
+        elif "tasks" in seen:
+            seen["after"] = set(codec._background)
+
+    codec, events, messages = _replay(name, watch=watch)
+    assert seen["tasks"], "the capture has background work running at Send now"
+    assert seen["ready"] and not seen["would_stop"]
+    asked = messages[1]
+    completions = [
+        e for e in events if e.kind == "turn_completed" and e.data.get("operation_id") == asked
+    ]
+    assert len(completions) == 1 and completions[0].data["state"] == "completed"
+    assert seen["after"] and seen["after"] <= seen["tasks"]
+    assert codec.lifecycle_proven  # earned back by a later clean cycle
+
+
 def test_a_notification_inside_an_operator_turn_never_distrusts():
     codec, events, messages = _replay("claude_notification_inside_operator_turn")
     assert all(d["state"] == "completed" for d in _completed(events).values())

@@ -1429,6 +1429,71 @@ def test_claude_a_notification_turn_starting_before_the_operators_write_keeps_it
     assert not codec.unowned_turn and codec.lifecycle_proven
 
 
+def test_claude_frames_inputs_is_set_only_by_its_own_inputs_and_survives_distrust():
+    """#2164: the flag that lets a message past a running task once the CLI is known to frame
+    inputs. An unrelated uuid never sets it; an anomaly never clears it; a new generation (a new
+    codec) starts without it."""
+    codec = ClaudeCodec(SESSION)
+    assert not codec.frames_inputs
+    codec.feed(_life(str(uuid.uuid4()), "queued"))  # a frame naming nothing this codec wrote
+    assert not codec.frames_inputs and not codec.lifecycle_proven
+    codec.submit("go", OPERATION)
+    codec.feed(_life(OPERATION, "queued"))
+    assert codec.frames_inputs
+    codec._distrust()
+    assert codec.frames_inputs and not codec.lifecycle_proven
+    assert not ClaudeCodec(SESSION).frames_inputs
+
+
+def test_claude_a_lost_fence_is_proved_again_by_the_next_clean_cycle():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "first")
+    assert codec.lifecycle_proven
+    codec._distrust()
+    events = _operator_turn(codec, NEXT, "second")
+    assert [e.data["operation_id"] for e in events if e.kind == "turn_completed"] == [NEXT]
+    assert codec.lifecycle_proven and codec.frames_inputs
+
+
+def test_claude_with_the_fence_lost_the_race_moves_output_never_a_completion_or_an_approval():
+    """#2164's accepted cost, pinned as a boundary: a message now goes past a running task while
+    the fence is lost, so a notification turn starting as it is written may have its output shown
+    in the reply. Nothing else moves: only the result naming the input completes it, exactly once,
+    and a background task's permission request stays that task's, never the operator turn's."""
+    from test_native_liveness import _task
+    from test_native_safety_table import claude_request
+
+    codec = ClaudeCodec(SESSION)
+    codec.generation = str(uuid.uuid4())
+    codec.feed(_task("task_started", "agent-bg", description="watcher", is_backgrounded=True))
+    _operator_turn(codec, OPERATION, "started a task")
+    codec._distrust()
+    codec.submit("what next?", NEXT)  # written while the notification turn is starting
+    events = []
+    for frame in (
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        _say("The background command finished."),
+        {**claude_request(agent_id="agent-bg"), "request_id": "native-bg"},
+        _result(
+            "The background command finished.",
+            origin={"kind": "task-notification", "producer": "session-task"},
+        ),
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _say("Here is what is next.", user_message_uuid=NEXT),
+        _result("Here is what is next.", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    completed = [e for e in events if e.kind == "turn_completed"]
+    assert [e.data["operation_id"] for e in completed] == [NEXT]
+    assert completed[0].data["state"] == "completed"
+    (approval,) = [e for e in events if e.kind == "approval"]
+    assert approval.data["operation_id"] is None and approval.data["native_turn_id"] is None
+    assert approval.data["background_task"]["task_id"] == "agent-bg"
+    assert codec.lifecycle_proven  # this clean cycle earned the proof back
+
+
 def test_claude_a_task_finishing_inside_an_operator_window_starts_no_other_turn():
     """#94505: a task completing during an operator lifecycle is folded into that turn as system
     frames; the reply is the operator's, and nothing is left running."""

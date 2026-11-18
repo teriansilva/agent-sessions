@@ -25,7 +25,6 @@ import {
   KillSwitchNotice,
   StateWord,
 } from "../components/automations/AutomationBits";
-import { MissionRailOnly } from "../components/automations/MissionRailOnly";
 import { useProjects } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
 import { engineLabel, engineName, runsInTerminal, useEngineRoster } from "../app/engineRoster";
@@ -350,7 +349,6 @@ function Editor({ routeId }: { routeId?: string }) {
   if (loadError) {
     return (
       <div className={styles.page}>
-        <MissionRailOnly />
         <div className={`${styles.notice} ${styles.noticeBad}`} role="alert">
           <strong data-testid="editor-load-error">
             {missing ? "This automation doesn’t exist" : "Couldn’t load this automation"}
@@ -371,7 +369,6 @@ function Editor({ routeId }: { routeId?: string }) {
   if (!form || !list) {
     return (
       <div className={styles.page}>
-        <MissionRailOnly />
         <p className={styles.lede}>Loading…</p>
       </div>
     );
@@ -393,7 +390,6 @@ function Editor({ routeId }: { routeId?: string }) {
 
   return (
     <div className={styles.page} data-testid="automation-editor">
-      <MissionRailOnly />
       <div className={`${styles.stack} ${styles.editorGrid}`}>
         <section className={styles.panel} aria-labelledby={f("title")}>
           <div className={styles.headText}>

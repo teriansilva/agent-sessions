@@ -2338,6 +2338,9 @@ class ClaudeCodec(_Codec):
         # turn only inside its own started window. Unknown per generation until one complete,
         # correlated cycle is seen; a frame outside the cycle makes it unknown again.
         self.lifecycle_proven = False
+        # The CLI has framed an input this codec wrote (#2164): it speaks the lifecycle, whatever
+        # an anomaly later did to the proof. Never cleared by `_distrust()`.
+        self.frames_inputs = False
         self._cycle: str | None = None  # the operator command: written | queued | started
         self._closing: str | None = None  # a command whose result came, awaiting `completed`
         self._tainted = False  # this command's cycle saw an anomaly: it proves nothing
@@ -2478,9 +2481,15 @@ class ClaudeCodec(_Codec):
         fence that tells the message's frames from the turn it cuts, and nothing already written
         ahead. The fence is proved, or the operator turn running now has started cleanly inside
         its own lifecycle: the first turn of a generation, whose end proves it (captured: the
-        cut turn's result, then its `cancelled`, then the message's `started`)."""
-        fenced = self.lifecycle_proven or (
-            self.operation_id is not None and self._cycle == "started" and not self._tainted
+        cut turn's result, then its `cancelled`, then the message's `started`). Or no operator
+        turn runs (#2164): the turn cut is the agent's own, the message is a plain submit with its
+        own lifecycle, and that turn ends with its own `task-notification` result (captured,
+        `claude_send_now_agent_turn_*`). The other way is a Stop, which ends every background
+        agent: never the price of Send now."""
+        fenced = (
+            self.lifecycle_proven
+            or self.operation_id is None
+            or (self._cycle == "started" and not self._tainted)
         )
         return self.native_send_now and fenced and self._ahead is None and not self._closed
 
@@ -2561,6 +2570,8 @@ class ClaudeCodec(_Codec):
 
     def _lifecycle(self, frame: dict) -> list[NativeEvent]:
         command, state = frame.get("command_uuid"), frame.get("state")
+        if command is not None and command in (self.operation_id, self._ahead, self._closing):
+            self.frames_inputs = True
         if command is not None and command == self._ahead:
             # Send now's message (#1526), written while the turn it cuts still runs: the CLI
             # queues it behind that turn and starts it once that turn has ended.

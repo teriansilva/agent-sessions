@@ -376,11 +376,10 @@ function Layout() {
    *  one screen, one opening sessions and one opening missions. */
   // `/pulse` is the pre-#948 path, still live as a redirect; counting it here keeps the sidebar
   // from flashing the session list for the one render before the redirect lands.
+  // Automations sat here too (#1201) until the operator removed the Missions rail from them: they
+  // are Library pages now, with no sidebar (see `noSidebar`).
   const missionRoute =
-    location.pathname === MISSION_PATH ||
-    location.pathname === LEGACY_MISSION_PATH ||
-    location.pathname === AUTOMATIONS_PATH ||
-    location.pathname.startsWith(`${AUTOMATIONS_PATH}/`);
+    location.pathname === MISSION_PATH || location.pathname === LEGACY_MISSION_PATH;
   const railInSidebar = missionRoute;
   /** SETTINGS RENDERS WITHOUT THE SESSION SIDEBAR (#1129), at every width. Settings is a
    *  utility surface, not a work section (#1058) — the shell carries no session list there in
@@ -420,7 +419,15 @@ function Layout() {
     location.pathname === ARTIFACTS_PATH ||
     location.pathname.startsWith(`${ARTIFACTS_PATH}/`) ||
     location.pathname === TEMPLATES_PATH ||
-    location.pathname.startsWith(`${TEMPLATES_PATH}/`);
+    location.pathname.startsWith(`${TEMPLATES_PATH}/`) ||
+    // Skills and Automations (operator, 2026-11-19): the Library has no sidebar. Skills showed the
+    // session list and Automations the mission rail; neither acts on it.
+    location.pathname === SKILLS_PATH ||
+    location.pathname.startsWith(`${SKILLS_PATH}/`) ||
+    location.pathname === GALLERY_SKILLS_PATH ||
+    location.pathname.startsWith(`${GALLERY_SKILLS_PATH}/`) ||
+    location.pathname === AUTOMATIONS_PATH ||
+    location.pathname.startsWith(`${AUTOMATIONS_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);

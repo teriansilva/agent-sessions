@@ -20,7 +20,6 @@ import {
   OutcomeWord,
   StateWord,
 } from "../components/automations/AutomationBits";
-import { MissionRailOnly } from "../components/automations/MissionRailOnly";
 import { useAutomations, useNowS } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
 import { useRunPages } from "../components/automations/useRunPages";
@@ -206,7 +205,6 @@ function RunsPage({ id }: { id: string }) {
   if (missing && !a) {
     return (
       <div className={styles.page}>
-        <MissionRailOnly />
         <div className={`${styles.notice} ${styles.noticeBad}`} role="alert">
           <strong>This automation doesn’t exist</strong>
           <span>It may have been deleted.</span>
@@ -222,7 +220,6 @@ function RunsPage({ id }: { id: string }) {
 
   return (
     <div className={styles.page} data-testid="automation-runs">
-      <MissionRailOnly />
       <div className={styles.stack}>
         <section className={styles.panel} aria-labelledby="runs-title">
           <div className={styles.head}>

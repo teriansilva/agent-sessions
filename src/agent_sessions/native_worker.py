@@ -983,10 +983,16 @@ class Worker:
         """May an operator message go to the agent now (#1427)?
 
         A running background task alone does not stop it once this generation's codec has PROVED
-        it can tell the operator's output from a turn the agent starts for itself. Until then the
-        old rule holds: a task could start such a turn, whose output would read as the reply.
+        it can tell the operator's output from a turn the agent starts for itself, or has seen the
+        CLI frame an input it wrote with `command_lifecycle` (#2164). A distrusted fence no longer
+        holds it: only an operator turn's clean cycle proves the fence again, and the hold kept
+        every such turn out for as long as the agent kept a task running. Without lifecycle frames
+        at all (an older CLI) the old rule holds: a task could start a turn of the agent's own,
+        whose output would read as the reply.
         """
-        if getattr(self.codec, "lifecycle_proven", False):
+        if getattr(self.codec, "lifecycle_proven", False) or getattr(
+            self.codec, "frames_inputs", False
+        ):
             return self._turn_busy()
         return self.native_busy()
 

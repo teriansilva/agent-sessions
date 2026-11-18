@@ -14,7 +14,6 @@ import { Ellipsis, Plus } from "lucide-react";
 
 import { AnchoredMenu } from "../components/ui/AnchoredMenu";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
-import { MissionRailOnly } from "../components/automations/MissionRailOnly";
 import {
   KillSwitchNotice,
   OutcomeWord,
@@ -262,7 +261,6 @@ export default function Automations() {
 
   return (
     <div className={styles.page} data-testid="automations-page">
-      <MissionRailOnly />
       <div className={styles.stack}>
         <section className={styles.panel} aria-labelledby="automations-title">
           <div className={styles.head}>

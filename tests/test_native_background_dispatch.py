@@ -83,6 +83,30 @@ async def test_a_message_goes_out_while_a_background_task_runs(host, project):  
 
 
 @pytest.mark.anyio
+async def test_a_lost_fence_no_longer_holds_a_message_behind_a_running_task(host, project):  # noqa: F811
+    """#2164, the operator's report: one anomaly lost the fence, and only an operator turn could
+    prove it again, which the hold kept out for as long as the agent kept a watcher running (85
+    minutes). A CLI that frames its inputs is never waited on for a task alone."""
+    key = await _with_running_task(project, lifecycle=True)
+    stray = ident()
+    await runtime.submit_turn(key, operation_id=stray, text="STRAY")  # the fence is lost here
+    _, turn = await settle(key, stray)
+    assert turn["reply"] == "strayed"
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    _, turn = await settle(key, nxt)  # the task has NOT been released
+    assert turn["reply"] == "echo:two"
+    page = await runtime.events(key, after=0)
+    tasks = [(e.get("data") or e).get("state") for e in page["events"] if e["kind"] == "background"]
+    assert "running" in tasks and "completed" not in tasks
+    # The task's own notification turn is still nobody's reply.
+    (project / "release-bg-task").write_text("")
+    await _task_completed(key)
+    await asyncio.sleep(0.5)
+    assert "notified" not in "".join(await _replies(key))
+
+
+@pytest.mark.anyio
 async def test_without_lifecycle_frames_a_running_task_still_holds_the_queue(host, project):  # noqa: F811
     """An older CLI proves no fence: today's rule stays, for every message. (That rule's own
     limit stays too: without lifecycle frames a notification turn's first output can still race

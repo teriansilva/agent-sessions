@@ -761,11 +761,14 @@ async def test_send_now_against_the_agents_turn_is_refused_unless_exact(
 
 
 @pytest.mark.anyio
-async def test_after_an_anomalous_cycle_a_running_task_holds_the_queue_again(
+async def test_after_an_anomalous_cycle_a_running_task_still_does_not_hold_the_queue(
     conversation, monkeypatch
 ):
-    """The decision that matters (Hermes on #1429): with a background task running, a worker
-    whose last cycle saw an anomaly must keep QUEUEING, exactly as before the fence."""
+    """#2164 supersedes the #1429 decision that an anomaly makes a running task hold the queue
+    again: only an operator turn's clean cycle could prove the fence back, and the hold kept every
+    such turn out for as long as a task ran (85 minutes, operator's report). A CLI that has framed
+    an input of this generation is never waited on for a task alone; one that never framed one
+    (an older CLI) still is."""
     from agent_sessions.native_protocol import ClaudeCodec
     from test_native_protocol import NEXT, OPERATION, SESSION, _life, _operator_turn, _result
 
@@ -796,8 +799,15 @@ async def test_after_an_anomalous_cycle_a_running_task_holds_the_queue_again(
         _life(NEXT, "completed"),
     ):
         codec.feed(frame)
-    assert codec.operation_id is None
-    assert worker.native_busy() and worker.dispatch_busy()  # the task holds the queue again
+    assert codec.operation_id is None and not codec.lifecycle_proven
+    assert worker.native_busy() and not worker.dispatch_busy()  # the task still does not hold
+    # A CLI that never framed an input: the task holds the queue, as before the fence.
+    codec = worker.codec = ClaudeCodec(SESSION)
+    codec.feed(
+        {"type": "system", "subtype": "task_started", "task_id": "bg1", "session_id": SESSION}
+    )
+    assert not codec.frames_inputs
+    assert worker.native_busy() and worker.dispatch_busy()
 
 
 # --- #1438: Interrupt (and Esc) stops a turn the agent runs for itself, directly -----------------

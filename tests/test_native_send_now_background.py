@@ -157,6 +157,31 @@ async def test_the_agents_own_turn_is_cut_by_writing_the_message_then_sending_it
 
 
 @pytest.mark.anyio
+async def test_a_lost_fence_still_cuts_the_agents_own_turn_the_clis_way(conversation, monkeypatch):
+    """#2164: the operator's forced send never stops every subagent. With the fence lost, Send
+    now on the agent's own turn is still the CLI's `send_now` (never a Stop, never refused): the
+    message goes as a plain submit with its own lifecycle, so the fence is not what tells it from
+    the turn it cuts."""
+    worker, queued, control = _own_turn_worker(conversation, monkeypatch)
+    worker.codec._distrust()
+    assert not worker.codec.lifecycle_proven
+    assert worker.send_now_state() == "ready"
+    writes = []
+
+    async def write(frame):
+        writes.append(frame)
+
+    monkeypatch.setattr(worker, "write", write)
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "sent"
+    message, request = writes
+    op = queued["params"]["operation_id"]
+    assert message["type"] == "user" and message["uuid"] == op
+    assert request["request"] == {"subtype": "interrupt", "send_now": True, "message_uuid": op}
+    assert worker.codec._background == {"agent-1"}  # nothing in the background was ended
+
+
+@pytest.mark.anyio
 async def test_a_message_write_that_fails_is_never_resent_and_nothing_is_cut(
     conversation, monkeypatch
 ):

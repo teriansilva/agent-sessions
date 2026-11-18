@@ -48,6 +48,8 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
   Each child's return code is appended to ``hog-codes.txt``. A ``report-oom-adj`` file in the
   working directory makes the agent fork a child first thing, which records its own and its
   parent's ``oom_score_adj`` (and the parent's environment) in ``oom-adj.jsonl``.
+* ``STRAY`` — (claude) a ``command_lifecycle`` frame naming an input the client never wrote, then
+  the reply ``strayed``: the client's lifecycle fence is lost (#2164).
 * ``FLOOD:<n>`` — (claude) n results of a sub-agent, one per frame, then the reply: fills the
   connection's result ledger (#1725).
 * ``MANYTASKS:<n>`` — (claude) start n background tasks, more than are tracked past 128 (#1725).
@@ -1090,6 +1092,19 @@ def claude_turn(frame, stream, session, notification_turn):
         TASKS.add("bg1")
         threading.Thread(target=notification_turn, daemon=True).start()
         answer = "started"
+    if text == "STRAY":
+        # A lifecycle frame for an input this client never wrote (#2164): an anomaly that loses
+        # the fence for the rest of the generation until an operator cycle proves it again.
+        send(
+            {
+                "type": "command_lifecycle",
+                "command_uuid": str(uuid.uuid4()),
+                "state": "completed",
+                "uuid": str(uuid.uuid4()),
+                "session_id": session,
+            }
+        )
+        answer = "strayed"
     if text.startswith("FLOOD:"):
         for _ in range(int(text[len("FLOOD:") :])):
             send(
