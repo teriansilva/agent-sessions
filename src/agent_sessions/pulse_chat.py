@@ -50,6 +50,8 @@ every existing consumer of ``matches`` is untouched.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import re
@@ -281,10 +283,17 @@ def _catalog_entry(card: dict, now: float) -> dict:
     }
 
 
-def bound_history(history: object) -> list[dict]:
-    """Clamp the replayed conversation tail: the last ``HISTORY_TURNS_MAX`` well-formed
-    user/assistant turns, each capped to ``HISTORY_TURN_CHARS_MAX`` chars; anything
-    malformed is dropped. The client is untrusted — this is the server-side gate."""
+def bound_history(
+    history: object,
+    *,
+    turns_max: int | None = HISTORY_TURNS_MAX,
+    chars_max: int = HISTORY_TURN_CHARS_MAX,
+) -> list[dict]:
+    """Clamp the replayed conversation tail: the last ``turns_max`` well-formed user/assistant
+    turns (None: every one), each capped to ``chars_max`` chars; anything malformed is dropped.
+    The client is untrusted — this is the server-side gate. HQ replays its own STORED
+    conversation through it with no turn cap and a larger per-message cap (#2137 P2): its size is
+    bounded by HQ's history budget before it gets here."""
     if not isinstance(history, list):
         return []
     turns: list[dict] = []
@@ -295,14 +304,14 @@ def bound_history(history: object) -> list[dict]:
         content = item.get("content")
         if role not in ("user", "assistant") or not isinstance(content, str):
             continue
-        text = content.strip()[:HISTORY_TURN_CHARS_MAX]
+        text = content.strip()[:chars_max]
         if text:
             # The role is written as one of two LITERALS rather than passed through from the
             # client payload. Same values, but now the message that lands on the wire is
             # provably never a system message — readable as such by a reader and by the
             # registry ratchet, which cannot otherwise know what `role` holds here.
             turns.append({"role": "user" if role == "user" else "assistant", "content": text})
-    return turns[-HISTORY_TURNS_MAX:]
+    return turns if turns_max is None else turns[-turns_max:]
 
 
 def _clamp_line(value: object, cap: int) -> str:
@@ -372,11 +381,44 @@ def _result(
     }
 
 
+#: The requests whose answers an ask KEPT, in order (#2137 P2): a stage appends its own only once
+#: its answer is accepted, so a refine that was cut off or invalid leaves the catalog's last. Read
+#: by HQ for its context meter; never part of a result, so the stream route sends nothing of it.
+_KEPT: contextvars.ContextVar[list | None] = contextvars.ContextVar("pulse_kept", default=None)
+
+
+@contextlib.contextmanager
+def measure_kept():
+    """Collect, in order, the request entries (`review.capture_requests`) of accepted stages."""
+    sink: list[dict] = []
+    token = _KEPT.set(sink)
+    try:
+        yield sink
+    finally:
+        _KEPT.reset(token)
+
+
+def _keep(captured: list[dict]) -> None:
+    sink = _KEPT.get()
+    if sink is not None and captured:
+        sink.append(captured[-1])
+
+
+def _unkeep() -> None:
+    """The last kept stage's answer was not kept after all: its measurement goes too."""
+    sink = _KEPT.get()
+    if sink:
+        sink.pop()
+
+
 async def _stage2_refine(
     query: str,
     history: list[dict],
     matches: list[tuple[str, str]],
     by_id: dict[str, dict],
+    *,
+    turns_max: int | None = HISTORY_TURNS_MAX,
+    chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> tuple[str, list[tuple[str, str]]] | None:
     """Content confirmation: gather each top candidate's transcript+live tail and make ONE
     refine call. Returns the refined ``(answer, matches)`` or ``None`` when Stage 2 could
@@ -415,7 +457,7 @@ async def _stage2_refine(
         return None
     user = {"question": query, "candidates": candidates}
     try:
-        with hq_usage.hq_call():  # the footer's HQ token count (#1531)
+        with hq_usage.hq_call(), review.capture_requests() as captured:  # #1531, #2137 P2
             obj = await review.complete_json(
                 [
                     {"role": "system", "content": prompts.effective("ask_verify")},
@@ -424,7 +466,7 @@ async def _stage2_refine(
                     # system message, and applying it here means that fact is readable from the
                     # call site — by a reviewer and by the registry ratchet. It is idempotent, so
                     # re-running it on already-bounded turns is free.
-                    *bound_history(history),
+                    *bound_history(history, turns_max=turns_max, chars_max=chars_max),
                     {"role": "user", "content": json.dumps(user)},
                 ]
             )
@@ -433,6 +475,7 @@ async def _stage2_refine(
     except review.ReviewError:
         return None  # total Stage-2 failure → the Stage-1 answer stands
     answer, refined = _validate_matches(obj, {c["id"] for c in candidates})
+    _keep(captured)  # accepted: the refined result is this request's
     return answer, refined
 
 
@@ -442,6 +485,8 @@ async def ask_events(
     *,
     working_keys: set[str] | None = None,
     scope: tuple[set[str], str] | None = None,
+    turns_max: int | None = HISTORY_TURNS_MAX,
+    chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> AsyncIterator[dict]:
     """One ask, as the events it passes through (#1171) — what ``/api/pulse/ask/stream`` sends.
 
@@ -460,7 +505,7 @@ async def ask_events(
     # "empty catalog → 0 calls" path still surfaces an unconfigured endpoint honestly).
     # `_require_config` is review's own gate — the single source of truth for "configured".
     review._require_config()
-    turns = bound_history(history)
+    turns = bound_history(history, turns_max=turns_max, chars_max=chars_max)
     catalog, mission_catalog = await asyncio.gather(
         asyncio.to_thread(build_catalog, working_keys=working_keys), _mission_catalog()
     )
@@ -503,15 +548,16 @@ async def ask_events(
             *(_catalog_entry(c, now) for c in slice_),
         ],
     }
-    with hq_usage.hq_call():  # the footer's HQ token count (#1531)
+    with hq_usage.hq_call(), review.capture_requests() as captured:  # #1531, #2137 P2
         obj = await review.complete_json(
             [
                 {"role": "system", "content": prompts.effective("ask_catalog")},
-                *bound_history(turns),
+                *bound_history(turns, turns_max=turns_max, chars_max=chars_max),
                 {"role": "user", "content": json.dumps(user)},
             ]
         )
     answer, matches = _validate_matches(obj, set(by_id))
+    _keep(captured)  # accepted: until a refine is accepted too, the answer is this request's
     # The grounding floor (#2016), applied HERE so the provisional answer below, the Stage-2
     # candidate set, the Stage-1 fallback and the final answer all pass through the one filter.
     # A scoped ask is exempt: the operator already chose the candidates (#1213).
@@ -533,7 +579,9 @@ async def ask_events(
         )
         + min(sum(1 for mid, _ in matches if _is_mission(by_id[mid])), STAGE2_MISSION_CANDIDATES),
     }
-    refined = await _stage2_refine(query, turns, matches, by_id)
+    refined = await _stage2_refine(
+        query, turns, matches, by_id, turns_max=turns_max, chars_max=chars_max
+    )
     if refined is None:
         yield {"type": "answer", "final": True, **_result(answer, matches, by_id, "catalog")}
         return
@@ -541,6 +589,8 @@ async def ask_events(
     # A refine that verified but returned no usable answer keeps the Stage-1 line — unless it
     # also kept no match, when that line is about candidates it has just rejected (#2016).
     if not answer2:
+        if matches2:
+            _unkeep()  # the Stage-1 line is kept: so is its measurement (#2137 P2)
         answer2 = answer if matches2 else NO_MATCH_ANSWER
     yield {"type": "answer", "final": True, **_result(answer2, matches2, by_id, "content")}
 
@@ -552,6 +602,8 @@ async def ask(
     working_keys: set[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
     scope: tuple[set[str], str] | None = None,
+    turns_max: int | None = HISTORY_TURNS_MAX,
+    chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> dict:
     """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
 
@@ -568,7 +620,16 @@ async def ask(
     copy of it.
     """
     final: dict | None = None
-    async for ev in ask_events(query, history, working_keys=working_keys, scope=scope):
+    async for ev in ask_events(
+        query,
+        history,
+        working_keys=working_keys,
+        scope=scope,
+        # The client-supplied history of the transient Ask keeps the default clamp; HQ's own
+        # stored conversation, already within its budget, passes its larger limits (#2137 P2).
+        turns_max=turns_max,
+        chars_max=chars_max,
+    ):
         if ev["type"] == "answer" and ev["final"]:
             final = {k: v for k, v in ev.items() if k not in ("type", "final")}
         elif on_event is not None:

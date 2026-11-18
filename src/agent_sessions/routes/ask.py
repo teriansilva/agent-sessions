@@ -247,6 +247,8 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
             ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid, cards), cid
         ),
         "running": ask_orchestrator.running(cid),
+        # #2137 P2: the context meter: the latest answer request's size, and compaction running.
+        "context": ask_orchestrator.context_view(records, cid),
         # #1443 Phase 4: what the follower wrote, in order; the client shows each session's newest
         # one in a single block (#1755).
         "updates": updates,

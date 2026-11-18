@@ -121,6 +121,7 @@ RECORD_TYPES = frozenset(
     {
         "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
         "steps_more", "screen", "interjection", "heard", "heard_link", "said", "counts",
+        "summary",
     }
 )  # fmt: skip
 
@@ -142,6 +143,15 @@ HEARD_DROPPED_MAX = 200
 HEARD_SAID_MAX = 2_000
 #: `counts` records: at most one per call, and only past a bound; capped too, since calls are not.
 HEARD_COUNTS_MAX = 50
+#: A background summary of a conversation's oldest exchanges (#2137 P2): its own guarded field
+#: cap (a summary over it is REFUSED by the summariser, never truncated), and how many one
+#: conversation may hold. Each new one covers everything its predecessor did, so only the newest
+#: is replayed.
+SUMMARY_TEXT_MAX = 6_000
+SUMMARIES_MAX = 3
+#: A turn's context size (#2137 P2): tokens of its latest answer request, measured or estimated,
+#: and the model's window when known. Numbers only.
+CTX_NUMBER_MAX = 10**8
 _HEARD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _LANG_RE = re.compile(r"^[a-z]{2}$")
 #: The worker's turn numbers, and an utterance's length in characters, are bounded like any number.
@@ -524,6 +534,19 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if not (isinstance(code, str) and _ERROR_CODE_RE.match(code)):
                 raise ValueError("malformed status code")
             out["code"] = code
+        if "ctx" in rec:
+            out["ctx"] = _admit_ctx(rec["ctx"])
+    elif kind == "summary":
+        # A background summary of the exchanges up to and including turn `upto` (#2137 P2): HQ's
+        # own words about the conversation, through the store boundary like any text, bound to
+        # the exact prefix it summarised (`n` records, `digest` over them; `append_summary`).
+        out["upto"] = _turn_id({"turn_id": rec.get("upto")})
+        out["n"] = _bounded_int(rec.get("n"), "summary prefix", low=1)
+        digest = rec.get("digest")
+        if not (isinstance(digest, str) and _DIGEST_RE.match(digest)):
+            raise ValueError("malformed summary digest")
+        out["digest"] = digest
+        out["text"] = text(rec.get("text"), SUMMARY_TEXT_MAX)
     elif kind == "assistant":
         out["turn_id"] = _turn_id(rec)
         out["text"] = text(rec.get("text"), TEXT_MAX)
@@ -652,6 +675,76 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 admitted_counts[name] = v
             out[k] = admitted_counts
     return out
+
+
+def _admit_ctx(raw: object) -> dict:
+    if not isinstance(raw, dict) or set(raw) - {"tokens", "estimated", "window"}:
+        raise ValueError("malformed context size")
+    tokens, window = raw.get("tokens"), raw.get("window")
+    if not (
+        isinstance(tokens, int) and not isinstance(tokens, bool) and 0 <= tokens <= CTX_NUMBER_MAX
+    ):
+        raise ValueError("malformed context size")
+    out: dict = {"tokens": tokens, "estimated": raw.get("estimated") is True}
+    if window is not None:
+        if not (
+            isinstance(window, int)
+            and not isinstance(window, bool)
+            and 0 < window <= CTX_NUMBER_MAX
+        ):
+            raise ValueError("malformed context window")
+        out["window"] = window
+    return out
+
+
+def records_digest(records: list[dict]) -> str:
+    """What binds a summary to the exact records it summarised (#2137 P2): a digest over their
+    canonical JSON, the same however the file is read."""
+    import hashlib
+
+    blob = json.dumps(records, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def append_summary(cid: str, rec: dict) -> dict | None:
+    """Publish a summary record ONLY if the conversation still begins with the exact records it
+    summarised (`rec["n"]` of them, `rec["digest"]` over them), it holds fewer than
+    `SUMMARIES_MAX` summaries, and none of them covers as much already. Checked and written under
+    the file's own lock, in one hold: records appended meanwhile stay after it. Returns the record
+    as written, or None when the prefix changed (deleted, swept, rewritten) or a summary already
+    covers it."""
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        admitted = _admit({**rec, "type": "summary"}, secrets)
+        try:
+            fd = os.open(_path(cid), os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            chunks = []
+            os.lseek(fd, 0, os.SEEK_SET)
+            while True:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if sum(len(c) for c in chunks) > READ_MAX_BYTES:
+                    return None
+            records = _parse(b"".join(chunks))
+            n = admitted["n"]
+            if len(records) < n or records_digest(records[:n]) != admitted["digest"]:
+                return None
+            held = [r for r in records if r.get("type") == "summary"]
+            if len(held) >= SUMMARIES_MAX or any(r.get("n", 0) >= n for r in held):
+                return None
+            _write_all(fd, _records_bytes([admitted]))
+        finally:
+            os.close(fd)
+    return admitted
 
 
 def _bounded_int(value: object, what: str, *, low: int = 0) -> int:

@@ -1275,3 +1275,86 @@ def test_total_stage2_failure_streams_a_final_stage1_answer(configured_ai, monke
     assert len(finals) == 1 and evs[-1] is finals[0]
     assert finals[0]["answer"] == "first look" and finals[0]["stage"] == "catalog"
     assert finals[0]["matches"][0]["id"] == target
+
+
+def test_hqs_trusted_history_passes_whole_through_both_stages(configured_ai, monkeypatch):
+    """#2137 P2 (Hermes on #2160): HQ's own stored conversation, already within its budget, is
+    replayed whole by the catalog AND the refine stage when HQ passes its limits; the transient
+    Ask's client history keeps the default clamp (`test_history_is_clamped`)."""
+    _setup(monkeypatch, _sessions(1))
+    target = f"claude:{_uuid(0)}"
+    calls: list = []
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {"answer": "stage1", "matches": [{"id": target, "why": "w"}]},
+                {"answer": "stage2", "matches": [{"id": target, "why": "w"}]},
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("tail", "fp"))
+    history = []
+    for i in range(12):
+        history += [
+            {"role": "user", "content": f"p0 turn {i} " + "x" * 3000},  # grounded on p0
+            {"role": "assistant", "content": f"answer {i}"},
+        ]
+    result = asyncio.run(pulse_chat.ask("q?", history, turns_max=None, chars_max=8000))
+    assert result["stage"] == "content"
+    for body in calls[:2]:  # the catalog request, then the refine request
+        replayed = [m for m in body["messages"][1:-1] if m["role"] in ("user", "assistant")]
+        assert len(replayed) == 24
+        assert replayed[0]["content"].startswith("p0 turn 0") and len(replayed[0]["content"]) > 3000
+
+
+@pytest.mark.parametrize(
+    "refine, kept",
+    [
+        ("accepted", [111, 222]),  # the refined answer is the refine request's
+        ("cut_off", [111]),  # rejected: the catalog answer stands, and so does its measurement
+        ("invalid", [111]),
+        ("failed", [111]),
+        # Valid, but no answer of its own: the catalog line is kept, and so is its measurement.
+        ("empty_answer", [111]),
+    ],
+)
+def test_only_an_accepted_stage_is_measured(configured_ai, monkeypatch, refine, kept):
+    """#2137 P2 (Hermes on #2160): HQ's context meter measures the request whose answer the ask
+    KEEPS. A refine that is cut off, invalid or failed is rejected and the catalog answer stands:
+    its measurement must stand too."""
+    _setup(monkeypatch, _sessions(1))
+    target = f"claude:{_uuid(0)}"
+    n = {"i": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        n["i"] += 1
+        if n["i"] == 1:
+            payload = {"answer": "catalog answer", "matches": [{"id": target, "why": "w"}]}
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": json.dumps(payload)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 111}})  # fmt: skip
+        if refine == "failed":
+            return httpx.Response(502)
+        refined = json.dumps({"answer": "refined", "matches": [{"id": target, "why": "w"}]})
+        empty = json.dumps({"answer": "", "matches": [{"id": target, "why": "w"}]})
+        content = {"accepted": refined, "cut_off": '{"answer": "ref', "invalid": "not json",
+                   "empty_answer": empty}[refine]  # fmt: skip
+        finish = "length" if refine == "cut_off" else "stop"
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 222 if refine == "accepted" else 999}})  # fmt: skip
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("tail", "fp"))
+
+    async def go():
+        with pulse_chat.measure_kept() as got:
+            result = await pulse_chat.ask("which?")
+        return result, got
+
+    result, got = asyncio.run(go())
+    assert [g["tokens"] for g in got] == kept
+    assert result["answer"] == ("refined" if refine == "accepted" else "catalog answer")

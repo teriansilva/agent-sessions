@@ -143,7 +143,7 @@ def found(monkeypatch):
     """`find_sessions` answers with S1 and M1 (the real two-stage find is pinned elsewhere)."""
     asked: list[str] = []
 
-    async def fake_ask(query, history=None, *, working_keys=None, on_event=None, scope=None):
+    async def fake_ask(query, history=None, *, working_keys=None, on_event=None, scope=None, **_):
         asked.append(query)
         if on_event:
             on_event({"type": "progress", "step": "catalog", "sessions": 3, "missions": 1})
@@ -1207,6 +1207,14 @@ def worst_case_bytes() -> int:
     call = max(size(heard), size(said), size(link)) * ask_store.HEARD_SAID_MAX + size(counts) * (
         ask_store.HEARD_COUNTS_MAX
     )
+    # …plus every background summary a conversation may hold (#2137 P2), each at its cap, and the
+    # context size each turn's settled status may carry.
+    summary = {"type": "summary", "upto": tid, "n": ask_store.HEARD_NUMBER_MAX, "digest": QD,
+               "text": big}  # fmt: skip
+    ctx = {"type": "status", "turn_id": tid, "status": "done", "detail": big, "code": "e" * 40,
+           "ctx": {"tokens": ask_store.CTX_NUMBER_MAX, "estimated": True,
+                   "window": ask_store.CTX_NUMBER_MAX}}  # fmt: skip
+    call += size(summary) * ask_store.SUMMARIES_MAX + size(ctx) * ask_store.MAX_TURNS
     return (
         (size(*turn) + steps) * ask_store.MAX_TURNS
         + card * ask_store.MAX_SESSION_PROPOSALS

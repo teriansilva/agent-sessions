@@ -68,7 +68,8 @@ def test_registry_covers_every_system_prompt():
     # #2113 hq_call_interject (on a call: the Commander speaks while HQ works, guarded).
     # #2136 hq_turn_watch (a second model judges whether an HQ turn converges, guarded) and
     # hq_turn_notes (what HQ read becomes its notes before it is dropped for room, guarded).
-    assert len(prompts.REGISTRY) == 50
+    # #2137 P2 hq_conversation_compact (the background summary of a long conversation, guarded).
+    assert len(prompts.REGISTRY) == 51
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -95,6 +96,9 @@ def test_registry_covers_every_system_prompt():
         # `hq_turn_watch` (#2136) reads HQ's own asides and notes, which can paraphrase what
         # agents' sessions said, and its strategy steers what HQ does next.
         "hq_turn_watch",
+        # `hq_conversation_compact` (#2137 P2) reads the conversation, whose answers quote tool
+        # results and agents' words, and its summary is replayed to HQ on every later turn.
+        "hq_conversation_compact",
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
@@ -197,6 +201,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?
     "voice_confirm_judge": "d0360ad9fd195a9a",  # #1715: did a spoken reply confirm a card?
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
+    "hq_conversation_compact": "c7fe648ee4b538ff",  # #2137 P2: the background summary
     "hq_notify": "172738181e0bcb1e",  # #1837: HQ's one line about a notification, facts only
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off

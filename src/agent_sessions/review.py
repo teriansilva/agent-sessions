@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -1523,15 +1524,54 @@ def _assert_registered_system_prompts(messages: list[dict]) -> None:
 
 
 def _note_hq_usage(hq: bool, body: dict, r) -> None:
-    """Count an HQ call's tokens from the response this transport already has (#1531). Numbers
-    only; best-effort — telemetry never fails or alters a model call."""
-    if not hq or getattr(r, "status_code", None) != 200:
+    """Count an HQ call's tokens from the response this transport already has (#1531), and hand
+    the request's size to a `capture_requests` scope if one is open (#2137 P2). Numbers only;
+    best-effort — telemetry never fails or alters a model call."""
+    sink = _CAPTURE.get()
+    if (not hq and sink is None) or getattr(r, "status_code", None) != 200:
         return
     try:
         p, t, est = hq_usage.usage_from(r.json(), body.get("messages") or [], body.get("tools"))
-        hq_usage.record(p, t, est)
+        if hq:
+            hq_usage.record(p, t, est)
+        if sink is not None:
+            # The model AS SENT: an HQ row's or a call's override, or the auto choice, applied.
+            # Measured when the provider gave the PROMPT's count (`est` above is about the
+            # total), else the request's size estimate.
+            usage = r.json().get("usage")
+            told = isinstance(usage, dict) and isinstance(usage.get("prompt_tokens"), int)
+            sink.append({"model": str(body.get("model") or ""), "tokens": p, "estimated": not told})
     except Exception:  # noqa: BLE001 — a malformed body is the caller's to report, not ours
         return
+
+
+#: The answer requests one scope made (#2137 P2): what the context meter measures. Opened only
+#: around the request whose answer a turn keeps, so a judge or a watcher is never measured.
+_CAPTURE: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "review_capture", default=None
+)
+
+
+@contextlib.contextmanager
+def capture_requests():
+    """Collect ``{"model", "tokens", "estimated"}`` for every successful request in this scope."""
+    sink: list[dict] = []
+    token = _CAPTURE.set(sink)
+    try:
+        yield sink
+    finally:
+        _CAPTURE.reset(token)
+
+
+def answering_model(cfg: dict, requested: str | None = None) -> str:
+    """The model a request asking for ``requested`` (default: the configured one) is SENT with
+    in this context, as `_post_chat` swaps it: an HQ row's or a call's override when the caller
+    did not pin its own. The auto choice is not known before the request: the configured name."""
+    requested = requested or str(cfg.get("model") or "")
+    override = ai_providers.override_model()
+    if override and not ai_providers.model_pinned() and requested == cfg.get("model"):
+        return override
+    return requested
 
 
 async def complete_json(messages: list[dict], *, model: str | None = None) -> dict:
@@ -1666,14 +1706,69 @@ async def list_models(*, force: bool = False, cfg: dict | None = None) -> list[s
     if not isinstance(raw, list):
         raise ModelsUnsupportedError("model listing returned an unexpected shape")
     models: list[str] = []
+    windows: dict[str, int] = {}
     for item in raw:
         if isinstance(item, str):
             models.append(item)
         elif isinstance(item, dict) and isinstance(item.get("id"), str):
             models.append(item["id"])
+            window = _listed_window(item)
+            if window is not None:
+                windows[item["id"]] = window
     models = sorted(set(models))
     if models:
         ai_providers.remember_listing(cfg, ai_providers.fingerprint(cfg.get("api_key")), models)
     if not draft:
         _models_cache[ck] = (now, models)
+        _windows_cache[ck] = (now, windows)
     return models
+
+
+#: Model id → context window (tokens), from the same listing (#2137 P2), per saved connection.
+_windows_cache: dict[str, tuple[float, dict[str, int]]] = {}
+#: The fields an OpenAI-compatible listing uses for a model's window: OpenRouter and LiteLLM's
+#: `context_length`, vLLM's `max_model_len`, others' `context_window`.
+_WINDOW_FIELDS = ("context_length", "max_model_len", "context_window", "max_context_length")
+
+
+def _listed_window(item: dict) -> int | None:
+    for key in _WINDOW_FIELDS:
+        v = item.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and 1_000 <= v <= 100_000_000:
+            return v
+    return None
+
+
+def context_window(model: str) -> int | None:
+    """The saved connection's window for `model` in tokens, from its own model listing (#2137
+    P2), as last read. Never blocks and never calls out: None when unknown or not read yet. A
+    turn calls `refresh_context_windows` beside itself to fill it."""
+    try:
+        hit = _windows_cache.get(_cache_key(_require_config()))
+    except Exception:  # noqa: BLE001 — not configured, or not readable: unknown
+        return None
+    return hit[1].get(model) if hit else None
+
+
+#: When a listing was last tried for a connection, so a listing that fails is not retried on
+#: every turn.
+_windows_tried: dict[str, float] = {}
+
+
+async def refresh_context_windows() -> None:
+    """Read the listing (through `list_models` and its cache) when this connection's windows are
+    unknown or stale, at most once per `MODELS_CACHE_TTL_S`, success or not."""
+    try:
+        cfg = _require_config()
+    except Exception:  # noqa: BLE001
+        return
+    ck = _cache_key(cfg)
+    now = time.monotonic()
+    hit = _windows_cache.get(ck)
+    if (hit and now - hit[0] < MODELS_CACHE_TTL_S) or now - _windows_tried.get(ck, -1e9) < (
+        MODELS_CACHE_TTL_S
+    ):
+        return
+    _windows_tried[ck] = now
+    with contextlib.suppress(Exception):
+        await list_models(force=hit is None)

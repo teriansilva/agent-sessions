@@ -387,6 +387,21 @@ def _no_usage_analytics(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_model_window_reads(monkeypatch) -> None:
+    """HQ reads the endpoint's model listing beside a turn for the model's window (#2137 P2). A
+    suite's fake endpoint would see that extra GET in whichever test runs first, so it is off by
+    default; the tests of the window itself (`test_hq_context.py`) turn it back on."""
+    from agent_sessions import review
+
+    async def _off() -> None:
+        return None
+
+    monkeypatch.setattr(review, "refresh_context_windows", _off)
+    review._windows_cache.clear()
+    review._windows_tried.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_prefs(tmp_path, monkeypatch) -> None:
     """Point operator prefs (#465) at a per-test tmp file so a LIVE config on the machine running
     the suite can't leak in. ``prefs.get_project_roots()`` — read FIRST by
