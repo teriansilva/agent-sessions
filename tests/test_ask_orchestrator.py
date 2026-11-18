@@ -333,6 +333,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "propose_message": "proposal",
         "withdraw_card": "proposal",  # #2120: dismisses a card HQ proposed in this conversation
         "list_cards": "read",  # #2120: this conversation's cards and their ids
+        "note": "read",  # #2136: HQ's own working note for the turn (never progress)
     }
     # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]
@@ -400,19 +401,19 @@ def _refused_search() -> dict:
     return call("session_status", {"key": "claude:not-a-key-this-turn-returned"})
 
 
-def test_identical_refused_calls_are_nudged_then_wrapped_up_with_an_answer(app, ai):
+def test_identical_refused_calls_are_nudged_then_re_steered_and_the_turn_goes_on(app, ai):
     """The 2026-11-17 call: the same refused call, over and over. The first is a fresh attempt;
-    after NUDGE_AFTER REPEATS the model is told it is going in circles; after WRAP_AFTER it gets
-    one request with the tools closed, and its answer is stored as the turn's answer, marked
-    `no_progress`."""
-    n = ask_orchestrator.WRAP_AFTER + 1  # the first try, then WRAP_AFTER repeats
+    after NUDGE_AFTER REPEATS the model is told it is going in circles; from WRAP_AFTER on it is
+    re-steered every round — the tools stay open and the turn goes on until the model answers
+    (#2136, the operator's direction: never stop, sanity-check and continue)."""
+    n = ask_orchestrator.WRAP_AFTER + 3
     script = ai(*[_refused_search() for _ in range(n)], answer("I found 2059, not the epic."))
     cid = app.new()
     turn = app.ask(cid, "where is the federation epic?").json()["turn"]
     assert turn["status"] == "done" and turn["answer"] == "I found 2059, not the epic."
-    assert len(script.bodies) == n + 1  # n rounds, then the one wrap-up request
+    assert len(script.bodies) == n + 1  # n rounds, then the model's own answer
     statuses = [r for r in ask_store.read(cid) if r["type"] == "status"]
-    assert statuses[-1]["status"] == "done" and statuses[-1]["code"] == "no_progress"
+    assert statuses[-1]["status"] == "done" and "code" not in statuses[-1]
 
     def notes(i: int) -> list[str]:
         return [json.loads(m["content"]).get("hq_note", "") for m in script.tool_results(i)]
@@ -420,24 +421,24 @@ def test_identical_refused_calls_are_nudged_then_wrapped_up_with_an_answer(app, 
     nudge = ask_orchestrator.NUDGE_AFTER + 1  # the request after the NUDGE_AFTER-th repeat
     assert not any(notes(nudge - 1))
     assert "without learning anything new" in notes(nudge)[-1]
+    resteer = ask_orchestrator.WRAP_AFTER + 1
+    for i in range(resteer, n + 1):  # every round past WRAP_AFTER, tools still open
+        assert "Do not repeat a call" in notes(i)[-1]
     # The repeat is named: from the second identical call on, its result says so.
     assert "step 1" in json.loads(script.tool_results(2)[-1]["content"])["loop_guard"]
-    wrap = script.bodies[-1]
-    assert wrap["tool_choice"] == "none" and wrap["tools"]  # declared, closed
-    assert "tools are closed" in notes(len(script.bodies) - 1)[-1]
-    # Never a request forced before the wrap-up.
-    assert all("tool_choice" not in b for b in script.bodies[:-1])
+    assert all("tool_choice" not in b for b in script.bodies)
 
 
-def test_a_wrap_up_without_an_answer_fails_the_turn_as_no_progress(app, ai):
-    """The wrap-up still calls tools (or says nothing): the turn fails, with the same code."""
-    script = ai(_refused_search())  # every request, the wrap-up's included
+def test_the_server_never_closes_the_tools_on_a_long_circle(app, ai):
+    """Three times WRAP_AFTER rounds of the same refused call, then an answer: never a request
+    forced to answer, never a `no_progress` turn. Only the Commander's Stop ends a circle."""
+    n = 3 * ask_orchestrator.WRAP_AFTER
+    script = ai(*[_refused_search() for _ in range(n)], answer("done"))
     cid = app.new()
     turn = app.ask(cid, "epic?").json()["turn"]
-    assert turn["status"] == "failed"
-    assert len(script.bodies) == ask_orchestrator.WRAP_AFTER + 2  # a try, the repeats, the wrap
-    statuses = [r for r in ask_store.read(cid) if r["type"] == "status"]
-    assert statuses[-1]["code"] == "no_progress"
+    assert turn["status"] == "done" and turn["answer"] == "done"
+    assert len(script.bodies) == n + 1
+    assert all("tool_choice" not in b for b in script.bodies)
 
 
 def test_one_round_that_learns_something_resets_the_count(app, ai, monkeypatch):
@@ -456,7 +457,7 @@ def test_one_round_that_learns_something_resets_the_count(app, ai, monkeypatch):
 
 def test_the_same_read_with_the_same_result_is_not_progress(app, ai, monkeypatch):
     """A read that answers the same thing every time teaches nothing after the first: it is
-    wrapped up like refusals are (a poll that SEES something new would be progress)."""
+    re-steered like refusals are (a poll that SEES something new would be progress)."""
 
     async def same(turn, args):
         return {"projects": [{"name": "api"}]}, {}
@@ -466,10 +467,11 @@ def test_the_same_read_with_the_same_result_is_not_progress(app, ai, monkeypatch
     script = ai(*[call("read_same", cid=f"p{i}") for i in range(n + 1)], answer("projects"))
     cid = app.new()
     turn = app.ask(cid, "projects?").json()["turn"]
-    # Round 1 learned the list; rounds 2..n+1 learned nothing; then the wrap-up answers.
+    # Round 1 learned the list; rounds 2..n+1 learned nothing and were re-steered; the model
+    # answered on its own, the tools never closed.
     assert turn["status"] == "done" and turn["answer"] == "projects"
     assert len(script.bodies) == n + 2
-    assert script.bodies[-1]["tool_choice"] == "none"
+    assert all("tool_choice" not in b for b in script.bodies)
     assert "step 1" in json.loads(script.tool_results(2)[-1]["content"])["loop_guard"]
 
 

@@ -17,6 +17,7 @@ def test_defaults_and_partial_patches_preserve_the_other_row(app):  # noqa: F811
     defaults = {
         "typed": {"model": "", "thinking": "hq"},
         "mission": {"model": "", "thinking": "hq"},
+        "watcher": {"model": "", "thinking": "hq"},  # #2136
     }
     assert app.c.get("/api/config").json()["hq_models"] == defaults
     r = app.c.post(
@@ -28,6 +29,7 @@ def test_defaults_and_partial_patches_preserve_the_other_row(app):  # noqa: F811
     assert prefs.get_hq_models() == {
         "typed": {"model": "chosen", "thinking": "hq"},
         "mission": {"model": "", "thinking": "auto"},
+        "watcher": {"model": "", "thinking": "hq"},
     }
 
 

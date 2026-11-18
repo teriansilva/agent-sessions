@@ -1425,6 +1425,8 @@ export interface AskFollow {
  *  turn runs, then exactly one `turn` (the settled turn) or one `error`. */
 export type AskTurnEvent =
   | { type: "progress"; step: "classify" }
+  // The turn watcher changed HQ's approach (#2136).
+  | { type: "progress"; step: "replan"; text: string }
   | {
       type: "progress";
       step: "catalog";

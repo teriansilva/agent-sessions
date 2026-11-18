@@ -50,6 +50,8 @@ EXPECTED_SITES = {
     ("ask_orchestrator.py", "ask_route"),  # #2028: HQ's question router, no-tools endpoints
     ("voice_judge.py", "voice_confirm_judge"),  # #1715: did a spoken reply confirm a card?
     ("voice_judge.py", "hq_call_interject"),  # #2113: the Commander speaks while HQ works
+    ("hq_watch.py", "hq_turn_watch"),  # #2136: is this HQ turn getting anywhere?
+    ("hq_watch.py", "hq_turn_notes"),  # #2136: what HQ read becomes its notes
     ("hq_dispatch.py", "hq_notify"),  # #1837: HQ's one line about a notification
     ("ask_orchestrator.py", "hq_handover"),  # the Commander switched contact mid-conversation
     ("ask_orchestrator.py", "hq_handover_plain"),  # the same, switched to Off

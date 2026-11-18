@@ -317,6 +317,7 @@ function applyEvent(turn: AskTurn, ev: AskTurnEvent): AskTurn {
     };
   if (ev.step === "content") return { ...t, step: { step: "content", candidates: ev.candidates } };
   if (ev.step === "tool") return { ...t, step: { step: "tool", tool: ev.tool } };
+  if (ev.step === "replan") return { ...t, step: { step: "replan", text: ev.text } };
   return { ...t, step: { step: "thinking", round: ev.round } };
 }
 

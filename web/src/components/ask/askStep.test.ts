@@ -33,3 +33,9 @@ test("the search says what it searched: matching sessions, or only recent ones (
   );
   expect(askStepLabel({ step: "classify" })).toBe("Reading your question…");
 });
+
+test("a changed approach reads as the watcher's own strategy (#2136)", () => {
+  expect(askStepLabel({ step: "replan", text: "decide from the list, then propose the cards" })).toBe(
+    "Changing approach: decide from the list, then propose the cards",
+  );
+});

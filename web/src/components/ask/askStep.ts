@@ -10,7 +10,9 @@ export type AskStep =
   | { step: "instruct"; sessions: number }
   // A durable Ask turn's own steps (#1443): the model reading, and the read tool it is calling.
   | { step: "thinking"; round: number }
-  | { step: "tool"; tool: string };
+  | { step: "tool"; tool: string }
+  // The turn watcher changed HQ's approach (#2136): its new strategy, in its own words.
+  | { step: "replan"; text: string };
 
 /** What each HQ tool does, in the operator's words (#2076): ONE table for the running row
  *  ("Reading a session's status…") and for the step list ("Reading a session's status"), covering
@@ -66,6 +68,7 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   list_recipients: { label: "Listing the recipients", noun: ["recipient", "recipients"] },
   propose_message: { label: "Preparing the message for you to send" },
   withdraw_card: { label: "Withdrawing a card" },
+  note: { label: "Keeping a note", noun: ["note", "notes"] },
   list_cards: { label: "Looking at the cards", noun: ["card", "cards"] },
   // #2137: what waits on the Commander, and the bell.
   needs_you: { label: "Checking what needs you", noun: ["item", "items"] },
@@ -99,6 +102,7 @@ export function askStepLabel(step: AskStep | null): string {
   if (step.step === "thinking")
     return step.round === 0 ? "Reading your question…" : "Putting the answer together…";
   if (step.step === "tool") return `${toolLabel(step.tool)}…`;
+  if (step.step === "replan") return `Changing approach: ${step.text}`;
   if (step.step === "instruct") {
     return step.sessions
       ? `Drafting the instruction for ${plural(step.sessions, "session", "sessions")}…`

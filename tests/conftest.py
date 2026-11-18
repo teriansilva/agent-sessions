@@ -257,6 +257,26 @@ def pytest_sessionfinish(session, exitstatus) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_turn_watcher_model(monkeypatch):
+    """The turn watcher (#2136) asks the AI endpoint for its verdicts. A test that scripts the
+    endpoint's replies must not have one taken by a watcher request, so by default it gives NO
+    verdict (the turn goes on; the #2116 guard stays the fallback). `test_hq_watch*.py` drives
+    the watcher with its own judge, and pins `judge_model` against a mock transport."""
+    from agent_sessions import hq_watch
+
+    async def no_verdict(_digest: str):
+        return None
+
+    async def no_notes(_request, _notes, _items):
+        return []
+
+    monkeypatch.setattr(hq_watch, "judge_model", no_verdict)
+    # Remembering before dropping (#2136) asks the endpoint too: by default it writes nothing,
+    # so the results are dropped exactly as before.
+    monkeypatch.setattr(hq_watch, "summarise", no_notes)
+
+
+@pytest.fixture(autouse=True)
 def _real_store_tripwire():
     """Fail the test that touched a real store, even if the app swallowed the exception."""
     st = _state()

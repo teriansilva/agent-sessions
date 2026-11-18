@@ -598,7 +598,8 @@ def set_hq_route(patch: object, path: Path | None = None) -> dict:
 
 
 # Only the missing rows live here. Routing and calls retain their existing keys/APIs.
-HQ_MODEL_ROWS = ("typed", "mission")
+#: `watcher` (#2136): the turn watcher's own model; empty inherits the question router's.
+HQ_MODEL_ROWS = ("typed", "mission", "watcher")
 HQ_MODEL_DEFAULTS = {"model": "", "thinking": "hq"}
 
 
@@ -622,7 +623,7 @@ def get_hq_models(path: Path | None = None) -> dict:
 
 def validate_hq_models_patch(patch: object) -> dict:
     if not isinstance(patch, dict) or not patch or set(patch) - set(HQ_MODEL_ROWS):
-        raise ValueError("hq_models must contain typed or mission settings")
+        raise ValueError("hq_models must contain typed, mission or watcher settings")
     clean = {}
     for row, block in patch.items():
         if not isinstance(block, dict) or not block or set(block) - set(HQ_MODEL_DEFAULTS):

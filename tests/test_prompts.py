@@ -66,7 +66,9 @@ def test_registry_covers_every_system_prompt():
     # #2028 ask_route (HQ's question router on an endpoint without tools, guarded).
     # #1997 session_clusters (HQ groups a project's sessions by topic, guarded).
     # #2113 hq_call_interject (on a call: the Commander speaks while HQ works, guarded).
-    assert len(prompts.REGISTRY) == 48
+    # #2136 hq_turn_watch (a second model judges whether an HQ turn converges, guarded) and
+    # hq_turn_notes (what HQ read becomes its notes before it is dropped for room, guarded).
+    assert len(prompts.REGISTRY) == 50
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -87,6 +89,12 @@ def test_registry_covers_every_system_prompt():
         # `ask_route` (#2028) reads the conversation, whose earlier answers quote what searches
         # found in agents' sessions, and its direct answer goes straight to the Commander.
         "ask_route",
+        # `hq_turn_notes` (#2136) reads tool results — agents' screens, transcripts, connector
+        # text — and its notes steer what HQ does next.
+        "hq_turn_notes",
+        # `hq_turn_watch` (#2136) reads HQ's own asides and notes, which can paraphrase what
+        # agents' sessions said, and its strategy steers what HQ does next.
+        "hq_turn_watch",
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
@@ -166,7 +174,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "a94cb6d7151ee0ec",  # #2137 (needs_you, set-up); #1960 P2; #1950
+    "ask_orchestrator": "449e27527aa21fc8",  # #2137 (needs_you, set-up); #1960 P2; #1950; #2136
     "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
@@ -185,6 +193,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_call": "f58f3e14b43ffc63",  # #1397; #1668; #1681; #2113 asides; #2120 change/dismiss
     "hq_call_detailed": "affda45c6fc4e930",  # #1397 (#1626); #1668; #1681; #2113; #2120
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
+    "hq_turn_notes": "7ac37f5362f515f9",  # #2136: what HQ read becomes its notes
+    "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?
     "voice_confirm_judge": "d0360ad9fd195a9a",  # #1715: did a spoken reply confirm a card?
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
     "hq_notify": "172738181e0bcb1e",  # #1837: HQ's one line about a notification, facts only

@@ -69,6 +69,7 @@ from . import (
     hq_calls_settings,
     hq_contacts,
     hq_usage,
+    hq_watch,
     mission_plan,
     missions,
     prefs,
@@ -138,12 +139,13 @@ DROPPED_RESULT = "[an earlier result, dropped to make room]"
 #: The loop guard (#2113). NOT a cap on steps or rounds (#2076 stays): it counts consecutive
 #: ROUNDS that brought nothing new, in two streaks. A turn that keeps learning runs as long as it
 #: needs to. A round that only REPEATS (calls the turn already made, or results with nothing new)
-#: extends the repeat streak: told so after `NUDGE_AFTER` of them, asked to answer with what it
-#: has, tools closed, after `WRAP_AFTER`. A round that TRIES something new (a call not made
-#: before) that is refused or teaches nothing breaks the repeat streak but not the second one:
-#: rounds without anything new at all are told so after `NUDGE_AFTER_TRYING` and wrapped up after
-#: `WRAP_AFTER_TRYING` — above `MAX_SENDS_PER_TURN`, so ten refused sends to ten sessions still
-#: reach the eleventh that takes one.
+#: extends the repeat streak: told so after `NUDGE_AFTER` of them, and from `WRAP_AFTER` on
+#: re-steered every round (`LOOP_RESTEER_NOTE`) — the tools stay open and the turn goes on
+#: (#2136, the operator's direction: never stop, sanity-check and continue). A round that TRIES
+#: something new (a call not made before) that is refused or teaches nothing breaks the repeat
+#: streak but not the second one: rounds without anything new at all are told so after
+#: `NUDGE_AFTER_TRYING` and re-steered from `WRAP_AFTER_TRYING` — above `MAX_SENDS_PER_TURN`, so
+#: ten refused sends to ten sessions still reach the eleventh that takes one.
 NUDGE_AFTER = 3
 WRAP_AFTER = 6
 NUDGE_AFTER_TRYING = 9
@@ -168,18 +170,15 @@ LOOP_NUDGE_NOTE = (
     "You have made {rounds} rounds of tool calls without learning anything new. Change your "
     "approach, or answer the Commander with what you have."
 )
-LOOP_WRAP_NOTE = (
-    "You have made {rounds} rounds of tool calls without learning anything new, so the tools are "
-    "closed for this turn. Answer the Commander now with what you found, and say plainly what you "
-    "could not find."
+LOOP_RESTEER_NOTE = (
+    "You have made {rounds} rounds of tool calls without learning anything new. Do not repeat a "
+    "call you already made: its result is above. Answer the Commander with what you found, or try "
+    "something you have not tried yet."
 )
 #: An aside on a call (#2113 P2): the model's own words beside a round's tool calls, said aloud
 #: while it works. One line, at most this long, AFTER the store's whole text boundary.
 ASIDE_MAX = 160
 _ASIDE_MARKUP_RE = re.compile(r"[*`#>_~|\[\]]+")
-#: The turn's outcome when the guard wrapped it up: an answer (`done`) or none (`failed`).
-NO_PROGRESS = "no_progress"
-NO_PROGRESS_FAILED = "HQ went in circles and could not settle on an answer — ask again"
 #: How long the stop route waits for the turn to settle before it answers with the turn as it is
 #: (an effect in flight, a send's delivery, runs to its recorded outcome first).
 STOP_WAIT_S = 5.0
@@ -340,7 +339,7 @@ def aside_text(text: object) -> str | None:
     return line or None
 
 
-def _with_note(content: str, key: str, note: str) -> str:
+def _with_note(content: str, key: str, note: object) -> str:
     """A tool result for the model with one more field: the server's own note to it."""
     try:
         value = json.loads(content)
@@ -557,6 +556,16 @@ class _Turn:
     #: carried into a model request. Taken by `_take_steers`; any left at the settle are handed
     #: back to the call (`take_unconsumed`), so each is used exactly once.
     steers: list[str] = field(default_factory=list)
+    #: How many times the Commander steered this turn (#2136): a watcher verdict judged before
+    #: the newest steer is stale.
+    steer_seq: int = 0
+    #: The turn watcher (#2136): a second model judging whether this turn converges. Set by
+    #: `run_turn`; memory only.
+    watch: hq_watch.Watcher | None = None
+    #: HQ's own working notes for this turn (#2136), sent with every request. Memory only.
+    notes: hq_watch.Notes = field(default_factory=hq_watch.Notes)
+    #: Tool-call ids whose results were already summarised into the notes (#2136).
+    summarised: set[str] = field(default_factory=set)
     #: Cards (proposal records, a nudge's own aside) this conversation holds, counted when the
     #: turn began and as its tools write them: a propose tool is refused at
     #: `ask_store.MAX_SESSION_PROPOSALS`, BEFORE it writes anything.
@@ -2350,6 +2359,16 @@ async def _list_cards(turn: _Turn, args: dict) -> tuple[dict, dict]:
     )
 
 
+async def _note(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """HQ's own working note for this turn (#2136): set, overwrite or (empty text) remove one
+    entry. Never stored beyond the turn; the notes ride on every tool result as `turn_notes`."""
+    key, text = args.get("key"), args.get("text")
+    if not isinstance(key, str) or not key.strip() or not isinstance(text, str):
+        raise _ToolRefused("refused: a note needs a key and a text", "bad_arguments")
+    count = await asyncio.to_thread(turn.notes.set, key, text)
+    return {"noted": True, "notes": count}, {"count": count}
+
+
 async def _replace_refusal(turn: _Turn, name: str, args: dict) -> str:
     """Why this call's ``replaces`` can't be honoured, checked BEFORE the tool stages anything."""
     from . import ask_proposals
@@ -3937,6 +3956,23 @@ TOOLS: dict[str, Tool] = {
             _withdraw_card,
         ),
         Tool(
+            "note",
+            "read",
+            _spec(
+                "note",
+                "Keep a short working note for this turn: a finding, what is done, what is left. "
+                "One key per item (a session, a step); the same key overwrites, an empty text "
+                "removes it. Your notes come back with every tool result as turn_notes, so you "
+                "never need to read the same thing twice.",
+                {
+                    "key": {"type": "string", "description": "what the note is about"},
+                    "text": {"type": "string", "description": "the note, one short line"},
+                },
+                ["key", "text"],
+            ),
+            _note,
+        ),
+        Tool(
             "list_cards",
             "read",
             _spec(
@@ -4007,7 +4043,7 @@ DRAFT_READ_TOOLS = frozenset(
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool", "list_procedures",
         "list_memory_notebooks", "search_memory", "read_memory", "list_cards",
-        "needs_you", "notifications",
+        "needs_you", "notifications", "note",
     }
 )  # fmt: skip
 
@@ -5030,7 +5066,11 @@ async def _step(turn: _Turn, round_no: int, n_in_round: int, call: dict) -> str:
         result, stored, meta, effect = await _call(turn, name, args)
     finally:
         turn.live = None
-    result = turn.loop.observe(n, name, args, result, effect)
+    if name not in hq_watch.NEUTRAL_TOOLS:
+        # A note is never progress nor a repeat (#2136): writing one cannot reset a streak.
+        result = turn.loop.observe(n, name, args, result, effect)
+    if turn.watch is not None:
+        turn.watch.observe(name, args, result, effect)
     ms = int((time.monotonic() - began) * 1000)
     turn.steps = n
     record = None
@@ -5079,11 +5119,15 @@ async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it. A
     spoken call turn is asked with the call's own thinking level and model (#1996, Settings →
     HQ calls; by default no extended thinking on HQ's model), in every request it makes."""
-    if turn.via == "call":
-        with ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+    turn.watch = hq_watch.Watcher(turn.question, notes=turn.notes, steer=lambda: turn.steer_seq)
+    try:
+        if turn.via == "call":
+            with ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+                return await _run_turn(turn)
+        with ai_providers.model_override(**prefs.get_hq_models()["typed"]):
             return await _run_turn(turn)
-    with ai_providers.model_override(**prefs.get_hq_models()["typed"]):
-        return await _run_turn(turn)
+    finally:
+        await turn.watch.close()
 
 
 async def _run_turn(turn: _Turn) -> list[dict]:
@@ -5133,6 +5177,9 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             {"type": "progress", "step": "thinking", "round": round_no, "steps": turn.steps}
         )
         tools = tool_specs(turn.via)
+        # What HQ read is kept as notes BEFORE `_fit` drops it for room (#2136): it never has to
+        # read it again. The replayed history and the newest round are never dropped.
+        await _remember_before_dropping(turn, convo, question_at, tools)
         fits = _fit(convo, question_at, tools, fit)
         body: dict = {
             "model": cfg["model"],
@@ -5203,6 +5250,8 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 aside = await asyncio.to_thread(aside_text, replay)
                 if aside:
                     turn.progress({"type": "aside", "text": aside})
+                    if turn.watch is not None:
+                        turn.watch.said(aside)
             convo.append({"role": "assistant", "content": replay, "tool_calls": clean})
             for n, call in enumerate(clean):
                 if turn.asked is not None:
@@ -5215,16 +5264,31 @@ async def _run_turn(turn: _Turn) -> list[dict]:
                 # `ask_operator` ends the turn: the operator holds the next move.
                 return _asked_records(turn)
             round_no += 1
+            # HQ's working notes ride on the newest result, every round (#2136): the newest
+            # round is never dropped to make room, so they always reach the model.
+            _carry_notes(turn, convo)
             # The loop guard (#2113): never a cap — only rounds that learned nothing count.
             verdict = turn.loop.end_round()
             idle = turn.loop.idle
-            if verdict == "wrap":
-                return await _wrap_up(turn, cfg, convo, question_at, fit, idle)
-            if verdict == "nudge":
-                # Told once per streak, inside the newest result: a user message right after a
-                # tool message is refused by some endpoints.
+            # Never an end (#2136, the operator's direction): the guard and the watcher re-steer;
+            # the turn ends when HQ answers, fails for a real reason, or the Commander stops it.
+            act = _watched(turn, verdict, _forgotten(convo, fit))
+            if act is not None and act[0] == "replan":
+                # Carried as DATA on the newest result, never as system text (#2136): advice on
+                # approach, which the guarded prompt says never authorises an effect.
+                convo[-1]["content"] = _with_note(convo[-1]["content"], "watcher_note", act[1])
+                turn.progress({"type": "progress", "step": "replan", "text": act[1]})
+                if turn.via == "call":
+                    said = await asyncio.to_thread(aside_text, f"Changing approach: {act[1]}")
+                    if said:
+                        turn.progress({"type": "aside", "text": said})
+            elif act is not None and act[0] in ("guard_nudge", "guard_resteer"):
+                # Inside the newest result: a user message right after a tool message is refused
+                # by some endpoints. Only one note per round: a replan takes its place. Past
+                # `WRAP_AFTER` the note re-steers every round — the tools stay open.
+                note = LOOP_NUDGE_NOTE if act[0] == "guard_nudge" else LOOP_RESTEER_NOTE
                 convo[-1]["content"] = _with_note(
-                    convo[-1]["content"], "hq_note", LOOP_NUDGE_NOTE.format(rounds=idle)
+                    convo[-1]["content"], "hq_note", note.format(rounds=idle)
                 )
             continue
         if isinstance(content, str) and _leaked_calls(content):
@@ -5274,6 +5338,8 @@ async def _take_steers(turn: _Turn, convo: list[dict], question_at: int) -> None
         else:
             q["content"] = f"{q.get('content') or ''}\n\n{note}"
     await _turn_append(turn, {"type": "interjection", "turn_id": turn.turn_id, "text": words})
+    if turn.watch is not None:
+        turn.watch.heard(words)  # evidence for the watcher (#2136), and a reason to look
 
 
 def steer(cid: str, turn_id: str, text: str) -> bool:
@@ -5291,6 +5357,7 @@ def steer(cid: str, turn_id: str, text: str) -> bool:
     if not words:
         return False
     turn.steers.append(words)
+    turn.steer_seq += 1
     return True
 
 
@@ -5299,55 +5366,106 @@ def take_unconsumed(cid: str, turn_id: str) -> list[str]:
     return _UNTAKEN.pop((cid, turn_id), [])
 
 
-async def _wrap_up(
-    turn: _Turn, cfg: dict, convo: list[dict], question_at: int, fit: _Fit, rounds: int
-) -> list[dict]:
-    """The turn went `rounds` rounds without learning anything (#2113): ONE last request, tools
-    closed (`tool_choice: none` — the tools stay declared, since the history holds calls to
-    them), asking for the answer it has. Stored like any answer, its `done` status marked
-    `no_progress`; no usable answer fails the turn with the same code."""
-
-    def failed() -> list[dict]:
-        return [_status(turn, "failed", NO_PROGRESS_FAILED, NO_PROGRESS)]
-
-    if turn.stop.is_set():
-        raise _Stopped
-    convo[-1]["content"] = _with_note(
-        convo[-1]["content"], "hq_note", LOOP_WRAP_NOTE.format(rounds=rounds)
+def _forgotten(convo: list[dict], fit: _Fit) -> int:
+    """Tool results the request has dropped to make room so far (`_fit`): its whole dropped
+    rounds' calls and the results replaced by `DROPPED_RESULT`."""
+    return fit.dropped + sum(
+        1 for m in convo if m.get("role") == "tool" and m.get("content") == DROPPED_RESULT
     )
-    await _take_steers(turn, convo, question_at)
-    tools = tool_specs(turn.via)
-    _fit(convo, question_at, tools, fit)
-    turn.progress({"type": "progress", "step": "thinking", "steps": turn.steps})
-    body: dict = {
-        "model": cfg["model"],
-        "messages": convo,
-        "temperature": 0,
-        "stream": False,
-        "tools": tools,
-        "tool_choice": "none",
-    }
-    try:
-        with hq_usage.hq_call():
-            r = await _stoppable(turn, review.post_chat_response(cfg, body))
-        if r.status_code != 200:
-            return failed()
-        choice = r.json()["choices"][0]
-        message = choice["message"]
-        content = message.get("content")
-    except (review.TransportTimeout, review.ReviewError):
-        return failed()
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-        return failed()
-    if (
-        choice.get("finish_reason") == "length"
-        or message.get("tool_calls")
-        or not isinstance(content, str)
-        or not content.strip()
-        or _leaked_calls(content)
-    ):
-        return failed()
-    return [_assistant(turn, content.strip()), _status(turn, "done", code=NO_PROGRESS)]
+
+
+def _watched(turn: _Turn, guard: str | None, forgotten: int = 0) -> tuple[str, str] | None:
+    """The turn watcher's safe point (#2136), or the loop guard alone when there is none.
+    Never an end: a strategy, the guard's note, or nothing."""
+    if turn.watch is None:
+        return {"wrap": ("guard_resteer", ""), "nudge": ("guard_nudge", "")}.get(guard or "")
+    turn.watch.end_round(guard, forgotten)
+    return turn.watch.safe_point()
+
+
+async def _remember_before_dropping(
+    turn: _Turn, convo: list[dict], question_at: int, tools: list[dict]
+) -> None:
+    """Over budget: before `_fit` drops anything, summarise into the turn notes EVERY tool result
+    it is going to drop (Hermes 8438), oldest first in `_fit`'s own order, in batches that fit
+    the summariser's limits (`SUMMARISE_ITEMS_MAX`, `SUMMARISE_RESULT_MAX`,
+    `SUMMARISE_CHARS_MAX`), until what they free covers the overrun — the notes it adds counted
+    too. A result is marked handled only once its batch was sent. Fails open: a failed batch
+    writes no notes and its results are dropped as before. Never the replayed history (before
+    the question) and never the newest round, which `_fit` never drops."""
+    starts = [i for i in range(question_at + 1, len(convo)) if convo[i].get("role") == "assistant"]
+    if not starts:
+        return
+    calls: dict[str, tuple[str, str]] = {}
+    for i in starts:
+        for c in convo[i].get("tool_calls") or []:
+            fn = c.get("function") or {}
+            calls[c.get("id", "")] = (str(fn.get("name", "")), str(fn.get("arguments", "")))
+    freed = 0  # what the results handled here will free once `_fit` drops them
+    while True:
+        if _request_chars(convo, tools) - REQUEST_BUDGET_CHARS <= freed:
+            return
+        batch: list[dict] = []
+        ids: list[str] = []
+        used = 0
+        over = _request_chars(convo, tools) - REQUEST_BUDGET_CHARS
+        for i in range(question_at + 1, starts[-1]):
+            m = convo[i]
+            cid = m.get("tool_call_id", "")
+            if m.get("role") != "tool" or m.get("content") == DROPPED_RESULT:
+                continue
+            if cid in turn.summarised:
+                continue
+            name, args = calls.get(cid, ("", ""))
+            neutral = name in hq_watch.NEUTRAL_TOOLS
+            size = min(len(str(m.get("content") or "")), hq_watch.SUMMARISE_RESULT_MAX)
+            if (
+                not neutral
+                and batch
+                and (
+                    len(batch) >= hq_watch.SUMMARISE_ITEMS_MAX
+                    or used + size > hq_watch.SUMMARISE_CHARS_MAX
+                )
+            ):
+                break  # the next batch takes it
+            ids.append(cid)
+            freed += _msg_chars(m) - _msg_chars({**m, "content": DROPPED_RESULT})
+            if not neutral:
+                batch.append({"tool": name, "args": args, "result": m.get("content")})
+                used += size
+            if freed >= over:
+                break
+        if not ids:
+            return  # nothing left that `_fit` may drop: it does what it can
+        notes = (
+            await _stoppable(turn, hq_watch.summarise(turn.question, turn.notes.render(), batch))
+            if batch
+            else []
+        )
+        turn.summarised.update(ids)  # handled: sent to the summariser (or nothing to send)
+        for key, text in notes:
+            with contextlib.suppress(ValueError):
+                await asyncio.to_thread(turn.notes.set, key, text)
+        if notes:
+            _carry_notes(turn, convo)  # they ride on THIS request
+
+
+def _carry_notes(turn: _Turn, convo: list[dict]) -> None:
+    """Exactly the CURRENT notes, once per request, on the newest tool result (Hermes 8440): every
+    older copy is taken off first, wherever it now is — `_fit` deletes whole rounds in place, so
+    a remembered position would point at the wrong message. A deleted note leaves no copy."""
+    for m in convo:
+        if m.get("role") != "tool" or '"turn_notes"' not in str(m.get("content") or ""):
+            continue
+        try:
+            value = json.loads(m["content"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, dict) and "turn_notes" in value:
+            value.pop("turn_notes")
+            m["content"] = json.dumps(value, ensure_ascii=False)
+    if turn.notes.items and convo and convo[-1].get("role") == "tool":
+        convo[-1]["content"] = _with_note(convo[-1]["content"], "turn_notes", turn.notes.render())
 
 
 #: The focused "is the call over?" judgement runs only on SHORT call utterances (#1668): goodbyes

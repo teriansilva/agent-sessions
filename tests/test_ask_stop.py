@@ -962,9 +962,10 @@ def test_a_stop_during_a_no_tools_memory_write_keeps_the_write_and_its_step(
     assert reloaded["steps"]["count"] == 1 and reloaded["status"] == "stopped"
 
 
-def test_stop_during_the_loop_guards_wrap_up_settles_stopped(ai, monkeypatch):
-    """#2113: Stop wins over the wrap-up request too — the turn settles `stopped`, no answer and
-    no `no_progress`, even though the guard had already closed the tools."""
+def test_stop_ends_an_endless_circle_the_guard_only_re_steers(ai, monkeypatch):
+    """#2113, #2136: the guard never closes the tools (the operator's direction: never stop,
+    sanity-check and continue), so a circle the model never leaves runs until the Commander's
+    Stop — which settles it `stopped`, with no answer."""
 
     async def scenario():
         reached, go = asyncio.Event(), asyncio.Event()
@@ -972,7 +973,9 @@ def test_stop_during_the_loop_guards_wrap_up_settles_stopped(ai, monkeypatch):
         real = script.handler
 
         async def handler(request):
-            if "tool_choice" in json.loads(request.content):  # the wrap-up, and only it
+            body = json.loads(request.content)
+            assert "tool_choice" not in body  # the tools are never closed
+            if "Do not repeat a call" in request.content.decode():  # re-steered, still going
                 reached.set()
                 await go.wait()
             return await real(request)
@@ -989,7 +992,7 @@ def test_stop_during_the_loop_guards_wrap_up_settles_stopped(ai, monkeypatch):
     cid, turn = run(scenario())
     assert (turn["status"], turn["answer"]) == ("stopped", None)
     assert not records_of(cid, "assistant")
-    assert all(r.get("code") != "no_progress" for r in records_of(cid, "status"))
+    assert all("code" not in r or r["code"] != "no_progress" for r in records_of(cid, "status"))
 
 
 def test_stop_says_whether_the_named_turn_is_being_stopped(held, ai):
