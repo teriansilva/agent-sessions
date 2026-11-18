@@ -2,10 +2,18 @@
  * Library's kicker + display title; the collections rail lights its selection with the accent edge;
  * variable rows are hairline rows (a secret's value is never shown — "Stored · hidden"); fields
  * are `nj-field` squares; every focus ring is inset. Tokens only (docs/nightjar-ledger.md). */
+/* The page is its own scroll container, like the other Library pages: the shell's pane
+ * (`.terminal-pane`) clips at the bottom of the window, so without it a tall secret editor's
+ * project list was reachable only by Tab. It spans the pane (scrollbar at the pane's edge) and
+ * keeps the content in the same centred 1200px column through its inline padding. */
 .page {
-  width: min(1200px, 100%);
-  margin: 0 auto;
-  padding: var(--sp-6);
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-6) max(var(--sp-6), calc((100% - 1200px) / 2 + var(--sp-6)));
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
