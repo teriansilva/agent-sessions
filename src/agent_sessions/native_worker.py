@@ -1863,7 +1863,9 @@ class Worker:
         between the comparison and the claim. An exact repeat of a turn already claimed still
         replays: observing an earlier effect needs no authority."""
         params = request["params"]
-        if request["action"] != "submit" or "authority" not in params:
+        # A guarded interrupt (#1960 Phase 2: HQ's stop) is claimed under its caller's authority
+        # exactly as a guarded turn is: a withdrawal that committed first refuses the claim.
+        if request["action"] not in native_ipc.GUARDED_ACTIONS or "authority" not in params:
             return native_journal.claim(self.journal_root, request, queued=queued)
         try:
             with native_authority.held(self.session_id, _authority_tokens(params)):

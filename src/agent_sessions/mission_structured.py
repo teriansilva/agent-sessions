@@ -541,6 +541,95 @@ def _still_current(snap: dict, pre: dict, *, key: str, autonomous: bool) -> str 
     return None
 
 
+def interrupt_operation_id(action_id: str) -> str:
+    """The one operation id a ledger action's interrupt may use, derived and never minted."""
+    if not isinstance(action_id, str) or not action_id:
+        raise ValueError("an interrupt needs its action id")
+    return str(uuid.uuid5(MISSION_NAMESPACE, f"interrupt:{action_id}"))
+
+
+async def interrupt(
+    *, action_id: str, key: str, check: Callable[[], tuple[bool, str]]
+) -> tuple[str, str]:
+    """Stop the turn running now in API session ``key`` (#1960 Phase 2): HQ's `interrupt` on the
+    Commander's instruction. Returns ``(state, detail)``; never raises.
+
+    ``state`` is ``interrupted`` (the stop was requested and acknowledged — acknowledgement is not
+    completion, so text sent after it queues behind the stopping turn), ``idle`` (nothing was
+    running), or the actuator's ``stale`` / ``failed`` / ``indeterminate``. ``check`` is the
+    action's own final guard, asked immediately before the request; a refusal stops nothing.
+    Only the operator turn the worker reports as active is stopped, never a turn the agent runs
+    for itself: that one is the operator's to stop from the session."""
+    try:
+        snap = await runtime.snapshot(key)
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return "failed", "the API session no longer exists"
+        return "stale", f"the session could not be read, so nothing was stopped ({exc.detail})"
+    except Exception as exc:  # noqa: BLE001 — could not look, so nothing is stopped
+        return "stale", f"the session could not be read ({type(exc).__name__})"
+    active = snap.get("active_turn")
+    if not active:
+        return "idle", "nothing was running, so nothing was stopped"
+    try:
+        ok, why = await asyncio.to_thread(check)
+    except Exception as exc:  # noqa: BLE001 — an unverifiable authority stops nothing
+        ok, why = False, f"authority could not be verified ({type(exc).__name__})"
+    if not ok:
+        return "stale", why
+
+    def fenced_check() -> tuple[bool, str]:
+        try:
+            return check()
+        except Exception as exc:  # noqa: BLE001
+            return False, f"authority could not be verified ({type(exc).__name__})"
+
+    try:
+        # CARRIED TO THE WORKER'S CLAIM (Hermes on #2135): the check above is only an early
+        # refusal. The stop itself is admitted through the same cross-process fence a guarded
+        # turn uses (#1897) and claimed only while that admission is current, so a withdrawal
+        # during the runtime's reads stops nothing.
+        guard = ExecutionGuard(
+            "orchestrator",
+            _in_process_only,
+            admit=lambda: session_input.admit_native(key, fenced_check),
+        )
+        op_id = interrupt_operation_id(action_id)
+    except Exception as exc:  # noqa: BLE001
+        why = f"the stop could not be identified ({type(exc).__name__})"
+        return "stale", f"nothing was stopped: {why}"
+    try:
+        await runtime.interrupt(
+            key, operation_id=op_id, turn_id=str(active), execution_admission=guard
+        )
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return "failed", "the API session no longer exists"
+        if getattr(exc, "reason", None) == native_ipc.AUTHORITY_WITHDRAWN:
+            # The worker refused the claim: the caller's authority was withdrawn after it was
+            # admitted (#1897). Nothing was journaled or stopped.
+            return "stale", "authority was withdrawn before the stop; nothing was stopped"
+        if exc.status in (409, 422):
+            # The targeted turn is no longer the active one. Look again: nothing running is
+            # "idle" (the text may follow); ANOTHER turn running is not the one the Commander was
+            # shown, so nothing is stopped and nothing is sent (#1960 Phase 2, Hermes).
+            try:
+                again = (await runtime.snapshot(key)).get("active_turn")
+            except Exception:  # noqa: BLE001 — could not look again, so nothing follows
+                return "stale", f"the turn changed before it could be stopped ({exc.detail})"
+            if again == active:
+                # The same turn still runs: the stop was not sent (`native_runtime.interrupt`
+                # answers 409 for a stop it could not send yet). Never read that as "ended".
+                return "stale", f"the running turn could not be stopped ({exc.detail})"
+            if again:
+                return "stale", "a different turn started before the stop; nothing was stopped"
+            return "idle", f"the turn ended before it could be stopped ({exc.detail})"
+        return "indeterminate", f"whether the turn stopped is unknown ({exc.detail})"
+    except Exception as exc:  # noqa: BLE001 — the request may have reached the worker
+        return "indeterminate", f"whether the turn stopped is unknown ({type(exc).__name__})"
+    return "interrupted", "stopped the running turn"
+
+
 async def send(  # noqa: PLR0913 — every argument is part of one delivery's identity
     *,
     action_id: str,

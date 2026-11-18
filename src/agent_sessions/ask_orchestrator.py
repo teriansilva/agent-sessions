@@ -1638,9 +1638,17 @@ async def _ask_operator(turn: _Turn, args: dict) -> tuple[dict, dict]:
     }
 
 
-def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, dict] | None:
+def _nudge_refusal(
+    turn: _Turn, key: str, card: dict | None, *, interrupt: bool = False
+) -> tuple[str, str, dict] | None:
     """Every gate a nudge must pass, read off the loop. Returns ``(message, code, {})`` for the
-    first that fails, or None with the facts stored on ``card`` for the record. Blocking."""
+    first that fails, or None with the facts stored on ``card`` for the record. Blocking, and it
+    writes nothing: a pending proposal it would supersede is only NAMED here (`supersede`), and
+    retired by `_send_nudge` once every gate has passed.
+
+    #1960 Phase 2: HQ types into a session whatever its state — working or idle, an API session
+    with a request open, a session with a proposal waiting. What still refuses is what would make
+    the text answer an operator-only prompt, duplicate a delivery, or reach a non-agent."""
     from . import automation, metadata, orchestrator, orchestrator_ledger, prefs, session_input
 
     cfg = prefs.get_automation_policy("session")
@@ -1689,25 +1697,56 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
             "excluded",
             {},
         )
+    supersede: list[dict] = []
     for a in orchestrator_ledger.live_actions():
-        if a.get("session_id") == key:
+        if a.get("session_id") != key:
+            continue
+        if a.get("state") in orchestrator_ledger.CLAIMABLE_STATES:
+            # A proposal nobody has started delivering (#1960 Phase 2): the Commander's own message
+            # outranks it, and typing would make its screen precondition false anyway.
+            supersede.append({"id": a["id"], "ts": a.get("ts")})
+            continue
+        if a.get("state") == "claimed":
             return (
-                "that session already has a decision waiting — see Needs you",
+                "another message is being delivered into that session right now — ask again in "
+                "a moment",
                 "pending",
                 {},
             )
+        return (
+            "that session has a question waiting for the operator in Needs you",
+            "pending",
+            {},
+        )
     phys = grant["physical_key"]
-    if key in turn.busy_keys or phys in turn.busy_keys:
-        return ("that session is working right now — ask again when it stops", "working", {})
+    # WORKING IS NOT A REFUSAL (#1960 Phase 2): an API session queues the text behind its running
+    # turn, a terminal agent takes it into its input mid-turn. `interrupt` stops the turn first.
     if api:
-        return _api_nudge_refusal(card, cfg, grant, phys)
+        return _api_nudge_refusal(card, cfg, grant, phys, supersede)
     if not session_input.is_live(phys):
         return ("that session is not running, so nothing can be typed into it", "not_live", {})
-    screen = orchestrator.observed_screen(phys)
-    if screen.get("permission") is not None:
+    if interrupt:
+        try:
+            prov, _native = engines.parse_key(key)
+        except Exception:  # noqa: BLE001 — a key that does not resolve has no interrupt key
+            prov = None
+        if engines.interrupt_bytes(prov) is None:
+            return (
+                "HQ knows no interrupt key for that agent, so it cannot stop its turn — send the "
+                "text without interrupt and it is typed into the session as it works",
+                "not_interruptible",
+                {},
+            )
+    try:
+        # Strict: an unreadable screen is not an empty one (#1960 Phase 2, Hermes on #2135).
+        screen = orchestrator.observed_screen(phys, strict=True)
+    except Exception:  # noqa: BLE001 — a screen that can't be read is not offered
+        return ("Ask cannot read that session's screen right now", "not_available", {})
+    prompt = _operator_prompt(screen)
+    if prompt:
         return (
-            "that session is showing a permission dialog — only the operator answers those, "
-            "from Needs you or the terminal",
+            f"that session is showing {prompt} — only the operator answers those, from Needs you "
+            "or the terminal",
             "permission_dialog",
             {},
         )
@@ -1715,36 +1754,41 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
         "cfg": cfg,
         "grant": grant,
         "precondition": orchestrator.precondition_for(phys),
+        "supersede": supersede,
     }
     return None
 
 
+def _operator_prompt(screen: dict) -> str:
+    """What on this terminal screen is the operator's alone to answer, or "" (#1960 Phase 2).
+
+    A permission dialog, and a numbered menu: text or an Esc typed into either answers it.
+    `actuator` re-asks this inside the write fence, before byte one (`hq_prompt_free`)."""
+    if screen.get("permission") is not None:
+        return "a permission dialog"
+    if screen.get("menu"):
+        return "a menu"
+    return ""
+
+
 def _api_nudge_refusal(
-    card: dict, cfg: dict, grant: dict, phys: str
+    card: dict, cfg: dict, grant: dict, phys: str, supersede: list[dict] | None = None
 ) -> tuple[str, str, dict] | None:
     """The API half of `_nudge_refusal` (#1960): no PTY, no screen. What it has instead is the
     structured precondition `orchestrator.precondition_for` records — the last operator turn and
     whether the session was idle — which `mission_structured.send` compares before the turn goes
     out. A snapshot that can't be read is refused here rather than staged as a card whose every
-    tap would be refused, and an open approval or question is the operator's, as a permission
-    dialog is on a terminal. Blocking."""
-    from . import orchestrator, structured_runtime
+    tap would be refused.
+
+    An open approval or question no longer refuses (#1960 Phase 2): HQ's text is a new turn that
+    queues behind it and can never answer it — structured approvals are decisions, not text.
+    Blocking."""
+    from . import orchestrator
 
     pre = orchestrator.precondition_for(phys)
     if pre.get("api_last_turn") == "unreadable":
         return ("Ask cannot read that session right now", "not_available", {})
-    try:
-        snap = asyncio.run(structured_runtime.snapshot(phys))
-    except Exception:  # noqa: BLE001 — a session that can't be read is not offered
-        return ("Ask cannot read that session right now", "not_available", {})
-    if snap.get("pending_requests"):
-        return (
-            "that session is waiting on an approval or a question — only the operator answers "
-            "those, from Needs you or the session",
-            "permission_dialog",
-            {},
-        )
-    card["_nudge"] = {"cfg": cfg, "grant": grant, "precondition": pre}
+    card["_nudge"] = {"cfg": cfg, "grant": grant, "precondition": pre, "supersede": supersede or []}
     return None
 
 
@@ -1761,7 +1805,12 @@ def _sent_result(rec: dict) -> dict:
     """What the model is told about one send: the ledger's outcome, never a hopeful reading."""
     state = rec.get("state")
     if state == "delivered":
-        return {"sent": True, "state": state, "note": "Delivered into the session."}
+        out = {"sent": True, "state": state, "note": "Delivered into the session."}
+        if rec.get("detail"):
+            # What delivery did (#1960 Phase 2): queued behind a running turn, stopped the turn
+            # first, nothing was running to stop. Server-authored text, never the agent's.
+            out["detail"] = str(rec["detail"])[:REASON_MAX]
+        return out
     if state == "indeterminate":
         return {
             "sent": "unknown",
@@ -1786,16 +1835,22 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
     from . import actuator, handoff, orchestrator_ledger
 
     key = _known_key(turn, args)
-    raw = _str_arg(args, "text", ask_store.NUDGE_MAX)
-    # THE SAME NORMALIZATION DELIVERY APPLIES (`actuator.render` → `handoff.sanitize_seed`: control
-    # bytes stripped, trimmed), applied HERE — so the text the card shows as "verbatim", the text
-    # stored, and the text typed are one string, never a display of bytes that will not be sent.
-    try:
-        text = handoff.sanitize_seed(raw)
-    except handoff.HandoffError:
-        raise _ToolRefused(
-            "refused: nothing typeable is left in that text", "bad_arguments"
-        ) from None
+    # INTERRUPT (#1960 Phase 2): stop the running turn first, then send the text. Only a real
+    # boolean counts; with it, the text may be left out and the session is only stopped.
+    interrupt = args.get("interrupt") is True
+    raw = _str_arg(args, "text", ask_store.NUDGE_MAX, required=not interrupt)
+    if raw:
+        # THE SAME NORMALIZATION DELIVERY APPLIES (`actuator.render` → `handoff.sanitize_seed`:
+        # control bytes stripped, trimmed), applied HERE — so the text the card shows as
+        # "verbatim", the text stored, and the text typed are one string.
+        try:
+            text = handoff.sanitize_seed(raw)
+        except handoff.HandoffError:
+            raise _ToolRefused(
+                "refused: nothing typeable is left in that text", "bad_arguments"
+            ) from None
+    else:
+        text = ""
     # A credential must never become a stored effect: text the store boundary would change is
     # refused before anything is written anywhere.
     if await asyncio.to_thread(ask_store.guard_text, text, ask_store.NUDGE_MAX) != text:
@@ -1805,7 +1860,7 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
             "credential",
         )
     card = next((dict(c) for c in await turn.catalog() if c.get("id") == key), None)
-    refusal = await asyncio.to_thread(_nudge_refusal, turn, key, card)
+    refusal = await asyncio.to_thread(_nudge_refusal, turn, key, card, interrupt=interrupt)
     if refusal is not None:
         raise _ToolRefused(f"refused: {refusal[0]}", refusal[1])
     assert card is not None
@@ -1834,6 +1889,7 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "answer": text,
         "confidence": 1.0,
         "rationale": "Sent by HQ",
+        **({"interrupt": True} if interrupt else {}),
         "evidence": "none",
         "authority": facts["grant"],
         "precondition": facts["precondition"],
@@ -1853,6 +1909,7 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
                 "key": key,
                 "title": rec["title"],
                 "text": text,
+                **({"interrupt": True} if interrupt else {}),
             },
         )
     except Exception:
@@ -1875,9 +1932,15 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
     def fenced_append() -> list[dict]:
         # The registration fence held across the guard AND the write (`template_secrets`): a
         # secret registered meanwhile lands before the guard runs or after the record exists.
+        # SUPERSEDE IN THE SAME LEDGER HOLD (#1960 Phase 2): each proposal `_nudge_refusal` named
+        # is retired only if still claimable at the revision it read, and in the same critical
+        # section as the append — so a claim or a new proposal racing it leaves both alone.
         with template_secrets.registration_fence():
             kept, _dropped = orchestrator_ledger.append_batch_for_free_sessions(
-                [rec], record_guard=clean_at_write
+                [rec],
+                record_guard=clean_at_write,
+                supersede={o["id"]: o.get("ts") for o in facts.get("supersede") or ()},
+                supersede_detail="superseded by a message HQ sent on the Commander's instruction",
             )
         return kept
 
@@ -1906,7 +1969,9 @@ async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
                 "credential",
             )
         raise _ToolRefused(
-            "refused: that session already has a decision waiting — see Needs you", "pending"
+            "refused: another message was being delivered into that session — ask again in a "
+            "moment",
+            "pending",
         )
     registry = getattr(getattr(turn.app, "state", None), "session_registry", None)
     try:
@@ -3082,14 +3147,21 @@ TOOLS: dict[str, Tool] = {
             "send",
             _spec(
                 "send_nudge",
-                "Send a message into one session NO mission holds, now: a terminal agent gets it "
-                "typed, an API session as its next turn. The result says whether it was delivered "
-                "and, if not, why.",
+                "Send a message into one session NO mission holds, now, whether it is working or "
+                "idle: a terminal agent gets it typed, an API session as its next turn (queued "
+                "behind a running one). interrupt: true stops the running turn first; with no "
+                "text it only stops it. The result says whether it was delivered and, if not, "
+                "why.",
                 {
                     **_KEY_PROP,
                     "text": {"type": "string", "description": "exactly what to send"},
+                    "interrupt": {
+                        "type": "boolean",
+                        "description": "stop the session's running turn first (only when the "
+                        "Commander asked to stop or interrupt it)",
+                    },
                 },
-                ["key", "text"],
+                ["key"],
             ),
             _send_nudge,
         ),
@@ -5213,6 +5285,8 @@ def turn_views(records: list[dict]) -> list[dict]:
                     "title": r.get("title") or "",
                     "agent": r.get("agent") or "",
                     "text": r.get("text") or "",
+                    # A nudge that stopped the session's running turn first (#1960 Phase 2).
+                    **({"interrupt": True} if r.get("interrupt") is True else {}),
                     # An HQ operation's card (#1559): the server's own wording.
                     **(
                         {

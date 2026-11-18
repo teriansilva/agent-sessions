@@ -182,15 +182,30 @@ with the sidebar open.
 - When it needs a detail, HQ **asks you back**: one question with a few answers to tap, and
   sometimes a box for your own words. You can also just send a new message instead.
 - HQ **sends a message** to a session no mission holds when you tell it to ("tell the rebase
-  session to run the tests", "nudge every stuck session"), terminal and API sessions alike, with
-  no tap: up to 10 per turn. A card in the conversation shows the exact text and what happened to
-  it. Just before sending, HQ checks the session is still as it saw it: a terminal's screen, or an
-  API session's last turn and that it is idle. If it moved on, someone is at its keyboard, or it is
-  waiting on an approval or a question, nothing is sent and HQ tells you why. *Delivered* means the
-  session accepted the text, not that the agent acted on it. Sending needs Session assistance on
-  (Suggest or YOLO) in Settings; Off stops it. HQ never answers a permission prompt, never types
-  into a plain shell, and never sends text that looks like a secret. A mission's sessions are
-  messaged from that mission's own console.
+  session to run the tests", "nudge every stuck session"). It works for terminal and API sessions
+  alike, working or idle, with no tap, up to 10 per turn.
+  - A working API session gets the text queued behind its running turn, and behind an approval or
+    question it is waiting on; the text never answers those.
+  - A working terminal agent gets the text typed into its input as it works. What it does with
+    typed input mid-turn depends on the agent: most queue it for after the turn.
+  - A card in the conversation shows the exact text and what happened to it. *Delivered* means the
+    session accepted the text, not that the agent acted on it.
+- Ask HQ to **stop or interrupt** a session ("stop the rebase session", "interrupt it and tell it
+  to run the tests instead"). HQ stops the running turn first, then sends your text; with no text
+  it only stops it, and the card says so. An API session's running turn is stopped directly. A
+  terminal agent gets its interrupt key (Esc for Claude Code, Codex, opencode, Gemini CLI and
+  Copilot CLI). For an agent whose interrupt key BattleLab doesn't know, HQ says it can't stop it.
+  If the stop doesn't take, the text isn't sent.
+- What HQ never does when sending or stopping:
+  - type into a permission prompt or a menu on a terminal's screen (checked again right before
+    the first keystroke);
+  - type into a plain shell;
+  - send text that looks like a secret;
+  - add a second message while another is being delivered into the same session.
+
+  A suggestion waiting for you in Needs you is replaced by HQ's message. Sending needs Session
+  assistance on (Suggest or YOLO) in Settings; Off stops it. A mission's sessions are messaged
+  from that mission's own console.
 - HQ can **propose a new session** ("start a Claude session on api to rebase onto main"). The
   card shows the project, the agent and the brief, the agent's first message, exactly as it will
   be typed. Nothing starts until you tap **Start session in …**.

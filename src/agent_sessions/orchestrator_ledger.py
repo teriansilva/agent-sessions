@@ -709,6 +709,30 @@ def _latest_of(records: list[dict]) -> dict[str, dict]:
         prev = out.get(rec["id"])
         if prev is None:
             out[rec["id"]] = rec
+            # A REPLACEMENT RETIRES ITS PREDECESSORS ATOMICALLY (#1960 Phase 2, Hermes on #2135):
+            # the retirement rides on the replacement's own (single-write) line, so a crash or a
+            # failed write leaves the original pending and no replacement — never neither. Applied
+            # at the replacement's first event, in log order, under exactly the conditions
+            # `append_batch_for_free_sessions` checked in the same hold.
+            sup = rec.get("supersedes")
+            if isinstance(sup, dict):
+                for old_id, read_ts in sup.items():
+                    cur = out.get(old_id)
+                    if (
+                        cur is None
+                        or cur.get("state") not in CLAIMABLE_STATES
+                        or (read_ts is not None and cur.get("ts") != read_ts)
+                    ):
+                        continue
+                    retired = {
+                        "state": "stale",
+                        "ts": rec.get("ts", cur.get("ts")),
+                        "outcome": "refused",
+                        "superseded_by": rec["id"],
+                    }
+                    if rec.get("supersede_detail"):
+                        retired["detail"] = rec["supersede_detail"]
+                    out[old_id] = {**cur, **retired}
         else:
             # Merge forward so a transition event needn't restate the whole proposal.
             merged = {**prev, **rec}
@@ -723,6 +747,8 @@ def append_batch_for_free_sessions(
     gate: Callable[[], bool] | None = None,
     barred: Callable[[], set[str]] | None = None,
     record_guard: Callable[[dict], bool] | None = None,
+    supersede: dict[str, float | None] | None = None,
+    supersede_detail: str = "",
 ) -> tuple[list[dict], list[dict]]:
     """Append only those ``records`` whose session has no live action. Returns ``(kept, dropped)``.
 
@@ -754,6 +780,15 @@ def append_batch_for_free_sessions(
     establishes (it holds this lock while projecting into the missions store), so a gate that
     touches missions here is consistent with it rather than the inversion that would deadlock.
     The same applies to ``barred``, which is a missions query.
+
+    ``supersede`` (#1960 Phase 2) retires named actions together with their replacement:
+    ``{action_id: ts read}``. Each is retired only when it is still claimable, still at the
+    revision the caller read, and belongs to the session of a record that IS appended (passing its
+    guard, the mission bar, and no other live action). The retirement is not a separate event: it
+    rides on the replacement's own line (``supersedes``), which `_latest_of` applies in log order.
+    One line is one ``write()`` (the crash contract), so a failed or interrupted write leaves the
+    original pending and no replacement, and a completed one retires it — never neither, never two
+    live actions (Hermes on #2135).
     """
     # OWED TERMINALIZATIONS FIRST (#903 review 6, finding 1). A claim this process abandoned but
     # could not release reads as LIVE below, so the session looks busy and every later autonomous
@@ -770,6 +805,7 @@ def append_batch_for_free_sessions(
     p = _path(path)
     kept: list[dict] = []
     dropped: list[dict] = []
+    superseded: list[tuple[str, dict, float | None]] = []
     with _locked(p):
         if gate is not None and not gate():
             # Refused before anything is written. Every record is reported as dropped, so the
@@ -780,30 +816,62 @@ def append_batch_for_free_sessions(
         # judged against one consistent snapshot of mission state.
         off_limits = barred() if barred is not None else set()
         latest = _latest_by_id_locked(p)
-        busy = {
-            r.get("session_id")
-            for r in latest.values()
-            if r.get("state") in LIVE_STATES and r.get("session_id")
-        }
+        # RETIRABLE (#1960 Phase 2): named, still claimable, at the revision the caller read.
+        # Nothing is retired yet — only for a replacement that is about to be appended below
+        # (Hermes on #2135: a replacement dropped by its own guard must not cost the original).
+        retirable: dict[str, list[tuple[str, dict]]] = {}
+        for old_id, read_ts in (supersede or {}).items():
+            cur = latest.get(old_id)
+            if (
+                cur is None
+                or cur.get("state") not in CLAIMABLE_STATES
+                or not cur.get("session_id")
+                or (read_ts is not None and cur.get("ts") != read_ts)
+            ):
+                continue
+            retirable.setdefault(cur["session_id"], []).append((old_id, cur))
+        live_by_session: dict[str, set[str]] = {}
+        for r in latest.values():
+            if r.get("state") in LIVE_STATES and r.get("session_id"):
+                live_by_session.setdefault(r["session_id"], set()).add(r["id"])
+        appended: set[str] = set()
         for rec in records:
             if record_guard is not None and not record_guard(rec):
                 dropped.append(rec)
                 continue
             sid = rec.get("session_id")
-            if sid and sid in busy:
-                dropped.append(rec)
-                continue
             if sid and sid in off_limits:
                 # The session belongs to a mission that has been abandoned or is being archived.
                 # Dropped rather than written-and-swept: an action that never exists cannot be
                 # delivered by a pass that runs before the sweep reaches it.
                 dropped.append(rec)
                 continue
+            olds = retirable.get(sid, []) if sid else []
+            others = live_by_session.get(sid, set()) - {o for o, _cur in olds} if sid else set()
+            if sid and (others or sid in appended):
+                # Another live action that is not ours to retire (or this batch already wrote
+                # one): drop the replacement and retire NOTHING.
+                dropped.append(rec)
+                continue
+            # Admitted: the retirement rides on THIS record's single line (`_latest_of` applies it),
+            # so the replacement and the retirement are one write — atomic under the crash contract.
+            if olds:
+                rec["supersedes"] = {o: cur.get("ts") for o, cur in olds}
+                if supersede_detail:
+                    rec["supersede_detail"] = supersede_detail
             _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
             kept.append(rec)
+            for old_id, cur in olds:
+                retired = {"state": "stale", "outcome": "refused", "superseded_by": rec["id"]}
+                if supersede_detail:
+                    retired["detail"] = supersede_detail
+                superseded.append((old_id, {**cur, **retired, "ts": rec.get("ts")}, cur.get("ts")))
             if sid:
                 # A batch can itself name one session twice; the first append makes it busy.
-                busy.add(sid)
+                appended.add(sid)
+    # Settlement hooks outside the lock, as `compare_and_set` runs them (#1960 Phase 2).
+    for old_id, merged, proposed_at in superseded:
+        _settled(old_id, "stale", merged, proposed_at)
     return kept, dropped
 
 

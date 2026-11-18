@@ -748,6 +748,23 @@ def supports_orchestrator_input(prov: base.EngineProvider | None) -> bool:
     return bool(getattr(prov, "supports_orchestrator_input", False))
 
 
+#: The bytes each `terminal.interrupt` kind writes (#1960 Phase 2). Server-authored and fixed;
+#: never model output. `none` has no entry.
+_INTERRUPT_BYTES = {"esc": b"\x1b"}
+
+
+def interrupt_bytes(prov: base.EngineProvider | None) -> bytes | None:
+    """The fixed bytes that stop this engine's running turn when typed alone, or None (#1960).
+
+    Asked of the manifest (`terminal.interrupt`), never of the engine's name. Default-deny like
+    :func:`supports_orchestrator_input`: an engine that declares no key, or is not actuable at
+    all (``shell``), has no interrupt, and HQ says so rather than guessing a key."""
+    if not supports_orchestrator_input(prov):
+        return None
+    terminal = getattr(getattr(prov, "manifest", None), "terminal", None)
+    return _INTERRUPT_BYTES.get(getattr(terminal, "interrupt", "none"))
+
+
 def expects_raw_tty(prov: base.EngineProvider | None) -> bool:
     """Does this engine run a TUI that puts its PTY into raw mode and keeps it there? (#804)
 

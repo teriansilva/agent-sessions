@@ -54,6 +54,8 @@ source = "plan"
 kind = "codex-app-server-probe"
 
 [terminal]
+# The key that stops a running turn, typed alone (#1960 Phase 2): HQ's `send_nudge` interrupt.
+interrupt = "esc"
 repaint = "wipe"
 
 [instructions]

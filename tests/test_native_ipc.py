@@ -440,3 +440,23 @@ def test_error_response_is_closed_and_mutually_exclusive(binding):
         ipc.encode_response({**doc, "result": {}})
     with pytest.raises(ipc.IPCError):
         ipc.encode_response({**doc, "error": {**doc["error"], "frame": {"secret": "hidden"}}})
+
+
+def test_a_guarded_interrupt_carries_its_binding_and_both_tokens(binding):
+    """#1960 Phase 2 (Hermes on #2135): HQ's stop is guarded like a turn (#1897). The binding is
+    part of its identity; the per-attempt tokens are checked at the worker's claim and never
+    stored with the identity. A lone token, or a binding without its tokens, is refused."""
+    base = params("interrupt")
+    tokens = {"authority_session": uid(), "authority_policy": uid()}
+    guarded = request(binding, "interrupt", {**base, "authority": "orchestrator", **tokens})
+    assert ipc.validate_request(guarded, expected=binding) is not None
+    stored = ipc.immutable_request(guarded)
+    assert stored["params"]["authority"] == "orchestrator"
+    assert not set(tokens) & set(stored["params"])
+    for bad in (
+        {**base, "authority": "orchestrator"},
+        {**base, "authority_session": uid(), "authority_policy": uid()},
+        {**base, "authority": "orchestrator", "authority_session": uid()},
+    ):
+        with pytest.raises(ipc.IPCError):
+            ipc.validate_request(request(binding, "interrupt", bad), expected=binding)

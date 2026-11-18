@@ -278,6 +278,10 @@ MENU_KINDS = frozenset({"none", "claude-numbered"})
 #: `terminal.permission` — the tool-permission dialog parser AND its key recipe
 #: (`permission_prompts._KINDS`, #1213). Operator-only: no autonomous path reads it.
 PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"})
+#: `terminal.interrupt` (#1960 Phase 2) — the key that stops the agent's running turn, typed alone.
+#: `esc`: the agent's TUI treats a lone Esc as "interrupt" (vendor-documented for claude, codex,
+#: opencode, gemini and copilot). `none` (the default): no key is known, so HQ never guesses one.
+INTERRUPT_KINDS = frozenset({"none", "esc"})
 #: `unattended.start_evidence` — the artifact that answers "did an agent start" (#989/#1050).
 #: `copilot-sessions`: the pinned `<uuid>` directory + `workspace.yaml` under
 #: `~/.copilot/session-state/` (#1565). `opencode2-log`: opencode 2.x's own structured log, its

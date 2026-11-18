@@ -49,6 +49,8 @@ source = "tokens"
 kind = "opencode-store-query"
 
 [terminal]
+# The key that stops a running turn, typed alone (#1960 Phase 2): HQ's `send_nudge` interrupt.
+interrupt = "esc"
 # The tool-permission dialog (#1213): parsed for the operator only; the cursor is a background
 # colour, so it is read from the coloured frame and moved with the arrow keys.
 permission = "opencode-permission"

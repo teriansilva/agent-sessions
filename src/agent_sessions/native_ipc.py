@@ -150,6 +150,9 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _AUTHORITY_BINDING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z", re.ASCII)
 #: A guarded submit's per-attempt tokens (#1897): checked by the worker, never part of identity.
 _AUTHORITY_TOKENS = frozenset({"authority_session", "authority_policy"})
+#: Effects a caller's authority may guard (#1897; #1960 Phase 2 adds HQ's interrupt): the worker
+#: claims them only while the tokens are current, under the authority lock.
+GUARDED_ACTIONS = frozenset({"submit", "interrupt"})
 _HEADER = frozenset(
     {"protocol", "type", "session_key", "worker_id", "connection_id", "adapter", "adapter_version"}
 )
@@ -406,10 +409,11 @@ def _params(action, value, *, immutable=False):
     optional = (
         (keys[action] & {"actor"} if immutable else set())
         | ({"attachments", "reply_to"} if action == "submit" else set())
-        # A guarded turn (#1897): its caller's opaque binding is part of its identity; the tokens
-        # the worker re-checks at its claim are per attempt, never stored with the identity.
-        | ({"authority"} if action == "submit" else set())
-        | (_AUTHORITY_TOKENS if action == "submit" and not immutable else set())
+        # A guarded turn (#1897), or a guarded interrupt (#1960 Phase 2: HQ's stop): its caller's
+        # opaque binding is part of its identity; the tokens the worker re-checks at its claim are
+        # per attempt, never stored with the identity.
+        | ({"authority"} if action in GUARDED_ACTIONS else set())
+        | (_AUTHORITY_TOKENS if action in GUARDED_ACTIONS and not immutable else set())
         | ({"grant", "answers"} if action == "decide" else set())
         # Stop all and send (#1644): what the operator confirmed, part of the request's identity.
         | ({"confirm_worker_id", "confirm_tasks"} if action == "send_now" else set())
@@ -422,7 +426,7 @@ def _params(action, value, *, immutable=False):
         "confirm_worker_id" in value and "confirm_tasks" in value
     ):
         raise IPCError("a confirmation goes with Stop all and send, and only with it")
-    if action == "submit" and not immutable:
+    if action in GUARDED_ACTIONS and not immutable:
         tokens = len(_AUTHORITY_TOKENS & set(value))
         if tokens not in (0, 2) or ("authority" in value) != (tokens == 2):
             raise IPCError("a guarded turn carries its binding with both authority tokens")

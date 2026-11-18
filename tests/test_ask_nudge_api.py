@@ -18,6 +18,7 @@ import time
 import pytest
 
 from agent_sessions import (
+    actuator,
     ask_orchestrator,
     mission_structured,
     orchestrator_ledger,
@@ -134,9 +135,11 @@ def test_an_api_session_is_nudged_as_one_structured_turn_at_once(
     assert live["state"] == "delivered"
 
 
-def test_an_api_session_waiting_on_a_request_is_refused_and_nothing_is_written(
-    app, ai, api_session, monkeypatch
+def test_an_api_session_waiting_on_a_request_gets_the_text_queued_never_as_an_answer(
+    app, ai, api_session, project, monkeypatch
 ):
+    """#1960 Phase 2: an open approval or question no longer refuses HQ. The text is a NEW turn
+    queued behind it; a structured approval is a decision, never answered by text."""
     real = runtime.snapshot
 
     async def asking(key):
@@ -145,10 +148,116 @@ def test_an_api_session_waiting_on_a_request_is_refused_and_nothing_is_written(
 
     monkeypatch.setattr(runtime, "snapshot", asking)
     script = _nudge(ai, api_session)
-    cid = app.new()
-    turn = app.ask(cid, "nudge it").json()["turn"]
-    assert "approval or a question" in _result(script)["error"]
-    assert _ledger_for(api_session) == [] and turn["proposals"] == []
+    app.ask(app.new(), "nudge it")
+    assert _result(script)["sent"] is True
+    assert _users(project).count(TEXT) == 1
+    (rec,) = _ledger_for(api_session)
+    assert rec["state"] == "delivered"
+
+
+def test_a_working_api_session_gets_the_text_as_a_non_autonomous_send(
+    app, ai, api_session, project, monkeypatch
+):
+    """HQ's send is the Commander's instruction, not an automatic one: it may queue behind a
+    running turn, which an automatic send (needing the idle session it was proposed against) may
+    not."""
+    seen: list[dict] = []
+    real_send = mission_structured.send
+
+    async def spy(**kw):
+        seen.append(kw)
+        return await real_send(**kw)
+
+    monkeypatch.setattr(mission_structured, "send", spy)
+    monkeypatch.setattr(actuator, "busy_keys", lambda registry, now=None: {api_session})
+    script = _nudge(ai, api_session)
+    app.ask(app.new(), "nudge it")
+    assert _result(script)["sent"] is True
+    assert seen and seen[0]["autonomous"] is False and seen[0]["attended"] is True
+
+
+# ---- interrupt on an API session (#1960 Phase 2) ---------------------------------------------
+
+
+def _interrupt(ai, key, text=None):
+    args = {"key": key, "interrupt": True}
+    if text is not None:
+        args["text"] = text
+    return ai(
+        call("find_sessions", {"query": "stuck"}, cid="f"),
+        call("send_nudge", args, cid="n"),
+        answer("Stopped."),
+    )
+
+
+@pytest.fixture
+def running(monkeypatch):
+    """The session reports an operator turn running; interrupt requests are recorded."""
+    state = {"active": "turn-running", "calls": [], "fail": None}
+    real = runtime.snapshot
+
+    async def snap(key):
+        out = await real(key)
+        return {**out, "active_turn": state["active"]} if state["active"] else out
+
+    async def interrupt(key, *, operation_id, turn_id, execution_admission=None):
+        if state["fail"] is not None:
+            raise state["fail"]
+        # Every HQ stop carries its admission to the worker's claim (Hermes on #2135).
+        assert execution_admission is not None and execution_admission.binding == "orchestrator"
+        state["calls"].append({"key": key, "operation_id": operation_id, "turn_id": turn_id})
+        return {"session_key": key, "interrupted": True}
+
+    monkeypatch.setattr(runtime, "snapshot", snap)
+    monkeypatch.setattr(runtime, "interrupt", interrupt)
+    return state
+
+
+def test_interrupt_stops_the_exact_active_turn_then_sends_the_text(
+    app, ai, api_session, project, running
+):
+    script = _interrupt(ai, api_session, "Stop and summarise what you have so far.")
+    app.ask(app.new(), "stop it and ask for a summary")
+    res = _result(script)
+    assert res["sent"] is True and res["detail"].startswith("stopped the running turn")
+    (rec,) = _ledger_for(api_session)
+    assert running["calls"] == [
+        {
+            "key": api_session,
+            "operation_id": mission_structured.interrupt_operation_id(rec["id"]),
+            "turn_id": "turn-running",
+        }
+    ]
+    assert _users(project).count("Stop and summarise what you have so far.") == 1
+
+
+def test_interrupt_alone_sends_nothing_after_the_stop(app, ai, api_session, project, running):
+    before = list(_users(project))
+    script = _interrupt(ai, api_session)
+    app.ask(app.new(), "stop it")
+    assert _result(script)["sent"] is True
+    assert len(running["calls"]) == 1 and _users(project) == before
+    (rec,) = _ledger_for(api_session)
+    assert rec["detail"] == "stopped the running turn" and rec["answer"] == ""
+
+
+def test_interrupting_an_idle_session_stops_nothing_and_says_so(app, ai, api_session, running):
+    running["active"] = None
+    script = _interrupt(ai, api_session)
+    app.ask(app.new(), "stop it")
+    assert running["calls"] == []
+    assert "nothing was running" in _result(script)["detail"]
+
+
+def test_an_interrupt_of_unknown_outcome_sends_no_text(app, ai, api_session, project, running):
+    running["fail"] = runtime.StructuredError(502, "worker went away")
+    script = _interrupt(ai, api_session, "Then do this instead.")
+    app.ask(app.new(), "stop it and redirect")
+    res = _result(script)
+    assert res["sent"] == "unknown" or res["sent"] is False
+    assert "Then do this instead." not in _users(project)
+    (rec,) = _ledger_for(api_session)
+    assert rec["state"] == "indeterminate" and "could not be stopped" in rec["detail"]
 
 
 def test_an_api_session_that_cannot_be_read_is_refused(app, ai, api_session, monkeypatch):
@@ -302,3 +411,40 @@ def test_only_hq_s_send_and_the_operator_s_tap_are_attended():
         if re.search(r"attended\s*=\s*True", p.read_text(encoding="utf-8"))
     )
     assert setters == ["ask_orchestrator.py"]
+
+
+def test_a_turn_replaced_before_the_stop_is_not_stopped_and_gets_no_text(
+    app, ai, api_session, project, running, monkeypatch
+):
+    """The turn HQ targeted ended and ANOTHER started before the stop request (Hermes on #1960):
+    that one was never the Commander's to stop, so nothing is stopped and nothing is sent."""
+
+    async def replaced(key, *, operation_id, turn_id, execution_admission=None):
+        running["active"] = "turn-other"
+        raise runtime.StructuredError(409, "not the active turn")
+
+    monkeypatch.setattr(runtime, "interrupt", replaced)
+    script = _interrupt(ai, api_session, "Then do this instead.")
+    app.ask(app.new(), "stop it and redirect")
+    assert _result(script)["sent"] is False
+    assert "Then do this instead." not in _users(project)
+    (rec,) = _ledger_for(api_session)
+    assert rec["state"] == "stale" and "different turn" in rec["detail"]
+
+
+def test_a_stop_refused_while_the_same_turn_still_runs_is_not_idle(
+    app, ai, api_session, project, running, monkeypatch
+):
+    """Hermes on #2135: the worker answers 409 for a stop it could not send yet. If the SAME turn
+    is still active on re-read, the turn did not end — the text must not follow."""
+
+    async def not_yet(key, *, operation_id, turn_id, execution_admission=None):
+        raise runtime.StructuredError(409, "interrupt could not be sent yet")
+
+    monkeypatch.setattr(runtime, "interrupt", not_yet)
+    script = _interrupt(ai, api_session, "Then do this instead.")
+    app.ask(app.new(), "stop it and redirect")
+    assert _result(script)["sent"] is False
+    assert "Then do this instead." not in _users(project)
+    (rec,) = _ledger_for(api_session)
+    assert rec["state"] == "stale" and "could not be stopped" in rec["detail"]

@@ -62,6 +62,8 @@ kind = "claude-cli-probe"
 probe_token = "/usage"
 
 [terminal]
+# The key that stops a running turn, typed alone (#1960 Phase 2): HQ's `send_nudge` interrupt.
+interrupt = "esc"
 ready = "claude-first-paint"
 menu = "claude-numbered"
 menu_digit_submits = true

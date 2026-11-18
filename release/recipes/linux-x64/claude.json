@@ -126,6 +126,7 @@
       "root": "~/.claude"
     },
     "terminal": {
+      "interrupt": "esc",
       "menu": "claude-numbered",
       "menu_digit_submits": true,
       "permission": "claude-permission",

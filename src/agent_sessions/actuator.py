@@ -568,6 +568,49 @@ def _viewer_busy(phys_key: str, registry, *, operator_approval: bool = False) ->
         return True
 
 
+#: Pause between an interrupt key and the text after it (#1960 Phase 2): a separate read for the
+#: agent's TUI, so a lone Esc is never merged with the paste's own ESC into one escape sequence,
+#: and time for the turn to stop before the text lands.
+INTERRUPT_SETTLE_S = 0.8
+
+
+def _hq_text_still_clean(text: str) -> bool:
+    """The store boundary's secret guard, asked again before the text half of an interrupt
+    (#1960 Phase 2, Hermes on the issue): the stop and the pause are a window in which a template
+    secret can be registered. Blocking; anything it cannot decide refuses."""
+    from . import ask_store
+
+    try:
+        return ask_store.guard_text(text, ask_store.NUDGE_MAX) == text
+    except Exception:  # noqa: BLE001 — a redaction that cannot run authorizes nothing
+        return False
+
+
+#: Why the text half of an interrupt was not sent when the secret guard refused it.
+_TEXT_NOT_CLEAN = "the text now matches a secret or looks like a credential; it was not sent"
+
+
+def hq_prompt_free(phys: str) -> tuple[bool, str]:
+    """No operator-only prompt on this terminal screen NOW (#1960 Phase 2). Blocking.
+
+    A permission dialog or a numbered menu: text, Enter or Esc typed into either answers it, and
+    answering those is the operator's alone (`permission-prompts.md`). An unreadable screen is
+    not proof of absence, so it refuses."""
+    from . import orchestrator
+
+    try:
+        # STRICT (Hermes on #2135): the fail-soft read substitutes an empty screen for an
+        # unreadable one, and an empty screen shows no dialog — so it would authorize the write.
+        screen = orchestrator.observed_screen(phys, strict=True)
+    except Exception:  # noqa: BLE001 — a screen that can't be read authorizes nothing
+        return False, "the session's screen could not be read before the write"
+    if screen.get("permission") is not None:
+        return False, "the session is showing a permission dialog; only the operator answers it"
+    if screen.get("menu"):
+        return False, "the session is showing a menu; only the operator answers it"
+    return True, ""
+
+
 def screen_matches(phys: str, pre: dict) -> tuple[bool, str]:
     """The screen half of the precondition: does the session still show what the pass judged?
 
@@ -609,7 +652,7 @@ def _action_excluded(sid: str, phys: str) -> bool:
 
 
 def check_precondition(
-    action: dict, *, registry=None, operator_approval: bool = False
+    action: dict, *, registry=None, operator_approval: bool = False, attended: bool = False
 ) -> tuple[bool, str]:
     """Re-verify everything the proposal assumed. Blocking (ring replay + metadata read).
 
@@ -644,6 +687,14 @@ def check_precondition(
         return False, "session is no longer managed by the orchestrator"
     if api:
         return True, ""
+
+    # HQ ON THE COMMANDER'S INSTRUCTION (#1960 Phase 2): `attended` and no tap. The Commander told
+    # HQ to type into this session whatever it is doing, so a viewer, recent output or a screen
+    # that moved on since the send was recorded are not reasons to refuse — a working agent's
+    # screen always moves. What remains is the one thing typed input must never do: answer a
+    # prompt that is the operator's alone. Re-read here, inside the fence, before byte one.
+    if attended and not operator_approval:
+        return hq_prompt_free(phys)
 
     # (3) nobody else is at the keyboard.
     if _viewer_busy(phys, registry, operator_approval=operator_approval):
@@ -1282,16 +1333,44 @@ async def deliver(
     # API path's own test below: a caller's authority behind it, or neither the operator's tap nor
     # the operator's words. The tap and the relay still deliver (D17: the Commander taps).
     automatic = authority is not None or (not operator_approval and rec.get("origin") != "operator")
+    # HQ's send (#1960 Phase 2): the Commander's instruction, without a tap. Only `_send_nudge`
+    # sets `attended` without `operator_approval`; a mission, an automation and the supervisor
+    # never set it, and keep every check below exactly as before.
+    hq = attended and not operator_approval
     held = None if api or not automatic else await asyncio.to_thread(console_member_hold, rec)
     if held:
         return _settle_waiting(action_id, "stale", detail=held) or rec
-    try:
-        # Off the loop: a supervisor nudge re-reads its objective from the missions store.
-        payload = await asyncio.to_thread(render_text if api else render, view, cfg)
-    except RenderStale as e:
-        return _settle_waiting(action_id, "stale", detail=str(e)) or rec
-    except NotDeliverable as e:
-        return _settle_waiting(action_id, "failed", detail=str(e)) or rec
+    # INTERRUPT (#1960 Phase 2): stop the running turn first. Only the Commander's instruction —
+    # HQ's send or the operator's own tap — ever stops an agent's turn; no autonomous path does.
+    interrupt = rec.get("interrupt") is True
+    if interrupt and not (attended or operator_approval):
+        return (
+            _settle_waiting(
+                action_id, "failed", detail="only the Commander's instruction stops a running turn"
+            )
+            or rec
+        )
+    intr_key = None
+    if interrupt and not api:
+        try:
+            intr_key = engines.interrupt_bytes(engines.parse_key(phys)[0])
+        except Exception:  # noqa: BLE001 — a key that does not resolve has no interrupt key
+            intr_key = None
+        if intr_key is None:
+            return (
+                _settle_waiting(action_id, "failed", detail="this agent declares no interrupt key")
+                or rec
+            )
+    if interrupt and not str(view.get("answer") or "").strip():
+        payload = None  # interrupt only: nothing is typed after the stop
+    else:
+        try:
+            # Off the loop: a supervisor nudge re-reads its objective from the missions store.
+            payload = await asyncio.to_thread(render_text if api else render, view, cfg)
+        except RenderStale as e:
+            return _settle_waiting(action_id, "stale", detail=str(e)) or rec
+        except NotDeliverable as e:
+            return _settle_waiting(action_id, "failed", detail=str(e)) or rec
 
     if not api and not session_input.is_live(phys):
         return _settle_waiting(action_id, "failed", detail="session is not live") or rec
@@ -1420,8 +1499,11 @@ async def deliver(
             if sid in barred:
                 return False, "the session's mission is being archived; it accepts no writes"
         # The screen/viewer contract is "no viewer at the keyboard, and the screen still looks
-        # like the one that was proposed against" — as of NOW, not as of setup.
-        return check_precondition(rec, registry=registry, operator_approval=operator_approval)
+        # like the one that was proposed against" — as of NOW, not as of setup. For HQ's send it
+        # is "no operator-only prompt on screen" (#1960 Phase 2).
+        return check_precondition(
+            rec, registry=registry, operator_approval=operator_approval, attended=attended
+        )
 
     if api:
         # THE SAME FINAL GUARD, twice (#1899). In full first, off the loop and outside every lock
@@ -1439,32 +1521,59 @@ async def deliver(
                 )
                 or rec
             )
-        state, detail = await mission_structured.send(
-            action_id=action_id,
-            key=phys,
-            text=payload,
-            mission_id=str(rec.get("mission_id") or "") or None,
-            check=lambda: _final_guard(in_fence=True),
-            precondition=rec.get("precondition")
-            if isinstance(rec.get("precondition"), dict)
-            else None,
-            autonomous=automatic,
-            attended=bool(attended or operator_approval),
-        )
-        api_outcome = session_input.Outcome(state, detail)
+        stopped, istate = "", ""
+        if interrupt:
+            # STOP FIRST (#1960 Phase 2), through the same door and the same final guard. A stop
+            # that did not take leaves the text unsent: "stop, then do X" never becomes "do X
+            # after the turn you were told to stop".
+            istate, stopped = await mission_structured.interrupt(
+                action_id=action_id, key=phys, check=lambda: _final_guard(in_fence=True)
+            )
+            if istate not in ("interrupted", "idle"):
+                api_outcome = session_input.Outcome(
+                    istate, f"the running turn could not be stopped ({stopped}); nothing was sent"
+                )
+        if interrupt and istate not in ("interrupted", "idle"):
+            pass  # settled as the stop's own failure, above
+        elif payload is None:
+            api_outcome = session_input.Outcome("delivered", stopped)
+        elif interrupt and not await asyncio.to_thread(_hq_text_still_clean, payload):
+            api_outcome = session_input.Outcome("stale", f"{stopped}; {_TEXT_NOT_CLEAN}")
+        else:
+            state, detail = await mission_structured.send(
+                action_id=action_id,
+                key=phys,
+                text=payload,
+                mission_id=str(rec.get("mission_id") or "") or None,
+                check=lambda: _final_guard(in_fence=True),
+                precondition=rec.get("precondition")
+                if isinstance(rec.get("precondition"), dict)
+                else None,
+                # HQ's send may queue behind a running turn or an open request (#1960 Phase 2);
+                # an automatic send still needs the idle session it was proposed against.
+                autonomous=automatic and not hq,
+                attended=bool(attended or operator_approval),
+            )
+            api_outcome = session_input.Outcome(
+                state, f"{stopped}; then {detail}" if stopped else detail
+            )
     else:
         api_outcome = None
-    try:
-        # An API turn has already settled above; only a terminal session is written to here.
-        outcome = api_outcome or await asyncio.to_thread(
-            session_input.send_input,
+
+    def _type(data: bytes) -> session_input.Outcome:
+        # ONE fenced write into the terminal. Both halves of an interrupt (#1960 Phase 2) — the
+        # key alone, then the text — go through exactly this: the same precondition, final guard
+        # and policy fingerprint re-read before byte one.
+        return session_input.send_input(
             phys,
-            payload,
+            data,
             policy_scope=scope,
+            # HQ types into a working session (#1960 Phase 2): its output never goes quiet.
+            require_quiet=not hq,
             # The SAME flag as `_final_guard`: disagreeing about who is at the keyboard
             # would let one callback approve what the other refuses (#969).
             precondition=lambda: check_precondition(
-                rec, registry=registry, operator_approval=operator_approval
+                rec, registry=registry, operator_approval=operator_approval, attended=attended
             ),
             final_guard=_final_guard,
             # The third domain. `_final_guard` reads policy and then does the screen check, so a
@@ -1504,11 +1613,58 @@ async def deliver(
                 ),
             ),
         )
+
+    stop_landed = False  # #1960 Phase 2: once the key is in, "nothing happened" is never true
+    try:
+        if api_outcome is not None:
+            # An API turn has already settled above; only a terminal session is written to here.
+            outcome = api_outcome
+        elif intr_key is not None:
+            # STOP FIRST (#1960 Phase 2): the interrupt key ALONE, then a pause, then the text. A
+            # stop that did not land leaves the text untyped.
+            first = await asyncio.to_thread(_type, intr_key)
+            stop_landed = first.state == "delivered"
+            if first.state != "delivered":
+                outcome = session_input.Outcome(
+                    first.state,
+                    f"the running turn could not be stopped ({first.detail}); nothing was typed",
+                )
+            elif payload is None:
+                outcome = session_input.Outcome("delivered", "stopped the running turn")
+            else:
+                await asyncio.sleep(INTERRUPT_SETTLE_S)
+                # The pause is a withdrawal window: `_type` re-asks policy, ownership, membership,
+                # the opt-out and the screen before byte one; the secret guard is asked here.
+                if not await asyncio.to_thread(_hq_text_still_clean, str(view.get("answer") or "")):
+                    outcome = session_input.Outcome(
+                        "stale", f"stopped the running turn; {_TEXT_NOT_CLEAN}"
+                    )
+                else:
+                    try:
+                        second = await asyncio.to_thread(_type, payload)
+                    except Exception as e:  # noqa: BLE001 — may have happened after byte one
+                        # The stop landed; the text's own write is of unknown outcome. Never
+                        # replayed: the row is settled `indeterminate` and says both halves.
+                        second = session_input.Outcome(
+                            "indeterminate", f"outcome unknown ({type(e).__name__})"
+                        )
+                    outcome = session_input.Outcome(
+                        second.state,
+                        "stopped the running turn, then typed the text"
+                        if second.state == "delivered"
+                        else "stopped the running turn, but the text was not typed "
+                        f"({second.detail})",
+                    )
+        else:
+            outcome = await asyncio.to_thread(_type, payload)
     except Exception as e:
         # A seam failure may have happened after byte one. Never leave a live owner's claim
         # stranded or make an uncertain send replayable; recovery uses the same terminal state.
+        # Between an interrupt's two effects (#1960 Phase 2): the stop is said, the rest unknown.
         outcome = session_input.Outcome(
-            "indeterminate", f"delivery outcome is unknown ({type(e).__name__}); not retried"
+            "indeterminate",
+            ("stopped the running turn; then " if stop_landed else "")
+            + f"delivery outcome is unknown ({type(e).__name__}); not retried",
         )
     state = {
         "delivered": "delivered",

@@ -422,6 +422,10 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             out.update(action_id=aid, key=key, kind=pkind)
             out["title"] = text(rec.get("title"), TITLE_MAX)
             out["text"] = text(rec.get("text"), NUDGE_MAX)
+            if rec.get("interrupt") is True:
+                # #1960 Phase 2: HQ stopped the session's running turn first (with no text, it
+                # only stopped it). A flag the card shows; never a value from a browser.
+                out["interrupt"] = True
         elif pkind == "message":
             # A message to send (#1833): the card's connector and recipient labels and the exact
             # text. What a tap sends is the sidecar's entry, bound to this card by `binding`.

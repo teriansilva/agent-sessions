@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -53,6 +54,7 @@ def writer(monkeypatch):
     """The PTY writer: it asks the delivery's own precondition first — the real
     `check_precondition` / `screen_matches` — and records the bytes only when it holds."""
     sent: list[bytes] = []
+    sent_quiet: list[bool] = []  # `require_quiet` of each write that landed (#1960 Phase 2)
 
     def send_input(phys, payload, *, precondition=None, final_guard=None, **kw):
         if final_guard is not None:
@@ -64,10 +66,18 @@ def writer(monkeypatch):
             if not ok:
                 return session_input.Outcome("stale", why)
         sent.append(payload)
+        sent_quiet.append(kw.get("require_quiet", True))
         return session_input.Outcome("delivered", "")
 
     monkeypatch.setattr(session_input, "send_input", send_input)
+    monkeypatch.setattr(actuator, "INTERRUPT_SETTLE_S", 0.0)
+    sent_quiet_ref[0] = sent_quiet
     return sent
+
+
+#: The last `writer`'s `require_quiet` flags, one per landed write (module-level so tests reach it
+#: without a second fixture).
+sent_quiet_ref: list[list[bool]] = [[]]
 
 
 @pytest.fixture
@@ -75,7 +85,7 @@ def target(monkeypatch, writer):
     """S1 is in scope, live, idle and at a plain question; session assistance is `suggest`. Its
     PTY is `writer`: what reaches it is recorded, only when delivery's own checks hold."""
     prefs.set_orchestrator({"enabled": True, "autonomy": "suggest"})
-    state = {"screen": SCREEN, "permission": None, "live": True, "held": {}}
+    state = {"screen": SCREEN, "permission": None, "menu": None, "live": True, "held": {}}
 
     async def catalog(self):
         return [
@@ -99,6 +109,7 @@ def target(monkeypatch, writer):
     def observed(key, **kw):
         out = real_observed(key, **kw)
         out["permission"] = state["permission"]
+        out["menu"] = state["menu"]
         return out
 
     monkeypatch.setattr(orchestrator, "observed_screen", observed)
@@ -176,8 +187,9 @@ def test_switching_off_before_the_write_sends_nothing(app, ai, found, target, wr
         (lambda s: s["held"].update({S1: "msn_" + "a" * 32}), "mission_held"),
         (lambda s: s.update(live=False), "not_live"),
         (lambda s: s.update(permission={"options": ["Yes", "No"]}), "permission_dialog"),
+        (lambda s: s.update(menu=[(1, "Yes"), (2, "No")]), "permission_dialog"),
     ],
-    ids=["disabled", "observe-only", "mission-held", "not-live", "permission-dialog"],
+    ids=["disabled", "observe-only", "mission-held", "not-live", "permission-dialog", "menu"],
 )
 def test_a_refused_nudge_writes_nothing_anywhere(app, ai, found, target, setup, code):
     setup(target)
@@ -200,25 +212,63 @@ def test_an_excluded_session_is_refused(app, ai, found, target):
     assert "excluded" in _result(script)["error"] and _ledger_for() == []
 
 
-def test_a_working_session_is_refused(app, ai, found, target, monkeypatch):
+def test_a_working_session_is_typed_into_without_waiting_for_quiet(
+    app, ai, found, target, writer, monkeypatch
+):
+    """#1960 Phase 2: HQ types into a session whatever it is doing. A working agent's output never
+    goes quiet and a viewer may be watching it — neither refuses HQ's send any more."""
     monkeypatch.setattr(actuator, "busy_keys", lambda registry, now=None: {S1})
+    monkeypatch.setattr(actuator, "_viewer_busy", lambda *a, **k: True)
     script = _nudge_turn(ai)
     app.ask(app.new(), "tell it to rebase")
-    assert "working right now" in _result(script)["error"] and _ledger_for() == []
+    assert _result(script)["sent"] is True
+    assert writer == [session_input.bracketed_paste("Rebase onto main, then run the tests.")]
+    assert sent_quiet_ref[0] == [False]  # no quiet wait: a working TUI never goes quiet
 
 
-def test_a_session_with_a_decision_waiting_gets_no_second_one(app, ai, found, target, monkeypatch):
+def test_a_waiting_proposal_is_superseded_by_hqs_message(
+    app, ai, found, target, writer, monkeypatch
+):
+    """#1960 Phase 2: a proposal nobody has started delivering no longer blocks HQ. It is retired
+    (`stale`, "superseded") by CAS, then HQ's own row is appended and sent — never two live."""
+    real = actuator.deliver
+
     async def claimed_elsewhere(*a, **k):
         raise actuator.NotDeliverable("another caller claimed or changed this action first")
 
     monkeypatch.setattr(actuator, "deliver", claimed_elsewhere)
     script = _nudge_turn(ai)
     app.ask(app.new(), "tell it to rebase")
-    assert _result(script)["sent"] is False  # its row is still live: a decision waiting
+    assert _result(script)["sent"] is False  # its row is still live, unclaimed
+    monkeypatch.setattr(actuator, "deliver", real)
     script = _nudge_turn(ai, "And then push.")
     app.ask(app.new(), "and tell it to push")
-    assert "already has a decision waiting" in _result(script)["error"]
-    assert len(_ledger_for()) == 1
+    assert _result(script)["sent"] is True
+    old, new = sorted(_ledger_for(), key=lambda r: r["ts"])
+    assert old["state"] == "stale" and "superseded" in old["detail"]
+    assert new["state"] == "delivered" and new["answer"] == "And then push."
+    assert writer == [session_input.bracketed_paste("And then push.")]
+
+
+def test_a_delivery_in_flight_still_refuses_a_second_message(
+    app, ai, found, target, writer, monkeypatch
+):
+    """A CLAIMED action is being typed right now: HQ never adds input beside it (no duplicates)."""
+    real = actuator.deliver
+
+    async def claimed_elsewhere(*a, **k):
+        raise actuator.NotDeliverable("another caller claimed or changed this action first")
+
+    monkeypatch.setattr(actuator, "deliver", claimed_elsewhere)
+    _nudge_turn(ai)
+    app.ask(app.new(), "tell it to rebase")
+    (first,) = _ledger_for()
+    assert orchestrator_ledger.claim(first["id"], orchestrator_ledger.CLAIMABLE_STATES)
+    monkeypatch.setattr(actuator, "deliver", real)
+    script = _nudge_turn(ai, "And then push.")
+    app.ask(app.new(), "and tell it to push")
+    assert "being delivered" in _result(script)["error"]
+    assert [r["state"] for r in _ledger_for()] == ["claimed"] and writer == []
 
 
 def test_a_send_claimed_elsewhere_after_it_was_recorded_keeps_its_budget_slot(
@@ -272,18 +322,35 @@ def test_text_with_a_secret_or_a_credential_never_becomes_an_effect(app, ai, fou
 # ---- the fence it is sent through ----------------------------------------------------------------
 
 
-def test_a_screen_that_moved_sends_nothing_and_the_card_says_so(
-    app, ai, found, target, writer, monkeypatch
-):
-    """The fingerprint is taken when the send is recorded and re-checked before the first byte."""
+def test_a_screen_that_moved_on_still_gets_hqs_text(app, ai, found, target, writer, monkeypatch):
+    """#1960 Phase 2: a working agent's screen always moves, so HQ no longer needs it unchanged."""
     real = ask_orchestrator._nudge_refusal
 
-    def then_moves(turn, key, card):
-        out = real(turn, key, card)
+    def then_moves(turn, key, card, **kw):
+        out = real(turn, key, card, **kw)
         target["screen"] = "Running tests… 14/80"
         return out
 
     monkeypatch.setattr(ask_orchestrator, "_nudge_refusal", then_moves)
+    script = _nudge_turn(ai)
+    app.ask(app.new(), "tell it to rebase")
+    assert _result(script)["sent"] is True and len(writer) == 1
+
+
+@pytest.mark.parametrize("prompt", ["permission", "menu"])
+def test_an_operator_prompt_appearing_before_the_write_sends_nothing(
+    app, ai, found, target, writer, monkeypatch, prompt
+):
+    """What HQ never does: type into a permission dialog or a menu. Re-checked inside the fence,
+    before byte one — a prompt that appears after the send was recorded still refuses."""
+    real = ask_orchestrator._nudge_refusal
+
+    def then_prompts(turn, key, card, **kw):
+        out = real(turn, key, card, **kw)
+        target[prompt] = {"options": ["Yes", "No"]} if prompt == "permission" else [(1, "Yes")]
+        return out
+
+    monkeypatch.setattr(ask_orchestrator, "_nudge_refusal", then_prompts)
     script = _nudge_turn(ai)
     cid = app.new()
     app.ask(cid, "tell it to rebase")
@@ -472,8 +539,8 @@ def test_a_secret_registered_during_the_checks_never_reaches_the_ledger(
     text = "deploy with tok-ABC123-late and retry"
     real = ask_orchestrator._nudge_refusal
 
-    def registers_mid_way(turn, key, card):
-        out = real(turn, key, card)
+    def registers_mid_way(turn, key, card, **kw):
+        out = real(turn, key, card, **kw)
         template_secrets.register_typed(["tok-ABC123-late"])
         return out
 
@@ -720,3 +787,285 @@ def test_a_failed_append_that_left_nothing_is_reported_as_uncertain_not_refused(
     app.ask(app.new(), "tell it to rebase")
     assert _result(script)["error"].startswith("refused: the proposal could not be confirmed")
     assert _ledger_for() == []
+
+
+# ---- interrupt (#1960 Phase 2) -------------------------------------------------------------------
+
+
+def _interrupt_turn(ai, text=None):
+    args = {"key": S1, "interrupt": True}
+    if text is not None:
+        args["text"] = text
+    return ai(
+        call("find_sessions", {"query": "rebase"}, cid="f"),
+        call("send_nudge", args, cid="n"),
+        answer("Stopped it."),
+    )
+
+
+def test_interrupt_types_the_key_alone_then_the_text(app, ai, found, target, writer, monkeypatch):
+    """Stop, then send: the agent's manifest key (claude: Esc) as a write of its own, then the
+    text as its usual paste. Never one write: a lone Esc beside the paste's ESC is a sequence."""
+    monkeypatch.setattr(actuator, "busy_keys", lambda registry, now=None: {S1})
+    script = _interrupt_turn(ai, "Stop that and rebase onto main instead.")
+    cid = app.new()
+    turn = app.ask(cid, "stop it and tell it to rebase").json()["turn"]
+    res = _result(script)
+    assert res["sent"] is True and "stopped the running turn" in res["detail"]
+    assert writer == [
+        b"\x1b",
+        session_input.bracketed_paste("Stop that and rebase onto main instead."),
+    ]
+    (rec,) = _ledger_for()
+    assert rec["interrupt"] is True and rec["state"] == "delivered"
+    (card,) = turn["proposals"]
+    assert card["interrupt"] is True and card["text"] == "Stop that and rebase onto main instead."
+
+
+def test_interrupt_without_text_only_stops(app, ai, found, target, writer):
+    script = _interrupt_turn(ai)
+    cid = app.new()
+    turn = app.ask(cid, "stop the rebase session").json()["turn"]
+    assert _result(script)["sent"] is True
+    assert writer == [b"\x1b"]
+    (rec,) = _ledger_for()
+    assert rec["answer"] == "" and rec["detail"] == "stopped the running turn"
+    (card,) = turn["proposals"]
+    assert card["interrupt"] is True and card["text"] == ""
+
+
+def test_text_is_still_required_without_interrupt(app, ai, found, target, writer):
+    script = ai(
+        call("find_sessions", {"query": "rebase"}, cid="f"),
+        call("send_nudge", {"key": S1}, cid="n"),
+        answer("can't"),
+    )
+    app.ask(app.new(), "tell it")
+    assert "text must be a non-empty string" in _result(script)["error"]
+    assert _ledger_for() == [] and writer == []
+
+
+def test_an_interrupt_that_did_not_land_types_no_text(app, ai, found, target, monkeypatch):
+    """ "Stop, then do X" never becomes "do X after the turn you were told to stop"."""
+    typed: list[bytes] = []
+
+    def esc_refused(phys, payload, **kw):
+        if payload == b"\x1b":
+            return session_input.Outcome("refused", "the PTY is consuming input")
+        typed.append(payload)
+        return session_input.Outcome("delivered", "")
+
+    monkeypatch.setattr(session_input, "send_input", esc_refused)
+    script = _interrupt_turn(ai, "Rebase instead.")
+    app.ask(app.new(), "stop it and rebase")
+    res = _result(script)
+    assert res["sent"] is False and "could not be stopped" in res["reason"]
+    assert typed == []
+
+
+def test_an_agent_with_no_interrupt_key_is_refused_before_anything_is_written(
+    app, ai, found, target, writer, monkeypatch
+):
+    from agent_sessions import engines
+
+    monkeypatch.setattr(engines, "interrupt_bytes", lambda prov: None)
+    script = _interrupt_turn(ai, "Rebase instead.")
+    cid = app.new()
+    turn = app.ask(cid, "stop it").json()["turn"]
+    assert "no interrupt key" in _result(script)["error"]
+    assert _ledger_for() == [] and writer == [] and turn["proposals"] == []
+
+
+def test_only_the_commanders_instruction_may_stop_a_turn(
+    app, ai, found, target, writer, monkeypatch
+):
+    """An interrupt row delivered by anything but HQ's send or the operator's tap — a supervisor or
+    automation path, which never sets `attended` — is refused and stops nothing."""
+    real = actuator.deliver
+
+    async def claimed_elsewhere(*a, **k):
+        raise actuator.NotDeliverable("another caller claimed or changed this action first")
+
+    monkeypatch.setattr(actuator, "deliver", claimed_elsewhere)
+    _interrupt_turn(ai, "Rebase instead.")
+    app.ask(app.new(), "stop it")
+    (row,) = _ledger_for()
+    assert row["interrupt"] is True and row["state"] == "proposed"
+    done = asyncio.run(real(row["id"], authority=lambda live: (True, "")))
+    assert done["state"] == "failed" and "Commander's instruction" in done["detail"]
+    assert writer == []
+
+
+def _pause_writer(monkeypatch, during_pause):
+    """A PTY whose Esc lands, after which ``during_pause`` changes the world; the text's write then
+    asks the delivery's own final guard and precondition, as `send_input` does before byte one."""
+    typed: list[bytes] = []
+
+    def send_input(phys, payload, *, precondition=None, final_guard=None, **kw):
+        if typed:  # the text, after the pause
+            for check, refused in ((final_guard, "refused"), (precondition, "stale")):
+                if check is not None:
+                    ok, why = check()
+                    if not ok:
+                        return session_input.Outcome(refused, why)
+        typed.append(payload)
+        if payload == b"\x1b":
+            during_pause()
+        return session_input.Outcome("delivered", "")
+
+    monkeypatch.setattr(session_input, "send_input", send_input)
+    monkeypatch.setattr(actuator, "INTERRUPT_SETTLE_S", 0.0)
+    return typed
+
+
+@pytest.mark.parametrize("change", ["off", "permission", "ownership", "secret"])
+def test_the_pause_after_an_interrupt_is_a_withdrawal_window(
+    app, ai, found, target, monkeypatch, change
+):
+    """Between the Esc and the text, everything delivery checks is asked again (Hermes on #1960):
+    switching off, a dialog appearing, the session changing owner, a secret being registered."""
+    from agent_sessions import automation
+
+    def during_pause():
+        if change == "off":
+            prefs.set_orchestrator({"enabled": True, "autonomy": "off"})
+        elif change == "permission":
+            target["permission"] = {"options": ["Yes", "No"]}
+        elif change == "ownership":
+            monkeypatch.setattr(automation, "check", lambda rec, **k: (False, "owner changed"))
+        else:
+            template_secrets.register_typed(["rebase-token-9f3k"])
+
+    typed = _pause_writer(monkeypatch, during_pause)
+    script = _interrupt_turn(ai, "Use rebase-token-9f3k and rebase.")
+    app.ask(app.new(), "stop it and rebase")
+    assert typed == [b"\x1b"]  # the stop landed; the text did not
+    res = _result(script)
+    assert res["sent"] is False
+    (rec,) = _ledger_for()
+    assert rec["state"] in ("stale", "failed") and rec["detail"].startswith(
+        "stopped the running turn"
+    )
+
+
+def test_a_text_write_that_raises_after_the_stop_is_unknown_and_never_replayed(
+    app, ai, found, target, monkeypatch
+):
+    typed: list[bytes] = []
+
+    def send_input(phys, payload, **kw):
+        typed.append(payload)
+        if payload != b"\x1b":
+            raise OSError("the PTY went away mid-write")
+        return session_input.Outcome("delivered", "")
+
+    monkeypatch.setattr(session_input, "send_input", send_input)
+    monkeypatch.setattr(actuator, "INTERRUPT_SETTLE_S", 0.0)
+    script = _interrupt_turn(ai, "Rebase instead.")
+    app.ask(app.new(), "stop it and rebase")
+    assert _result(script)["sent"] == "unknown"
+    (rec,) = _ledger_for()
+    assert rec["state"] == "indeterminate" and rec["detail"].startswith("stopped the running turn")
+    assert typed.count(b"\x1b") == 1  # each half written at most once
+
+
+def test_a_failure_between_the_stop_and_the_text_is_unknown_and_says_the_stop(
+    app, ai, found, target, writer, monkeypatch
+):
+    """A crash between the two effects (Hermes on #1960): the Esc is in, the text never started.
+    Settled `indeterminate`, saying the stop; never replayed."""
+
+    def boom(text):
+        raise RuntimeError("the server stopped mid-delivery")
+
+    monkeypatch.setattr(actuator, "_hq_text_still_clean", boom)
+    script = _interrupt_turn(ai, "Rebase instead.")
+    app.ask(app.new(), "stop it and rebase")
+    assert _result(script)["sent"] == "unknown"
+    (rec,) = _ledger_for()
+    assert rec["state"] == "indeterminate"
+    assert rec["detail"].startswith("stopped the running turn; then delivery outcome is unknown")
+    assert writer == [b"\x1b"]
+
+
+def _one_send_budget(monkeypatch):
+    monkeypatch.setitem(
+        ask_orchestrator._BUDGETS, "send", ("sends", 1, "messages", "too_many_sends")
+    )
+
+
+def test_an_interrupt_only_send_spends_a_send_slot(app, ai, found, target, writer, monkeypatch):
+    """Stopping a turn is an effect: it is counted like any send (Hermes on #1960)."""
+    _one_send_budget(monkeypatch)
+    script = ai(
+        call("find_sessions", {"query": "rebase"}, cid="f"),
+        call("send_nudge", {"key": S1, "interrupt": True}, cid="a"),
+        call("send_nudge", {"key": S1, "text": "and rebase"}, cid="b"),
+        answer("done"),
+    )
+    app.ask(app.new(), "stop it, then tell it to rebase")
+    first, second = (json.loads(r["content"]) for r in script.tool_results(3)[1:])
+    assert first["sent"] is True
+    assert "at most 1 messages per turn" in second["error"]
+    assert writer == [b"\x1b"]
+
+
+def test_a_stop_that_landed_keeps_its_slot_even_when_the_text_was_refused(
+    app, ai, found, target, monkeypatch
+):
+    """ "No text sent" is not "no effect": once the Esc may have landed, a later refusal of the text
+    does not give the slot back (Hermes on #1960)."""
+    _one_send_budget(monkeypatch)
+    typed = _pause_writer(
+        monkeypatch, lambda: template_secrets.register_typed(["rebase-token-9f3k"])
+    )
+    script = ai(
+        call("find_sessions", {"query": "rebase"}, cid="f"),
+        call(
+            "send_nudge", {"key": S1, "interrupt": True, "text": "Use rebase-token-9f3k"}, cid="a"
+        ),
+        call("send_nudge", {"key": S1, "text": "then rebase"}, cid="b"),
+        answer("done"),
+    )
+    app.ask(app.new(), "stop it and redirect it")
+    first, second = (json.loads(r["content"]) for r in script.tool_results(3)[1:])
+    assert first["sent"] is False and "stopped the running turn" in first["reason"]
+    assert "at most 1 messages per turn" in second["error"]
+    assert typed == [b"\x1b"]
+
+
+def test_an_unreadable_screen_never_authorizes_hqs_text(
+    app, ai, found, target, writer, monkeypatch
+):
+    """Hermes on #2135: the fail-soft screen read turns an error into an EMPTY screen, which shows
+    no dialog. HQ's prompt check reads strictly, so a reader error refuses instead."""
+    real = ask_orchestrator._nudge_refusal
+
+    def then_unreadable(turn, key, card, **kw):
+        out = real(turn, key, card, **kw)
+
+        def broken(*a, **k):
+            raise OSError("the scrollback ring could not be read")
+
+        monkeypatch.setattr(scrollback, "live_tail_text", broken)
+        return out
+
+    monkeypatch.setattr(ask_orchestrator, "_nudge_refusal", then_unreadable)
+    script = _nudge_turn(ai)
+    app.ask(app.new(), "tell it to rebase")
+    res = _result(script)
+    assert res["sent"] is False and "could not be read" in res["reason"]
+    assert writer == []
+
+
+def test_an_unreadable_screen_is_refused_before_anything_is_recorded(
+    app, ai, found, target, writer, monkeypatch
+):
+    def broken(*a, **k):
+        raise OSError("the scrollback ring could not be read")
+
+    monkeypatch.setattr(scrollback, "live_tail_text", broken)
+    script = _nudge_turn(ai)
+    app.ask(app.new(), "tell it to rebase")
+    assert "cannot read that session's screen" in _result(script)["error"]
+    assert _ledger_for() == [] and writer == []

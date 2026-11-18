@@ -91,6 +91,9 @@
       "layout": "gemini-tmp",
       "root": "~/.gemini/tmp"
     },
+    "terminal": {
+      "interrupt": "esc"
+    },
     "transcript": {
       "kind": "gemini-chat"
     },

@@ -1108,6 +1108,8 @@ export interface AskNudgeCard {
   key: string;
   title: string;
   text: string;
+  /** HQ stopped the session's running turn first (#1960 Phase 2); `text` may then be empty. */
+  interrupt?: boolean;
   state: string | null;
   projection:
     | "actionable"

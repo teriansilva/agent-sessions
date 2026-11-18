@@ -490,3 +490,50 @@ async def test_a_send_that_cannot_be_identified_is_stale_never_raises(host, proj
         )
         assert state == "stale" and "could not be identified" in detail
     assert "NEVER" not in _users(project)
+
+
+@pytest.mark.anyio
+async def test_a_withdrawal_after_admission_stops_nothing(host, project, monkeypatch):
+    """Hermes on #2135: HQ's API interrupt is admitted through the same cross-process fence as a
+    guarded turn and claimed by the worker only while that admission is current (#1897). A
+    withdrawal that commits after the admission (here: between it and the worker's claim, the
+    window the runtime's own reads open) refuses the claim — the running turn is NOT stopped."""
+    key = (await runtime.create_session(ENGINE, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="HANG")
+    await asyncio.sleep(0.3)
+    real_admit = session_input.admit_native
+    admitted = []
+
+    def admit_then_withdraw(k, check):
+        tokens = real_admit(k, check)
+        admitted.append(k)
+        with session_input.sessions_transaction([k]):  # the authority is withdrawn
+            pass
+        return tokens
+
+    monkeypatch.setattr(mission_structured.session_input, "admit_native", admit_then_withdraw)
+    state, detail = await mission_structured.interrupt(
+        action_id="act-stop-1", key=key, check=lambda: (True, "")
+    )
+    assert admitted, "the stop was admitted through the fence"
+    assert state == "stale" and "withdrawn" in detail
+    snap = await runtime.snapshot(key)
+    assert snap.get("active_turn") == turn  # still running: nothing was stopped
+    assert not any(t.get("state") == "interrupted" for t in snap.get("turns") or [])
+
+
+@pytest.mark.anyio
+async def test_an_admitted_stop_still_interrupts_the_exact_turn(host, project):
+    key = (await runtime.create_session(ENGINE, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="HANG")
+    await asyncio.sleep(0.3)
+    state, detail = await mission_structured.interrupt(
+        action_id="act-stop-2", key=key, check=lambda: (True, "")
+    )
+    assert state == "interrupted", detail
+    from test_native_runtime import settle
+
+    _snap, settled = await settle(key, turn, state=("interrupted",))
+    assert settled["state"] == "interrupted"

@@ -191,11 +191,23 @@ export function NudgeCard({
         <dl className={c.kv}>
           <dt>Session</dt>
           <dd>{p.title || p.key}</dd>
+          {p.interrupt ? (
+            <>
+              <dt>Interrupt</dt>
+              <dd data-testid="ask-nudge-interrupt">
+                {p.text ? "Stops its running turn first" : "Stops its running turn"}
+              </dd>
+            </>
+          ) : null}
         </dl>
-        <div className={c.blockLabel}>Text to send, verbatim</div>
-        <div className={c.verbatim} data-testid="ask-nudge-text">
-          {p.text}
-        </div>
+        {p.text ? (
+          <>
+            <div className={c.blockLabel}>Text to send, verbatim</div>
+            <div className={c.verbatim} data-testid="ask-nudge-text">
+              {p.text}
+            </div>
+          </>
+        ) : null}
         {error ? (
           <div className={c.note} role="alert" data-testid="ask-nudge-error">
             <span>{error}</span>

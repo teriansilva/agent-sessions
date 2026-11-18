@@ -4355,16 +4355,39 @@ async def decide(
     return {"turn_id": turn_id, "request_id": request_id, "decision": decision, **receipt}
 
 
-async def interrupt(engine_id: str, session_id: str, *, operation_id: str, turn_id: str) -> dict:
+async def interrupt(
+    engine_id: str,
+    session_id: str,
+    *,
+    operation_id: str,
+    turn_id: str,
+    execution_admission=None,
+) -> dict:
+    """Stop the exact active turn. ``execution_admission`` (#1960 Phase 2, HQ's stop on the
+    Commander's instruction): the caller's authority is admitted fresh for every attempt and the
+    worker claims the stop only while those tokens are current (#1897) — so a withdrawal that
+    commits after the caller's first check, during the reads below, stops nothing."""
+    if execution_admission is not None and getattr(execution_admission, "admit", None) is None:
+        raise NativeError(409, "this caller's authority can't be checked across processes")
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
     params = {"turn_id": turn_id}
+    if execution_admission is not None:
+        # The binding is part of the stop's identity; its tokens are not (they are per attempt).
+        params["authority"] = execution_admission.binding
     immutable = native_ipc.normalize_immutable_request({"action": "interrupt", "params": params})
 
     async def send(_journal_now, revision):
+        authority = {}
+        if execution_admission is not None:
+            tokens = await _admit(execution_admission)
+            authority = {
+                "authority_session": tokens["session"],
+                "authority_policy": tokens["policy"],
+            }
         return await _existing_generation_call(
             session_id,
             "interrupt",
-            {**params, "operation_id": operation_id, "expected_revision": revision},
+            {**params, **authority, "operation_id": operation_id, "expected_revision": revision},
         )
 
     receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)

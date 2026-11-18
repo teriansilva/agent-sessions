@@ -1111,11 +1111,21 @@ async def start_session(session_key: str, *, wait_ready: bool = True) -> dict:
     return await snapshot(f"{engine}:{native}")
 
 
-async def interrupt(session_key: str, *, operation_id: str, turn_id: str) -> dict:
-    """Request interruption of the exact active turn. Acknowledgement is not completion."""
+async def interrupt(
+    session_key: str, *, operation_id: str, turn_id: str, execution_admission=None
+) -> dict:
+    """Request interruption of the exact active turn. Acknowledgement is not completion.
+
+    ``execution_admission`` (#1960 Phase 2): a guarded stop, claimed by the worker only while the
+    caller's authority is current (#1897). Only a guarded caller passes it."""
     engine, native = _key(session_key)
+    extra = {} if execution_admission is None else {"execution_admission": execution_admission}
     result = await _adapter(engine, "interrupt").interrupt(
-        engine, native, operation_id=_operation_id(operation_id), turn_id=_operation_id(turn_id)
+        engine,
+        native,
+        operation_id=_operation_id(operation_id),
+        turn_id=_operation_id(turn_id),
+        **extra,
     )
     return {"session_key": f"{engine}:{native}", **result}
 

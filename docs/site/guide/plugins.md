@@ -119,7 +119,7 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` definition may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
 | `[transcript]` | no | `kind`, the built-in adapter that renders the conversation for scroll-up and AI review; `strict`. Absent means none. |
 | `[usage]` | no | `source`: `plan` (a subscription window), `tokens`, `manual` (you enter it), or `none`. `plan` and `tokens` need a `kind` naming the built-in reporter; a CLI probe also names its `probe_token`. `access` names the check that notices when the vendor refuses the account. |
-| `[terminal]` | no | `repaint` (`wipe` for a TUI that redraws its scrollback), `ready` (the first-paint rule), `menu` (the numbered-menu parser) and `menu_digit_submits`. |
+| `[terminal]` | no | `repaint` (`wipe` for a TUI that redraws its scrollback), `ready` (the first-paint rule), `menu` (the numbered-menu parser), `menu_digit_submits`, and `interrupt` (`esc` when a lone Esc stops the agent's running turn; HQ never guesses a key an agent doesn't declare). |
 | `[unattended]` | no | `start_evidence`: the artifact that proves an agent started. Absent means missions will not dispatch to it unattended. |
 | `maintenance` | no | Store maintenance the agent admits, e.g. `sqlite-vacuum`. |
 | `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` agent’s list must be empty: its model is your endpoint configuration. |
@@ -220,6 +220,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `terminal.ready` | `bytes`, `claude-first-paint` |
 | `terminal.menu` | `claude-numbered`, `none` |
 | `terminal.permission` | `claude-permission`, `none`, `opencode-permission` |
+| `terminal.interrupt` | `esc`, `none` |
 | `unattended.start_evidence` | `claude-sessions`, `copilot-sessions`, `none`, `opencode-log`, `opencode2-log` |
 | `maintenance` | `sqlite-vacuum` |
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |

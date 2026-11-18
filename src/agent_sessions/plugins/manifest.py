@@ -281,6 +281,8 @@ class Terminal:
     menu_digit_submits: bool
     #: `terminal.permission` (#1213): the tool-permission dialog kind, or "none".
     permission: str = "none"
+    #: `terminal.interrupt` (#1960 Phase 2): the key that stops the running turn, or "none".
+    interrupt: str = "none"
 
 
 @dataclass(frozen=True)
@@ -751,6 +753,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             menu=r.str("menu", "none", one_of=kinds.MENU_KINDS),
             menu_digit_submits=r.bool("menu_digit_submits"),
             permission=r.str("permission", "none", one_of=kinds.PERMISSION_KINDS),
+            interrupt=r.str("interrupt", "none", one_of=kinds.INTERRUPT_KINDS),
         )
         r.done()
         if terminal.menu_digit_submits and terminal.menu == "none":
@@ -985,6 +988,10 @@ def _cross_check(m: Manifest) -> None:
             raise ManifestError(
                 "memory.kind", f"{m.memory_kind!r} reads a {'/'.join(need)} store with sessions"
             )
+    if m.identity.kind == "terminal" and m.terminal.interrupt != "none":
+        # An agentless terminal has no turn to stop: a key "interrupt" there is a keystroke into a
+        # bare shell, which the app never authors (#636).
+        raise ManifestError("terminal.interrupt", "a terminal plugin has no agent turn to stop")
     if m.identity.kind == "terminal":
         for c in sorted(kinds.AGENT_ONLY_CAPABILITIES):
             if caps.get(c):

@@ -85,6 +85,7 @@
       "root": "~/.local/share/opencode"
     },
     "terminal": {
+      "interrupt": "esc",
       "permission": "opencode-permission"
     },
     "tools": {

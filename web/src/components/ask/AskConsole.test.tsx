@@ -1150,6 +1150,37 @@ test("a nudge card shows the exact text; Send posts the approve route and the ca
   expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
 });
 
+test("an interrupting nudge says it stopped the turn, and one with no text shows no text block (#1960)", async () => {
+  const settled = { state: "delivered", projection: "settled" as const, can_approve: false, can_reject: false };
+  const turn = {
+    ...turnOf("stop it", "t-n", { answer: "Stopped." }),
+    proposals: [
+      nudge({ ...settled, interrupt: true }),
+      nudge({ ...settled, action_id: "b".repeat(32), interrupt: true, text: "" }),
+    ],
+  };
+  withConversation([turn]);
+  await mountAt(<AskConsole configured />);
+  const [withText, stopOnly] = await screen.findAllByTestId("ask-nudge");
+  expect(within(withText).getByTestId("ask-nudge-interrupt")).toHaveTextContent(
+    "Stops its running turn first",
+  );
+  expect(within(withText).getByTestId("ask-nudge-text")).toHaveTextContent(
+    "Rebase onto main, then run the tests.",
+  );
+  expect(within(stopOnly).getByTestId("ask-nudge-interrupt")).toHaveTextContent(
+    "Stops its running turn",
+  );
+  expect(within(stopOnly).queryByTestId("ask-nudge-text")).toBeNull();
+});
+
+test("a nudge that did not interrupt shows no interrupt row", async () => {
+  withConversation([{ ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] }]);
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-nudge");
+  expect(within(card).queryByTestId("ask-nudge-interrupt")).toBeNull();
+});
+
 test("a refused approve (409 out of date) is an outcome the card reads back, not an error", async () => {
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);

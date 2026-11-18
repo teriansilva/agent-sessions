@@ -94,6 +94,7 @@
       "root": "~/.codex/sessions"
     },
     "terminal": {
+      "interrupt": "esc",
       "repaint": "wipe"
     },
     "tools": {

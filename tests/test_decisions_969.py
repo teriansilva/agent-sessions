@@ -504,11 +504,17 @@ def test_title_only_output_is_eligible_but_an_approval_into_it_is_still_refused(
 def test_both_precondition_callbacks_carry_the_same_flag(monkeypatch, live, operator_approval):
     _propose({})
     seen: list[bool] = []
+    attended_seen: list[bool] = []
     real = actuator.check_precondition
 
-    def spy(action, *, registry=None, operator_approval=False):
+    def spy(action, *, registry=None, operator_approval=False, attended=False):
         seen.append(operator_approval)
-        return real(action, registry=registry, operator_approval=operator_approval)
+        # #1960 Phase 2: `attended` (HQ's send) rides both callbacks the same way; this route
+        # never sets it.
+        attended_seen.append(attended)
+        return real(
+            action, registry=registry, operator_approval=operator_approval, attended=attended
+        )
 
     monkeypatch.setattr(actuator, "check_precondition", spy)
     reg = _viewer(attached=True, last_output_at=None)
@@ -519,6 +525,7 @@ def test_both_precondition_callbacks_carry_the_same_flag(monkeypatch, live, oper
         # Delivered means BOTH callbacks ran and both were told it is the operator's approval.
         assert len(seen) >= 2, f"expected the precondition AND the final guard, saw {seen}"
         assert set(seen) == {True}
+        assert set(attended_seen) == {False}
         assert rec["state"] == "delivered"
     else:
         # Without the flag the attached viewer refuses at the FIRST callback, so the second is
