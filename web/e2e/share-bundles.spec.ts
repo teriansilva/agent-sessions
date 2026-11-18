@@ -205,8 +205,17 @@ test("export: a chosen playbook locks in its skills and downloads exactly the ch
   await expect(dialog.getByLabel("Skill research-review")).toBeEnabled();
 });
 
+/** Import from file: the grid's tile on a gallery that has it (#2144), else the header's Import…. */
+async function openImport(page: Page) {
+  await page
+    .getByTestId("library-import-tile")
+    .or(page.getByRole("button", { name: "Import…", exact: true }))
+    .first()
+    .click();
+}
+
 async function openPreview(page: Page) {
-  await page.getByRole("button", { name: "Import…" }).click();
+  await openImport(page);
   const dialog = page.getByTestId("share-import");
   await dialog.getByTestId("share-file").setInputFiles({
     name: "research-kit.battlelab",
@@ -270,7 +279,7 @@ test("import: a library change after the preview asks to preview again", async (
 test("import: a hostile file is refused, and the dialog says nothing was read", async ({ page }) => {
   await setup(page, { preview: "refused" });
   await page.goto(SKILLS_PATH);
-  await page.getByRole("button", { name: "Import…" }).click();
+  await openImport(page);
   const dialog = page.getByTestId("share-import");
   await dialog.getByTestId("share-file").setInputFiles({
     name: "evil.battlelab",
@@ -383,7 +392,7 @@ test("import: after a partial import, Back / another file / close and reopen nev
   let dialog = await partial(page);
   // Close and reopen: the page remembers what this file created.
   await dialog.getByRole("button", { name: "Done" }).click();
-  await page.getByRole("button", { name: "Import…" }).click();
+  await openImport(page);
   dialog = page.getByTestId("share-import");
   await pick(dialog, "bundle-bytes");
   await nothingCreatedIsTicked(dialog);

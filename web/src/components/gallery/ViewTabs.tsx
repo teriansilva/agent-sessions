@@ -1,5 +1,6 @@
-/** "Your playbooks | Browse gallery" (and the Skills pair) — the two views one Library entry holds
- *  (#1440). Plain links, so each view keeps its own URL and the back button works. */
+/** "Yours | Public gallery" — the two views one Library entry holds (#1440; named so by #2144, which
+ *  gives both one toolbar and one card). Plain links, so each view keeps its own URL and the back
+ *  button works. */
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { X } from "lucide-react";
@@ -12,14 +13,14 @@ export function ViewTabs({ kind, view }: { kind: GalleryKind; view: "local" | "g
   return (
     <nav className={styles.tabs} aria-label={kind === "playbook" ? "Playbook views" : "Skill views"}>
       <Link className={styles.tab} to={local} aria-current={view === "local" ? "page" : undefined}>
-        {kind === "playbook" ? "Your playbooks" : "Your skills"}
+        Yours
       </Link>
       <Link
         className={styles.tab}
         to={galleryPath(kind)}
         aria-current={view === "gallery" ? "page" : undefined}
       >
-        Browse gallery
+        Public gallery
       </Link>
     </nav>
   );

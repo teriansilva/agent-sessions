@@ -1,14 +1,24 @@
 import { Link } from "react-router-dom";
+import { Plus } from "lucide-react";
 import {
   engineColor,
   engineName,
   offeredModels,
   useEngineRoster,
 } from "../../app/engineRoster";
-import { playbookPath } from "../../lib/routes";
+import { PLAYBOOK_NEW_PATH, playbookPath } from "../../lib/routes";
 import type { PlaybookCardData, PlaybookStep } from "../../types/playbooks";
+import {
+  CardExport,
+  Count,
+  DefaultMark,
+  Dot,
+  LibraryCard,
+  type LibrarySource,
+} from "../library/LibraryCard";
+import lib from "../library/library.module.css";
 import { bindingRole } from "../../types/playbooks";
-import { ImportedMark } from "../share/ShareDialogs";
+import { playbookProvenance } from "./playbookSource";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbooks.module.css";
 
@@ -68,115 +78,69 @@ export function PlaybookActor({ step }: { step: PlaybookStep }) {
   );
 }
 
-export function PlaybookSource({ card }: { card: PlaybookCardData }) {
+/** The one primary both Playbooks tabs' head carries (#2144 board 1). */
+export function NewPlaybookLink() {
   return (
-    <div className={styles.tags}>
-      <span className={styles.badge}>{card.source}</span>
-      <span>
-        {card.source === "local"
-          ? "Unsigned"
-          : card.source === "bundled"
-            ? "Shipped with this release"
-            : "Catalog · trust not reported"}
-      </span>
-      {card.version && <span className={styles.badge}>v{card.version}</span>}
-      {card.default && <strong className={styles.defaultTag}>Default</strong>}
-    </div>
+    <Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>
+      <Plus size={16} aria-hidden />
+      New playbook
+    </Link>
   );
 }
 
-/** Shared with the New project wizard: a card displays the stored references, never assigns. */
+/** One playbook on the Library grid (#2144): the shared card with the playbook's meta row. A tap
+ *  anywhere opens it; Export is offered on local copies only (bundled and catalog playbooks are
+ *  not in the share catalog). The New project wizard's radio cards are a different component. */
 export function PlaybookCard({
   card,
-  onSelect,
-  ordinal,
-  imported = false,
+  source,
 }: {
   card: PlaybookCardData;
-  onSelect?: (card: PlaybookCardData) => void;
-  /** A local copy created from a share bundle (#1714): it carries the mark. */
-  imported?: boolean;
-  /** The card's place in the library list, for the dossier's stamp line (#1574 board B1). */
-  ordinal?: number;
+  source: LibrarySource;
 }) {
+  const flows = card.flows ?? [];
+  const steps = flows.reduce((n, f) => n + f.steps.length, 0);
+  const files = card.ships ? card.ships.materials + card.ships.runbooks + card.ships.templates : null;
+  const title = card.name || card.id;
   return (
-    <article
-      className={`${styles.card} ${card.ok ? "" : styles.invalid}`}
-      data-testid={`playbook-card-${card.id}`}
+    <LibraryCard
+      testId={`playbook-card-${card.id}`}
+      to={card.ok ? playbookPath(card.id) : undefined}
+      title={title}
+      kind="Playbook"
+      version={card.version}
+      badges={card.default ? <DefaultMark /> : undefined}
+      source={source}
+      invalid={!card.ok}
+      summary={card.ok ? card.summary || "No summary." : undefined}
+      meta={
+        card.ok ? (
+          <>
+            <Count n={flows.length} one="flow" />
+            <Dot />
+            <Count n={steps} one="step" />
+            {files !== null && (
+              <>
+                <Dot />
+                <Count n={files} one="file" />
+              </>
+            )}
+          </>
+        ) : undefined
+      }
+      provenance={playbookProvenance(card, source)}
+      actions={
+        card.ok && card.source === "local" ? (
+          <CardExport kind="playbook" id={card.id} title={title} />
+        ) : undefined
+      }
     >
-      <div className={styles.dh} aria-hidden="true">
-        Playbook
-        {ordinal !== undefined && (
-          <span className={styles.did}>P-{String(ordinal).padStart(2, "0")}</span>
-        )}
-      </div>
-      <h2>{card.name || card.id}</h2>
-      <PlaybookSource card={card} />
-      {imported && <ImportedMark />}
-      {card.ok ? (
-        <>
-          <p>{card.summary}</p>
-          {(card.flows ?? []).map((flow) => (
-            <section
-              className={styles.flow}
-              key={flow.id}
-              aria-label={flow.title}
-            >
-              <div className={styles.kicker}>
-                {flow.title} // {flow.steps.length} steps
-              </div>
-              <ol>
-                {flow.steps.map((step) => (
-                  <li key={step.id}>
-                    <span>
-                      {step.title}
-                      {step.note ? " · note" : ""}
-                    </span>
-                    <PlaybookActor step={step} />
-                  </li>
-                ))}
-              </ol>
-            </section>
-          ))}
-          {!card.flows?.length && <p>No flow defined.</p>}
-          {card.ships && (
-            <p className={styles.counts}>
-              {card.ships.materials} files · {card.ships.runbooks} runbooks ·{" "}
-              {card.ships.templates} templates · {card.ships.variables}{" "}
-              variables
-            </p>
-          )}
-          <p>
-            Requires: {card.requires?.binaries.join(", ") || "no binaries"}
-            {card.connections?.length
-              ? ` · ${card.connections.join(", ")} connection`
-              : ""}
-          </p>
-        </>
-      ) : (
-        <div role="note">
-          <strong>This playbook could not be loaded</strong>
-          <p>{card.error}</p>
-          <p>Other playbooks remain available.</p>
+      {!card.ok && (
+        <div role="note" className={lib.note}>
+          <strong>This playbook could not be loaded.</strong> {card.error} Other playbooks remain
+          available.
         </div>
       )}
-      <div className={styles.actions}>
-        {onSelect ? (
-          <button
-            className={buttons.ghost}
-            disabled={!card.ok}
-            onClick={() => onSelect(card)}
-          >
-            Select
-          </button>
-        ) : card.ok ? (
-          <Link className={buttons.ghost} to={playbookPath(card.id)}>
-            Open
-          </Link>
-        ) : (
-          <span>Unavailable</span>
-        )}
-      </div>
-    </article>
+    </LibraryCard>
   );
 }

@@ -1,0 +1,641 @@
+/* THE ONE LIBRARY GALLERY (#2144): the card, the grid with its dashed tiles, the toolbar both tabs
+ * share, and the detail frame (header, action bar, main column + quiet facts panel) that
+ * Playbooks, Skills, Specialists and Mission plans all wear. It replaces the two near-duplicate
+ * dossier looks (playbooks.module.css `.card`, gallery.module.css `.card`).
+ *
+ * Tokens and NIGHTJAR primitives only (docs/design.md v2, nightjarLedger.test.ts): no literal colour,
+ * radius, shadow, z-index or off-scale font size. The card is ONE link stretched over the card
+ * (its `::after`), so a tap anywhere opens it; the card's own controls (Export, Release) sit above
+ * that layer and stay their own targets. Focus is the inset `--accent-text` ring, drawn on the card
+ * while its link has keyboard focus. */
+
+/* ---- page ---------------------------------------------------------------------------------- */
+.page {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-5);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.page *,
+.page *::before,
+.page *::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+  margin-top: var(--sp-1);
+}
+/* The section's breadcrumb, in the Library's voice: `LIBRARY // PLAYBOOKS`. */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The page title in the chrome's ink (`nj-h1`'s voice, without a glow: no glow on text). Scoped by
+ * its container so a legacy page wrapper's `.page h1` / `.page p` never outranks it. */
+.head .h1,
+.dhead .h1 {
+  margin: var(--sp-1) 0;
+  font: 600 var(--fs-h1) / 1.1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.page .intro,
+.intro.intro {
+  max-width: 72ch;
+  margin: var(--sp-2) 0 var(--sp-4);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* ---- toolbar: the same row on both tabs (search + facet chips + count) ---------------------- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0;
+}
+.search {
+  position: relative;
+  flex: 0 1 380px;
+}
+.search > svg {
+  position: absolute;
+  left: var(--sp-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.toolbar .search input:global(.nj-field)[type="search"] {
+  padding-left: 36px;
+  font-size: var(--fs-row);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+/* The pressed chip keeps the chrome tint as its selection; its ink is --text-1, because the
+ * primitive's --hud-text on that tint measures 4.2:1 in the light theme (under AA). */
+.chips :global(.nj-chip[aria-pressed="true"]) {
+  color: var(--text-1);
+}
+.count {
+  margin-left: auto;
+  font: 400 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* ---- callouts ------------------------------------------------------------------------------ */
+.error {
+  composes: nj-error from global;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) var(--sp-3);
+}
+.error button {
+  margin: var(--sp-2);
+}
+.notice {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+.empty {
+  margin: var(--sp-4) 0;
+  padding: var(--sp-4);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+.empty.empty h2 {
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  color: var(--text-1);
+}
+
+/* ---- grid ---------------------------------------------------------------------------------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: var(--sp-4);
+  align-items: stretch;
+}
+
+/* ---- the card ------------------------------------------------------------------------------ */
+/* `nj-frame-sm` gives the chamfer, the two cut lines and the top border; the card quiets the edge
+ * to a hairline and keeps the dossier's short lit rail. It arrives once (Full; at rest in
+ * Reduced/Off). */
+.card {
+  composes: nj-frame-sm nj-arrive from global;
+  --nj-edge: var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top-color: var(--hud-dim);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--c) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+  pointer-events: none;
+}
+/* Hover and keyboard focus light the edge and tint the face; focus adds the inset ring (rings are
+ * drawn inset, so the chamfer cannot clip them). */
+.card:hover,
+.card:has(.link:focus-visible) {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+  border-top-color: var(--hud);
+}
+.card:has(.link:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
+}
+/* A card that could not be loaded: the failed edge. */
+.invalid {
+  --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
+  border-top-color: var(--status-down);
+}
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 20px;
+}
+.top :global(.nj-stamp) b {
+  color: var(--hud-text);
+  font-weight: 600;
+}
+/* The source tag: what this copy IS (local, imported, gallery, bundled, saved from a mission). A
+ * source is not a state, so never a status hue: a flat 6px accent square for your own, a glyph for
+ * the rest, always with its word. */
+.src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  margin-left: auto;
+  padding: 0 7px;
+  background: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.sq {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.src svg {
+  flex: none;
+  color: var(--text-2);
+}
+.default {
+  padding: 3px 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.card .title {
+  margin: var(--sp-1) 0 0;
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  letter-spacing: 0.02em;
+  color: var(--text-1);
+}
+/* The card's ONE link. Its ::after covers the whole card, so a tap anywhere opens it, and the card
+ * is still one tab stop with one accessible name (no control nested inside a link). */
+.link {
+  color: inherit;
+  text-decoration: none;
+}
+.link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-base);
+}
+.card .link:focus-visible {
+  outline: none;
+}
+.card .sum {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: calc(2 * 1.5em);
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.card .meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--sp-2);
+  margin: 0;
+  font: 400 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.card .meta b {
+  color: var(--text-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.card .note {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+  min-height: 41px;
+}
+.prov {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.prov svg {
+  flex: none;
+  color: var(--text-2);
+}
+.prov b {
+  font-weight: 500;
+  color: var(--text-1);
+}
+/* The card's own controls sit ABOVE the stretched link, so they stay their own targets. */
+.actions {
+  position: relative;
+  z-index: var(--z-raised);
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+/* A public entry you already hold: a fact with its mark, not a state colour. */
+.have {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.have svg {
+  color: var(--hud-text);
+}
+
+/* ---- the dashed tiles that close the grid: + New …, Import from file ------------------------ */
+/* A plate cannot dash its painted edge (design §6), so a tile is a real dashed border, square. */
+.tile {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--sp-2);
+  min-height: 180px;
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.tile svg {
+  color: var(--hud-text);
+}
+.tile:hover,
+.tile:focus-visible {
+  border-color: var(--hud);
+  color: var(--text-1);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tileTitle {
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  letter-spacing: 0.04em;
+  color: var(--text-1);
+}
+.tileHint {
+  max-width: 32ch;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+
+/* A quiet line under a public grid: the signed listing's facts and its Refresh. */
+.listing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+  font: 400 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.listing b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.listing a {
+  color: var(--accent-text);
+}
+.listing > :last-child {
+  margin-left: auto;
+}
+
+/* ---- detail: the same layout for all four kinds -------------------------------------------- */
+.detail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.detail > .back {
+  align-self: flex-start;
+}
+.after {
+  margin-top: var(--sp-4);
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.back:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.dhead {
+  display: grid;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-4);
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.tags .src {
+  margin-left: 0;
+}
+.dhead .h1.h1 {
+  margin: 0;
+}
+.dhead .by {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+/* The action bar: the kind's primary first, then Export, Import…, and ⋯ for the rest. One row on a
+ * desktop; on a phone it wraps with the primary on its own full-width line. */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+  border-block: 1px solid var(--line);
+}
+/* The primary's slot: its control fills it (full width on a phone). */
+.primary {
+  display: inline-flex;
+}
+.primary > * {
+  flex: 1 1 auto;
+}
+.bar .why {
+  margin: 0 0 0 auto;
+  font: 400 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: var(--sp-6);
+  align-items: start;
+  margin-top: var(--sp-4);
+}
+.cols .lead {
+  max-width: 72ch;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-1);
+}
+/* A section's callsign: the hazard notch, then the mono title. */
+.section {
+  margin: 0 0 var(--sp-5);
+}
+.cols .section > h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.cols .section > h2::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+/* The side panel: a quiet frame of facts (design §7: calm where it counts). */
+.side {
+  composes: nj-frame-sm nj-frame-quiet from global;
+  padding: var(--sp-4);
+}
+.side .sideHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-label) / 1.2 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.facts {
+  margin: 0;
+}
+.facts > div {
+  display: grid;
+  gap: 4px;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.facts > div:last-child {
+  border-bottom: 0;
+}
+/* Labels in --text-2, not --text-3: at 10px --text-3 measures under AA on --bg-1. */
+.facts dt {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.facts dd {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.facts dd code {
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+}
+.facts dd p,
+.facts dd p:not([class]) {
+  margin: 0;
+}
+.small {
+  display: block;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.good {
+  color: var(--ok-text);
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.warn {
+  color: var(--warn-text);
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ---- phone (≤800px, the one breakpoint) --------------------------------------------------- */
+@media (max-width: 800px) {
+  .page {
+    padding: var(--sp-4) var(--sp-3);
+  }
+  .head {
+    flex-wrap: nowrap;
+  }
+  .page .intro,
+  .intro.intro {
+    font-size: var(--fs-row);
+  }
+  /* The search takes the row; the chips scroll sideways inside their OWN strip, so the page itself
+   * never does, and every chip keeps the 44px floor. */
+  .search {
+    flex: 1 1 100%;
+  }
+  .toolbar .search input:global(.nj-field)[type="search"] {
+    font-size: var(--fs-input);
+  }
+  .chips {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .chips > * {
+    flex: none;
+  }
+  .count {
+    display: none;
+  }
+  .tile {
+    min-height: 96px;
+    grid-auto-flow: column;
+    justify-content: center;
+  }
+  .tileHint {
+    display: none;
+  }
+  .cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-4);
+  }
+  /* A public entry: review first, then the bar, then its technical details. */
+  .reviewFirst > .bar {
+    order: 1;
+  }
+  .reviewFirst > .after {
+    order: 2;
+  }
+  .bar > .primary {
+    flex: 1 1 100%;
+  }
+  .bar > :not(.primary):not(.why) {
+    flex: 1 1 auto;
+  }
+  .bar .why {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+}

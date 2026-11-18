@@ -95,7 +95,7 @@ test("Variables has a Library entry and its own screen", async ({ page }) => {
   await expect(again.locator('a[data-subsection="variables"]')).toHaveAttribute("aria-current", "page");
 });
 
-test("Playbooks has a Library entry, your playbooks and a Browse gallery tab", async ({ page }) => {
+test("Playbooks has a Library entry, your playbooks and a Public gallery tab", async ({ page }) => {
   await page.route("**/api/playbooks", (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
   await page.goto(MISSION_PATH);
   const menu = await libraryMenu(page);
@@ -105,8 +105,10 @@ test("Playbooks has a Library entry, your playbooks and a Browse gallery tab", a
   await expect(pg.getByRole("heading", { level: 1, name: "Playbooks" })).toBeVisible();
   await expect(pg).toContainText("No playbooks on this host.");
   await expect(pg.getByLabel("Search playbooks")).toBeVisible();
-  await expect(pg.getByRole("link", { name: "Your playbooks" })).toHaveAttribute("aria-current", "page");
-  await expect(pg.getByRole("link", { name: "Browse gallery" })).toBeVisible();
+  await expect(pg.getByRole("link", { name: "Yours", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(pg.getByRole("link", { name: "Public gallery", exact: true })).toBeVisible();
+  // #2144: Import from file is reachable from the empty library too.
+  await expect(pg.getByTestId("library-import-tile")).toBeVisible();
 });
 
 test("both old checklist addresses land on Playbooks (#1653), and Settings lists no Checklists", async ({

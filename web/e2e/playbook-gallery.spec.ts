@@ -252,12 +252,6 @@ test("gallery filters, independent invalid cards and the detail route", async ({
   await setup(page);
   await page.goto(PLAYBOOKS_PATH);
   await expect(page.getByTestId("playbook-card-team-workflow")).toBeVisible();
-  await expect(page.getByTestId("playbook-card-team-workflow")).toContainText(
-    "Unresolved: agent absent",
-  );
-  await expect(page.getByTestId("playbook-card-team-workflow")).toContainText(
-    "careful",
-  );
   await expect(page.getByTestId("playbook-card-broken")).toContainText(
     "Unsupported bundle format",
   );
@@ -266,15 +260,25 @@ test("gallery filters, independent invalid cards and the detail route", async ({
   ).toHaveCount(0);
   await page.getByLabel("Search playbooks").fill("independent");
   await expect(page.getByTestId("playbook-card-starter")).toBeVisible();
-  await page.getByLabel("Source").selectOption("local");
+  // #2144: the source select became the toolbar's facet chips.
+  await page
+    .getByRole("group", { name: "Show" })
+    .getByRole("button", { name: /^Local/ })
+    .click();
   await expect(page.getByTestId("playbook-card-starter")).toHaveCount(0);
+  // #2144: no Open button; the card's title is its one link.
   await page
     .getByTestId("playbook-card-team-workflow")
-    .getByRole("link", { name: "Open" })
+    .getByRole("link", { name: "Team workflow" })
     .click();
   await expect(
     page.getByRole("heading", { level: 1, name: "Team workflow" }),
   ).toBeVisible();
+  // The stored actors (and why they don't resolve) are read on the detail's flow.
+  await expect(page.getByTestId("playbook-detail")).toContainText(
+    "Unresolved: agent absent",
+  );
+  await expect(page.getByTestId("playbook-detail")).toContainText("careful");
   await expect(
     page.getByText("Keep the release branch untouched.").first(),
   ).toBeVisible();
@@ -293,17 +297,22 @@ test("default conflicts require a refresh and a fresh explicit action", async ({
 }) => {
   const calls = await setup(page, { stale: true });
   await page.goto(`${PLAYBOOKS_PATH}/team-workflow`);
+  // #2144: Set as default lives in the action bar's ⋯.
+  const more = page.getByRole("button", { name: "More actions" });
+  await more.click();
   await page
-    .getByRole("button", { name: "Set as default", exact: true })
+    .getByRole("menuitem", { name: "Set as default", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText("changed elsewhere");
   expect(calls).toHaveLength(1);
   await page.getByRole("button", { name: "Reload current playbooks" }).click();
+  await more.click();
   await page
-    .getByRole("button", { name: "Set as default", exact: true })
+    .getByRole("menuitem", { name: "Set as default", exact: true })
     .click();
+  await more.click();
   await expect(
-    page.getByRole("button", { name: "Clear default", exact: true }),
+    page.getByRole("menuitem", { name: "Clear default", exact: true }),
   ).toBeVisible();
   expect(calls[0].body).toEqual({ revision: REV, expect_default: null });
   expect(calls[1].body).toEqual({ revision: NEW_REV, expect_default: null });
@@ -314,15 +323,20 @@ test("duplicate opens the returned local playbook; delete refuses with named pro
 }) => {
   const calls = await setup(page, { inUse: true });
   await page.goto(`${PLAYBOOKS_PATH}/starter`);
+  // A bundled playbook: Duplicate to local leads the bar, and its ⋯ offers no delete.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Set as default" })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Delete playbook…" }),
+    page.getByRole("menuitem", { name: "Delete playbook…" }),
   ).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "Duplicate to local", exact: true })
     .click();
   await expect(page).toHaveURL(new RegExp(`${PLAYBOOKS_PATH}/team-copy$`));
   expect(calls[0].body).toEqual({ revision: REV });
-  await page.getByRole("button", { name: "Delete playbook…" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Delete playbook…" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await dialog
@@ -380,7 +394,11 @@ test("320px gallery and detail hold touch targets without horizontal overflow", 
       .getByTestId("playbooks-page")
       .locator("button:visible, a:visible, select:visible, input:visible")
       .all()) {
-      expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      // A card's title link is stretched over its card (#2144): the card is the target.
+      const target = (await el.getAttribute("data-library-card-link")) !== null
+        ? el.locator("xpath=ancestor::article[1]")
+        : el;
+      expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
 });

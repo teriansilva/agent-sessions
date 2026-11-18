@@ -8,7 +8,7 @@ import {
   SKILLS_PATH,
 } from "../src/lib/routes";
 
-/** Library → Playbooks / Skills → Browse gallery (#1440, was Library → Gallery #1371/#1417). */
+/** Library → Playbooks / Skills → Public gallery (#1440, #2144, was Library → Gallery #1371/#1417). */
 const digest = "a".repeat(64),
   playbookDigest = "e".repeat(64),
   revision = "b".repeat(64),
@@ -394,7 +394,17 @@ async function geometry(page: Page) {
     .evaluateAll((els) =>
       els
         .filter((el) => el.checkVisibility())
-        .map((el) => el.getBoundingClientRect().height),
+        // A filter chip holds the 44px floor where a finger is the input (design §8: a coarse
+        // pointer or ≤800px); a card's title link is stretched over its card, the real target.
+        .filter(
+          (el) =>
+            !el.matches(".nj-chip") ||
+            matchMedia("(pointer: coarse), (max-width: 800px)").matches,
+        )
+        .map((el) =>
+          (el.hasAttribute("data-library-card-link") ? el.closest("article")! : el)
+            .getBoundingClientRect().height,
+        ),
     );
   expect(heights.every((h) => h >= 44)).toBe(true);
   await page.locator("main a[class]").first().focus();
@@ -424,14 +434,14 @@ for (const theme of ["dark", "light"]) {
       await expect(
         page.getByRole("heading", { name: "Review checklist", exact: true }),
       ).toBeVisible();
-      await expect(page.getByRole("link", { name: "Browse gallery" })).toHaveAttribute("aria-current", "page");
+      await expect(page.getByRole("link", { name: "Public gallery", exact: true })).toHaveAttribute("aria-current", "page");
       // The automatic check ran once; nobody pressed a refresh button.
       await expect.poll(() => writes.refreshes.length).toBe(1);
       await geometry(page);
       await page.getByLabel("Search the gallery").fill("no match");
       await expect(page.getByText("Nothing in the gallery matches this search.")).toBeVisible();
       await page.getByLabel("Search the gallery").fill("");
-      await page.getByRole("link", { name: "View Review checklist" }).click();
+      await page.getByRole("link", { name: "Review checklist", exact: true }).click();
       // Review comes first: requirements, then the first file already open in full.
       await expect(page.getByRole("heading", { name: "Requirements" })).toBeVisible();
       await expect(
@@ -470,7 +480,7 @@ for (const theme of ["dark", "light"]) {
       await page.goto(GALLERY_PLAYBOOKS_PATH);
       // The playbook view lists playbooks only.
       await expect(page.getByRole("heading", { name: "Review checklist" })).toHaveCount(0);
-      await page.getByRole("link", { name: "View Inbox triage" }).click();
+      await page.getByRole("link", { name: "Inbox triage", exact: true }).click();
       await expect(page.getByRole("heading", { name: "What's inside" })).toBeVisible();
       await expect(page.getByText("Inbox · required", { exact: true })).toBeVisible();
       await expect(page.getByText("Read the new messages · claude", { exact: true })).toBeVisible();
@@ -738,7 +748,7 @@ for (const theme of ["dark", "light"]) {
         await setup(page, { state });
         await page.goto(GALLERY_SKILLS_PATH);
         await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-        await expect(page.getByRole("link", { name: "Your skills", exact: true })).toBeVisible();
+        await expect(page.getByRole("link", { name: "Yours", exact: true })).toBeVisible();
         await expect(
           page.getByText(
             state === "empty"
@@ -750,7 +760,7 @@ for (const theme of ["dark", "light"]) {
           ),
         ).toBeVisible();
         if (state === "stale") {
-          await page.getByRole("link", { name: "View Review checklist" }).click();
+          await page.getByRole("link", { name: "Review checklist", exact: true }).click();
           await expect(page.getByRole("button", { name: "Add to my skills" })).toBeDisabled();
         }
         await page.screenshot({ path: info.outputPath(`${state}-${theme}.png`), fullPage: true });
@@ -818,15 +828,15 @@ test("a listing that fails verification says nothing changed", async ({ page }) 
 });
 
 // The menu's entries are pinned by SectionNav.test.tsx (no Gallery entry since #1440).
-test("Playbooks and Skills each hold Your … and Browse gallery", async ({ page }) => {
+test("Playbooks and Skills each hold Yours and Public gallery", async ({ page }) => {
   await setup(page);
   await page.goto(PLAYBOOKS_PATH);
-  await expect(page.getByRole("link", { name: "Your playbooks" })).toHaveAttribute("aria-current", "page");
-  await page.getByRole("link", { name: "Browse gallery" }).click();
+  await expect(page.getByRole("link", { name: "Yours", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("link", { name: "Public gallery", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${GALLERY_PLAYBOOKS_PATH}$`));
   await page.goto(SKILLS_PATH);
-  await expect(page.getByRole("link", { name: "Your skills" })).toHaveAttribute("aria-current", "page");
-  await page.getByRole("link", { name: "Browse gallery" }).click();
+  await expect(page.getByRole("link", { name: "Yours", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("link", { name: "Public gallery", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${GALLERY_SKILLS_PATH}$`));
 });
 
@@ -859,7 +869,7 @@ test.describe("old gallery links land in Playbooks and Skills (#1440)", () => {
     `${GALLERY_PATH}?kind=widget&id=x`,
     `${GALLERY_PATH}?kind=__proto__&id=x`,
   ])
-    test(`${link} lands on Browse gallery with a plain note`, async ({ page }) => {
+    test(`${link} lands on Public gallery with a plain note`, async ({ page }) => {
       await setup(page);
       await page.goto(link);
       await expect(page).toHaveURL(new RegExp(`${GALLERY_PLAYBOOKS_PATH}$`));
@@ -935,7 +945,7 @@ test.describe("a listing kept from an earlier check is shown but never acted on 
     await setup(page, { refresh: "unreachable" });
     await page.goto(GALLERY_SKILLS_PATH);
     await expect(page.getByTestId("gallery-unreachable")).toContainText("this is the list from the last check");
-    await page.getByRole("link", { name: "View Review checklist" }).click();
+    await page.getByRole("link", { name: "Review checklist", exact: true }).click();
     const add = page.getByRole("button", { name: "Add to my skills" });
     await expect(add).toBeDisabled();
     await expect(add).toHaveAccessibleDescription(WAIT);

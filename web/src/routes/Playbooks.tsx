@@ -1,24 +1,29 @@
 /** Library → Playbooks: your playbooks (bundled + local — what projects use) and one playbook's
- *  detail. The public gallery is the sibling Browse view (#1440). Mutations retain the revision the
- *  operator saw. */
-import { Plus } from "lucide-react";
-import { GALLERY_PLAYBOOKS_PATH, PLAYBOOK_NEW_PATH } from "../lib/routes";
+ *  detail. The public gallery is the sibling tab (#1440). Both wear the one Library gallery
+ *  (#2144): a tap on a card opens it, Export is on each card you own, and Import from file closes
+ *  the grid. Mutations retain the revision the operator saw. */
+import { PLAYBOOK_NEW_PATH } from "../lib/routes";
 import { useCallback, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
-import { PlaybookCard } from "../components/playbooks/PlaybookCard";
+import { NewPlaybookLink, PlaybookCard } from "../components/playbooks/PlaybookCard";
+import { playbookSource } from "../components/playbooks/playbookSource";
 import { PlaybookDetailPage } from "../components/playbooks/PlaybookDetail";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
-import { api } from "../lib/api";
-import { ShareActions } from "../components/share/ShareDialogs";
+import { LibraryGrid, LibraryHead, LibraryToolbar, type Facet } from "../components/library/LibraryGrid";
+import type { LibrarySource } from "../components/library/LibraryCard";
+import { useImportEntry } from "../components/share/useLibraryShare";
 import { useShareImports } from "../components/share/useShareImports";
+import { api } from "../lib/api";
 import buttons from "../components/ui/actionButton.module.css";
-import styles from "../components/playbooks/playbooks.module.css";
+import styles from "../components/library/library.module.css";
+// The playbook pages' element rules (fleet, flow preview, instructions) still live here.
+import legacy from "../components/playbooks/playbooks.module.css";
 
 export default function Playbooks() {
   const { playbookId } = useParams();
   return (
-    <main className={styles.page} data-testid="playbooks-page">
+    <main className={`${legacy.page} ${styles.page}`} data-testid="playbooks-page">
       <LandingNote />
       {playbookId ? (
         <PlaybookDetailPage key={playbookId} id={playbookId} />
@@ -29,109 +34,80 @@ export default function Playbooks() {
   );
 }
 
+type Show = "all" | LibrarySource;
+const FACETS: { value: Show; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "local", label: "Local" },
+  { value: "imported", label: "Imported" },
+  { value: "gallery", label: "Gallery" },
+  { value: "bundled", label: "Bundled" },
+  { value: "catalog", label: "Catalog" },
+];
+
 function Library() {
   const read = useCallback(() => api.playbooks(), []);
   const { data, error, loading, reload } = usePlaybookRead(read);
   const [search, setSearch] = useState("");
-  const [source, setSource] = useState("");
-  const [domain, setDomain] = useState("");
+  const [show, setShow] = useState<Show>("all");
   const [round, setRound] = useState(0);
   const imported = useShareImports(round);
-  const rows = data?.playbooks ?? [];
+  const importer = useImportEntry(() => {
+    setRound((n) => n + 1);
+    void reload();
+  });
+  const rows = (data?.playbooks ?? []).map((p) => ({
+    p,
+    source: playbookSource(p, imported.has(`playbook:${p.id}`)),
+  }));
   const needle = search.trim().toLowerCase();
-  const shown = rows.filter(
-    (p) =>
-      (!source || p.source === source) &&
-      (!domain || p.domain === domain) &&
-      [
-        p.id,
-        p.name,
-        p.summary,
-        ...(p.flows ?? []).flatMap((f) =>
-          f.steps.flatMap((s) => [
-            s.title,
-            s.actor.engine,
-            s.actor.label,
-            s.actor.model,
-          ]),
-        ),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
+  const matching = rows.filter(({ p }) =>
+    [
+      p.id,
+      p.name,
+      p.summary,
+      p.domain,
+      ...(p.flows ?? []).flatMap((f) =>
+        f.steps.flatMap((s) => [s.title, s.actor.engine, s.actor.label, s.actor.model]),
+      ),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
   );
+  const shown = matching.filter((r) => show === "all" || r.source === show);
+  const facets: Facet<Show>[] = FACETS.map((f) => ({
+    ...f,
+    n: f.value === "all" ? matching.length : matching.filter((r) => r.source === f.value).length,
+  })).filter((f) => f.value === "all" || f.value === show || f.n > 0);
   return (
     <>
-      <div className={`nj-kicker ${styles.kicker}`}>
-        <span className="nj-notch" aria-hidden="true" />
-        Library // <b>playbooks</b>{data ? ` // ${rows.length}` : ""}
-      </div>
-      <div className={styles.header}>
-        <h1>Playbooks</h1>
-        <ShareActions
-          kind="playbook"
-          onImported={() => {
-            setRound((n) => n + 1);
-            void reload();
-          }}
-        >
-          <Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link>
-        </ShareActions>
-      </div>
+      <LibraryHead
+        section="playbooks"
+        title="Playbooks"
+        count={data ? rows.length : undefined}
+        primary={<NewPlaybookLink />}
+      />
       <ViewTabs kind="playbook" view="local" />
       <p className={styles.intro}>
-        How a repository works: its flow of agents, the checklist that ends each
-        step, and the files, templates and variables a project is given. New
-        projects choose from these.
+        How a repository works: its flow of agents, the checklist that ends each step, and the
+        files, templates and variables a project is given. New projects choose from these.
       </p>
-      <div className={styles.filters}>
-        <label>
-          Search playbooks
-          <input
-            type="search"
-            value={search}
-            placeholder="Name, summary, step or agent…"
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </label>
-        <label>
-          Source
-          <select value={source} onChange={(e) => setSource(e.target.value)}>
-            <option value="">All sources</option>
-            <option value="local">Local</option>
-            <option value="bundled">Bundled</option>
-            <option value="catalog">Catalog</option>
-          </select>
-        </label>
-        <label>
-          Domain
-          <select value={domain} onChange={(e) => setDomain(e.target.value)}>
-            <option value="">All domains</option>
-            {[
-              ...new Set(
-                rows.map((p) => p.domain).filter((d): d is string => !!d),
-              ),
-            ]
-              .sort()
-              .map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-          </select>
-        </label>
-        <button
-          className={buttons.ghost}
-          disabled={loading}
-          onClick={() => void reload()}
-        >
-          Refresh
-        </button>
-      </div>
+      <LibraryToolbar
+        label="Search playbooks"
+        placeholder="Name, summary, step or agent…"
+        search={search}
+        onSearch={setSearch}
+        facets={data ? facets : undefined}
+        facet={show}
+        onFacet={setShow}
+        count={data ? `${shown.length} ${shown.length === 1 ? "playbook" : "playbooks"}` : undefined}
+      />
       {error && (
         <div className={styles.error} role="alert">
           {error}
           {data ? " Showing the last successful read." : ""}{" "}
-          <button className={buttons.ghost} onClick={() => void reload()}>
+          <button className={buttons.ghost} disabled={loading} onClick={() => void reload()}>
             Try again
           </button>
         </div>
@@ -141,9 +117,8 @@ function Library() {
         <div className={styles.empty}>
           <h2>No playbooks on this host.</h2>
           <p>
-            Playbooks from installed bundles, the ones you create and the ones
-            you add from the <Link to={GALLERY_PLAYBOOKS_PATH}>gallery</Link> appear
-            here.
+            Playbooks from installed bundles, the ones you create, import from a file or add from
+            the public gallery appear here.
           </p>
         </div>
       )}
@@ -154,36 +129,33 @@ function Library() {
             className={buttons.ghost}
             onClick={() => {
               setSearch("");
-              setSource("");
-              setDomain("");
+              setShow("all");
             }}
           >
             Clear filters
           </button>
         </div>
       )}
-      <div className={styles.grid}>
-        {shown.map((card, i) => (
-          <PlaybookCard
-            key={`${card.source}:${card.id}:${i}`}
-            card={card}
-            ordinal={i + 1}
-            imported={card.source === "local" && imported.has(`playbook:${card.id}`)}
-          />
-        ))}
-        {/* The dashed New card closes the grid (#1574 board B1). */}
-        {data && (
-          <Link to={PLAYBOOK_NEW_PATH} className={styles.newCard}>
-            <Plus size={22} aria-hidden="true" />
-            <span className={styles.newTitle}>New playbook</span>
-            <span className={styles.newHint}>Start from a flow, or copy one from the gallery.</span>
-          </Link>
-        )}
-      </div>
+      {/* The tiles stay reachable when the list can't be read: importing doesn't need it. */}
+      {(data || error) && (
+        <LibraryGrid
+          testId="playbook-grid"
+          newTile={{
+            to: PLAYBOOK_NEW_PATH,
+            title: "New playbook",
+            hint: "Start from a flow, or copy one from the public gallery.",
+          }}
+          onImport={importer.open}
+        >
+          {shown.map(({ p, source }, i) => (
+            <PlaybookCard key={`${p.source}:${p.id}:${i}`} card={p} source={source} />
+          ))}
+        </LibraryGrid>
+      )}
+      {importer.dialog}
       {!!data?.recovery_total && (
-        <p>
-          {data.recovery_total} previous or interrupted copies are retained for
-          recovery.
+        <p className={styles.intro}>
+          {data.recovery_total} previous or interrupted copies are retained for recovery.
         </p>
       )}
     </>

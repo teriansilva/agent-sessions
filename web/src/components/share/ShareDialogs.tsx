@@ -1473,6 +1473,13 @@ export function ShareExportDialog(props: { kind: ShareKind; onClose: () => void;
   return <ExportDialog {...props} />;
 }
 
+/** The import dialog on its own, for the Library's Import from file tile and a detail's Import…
+ *  (#2144): the same wiring as the header's Import… — the page-level memory of what earlier
+ *  imports of a file created, and `onImported` when results that created something are closed. */
+export function ShareImportDialog(props: { onClose: () => void; onImported: () => void }) {
+  return <ImportDialog {...props} memory={sharedImportMemory} />;
+}
+
 /** The *imported from a file* mark on a Library card. */
 export function ImportedMark() {
   return (

@@ -592,9 +592,16 @@ export const SWEEP = [
   },
   {
     id: "popup:playbook-delete",
-    path: "/library/playbooks",
-    open: [{ css: "[data-testid='playbook-card-ship-it'] a:has-text('Open')" }, { role: "button", name: "Delete playbook…" }],
+    path: "/library/playbooks/ship-it",
+    open: [{ role: "button", name: "More actions" }, { role: "menuitem", name: "Delete playbook…" }],
     expect: "dialog",
+  },
+  // A Library detail's ⋯ (#2144): anchored under its trigger on a desktop, a bottom sheet on a phone.
+  {
+    id: "popup:library-more",
+    path: "/library/playbooks/ship-it",
+    open: [{ role: "button", name: "More actions" }],
+    expect: "menu",
   },
   // The shell's states (Phase 4): a route chunk still loading, and a part of the app that failed.
   { id: "route:loading", path: "/templates", holdAsset: "/assets/Templates-[^/.]+\\.js$", at: 1500 },

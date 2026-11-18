@@ -13,14 +13,10 @@ import {
 } from "react-router-dom";
 import {
   ArrowLeft,
-  ArrowRight,
   ChevronRight,
-  FileText as SkillIcon,
   GitCompareArrows,
   Plus,
   RefreshCw,
-  Search,
-  Workflow,
 } from "lucide-react";
 import { ApiError, api } from "../lib/api";
 import {
@@ -38,7 +34,7 @@ import type {
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { PlaybookDialog } from "../components/playbooks/PlaybookDialog";
 import {
-  Fact,
+  Fact as TechFact,
   FileRow,
   FileText,
   LeaveGuard,
@@ -65,6 +61,27 @@ import {
 } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/gallery/gallery.module.css";
+import lib from "../components/library/library.module.css";
+import {
+  Count,
+  Dot,
+  InLibraryMark,
+  LibraryCard,
+} from "../components/library/LibraryCard";
+import {
+  ActionBar,
+  DetailSection,
+  Fact,
+  LibraryDetail,
+  SourceFact,
+} from "../components/library/LibraryDetail";
+import {
+  LibraryGrid,
+  LibraryHead,
+  LibraryToolbar,
+  type Facet,
+} from "../components/library/LibraryGrid";
+import { NewPlaybookLink } from "../components/playbooks/PlaybookCard";
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n} ${n === 1 ? one : many}`;
@@ -83,13 +100,6 @@ function roleText(step: PlaybookStep): string | null {
   return `role: ${role.skills.length ? role.skills.join(", ") : "no skills"} · at least ${grade}`;
 }
 
-function KindIcon({ kind }: { kind: GalleryKind }) {
-  return kind === "playbook" ? (
-    <Workflow size={14} aria-hidden />
-  ) : (
-    <SkillIcon size={14} aria-hidden />
-  );
-}
 
 /** IDs already used by this kind's library: playbook IDs are unique across bundled and local. */
 function useTakenIds(kind: GalleryKind) {
@@ -106,6 +116,28 @@ function useTakenIds(kind: GalleryKind) {
   );
   return { taken: read.data, reloadTaken: read.reload };
 }
+
+/** Which public entries you already hold a copy of (#2144): a local copy's recorded gallery origin
+ *  names the entry's publisher and ID. `null` while unknown (or unreadable): no entry is marked. */
+function useHeld(kind: GalleryKind) {
+  const read = usePlaybookRead(
+    useCallback(async () => {
+      const origins =
+        kind === "playbook"
+          ? (await api.playbooks()).playbooks.map((p) => p.gallery_origin)
+          : (await api.localSkills()).skills.map((s) => s.gallery_origin);
+      return new Set(
+        origins
+          .filter((o) => o?.state === "verified" && o.id)
+          .map((o) => heldKey(o!.publisher, o!.id!)),
+      );
+    }, [kind]),
+  );
+  return read.data;
+}
+const heldKey = (publisher: string | undefined, id: string) => `${publisher ?? ""}\u0000${id}`;
+
+type HeldFacet = "all" | "new" | "held";
 
 /** What the listing state means to the operator, in one callout (or none). */
 function ListingState({
@@ -141,7 +173,7 @@ function ListingState({
       <div className={styles.actions}>{retry}</div>
       {p?.detail && (
         <TechnicalDetails>
-          <Fact label="Server answer">{p.detail}</Fact>
+          <TechFact label="Server answer">{p.detail}</TechFact>
         </TechnicalDetails>
       )}
     </div>
@@ -202,6 +234,8 @@ export default function ContentGallery() {
   const target = update !== null && idRule(kind).re.test(update) ? update : null;
   const gallery = useGallery();
   const [search, setSearch] = useState("");
+  const [facet, setFacet] = useState<HeldFacet>("all");
+  const held = useHeld(kind);
   const all = gallery.data?.entries ?? [];
   const mine = all.filter((e) => e.content.kind === kind);
   const needle = search.trim().toLowerCase();
@@ -222,28 +256,29 @@ export default function ContentGallery() {
       />
     );
   const settled = !gallery.loading && !gallery.checking;
+  const isHeld = (e: GalleryEntry) => !!held?.has(heldKey(e.content.publisher, e.content.id));
+  const shown = matches.filter(
+    (e) => facet === "all" || (facet === "held") === isHeld(e),
+  );
+  const facets: Facet<HeldFacet>[] = held
+    ? [
+        { value: "all", label: "All", n: matches.length },
+        { value: "new", label: "Not in your library", n: matches.filter((e) => !isHeld(e)).length },
+        { value: "held", label: "In your library", n: matches.filter(isHeld).length },
+      ]
+    : [{ value: "all", label: "All", n: matches.length }];
   return (
     <main className={styles.page} data-testid="content-gallery">
-      <div className={`nj-kicker ${styles.kicker}`}>
-        <span className="nj-notch" aria-hidden="true" />
-        Library // {NOUN[kind]} // <b>gallery</b>
-        {!digest && gallery.data ? ` // ${mine.length}` : ""}
-      </div>
       {!digest && (
         <>
-          <div className={styles.header}>
-            <h1>{kind === "playbook" ? "Playbooks" : "Skills"}</h1>
-            <button
-              className={buttons.ghost}
-              disabled={gallery.checking}
-              onClick={() => void gallery.check()}
-            >
-              <RefreshCw size={14} aria-hidden />
-              {gallery.checking ? "Checking…" : "Refresh"}
-            </button>
-          </div>
+          <LibraryHead
+            section={NOUN[kind]}
+            title={kind === "playbook" ? "Playbooks" : "Skills"}
+            count={gallery.data ? mine.length : undefined}
+            primary={kind === "playbook" ? <NewPlaybookLink /> : undefined}
+          />
           <ViewTabs kind={kind} view="gallery" />
-          <p className={styles.intro}>
+          <p className={lib.intro}>
             {kind === "playbook"
               ? "Ready-made playbooks from the public gallery. Look inside any of them, then add your own editable copy. Nothing runs until you use it."
               : "Ready-made skills from the public gallery. Look inside any of them, then add your own editable copy. Adding a skill doesn't turn it on in any agent."}
@@ -268,6 +303,7 @@ export default function ContentGallery() {
               entry={entry}
               listing={gallery.data}
               wait={galleryWait(gallery)}
+              held={isHeld(entry)}
             />
           )
         ) : !settled ? (
@@ -277,27 +313,23 @@ export default function ContentGallery() {
             <h2>This version isn't in the gallery any more.</h2>
             <Link className={buttons.ghost} to={galleryPath(kind)}>
               <ArrowLeft size={16} aria-hidden />
-              Browse gallery
+              Public gallery
             </Link>
           </div>
         )
       ) : (
         <>
           {!!mine.length && (
-            <div className={styles.toolbar}>
-              <label className={styles.search}>
-                Search the gallery
-                <span className={styles.searchBox}>
-                  <Search size={16} aria-hidden />
-                  <input
-                    type="search"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Title, author, publisher…"
-                  />
-                </span>
-              </label>
-            </div>
+            <LibraryToolbar
+              label="Search the gallery"
+              placeholder="Title, author, publisher…"
+              search={search}
+              onSearch={setSearch}
+              facets={facets}
+              facet={facet}
+              onFacet={setFacet}
+              count={`${shown.length} ${shown.length === 1 ? kind : NOUN[kind]}`}
+            />
           )}
           {!mine.length && !settled && (
             <p role="status" data-testid="gallery-checking">
@@ -317,78 +349,123 @@ export default function ContentGallery() {
                 </h2>
               </section>
             )}
-          {!!mine.length && !matches.length && (
+          {!!mine.length && !shown.length && (
             <div className={styles.empty}>
               <p>Nothing in the gallery matches this search.</p>
-              <button className={buttons.ghost} onClick={() => setSearch("")}>
+              <button
+                className={buttons.ghost}
+                onClick={() => {
+                  setSearch("");
+                  setFacet("all");
+                }}
+              >
                 Clear search
               </button>
             </div>
           )}
-          <div className={styles.grid}>
-            {matches.map((e) => (
-              <article className={styles.card} key={e.digest}>
-                <div className={`${styles.tag} ${styles.stamp}`}>
-                  <KindIcon kind={e.content.kind} />
-                  Gallery
-                  <span className={styles.stampId}>v{e.content.version}</span>
-                </div>
-                <h2>{e.content.title}</h2>
-                <p>{e.content.summary}</p>
-                <p className={styles.meta}>
-                  By {e.content.author} · {e.content.publisher}
-                </p>
-                {e.available ? (
-                  <Verified />
-                ) : (
-                  <span className={`${styles.tag} ${styles.withdrawn}`}>
-                    Withdrawn · view only
-                  </span>
-                )}
-                <Link
-                  className={`${buttons.ghost} ${styles.cardAction}`}
-                  to={galleryEntryPath(kind, e.digest)}
-                  aria-label={`View ${e.content.title}`}
-                >
-                  View
-                  <ArrowRight size={16} aria-hidden />
-                </Link>
-              </article>
+          {/* No tiles on this tab: New and Import act on your library, not the gallery (#2144). */}
+          <LibraryGrid testId="gallery-grid">
+            {shown.map((e) => (
+              <PublicCard key={e.digest} entry={e} held={isHeld(e)} />
             ))}
-          </div>
-          <ListingFacts listing={gallery.data} />
+          </LibraryGrid>
+          <ListingFacts
+            listing={gallery.data}
+            checking={gallery.checking}
+            onRefresh={() => void gallery.check()}
+          />
         </>
       )}
     </main>
   );
 }
 
-function ListingFacts({ listing }: { listing: GalleryIndex | null }) {
+/** Size of an entry's files as text, for a card's meta row. */
+function sizeOf(files: GalleryFiles): string {
+  const bytes = Object.values(files).reduce(
+    (n, v) => n + (typeof v === "string" ? new Blob([v]).size : Math.floor((v.base64.length * 3) / 4)),
+    0,
+  );
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/** One public entry on the grid (#2144): the shared card. No Export (it isn't yours until added);
+ *  the meta row shows only what the feed entry carries. */
+function PublicCard({ entry: e, held }: { entry: GalleryEntry; held: boolean }) {
+  const c = e.content;
+  const files = Object.keys(c.files).length;
   return (
-    <TechnicalDetails>
-      <Fact label="Signed publication">
-        {listing?.sequence ? `Sequence ${listing.sequence}` : "None loaded yet"}
-      </Fact>
+    <LibraryCard
+      testId={`gallery-card-${c.id}`}
+      to={galleryEntryPath(c.kind, e.digest)}
+      title={c.title}
+      kind={c.kind === "playbook" ? "Playbook" : "Skill"}
+      version={c.version}
+      source="gallery"
+      summary={c.summary}
+      meta={
+        <>
+          <Count n={files} one="file" />
+          <Dot />
+          <span>{sizeOf(c.files)}</span>
+          <Dot />
+          <span>{c.requirements.length ? `needs ${c.requirements.join(", ")}` : "nothing extra"}</span>
+        </>
+      }
+      provenance={
+        <>
+          By <b>{c.author}</b> · {c.publisher}
+          {e.available ? (
+            <Verified />
+          ) : (
+            <span className={`${styles.tag} ${styles.withdrawn}`}>Withdrawn · view only</span>
+          )}
+        </>
+      }
+      actions={held ? <InLibraryMark /> : undefined}
+    />
+  );
+}
+
+/** The signed listing's facts and its Refresh, one quiet line under the grid (#2144: Refresh left the
+ *  header). */
+function ListingFacts({
+  listing,
+  checking,
+  onRefresh,
+}: {
+  listing: GalleryIndex | null;
+  checking: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className={lib.listing} data-testid="gallery-listing">
+      <span>
+        Signed publication{" "}
+        <b>{listing?.sequence ? `#${listing.sequence}` : "none loaded yet"}</b>
+      </span>
       {listing?.expires_at && (
-        <Fact label="Valid until">
-          {new Date(listing.expires_at * 1000).toLocaleString()}
-        </Fact>
+        <span>
+          Valid until <b>{new Date(listing.expires_at * 1000).toLocaleString()}</b>
+        </span>
       )}
       {listing?.digest && (
-        <Fact label="Index SHA-256">
-          <code>{listing.digest}</code>
-        </Fact>
+        <span title={listing.digest}>
+          Index <b>sha256:{listing.digest.slice(0, 4)}…{listing.digest.slice(-4)}</b>
+        </span>
       )}
-      <Fact label="Public page">
-        <a
-          href="https://relay.battlelab.superstatus.io/catalogs/gallery"
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open the public gallery
-        </a>
-      </Fact>
-    </TechnicalDetails>
+      <a
+        href="https://relay.battlelab.superstatus.io/catalogs/gallery"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Open the public gallery
+      </a>
+      <button className={buttons.ghost} disabled={checking} onClick={onRefresh}>
+        <RefreshCw size={14} aria-hidden />
+        {checking ? "Checking…" : "Refresh"}
+      </button>
+    </div>
   );
 }
 
@@ -533,9 +610,12 @@ function Inspect({
   entry,
   listing,
   wait,
+  held,
 }: {
   entry: GalleryEntry;
   listing: GalleryIndex | null;
+  /** You already hold a copy of this entry (its Used by fact). */
+  held: boolean;
   /** Non-empty while the current check is running or failed: a kept listing is never acted on. */
   wait: string;
 }) {
@@ -583,168 +663,88 @@ function Inspect({
   const where = NOUN[c.kind];
   return (
     <>
-      <Link
-        className={`${buttons.ghost} ${styles.back}`}
-        to={galleryPath(c.kind)}
-      >
-        <ArrowLeft size={16} aria-hidden />
-        Back to gallery
-      </Link>
-      <div className={styles.detail}>
-        <article className={styles.main}>
-          <header className={styles.detailHead}>
-            <div className={styles.tag}>
-              <KindIcon kind={c.kind} />
-              {c.kind} · v{c.version}
-            </div>
-            <h1>{c.title}</h1>
-            <p>{c.summary}</p>
-            <p>
-              By {c.author} · published by {c.publisher}
-            </p>
-            {entry.available && <Verified />}
-          </header>
-          <section className={styles.section}>
-            <h2>Requirements</h2>
-            {c.requirements.length ? (
-              <ul>
-                {c.requirements.map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
-            ) : (
-              <p>Nothing extra is needed.</p>
-            )}
-          </section>
-          {read.data?.preview && (
-            <section className={styles.section} aria-label="What's inside">
-              <h2>What's inside</h2>
-              {!!read.data.preview.inputs.length && (
-                <>
-                  <h3>Inputs</h3>
-                  <ul>
-                    {read.data.preview.inputs.map((input) => (
-                      <li key={input.name}>
-                        {input.label ?? input.name} ·{" "}
-                        {input.required ? "required" : "optional"}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {read.data.preview.flows?.map((flow) => (
-                <div key={flow.id}>
-                  <h3>{flow.title}</h3>
-                  <ol>
-                    {flow.steps.map((step) => (
-                      <li key={step.id}>
-                        {step.title} ·{" "}
-                        {roleText(step) ??
-                          step.actor.engine ??
-                          step.actor.label ??
-                          step.actor.kind}
-                        {step.after.length
-                          ? ` · after ${step.after.join(", ")}`
-                          : ""}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ))}
-            </section>
-          )}
-          <section className={styles.section} aria-label="Files">
-            <div className={styles.sectionHead}>
-              <h2>Files</h2>
-              {names.length > 1 && (
+      <LibraryDetail
+        testId="gallery-detail"
+        back={{ to: galleryPath(c.kind), label: "Public gallery" }}
+        kicker={`${where} // gallery`}
+        kind={c.kind === "playbook" ? "Playbook" : "Skill"}
+        version={c.version}
+        source="gallery"
+        badges={entry.available ? <Verified /> : undefined}
+        title={c.title}
+        by={`By ${c.author} · published by ${c.publisher}`}
+        bar={
+          <ActionBar
+            primary={
+              write.done ? (
+                <p role="status" className={styles.done}>
+                  Added — <Link to={localPath(c.kind, write.done.id)}>Open</Link>
+                  {!write.done.durable &&
+                    " The disk didn't confirm the save, so check it before relying on it."}
+                </p>
+              ) : (
                 <button
-                  className={buttons.ghost}
-                  onClick={() =>
-                    setOpen(Object.fromEntries(names.map((n) => [n, !allOpen])))
-                  }
+                  className={buttons.primary}
+                  aria-describedby={why ? hint : undefined}
+                  disabled={blocked}
+                  data-testid="gallery-add"
+                  onClick={() => {
+                    write.setError("");
+                    write.setAsking(true);
+                  }}
                 >
-                  {allOpen ? "Collapse all" : "Expand all"}
+                  <Plus size={16} aria-hidden />
+                  Add to my {where}
                 </button>
-              )}
-            </div>
-            {names.map((name) => (
-              <ReviewFile
-                key={name}
-                name={name}
-                value={c.files[name]}
-                open={ownValue(open, name) === true}
-                onToggle={(value) =>
-                  setOpen((old) => ({ ...old, [name]: value }))
-                }
-              />
-            ))}
-          </section>
-        </article>
-        <aside className={styles.side} aria-label="Add">
-          <LeaveGuard dirty={write.busy} />
-          {write.done ? (
-            <p role="status" className={styles.done}>
-              Added — <Link to={localPath(c.kind, write.done.id)}>Open</Link>
-              {!write.done.durable &&
-                " The disk didn't confirm the save, so check it before relying on it."}
-            </p>
-          ) : (
-            <>
-              <button
-                className={`${buttons.primary} ${styles.wide}`}
-                aria-describedby={why ? hint : undefined}
-                disabled={blocked}
-                data-testid="gallery-add"
-                onClick={() => {
-                  write.setError("");
-                  write.setAsking(true);
-                }}
-              >
-                <Plus size={16} aria-hidden />
-                Add to my {where}
-              </button>
-              {why ? (
-                <p className={styles.why} id={hint}>
+              )
+            }
+          >
+            {!write.done &&
+              (why ? (
+                <p className={lib.why} id={hint}>
                   {why}
                 </p>
               ) : (
                 write.id && (
-                  <p className={styles.why}>
+                  <p className={lib.why}>
                     Adds as <code>{write.id}</code>.
                   </p>
                 )
-              )}
-              {write.error && !write.asking && (
-                <p className={styles.error} role="alert">
-                  {write.error}
-                </p>
-              )}
-            </>
-          )}
-        </aside>
-        <div className={styles.tech}>
+              ))}
+          </ActionBar>
+        }
+        notices={
+          write.error && !write.asking && !write.done ? (
+            <p className={lib.error} role="alert">
+              {write.error}
+            </p>
+          ) : undefined
+        }
+        lead={c.summary}
+        reviewFirst
+        after={
           <TechnicalDetails>
-            <Fact label="Content SHA-256">
+            <TechFact label="Content SHA-256">
               <code>{entry.digest}</code>
-            </Fact>
+            </TechFact>
             {listing?.sequence && (
-              <Fact label="Signed publication">
+              <TechFact label="Signed publication">
                 Sequence {listing.sequence}
                 {listing.expires_at
                   ? ` · valid until ${new Date(listing.expires_at * 1000).toLocaleString()}`
                   : ""}
-              </Fact>
+              </TechFact>
             )}
-            <Fact label="Source">
+            <TechFact label="Source">
               <a href={c.source} target="_blank" rel="noreferrer">
                 {c.source}
               </a>
-            </Fact>
+            </TechFact>
             {c.kind === "playbook" && (
-              <Fact label="Playbook ID">
+              <TechFact label="Playbook ID">
                 Only the local playbook ID is rewritten; workflows keep their
                 identities.
-              </Fact>
+              </TechFact>
             )}
             {!write.done && (
               <>
@@ -764,8 +764,103 @@ function Inspect({
               </>
             )}
           </TechnicalDetails>
-        </div>
-      </div>
+        }
+        facts={
+          <>
+            <Fact label="Version">v{c.version.replace(/^v/i, "")}</Fact>
+            <SourceFact word={`Public gallery · ${c.publisher}`} note={`Author: ${c.author}`} />
+            <Fact label="Signature">
+              {entry.available ? <Verified /> : "Withdrawn · view only"}
+              {listing?.sequence ? (
+                <span className={lib.small}>Signed publication #{listing.sequence}</span>
+              ) : null}
+            </Fact>
+            <Fact label="Requires">
+              {c.requirements.length ? (
+                c.requirements.map((r, i) => <p key={i}>{r}</p>)
+              ) : (
+                <span className={lib.small}>Nothing extra is needed.</span>
+              )}
+            </Fact>
+            <Fact label="Used by">{held ? "In your library" : "Not in your library yet"}</Fact>
+          </>
+        }
+      >
+        <LeaveGuard dirty={write.busy} />
+        <DetailSection title="Requirements">
+          {c.requirements.length ? (
+            <ul>
+              {c.requirements.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>Nothing extra is needed.</p>
+          )}
+        </DetailSection>
+        {read.data?.preview && (
+          <DetailSection title="What's inside" label="What's inside">
+            {!!read.data.preview.inputs.length && (
+              <>
+                <h3>Inputs</h3>
+                <ul>
+                  {read.data.preview.inputs.map((input) => (
+                    <li key={input.name}>
+                      {input.label ?? input.name} ·{" "}
+                      {input.required ? "required" : "optional"}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {read.data.preview.flows?.map((flow) => (
+              <div key={flow.id}>
+                <h3>{flow.title}</h3>
+                <ol>
+                  {flow.steps.map((step) => (
+                    <li key={step.id}>
+                      {step.title} ·{" "}
+                      {roleText(step) ??
+                        step.actor.engine ??
+                        step.actor.label ??
+                        step.actor.kind}
+                      {step.after.length
+                        ? ` · after ${step.after.join(", ")}`
+                        : ""}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ))}
+          </DetailSection>
+        )}
+        <section className={lib.section} aria-label="Files">
+          <div className={styles.sectionHead}>
+            <h2>Files · {names.length}</h2>
+            {names.length > 1 && (
+              <button
+                className={buttons.ghost}
+                onClick={() =>
+                  setOpen(Object.fromEntries(names.map((n) => [n, !allOpen])))
+                }
+              >
+                {allOpen ? "Collapse all" : "Expand all"}
+              </button>
+            )}
+          </div>
+          {names.map((name) => (
+            <ReviewFile
+              key={name}
+              name={name}
+              value={c.files[name]}
+              open={ownValue(open, name) === true}
+              onToggle={(value) =>
+                setOpen((old) => ({ ...old, [name]: value }))
+              }
+            />
+          ))}
+        </section>
+      </LibraryDetail>
       {write.asking && write.id && (
         <PlaybookDialog
           tag={`Gallery // add`}
@@ -1120,15 +1215,15 @@ function Merge({
         </details>
       )}
       <TechnicalDetails>
-        <Fact label="Comparison">
+        <TechFact label="Comparison">
           <code>{view.comparison}</code>
-        </Fact>
-        <Fact label="Incoming content SHA-256">
+        </TechFact>
+        <TechFact label="Incoming content SHA-256">
           <code>{view.incoming_digest}</code>
-        </Fact>
-        <Fact label="Your copy's revision">
+        </TechFact>
+        <TechFact label="Your copy's revision">
           <code>{view.revision}</code>
-        </Fact>
+        </TechFact>
         {!write.done && (
           <>
             <label className={styles.field}>
