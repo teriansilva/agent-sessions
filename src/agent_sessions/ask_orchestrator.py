@@ -5535,6 +5535,15 @@ def running_turn(cid: str) -> str | None:
     return r.turn_id if r is not None and running(cid) else None
 
 
+def turn_live(cid: str, turn_id: str) -> bool:
+    """Whether ``turn_id`` is the running, visible turn in ``cid`` AND still working: not settled
+    and not stopped (#2113). Stricter than `running_turn`, which still names a turn for the
+    moment between its settle and the release of its slot. Synchronous, no await."""
+    r = _RUNNING.get(cid)
+    turn = r.turn if r is not None and r.turn_id == turn_id else None
+    return turn is not None and running(cid) and not turn.settled and not turn.stop.is_set()
+
+
 def request_stop(cid: str, turn_id: str, *, committing: bool = False) -> bool:
     """Set the stop flag on the running turn ``turn_id`` — SYNCHRONOUSLY, with no await (#2076).
 

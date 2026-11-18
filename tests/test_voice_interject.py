@@ -130,7 +130,8 @@ def test_a_steer_the_turn_never_used_is_asked_next_exactly_once(rig, held):
         await _speak(rig, "It's issue 2059.")
         await _until(lambda: "Ah, got it." in rig.said_text())
         script.go.set()
-        await _until(lambda: len(_statuses(rig.call.cid)) == 4)
+        # Waited on the LAST spoken line: it is said after its turn's status is written.
+        await _until(lambda: "Issue 2059 is in phase three." in rig.said_text())
 
     run(scenario())
     assert _questions(rig.call.cid) == ["Where is the federation epic?", "It's issue 2059."]
@@ -628,3 +629,56 @@ def test_a_quick_mute_and_unmute_during_the_caption_takes_the_words_back(rig, he
     assert rig.interjected == []
     assert "Okay, dropping that." not in rig.said_text()
     assert _statuses(rig.call.cid) == ["pending", "done"]
+
+
+# ---- the settle window (flaky under load before: #2113 follow-up) -------------------------------
+
+
+def test_a_verdict_for_a_turn_settled_but_still_in_its_slot_is_a_new_question(rig, held):
+    """`running_turn` still names a turn for a moment after its settle; the fence asks
+    `turn_live`. A `switch` returning in that window stops nothing and says nothing about it:
+    the words are a new question, after the turn's own answer."""
+    gate = asyncio.Event()
+
+    async def judged():
+        await gate.wait()
+        return ("switch", "Okay, dropping that.")
+
+    rig.interject_verdict = judged
+
+    async def scenario():
+        script = held(answer("The epic is in phase three."), answer("Staging is green."))
+        tid = await _working(rig, script)
+        await _speak(rig, "Forget that, how is staging?")
+        await _until(lambda: len(rig.interjected) == 1)
+        turn = ask_orchestrator._RUNNING[rig.call.cid].turn
+        turn.settled = True  # the window: settled, its slot not released yet
+        assert ask_orchestrator.running_turn(rig.call.cid) == tid
+        assert not ask_orchestrator.turn_live(rig.call.cid, tid)
+        gate.set()
+        await _until(lambda: rig.call.queued is not None)
+        assert "Okay, dropping that." not in rig.said_text()
+        script.go.set()
+        await _until(lambda: "Staging is green." in rig.said_text())
+
+    run(scenario())
+    assert rig.said_text() == ["The epic is in phase three.", "Staging is green."]
+    assert _questions(rig.call.cid)[-1] == "Forget that, how is staging?"
+
+
+def test_turn_live_is_stricter_than_running_turn():
+    a = ask_orchestrator
+    t = a._Turn(
+        cid="c-live", turn_id="t1", question="q", working_keys=set(), progress=lambda e: None
+    )
+    a._RUNNING["c-live"] = a._Running(turn_id="t1", task=None, turn=t)
+    try:
+        assert a.running_turn("c-live") == "t1" and a.turn_live("c-live", "t1")
+        assert not a.turn_live("c-live", "other")
+        t.stop.set()
+        assert a.running_turn("c-live") == "t1" and not a.turn_live("c-live", "t1")
+        t.stop.clear()
+        t.settled = True
+        assert a.running_turn("c-live") == "t1" and not a.turn_live("c-live", "t1")
+    finally:
+        del a._RUNNING["c-live"]

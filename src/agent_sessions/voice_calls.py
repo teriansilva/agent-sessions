@@ -935,7 +935,7 @@ class Call:
             and self.committing is None
             and self.held is None
             and self._turn_running()
-            and ask_orchestrator.running_turn(self.cid) == ct[0]
+            and ask_orchestrator.turn_live(self.cid, ct[0])
         )
 
     def _reserve_interjection(self, text: str, heard: dict) -> int:
@@ -1009,8 +1009,10 @@ class Call:
         if self.state == "ended" or self.muted:
             return
         ct = self.call_turn
-        if ct is None or ct[0] != turn_id or ask_orchestrator.running_turn(self.cid) != turn_id:
-            self._dispatch(text, heard, self.generation)  # settled meanwhile: a new question
+        if ct is None or ct[0] != turn_id or not ask_orchestrator.turn_live(self.cid, turn_id):
+            # Settled meanwhile — even if its slot is not released yet: a new question. A late
+            # `switch` then stops nothing and says nothing about stopping.
+            self._dispatch(text, heard, self.generation)
             return
         do = verdict[0] if verdict is not None and say else None
         if do == "steer" and not ask_orchestrator.steer(self.cid, turn_id, text):
