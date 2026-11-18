@@ -18,6 +18,8 @@ approvals (D8: no bypass on the planner):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 
 #: The card group. Never voice-confirmed (`voice_calls._voice_operation`): a team card's
@@ -38,6 +40,12 @@ _VERB = {
     "set_override": "Use this model",
     "clear_override": "Clear override",
 }
+#: How much of an `assemble` card's sentence its picks may take (#2126): `step → specialist` for
+#: as many as fit, the rest counted — the sentence stays under `ask_operations.SUMMARY_MAX`.
+TEAM_SHOWN_CHARS = 120
+_MORE_RESERVE = 16  # room for " and N more"
+#: The fields of a team operation its dry run takes (`mission_team.parse_op` refuses the rest).
+_PROBE_KEYS = ("op", "operation_id", "expected_revision", "reason", "step", "index", "listing")
 
 
 def _body(target: str, f: dict, facts: dict) -> tuple[str, str, dict]:
@@ -55,19 +63,51 @@ def _body(target: str, f: dict, facts: dict) -> tuple[str, str, dict]:
     return "POST", f"/api/missions/{target}/plan/ops", body
 
 
+def _team_clause(team: dict | None) -> str:
+    """The picks an `assemble` card names (#2126): `step → specialist` for each step the server's
+    dry run fills, as many as fit, the rest counted; then what stays and what it cannot fill."""
+    if not team:
+        return ""
+    tail = []
+    if team["kept"]:
+        tail.append(f"{len(team['kept'])} already assigned stay")
+    if team["unassigned"]:
+        tail.append(f"{len(team['unassigned'])} cannot be filled")
+    tail_text = f" ({'; '.join(tail)})" if tail else ""
+    # The picks and the tail share one budget, so the clause stays bounded however many steps.
+    # The "and N more" suffix is reserved too, so the whole clause is at most TEAM_SHOWN_CHARS + 2.
+    budget = TEAM_SHOWN_CHARS - len(tail_text) - _MORE_RESERVE
+    picks = [f"{p['step']} → {p['specialist']}" for p in team["assembled"]]
+    shown: list[str] = []
+    used = 0
+    for pick in picks:
+        if not shown and len(pick) > budget:
+            shown.append(pick[: budget - 1] + "…")  # the first pick is cut, never over budget
+            break
+        if shown and used + len(pick) > budget:
+            break
+        shown.append(pick)
+        used += len(pick) + 2
+    more = len(picks) - len(shown)
+    text = ", ".join(shown) + (f" and {more} more" if more else "")
+    return f": {text}{tail_text}"
+
+
 def _describe(f: dict, facts: dict) -> str:
     rev = f["expected_revision"]
     if f["op"] == "assemble":
-        what = "Picks a specialist for every agent step that has none, the cheapest that qualifies"
+        what = "Picks the cheapest qualifying specialist for every agent step that has none"
+        what += str(facts.get("picks") or "")
     elif f["op"] == "assign":
         what = f"Puts {f['shown']} on step {f['step']}"
     elif f["op"] == "set_override":
         what = f"Runs step {f['step']} on {f['shown']}, for this mission only"
     else:
         what = f"Puts step {f['step']} back on its specialist's own model"
+    moved = "the plan or these picks" if f["op"] == "assemble" else "the plan"
     return (
         f"{what} (plan revision {rev}). It writes a new plan revision and launches nothing; if "
-        "the plan changed since HQ read it, nothing is written."
+        f"{moved} changed since HQ read it, nothing is written."
     )
 
 
@@ -105,10 +145,15 @@ def team_ops() -> tuple:
     )
 
 
-async def facts(target: str, app, operator) -> dict | None:
-    """The card's facts, read as the operator: the mission's title and its plan revision. A plan
-    that moves before the tap makes the card `stale` (`ask_operations.changed`: `revision`)."""
-    from . import asgi_call
+async def facts(target: str, fields: dict, app, operator) -> dict | None:
+    """The card's facts, read as the operator: the mission's title and its plan revision, and for
+    `assemble` the team it writes (#2126). A plan that moves before the tap makes the card `stale`
+    (`ask_operations.changed`: `revision`); so does a team that would come out differently
+    (`team`): a plan revision does not freeze the pool, so the tap runs the dry run again over the
+    context as it stands, and a pick gone or changed means nothing is written. A change inside
+    the confirm request itself, after this check, is not caught (the route reloads its own context).
+    A dry run the route would now refuse leaves no team."""
+    from . import asgi_call, mission_team
 
     r = await asgi_call.call(app, operator, "GET", f"/api/missions/{target}/plan/team", None)
     if r.status != 200 or not isinstance(r.body, dict) or r.body.get("revision") is None:
@@ -118,33 +163,86 @@ async def facts(target: str, app, operator) -> dict | None:
     if m.status == 200 and isinstance(m.body, dict):
         mission = m.body.get("mission") if isinstance(m.body.get("mission"), dict) else m.body
         title = str(mission.get("title") or "")[:120]
-    return {"title": title or target, "revision": int(r.body["revision"])}
+    out: dict = {"title": title or target, "revision": int(r.body["revision"])}
+    if fields.get("op") == "assemble":
+        # Facts hold scalars (`ask_store._admit_values`): the team as its digest (what binds)
+        # and the picks as the card's clause (what shows).
+        try:
+            team = await dry_run(target, {k: fields[k] for k in _PROBE_KEYS[:4]})
+        except mission_team.TeamRefused:
+            out["team"] = None
+        else:
+            out["team"], out["picks"] = team_digest(team), _team_clause(team)
+    return out
+
+
+def team_digest(team: dict) -> str:
+    """One team as a short, comparable string (#2126): the same picks give the same digest."""
+    canon = json.dumps(team, sort_keys=True, ensure_ascii=False).encode()
+    return hashlib.sha256(canon).hexdigest()[:16]
 
 
 def operation_id(nonce: str) -> str:
     return str(uuid.uuid5(_NS, nonce))
 
 
-async def dry_run(mission_id: str, op: dict) -> None:
-    """Run the operation against the revision it names, writing nothing: `TeamRefused` (with its
-    code and server text) when the route would refuse it. Off the loop."""
+def _preview(before: dict, after: dict, ctx) -> dict:
+    """The team the operation writes (#2126), `after` against `before`: the steps it fills
+    (`assembled`: the specialist and version it pins and the effective engine · model), the steps
+    that keep their specialist (`kept`) and the agent steps left without one (`unassigned`, with
+    the server's own summary). Identifiers and server text only — the card binds it (`facts`) and
+    HQ quotes it, so what HQ says is what the tap writes, never its own reading of `read_pool`."""
+    from . import mission_team
+
+    was = mission_team.assignments_of(before)
+    assembled: list[dict] = []
+    kept: list[dict] = []
+    unassigned: list[dict] = []
+    for row in mission_team.view(after, ctx)["steps"]:
+        sid = row["id"]
+        a = row.get("assignment")
+        if a is None:
+            if row.get("unassigned"):
+                why = str(row["unassigned"].get("summary") or "no specialist qualifies")
+                unassigned.append({"step": sid, "why": why[: mission_team.REASON_MAX]})
+            continue
+        eff = (row.get("derived") or {}).get("effective") or {}
+        entry = {
+            "step": sid,
+            "specialist": a["specialist"]["id"],
+            "version": a["specialist"]["version"],
+            "model": f"{eff.get('engine')} · {eff.get('model') or 'default'}",
+        }
+        (kept if was.get(sid) is not None else assembled).append(entry)
+    return {"assembled": assembled, "kept": kept, "unassigned": unassigned}
+
+
+def _dry_run(mission_id: str, op: dict) -> dict:
+    """`dry_run`, blocking."""
     from . import mission_team, missions
 
-    def check() -> None:
-        latest = missions.plan_revision(mission_id)
-        if latest is None:
-            raise mission_team.TeamRefused(
-                "no_plan", "this mission has no plan yet: apply a procedure first", status=409
-            )
-        if latest["revision"] != op["expected_revision"]:
-            raise mission_team.TeamRefused(
-                "stale",
-                f"the plan is at revision {latest['revision']} now: read it again",
-                status=409,
-            )
-        parsed = mission_team.parse_op(op)
-        doc = latest["document"]
-        ctx = mission_team.load_context(doc)
-        mission_team.apply_op(doc, parsed, ctx, mission_id=mission_id, revision=latest["revision"])
+    latest = missions.plan_revision(mission_id)
+    if latest is None:
+        raise mission_team.TeamRefused(
+            "no_plan", "this mission has no plan yet: apply a procedure first", status=409
+        )
+    if latest["revision"] != op["expected_revision"]:
+        raise mission_team.TeamRefused(
+            "stale",
+            f"the plan is at revision {latest['revision']} now: read it again",
+            status=409,
+        )
+    parsed = mission_team.parse_op(op)
+    doc = latest["document"]
+    ctx = mission_team.load_context(doc)
+    new = mission_team.apply_op(
+        doc, parsed, ctx, mission_id=mission_id, revision=latest["revision"]
+    )
+    return _preview(doc, new, ctx)
 
-    await asyncio.to_thread(check)
+
+async def dry_run(mission_id: str, op: dict) -> dict:
+    """Run the operation against the revision it names, writing nothing: `TeamRefused` (with its
+    code and server text) when the route would refuse it; otherwise the team it would write
+    (`_preview`). Off the loop."""
+    return await asyncio.to_thread(_dry_run, mission_id, op)

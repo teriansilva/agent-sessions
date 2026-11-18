@@ -18,7 +18,7 @@ import pytest
 
 from agent_sessions import ask_operations, ask_orchestrator, missions, projects
 from agent_sessions import mission_team as team
-from mission_team_fixture import context, document, store_plan
+from mission_team_fixture import context, document, pool, store_plan
 from test_ask_orchestrator import ai, answer, call, calls  # noqa: F401
 from test_ask_sessions import Live
 
@@ -299,3 +299,270 @@ def test_a_long_instruction_is_refused(live, ai):
     assert live.ask(cid, "plan it").status_code == 200
     assert "error" in json.loads(script.tool_results(2)[-1]["content"])
     assert _mission_cards(live, cid) == []
+
+
+# ---- the assemble card's team is the assembler's (#2126) ----------------------------------------
+
+
+def _unassembled(title: str = "Apply again") -> str:
+    """A second mission with the fixture plan and no specialist on any step."""
+    mid = missions.create_mission("apply for the job again", title=title)["id"]
+    store_plan(mid, document())
+    return mid
+
+
+def _assembler_picks(mid: str, revision: int) -> dict:
+    """The route's own answer, independently: `apply_op` over the stored plan and the context."""
+    op = {
+        "op": "assemble",
+        "operation_id": str(uuid.uuid4()),
+        "expected_revision": revision,
+        "reason": "x",
+    }
+    doc = missions.plan_revision(mid)["document"]
+    new = team.apply_op(doc, team.parse_op(op), context(), mission_id=mid, revision=revision)
+    return {
+        s["id"]: s["envelope"]["assignment"]["specialist"]
+        for s in new["steps"]
+        if s["envelope"].get("assignment")
+    }
+
+
+def _assign_by_route(live, mid: str, step: str, revision: int) -> str:
+    """The operator puts a specialist on one step by hand, as the Team card does."""
+    r = live.c.get(
+        f"/api/missions/{mid}/plan/team/choices", params={"step": step}, headers=live.hdr
+    )
+    assert r.status_code == 200, r.text
+    cands = r.json()["candidates"]
+    pick = next(c for c in cands["choices"] if c["ok"])
+    body = {
+        "op": "assign",
+        "operation_id": str(uuid.uuid4()),
+        "expected_revision": revision,
+        "reason": "by hand",
+        "step": step,
+        "index": pick["index"],
+        "listing": cands["listing"],
+    }
+    r = live.c.post(f"/api/missions/{mid}/plan/ops", json=body, headers=live.hdr)
+    assert r.status_code == 200, r.text
+    return pick["specialist"]["id"]
+
+
+def _written(mid: str, revision: int) -> dict:
+    rev = missions.plan_revision(mid)
+    assert rev["revision"] == revision
+    return {
+        s["id"]: s["envelope"]["assignment"]["specialist"]
+        for s in rev["document"]["steps"]
+        if s["envelope"].get("assignment")
+    }
+
+
+def test_the_assemble_card_quotes_the_assemblers_team_and_the_tap_writes_exactly_it(live, ai):
+    """#2126: on 2026-11-17 HQ's table named career-archivist for o1.record while the assembler
+    wrote cv-writer. The `assemble` result carries the team the server's own dry run writes —
+    step, specialist, version, model — with the note to quote it; the card's sentence names the
+    same picks; and the confirmed revision holds exactly that team, not another."""
+    mid = _unassembled()
+    # One step already has a specialist, put there by hand: assembling keeps it.
+    kept_id = _assign_by_route(live, mid, "o1.posting", 1)
+    assert _revisions(mid) == 2
+    script = ai(
+        calls(("list_missions", {})),
+        calls(("read_plan", {"mission_id": mid})),
+        calls(("read_pool", {"mission_id": mid, "step_index": RECORD})),
+        call("assemble", {"mission_id": mid, "reason": "cheapest that qualifies"}),
+        answer("done"),
+    )
+    cid = live.new()
+    r = live.ask(cid, "assemble the team")
+    assert r.status_code == 200, r.text
+    pool_rows = json.loads(script.tool_results(3)[-1]["content"])["specialists"]
+    assert len(pool_rows) >= 2, "the record step is a choice between specialists, not the only one"
+    result = json.loads(script.tool_results(4)[-1]["content"])
+    assert result.get("proposed") is True, result
+    assert (
+        "read_pool" in result["team_note"] and "confirming the card writes" in result["team_note"]
+    )
+    said = {
+        p["step"]: {"id": p["specialist"], "version": p["version"]}
+        for p in result["team"]["assembled"]
+    }
+    expected = _assembler_picks(mid, 2)
+    kept = {p["step"]: p["specialist"] for p in result["team"]["kept"]}
+    assert kept == {"o1.posting": kept_id} and "o1.posting" not in said
+    assert expected.pop("o1.posting")["id"] == kept_id
+    assert expected and said == expected
+    assert result["team"]["unassigned"] == []
+    assert all(p["model"].startswith("claude-api · ") for p in result["team"]["assembled"])
+    (card,) = [p for t in live.get(cid)["turns"] for p in t["proposals"]]
+    assert card["op"] == "team.assemble"
+    for p in result["team"]["assembled"][:2]:
+        assert f"{p['step']} → {p['specialist']}" in card["text"]
+    assert "the plan or these picks changed" in card["text"]
+    assert "1 already assigned stay" in card["text"]
+    assert _revisions(mid) == 2, "staging writes nothing"
+    d = live.c.post(
+        f"/api/ask/proposals/{card['action_id']}/decide",
+        json={"decision": "confirm"},
+        headers=live.hdr,
+    )
+    assert d.status_code in (200, 202), d.text
+    assert live.settled(cid)["state"] == "done"
+    written = _written(mid, 3)
+    assert written.pop("o1.posting")["id"] == kept_id and written == said
+
+
+def test_picks_that_would_differ_at_the_tap_make_the_card_stale_and_write_nothing(
+    live, ai, monkeypatch
+):
+    """A plan revision does not freeze the pool (Hermes on #2126). The card binds the team it
+    showed; the tap runs the dry run again over the context as it stands, and a pick that is gone
+    makes the card `stale` with nothing written — never a team other than the one shown."""
+    mid = _unassembled("Apply once more")
+    script = ai(
+        calls(("list_missions", {})),
+        calls(("read_plan", {"mission_id": mid})),
+        call("assemble", {"mission_id": mid, "reason": "go"}),
+        answer("done"),
+    )
+    cid = live.new()
+    r = live.ask(cid, "assemble")
+    assert r.status_code == 200, r.text
+    result = json.loads(script.tool_results(3)[-1]["content"])
+    gone = next(p["specialist"] for p in result["team"]["assembled"] if p["step"] == "o1.record")
+    monkeypatch.setattr(
+        team, "snapshot", lambda: context(specs=pool(**{gone.replace("-", "_"): None}))
+    )
+    (card,) = [p for t in live.get(cid)["turns"] for p in t["proposals"]]
+    d = live.c.post(
+        f"/api/ask/proposals/{card['action_id']}/decide",
+        json={"decision": "confirm"},
+        headers=live.hdr,
+    )
+    assert d.status_code in (200, 202), d.text
+    settled = live.settled(cid)
+    assert settled["state"] == "stale", settled
+    assert "the team it would assemble changed" in json.dumps(settled)
+    assert _revisions(mid) == 1, "nothing was written"
+
+
+def test_a_pool_change_between_the_two_staging_reads_is_refused_not_bound(live, ai, monkeypatch):
+    """Hermes on #2126: HQ quotes the team of the tool's dry run, and staging re-reads the facts.
+    A pool change between those two reads must refuse the card, never bind a team HQ did not
+    quote. Without the `expected` check the card binds the second team and this test is red."""
+    from agent_sessions import ask_team
+
+    mid = _unassembled("Apply between reads")
+    orig = ask_team._dry_run
+    seen: list[dict] = []
+
+    def between_reads(mission_id, op):
+        out = orig(mission_id, op)
+        if op.get("op") == "assemble":
+            seen.append(out)
+            if len(seen) == 1:  # the tool's own dry run has run; the staging re-read is next
+                gone = out["assembled"][0]["specialist"]
+                monkeypatch.setattr(
+                    team, "snapshot", lambda: context(specs=pool(**{gone.replace("-", "_"): None}))
+                )
+        return out
+
+    monkeypatch.setattr(ask_team, "_dry_run", between_reads)
+    script = ai(
+        calls(("list_missions", {})),
+        calls(("read_plan", {"mission_id": mid})),
+        call("assemble", {"mission_id": mid, "reason": "go"}),
+        answer("done"),
+    )
+    cid = live.new()
+    assert live.ask(cid, "assemble").status_code == 200
+    assert len(seen) >= 2, "the staging re-read ran after the tool's dry run"
+    refused = json.loads(script.tool_results(3)[-1]["content"])
+    assert "the plan or its picks changed while the card was prepared" in refused["error"], refused
+    team_cards = [
+        p for t in live.get(cid)["turns"] for p in t["proposals"] if p["op"] == "team.assemble"
+    ]
+    assert team_cards == [], "a refused assemble leaves no team.assemble card"
+    assert _revisions(mid) == 1, "nothing was written"
+
+
+def test_the_assemble_sentence_names_as_many_picks_as_fit_and_counts_the_rest():
+    from agent_sessions import ask_store, ask_team
+
+    f = {"op": "assemble", "expected_revision": 1}
+    picks = [
+        {
+            "step": f"o{i}.cover_letter",
+            "specialist": "career-archivist-senior",
+            "version": 1,
+            "model": "m",
+        }
+        for i in range(1, 13)
+    ]
+    big = {
+        "assembled": picks,
+        "kept": [{"step": "o0.intake", "specialist": "s", "version": 1, "model": "m"}],
+        "unassigned": [{"step": "o9.review", "why": "none qualifies"}],
+    }
+
+    def facts_of(team: dict) -> dict:
+        return {
+            "title": "Apply",
+            "revision": 1,
+            "team": ask_team.team_digest(team),
+            "picks": ask_team._team_clause(team),
+        }
+
+    text = ask_team._describe(f, facts_of(big))
+    assert len(text) <= ask_operations.SUMMARY_MAX
+    assert len(facts_of(big)["picks"]) <= ask_store.OP_SUMMARY_MAX  # a fact the store admits
+    assert "o1.cover_letter → career-archivist-senior" in text and " more" in text
+    assert "1 already assigned stay" in text and "1 cannot be filled" in text
+    assert "plan revision 1" in text
+    # Few picks: all named, nothing counted.
+    small = {"assembled": picks[:2], "kept": [], "unassigned": []}
+    short = ask_team._describe(f, facts_of(small))
+    assert " more" not in short and "o2.cover_letter → career-archivist-senior" in short
+    # The digest is the team: the same picks in another order or a changed pick differ or not.
+    assert ask_team.team_digest(small) == ask_team.team_digest(json.loads(json.dumps(small)))
+    other = {**small, "assembled": [{**picks[0], "specialist": "cv-writer"}, picks[1]]}
+    assert ask_team.team_digest(other) != ask_team.team_digest(small)
+    # No team (a dry run the route refused at the tap): the sentence still stands.
+    assert ask_team._describe(f, {"title": "A", "revision": 1, "team": None}).startswith(
+        "Picks the cheapest"
+    )
+    # The worst case stays under the card's cap too: long ids, many kept and unfillable steps.
+    long_picks = [
+        {
+            "step": f"o{i}.cover_letter_for_a_long_step",
+            "specialist": "career-archivist-senior-v9",
+            "version": 1,
+            "model": "m",
+        }
+        for i in range(12)
+    ]
+    worst = {
+        "assembled": long_picks,
+        "kept": [
+            {"step": f"k{i}.intake_step_x", "specialist": "s", "version": 1, "model": "m"}
+            for i in range(10)
+        ],
+        "unassigned": [{"step": f"u{i}.review_step_x", "why": "none"} for i in range(10)],
+    }
+    # One first pick longer than the whole budget is cut, never over it, and says so with "…".
+    huge = {
+        "assembled": [{"step": "o" * 120, "specialist": "s" * 48, "version": 1, "model": "m"}],
+        "kept": [],
+        "unassigned": [],
+    }
+    cut = ask_team._team_clause(huge)
+    assert cut.endswith("…") and len(cut) <= ask_team.TEAM_SHOWN_CHARS + 2, cut
+    worst_text = ask_team._describe(f, facts_of(worst))
+    assert len(worst_text) <= ask_operations.SUMMARY_MAX, len(worst_text)
+    assert "10 already assigned stay" in worst_text and "10 cannot be filled" in worst_text
+    # A plan revision that moved before the tap says so, not that the team changed.
+    moved = ask_operations.changed({"revision": 1, "team": "a"}, {"revision": 2, "team": "b"})
+    assert moved == "it was saved elsewhere after HQ read it", moved

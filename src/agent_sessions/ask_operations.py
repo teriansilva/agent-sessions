@@ -893,10 +893,10 @@ async def facts_for(
         from . import ask_secrets
 
         return await ask_secrets.facts(op, target, app, operator)
-    if op.group == "team":  # a mission's team (#1950): its title and plan revision
+    if op.group == "team":  # a mission's team (#1950): title, plan revision, the picks (#2126)
         from . import ask_team
 
-        return await ask_team.facts(target, app, operator)
+        return await ask_team.facts(target, fields, app, operator)
     if op.target == "attachment":
         from . import ask_secrets
 
@@ -953,8 +953,11 @@ def changed(before: dict, now: dict | None) -> str:
         return "the projects that can use it changed"
     if "enabled" in before and before["enabled"] != now.get("enabled"):
         return "it was switched on" if now.get("enabled") else "it was switched off"
+    # An assemble card's picks (#2126): the team it would write now is not the one it showed.
     if "revision" in before and before["revision"] != now.get("revision"):
         return "it was saved elsewhere after HQ read it"
+    if "team" in before and before["team"] != now.get("team"):
+        return "the team it would assemble changed"
     # A draft mission's procedure (#1950): the deployed playbook's listing it was chosen from.
     if ("listing" in before and before["listing"] != now.get("listing")) or (
         "flow" in before and before["flow"] != now.get("flow")
@@ -1196,6 +1199,12 @@ async def stage(
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
     if expected is not None and changed(expected, facts):
+        if op.group == "team":  # the team HQ quoted is not the one the card would bind (#2126)
+            raise Refused(
+                "refused: the plan or its picks changed while the card was prepared; read the "
+                "plan again. Nothing was written",
+                "stale",
+            )
         if op.group == "mission":  # the procedure HQ validated is not the one the card would show
             raise Refused(
                 "refused: the project's procedures changed while the card was prepared; read "

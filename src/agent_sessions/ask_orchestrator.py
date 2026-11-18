@@ -1119,6 +1119,11 @@ async def _list_specialists(turn: _Turn, args: dict) -> tuple[dict, dict]:
 # its code and server text, and is never a card. HQ has no approve, start or launch tool.
 
 _TEAM_REASON_MAX = 200
+#: On an `assemble` result (#2126): the picks HQ may describe are the dry run's, in `team`.
+TEAM_NOTE = (
+    "Describe the team from `team` above: these are the picks confirming the card writes, step by "
+    "step. Never infer or rank them yourself from read_pool."
+)
 
 
 def _team_reason(args: dict) -> str:
@@ -1278,14 +1283,24 @@ async def _team_propose(turn: _Turn, mid: str, fields: dict) -> tuple[dict, dict
         or (k in ("index", "listing") and fields["op"] in ("assign", "set_override"))
     }
     try:
-        await ask_team.dry_run(mid, probe)
+        team = await ask_team.dry_run(mid, probe)
     except mission_team.TeamRefused as e:
         # THE REFUSAL REACHES HQ AS ITS TOOL RESULT (#1950): the same code and server text the
         # plan view shows. Nothing is staged and nothing is written.
         raise _ToolRefused(f"refused: {e.text}. Nothing was written ({e.code})", e.code) from None
     op = ask_operations.CATALOG[f"team.{fields['op']}"]
     await _focus_mission(turn, mid)
-    return await _stage(turn, op, mid, "", fields)
+    # The card must bind the team HQ quotes (#2126, Hermes): staging re-reads the facts and refuses
+    # when the team it would bind is not this one, so a pool change between the two reads is a
+    # refusal, never a card that writes a team HQ did not quote.
+    expected = {"team": ask_team.team_digest(team)} if fields["op"] == "assemble" else None
+    content, meta = await _stage(turn, op, mid, "", fields, expected=expected)
+    if fields["op"] == "assemble":
+        # The team the card writes, the server's own dry run (#2126): HQ quotes THIS, never its
+        # reading of read_pool — on 2026-11-17 its table named another specialist than the
+        # assembler then wrote. The card's sentence names the same picks and binds them.
+        content = {**content, "team": team, "team_note": TEAM_NOTE}
+    return content, meta
 
 
 async def _team_assemble(turn: _Turn, args: dict) -> tuple[dict, dict]:
