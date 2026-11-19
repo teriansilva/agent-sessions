@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, filesRawUrl, FILE_BLOB_CAP, isApiTunneled } from "../../../lib/api";
 import { classifyImage } from "./markdownView";
+import { RemoteImage } from "./RemoteImage";
 import { useNear } from "./useNear";
 import styles from "./markdownDocument.module.css";
 
@@ -31,17 +32,7 @@ export function MarkdownImage({
   const source = classifyImage(fromFile, src);
   const label = alt?.trim() || "";
   if (source.kind === "remote") {
-    return (
-      <span className={styles.remoteImage} data-md-remote-image={source.host}>
-        <span className={styles.tag}>Remote image</span>
-        <span>
-          {label ? `${label} — ` : ""}from {source.host}, not loaded here.
-        </span>
-        <a href={source.href} target="_blank" rel="noopener noreferrer">
-          Open link ↗
-        </a>
-      </span>
-    );
+    return <RemoteImage href={source.href} host={source.host} alt={label} />;
   }
   if (source.kind === "none") {
     return <span className={styles.imageAlt}>[image{label ? `: ${label}` : ""}]</span>;

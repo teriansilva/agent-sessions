@@ -54,6 +54,7 @@ the same list.
 | `components/EnableLoginDetails.module.css` | css | 11 | done | route:settings-loginoff | the disclosure marker turns (transform, --t-fast); Reduced/Off still |
 | `components/files/filePanel.module.css` | css | 7 | todo |  |  |
 | `components/files/markdown/markdownDocument.module.css` | css | 7 | todo |  |  |
+| `artifact-md/artifactMd.css` | css | 7 | todo |  |  |
 | `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
 | `components/FolderPickerModal.module.css` | css | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/overview/NewSessionModal.module.css` | css | 9 | done | popup:new-session-map | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a full-height sheet sliding up; 120 ms fade in Reduced |

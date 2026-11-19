@@ -5,7 +5,9 @@ serves what this writes. The site goes in through `artifact_store.publish` — t
 agent publish passes (the tool and broker in front of it are pinned end to end by
 `tests/test_artifacts.py`). Prints `{"id": <artifact id>}` as one JSON line.
 
-    uv run python tests/appmode/seed_artifacts.py <repo> <session key>
+    uv run python tests/appmode/seed_artifacts.py <repo> <session key> [<path under repo> <title>]
+
+The default is the probe site (`<repo>/site`); #2210 also seeds a Markdown file.
 """
 
 from __future__ import annotations
@@ -16,15 +18,15 @@ import sys
 from agent_sessions import artifact_store, prefs
 
 
-def main(repo: str, session: str) -> int:
+def main(repo: str, session: str, path: str = "site", title: str = "Probe site") -> int:
     prefs.set_artifacts_enabled(True)
     origin = artifact_store.Origin(engine="claude", session_key=session, phys_key=session, cwd=repo)
     out = artifact_store.publish(
-        origin, {"path": f"{repo}/site", "title": "Probe site", "why": "the sandbox, in a browser"}
+        origin, {"path": f"{repo}/{path}", "title": title, "why": "the sandbox, in a browser"}
     )
     print(json.dumps({"id": out["id"]}))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(*sys.argv[1:5]))

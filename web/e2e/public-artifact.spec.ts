@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+
 import { expect, test, type Browser, type TestInfo } from "@playwright/test";
 import { TOUCH_FLOOR } from "./touchTarget";
 
@@ -29,7 +32,12 @@ fetch("/api/artifact-probe", { credentials: "include" })
   .catch(() => { b.api = "blocked"; });
 </script></body></html>`;
 
-async function visitor(browser: Browser, testInfo: TestInfo, meta: "live" | "gone" = "live") {
+async function visitor(
+  browser: Browser,
+  testInfo: TestInfo,
+  meta: "live" | "gone" = "live",
+  content: string = PROBE,
+) {
   const use = testInfo.project.use;
   const ctx = await browser.newContext({
     viewport: use.viewport,
@@ -60,7 +68,7 @@ async function visitor(browser: Browser, testInfo: TestInfo, meta: "live" | "gon
       : r.fulfill({ status: 404, json: { detail: "Not Found" } }),
   );
   await ctx.route((u) => u.pathname === `${P}~/`, (r) =>
-    r.fulfill({ status: 200, contentType: "text/html", body: PROBE }),
+    r.fulfill({ status: 200, contentType: "text/html", body: content }),
   );
   await ctx.route(`${SITE}**`, (r) => {
     siteRequests.push({ referer: r.request().headers()["referer"] });
@@ -171,5 +179,123 @@ test("the shared session and shared reply pages wear the same header", async ({ 
     await expect(brand, path).toHaveAttribute("rel", /noopener/);
     await expect(page.getByTestId("public-bar-toggle"), path).toBeVisible();
   }
+  await ctx.close();
+});
+
+// #2210: a Markdown artifact, as the server writes its page (`markdown_page`; the fixture is pinned
+// to the server's own output by tests/test_artifacts.py). The page loads the REAL built renderer
+// (`dist/assets/artifact-md.js`, one classic script) from inside the opaque frame: a module script
+// would be a CORS request the frame can never satisfy, so this is the proof the bundle loads at all.
+const MD_DIR = join(process.cwd(), "e2e", "fixtures", "artifact-md");
+const MD_PAGE = readFileSync(join(MD_DIR, "report.html"), "utf8");
+const MD_TEXT = readFileSync(join(MD_DIR, "report.md"), "utf8");
+const NIGHTJAR = resolve(process.cwd(), "..", "src", "agent_sessions", "static", "nightjar");
+
+test("a Markdown artifact reads as a document in the frame: rendered, Source, Download", async ({ browser }, testInfo) => {
+  const { ctx, page } = await visitor(browser, testInfo, "live", MD_PAGE);
+  // The page's three subresources come through the route too. The frame here is a fulfilled
+  // response, which has no IP address, so Chrome's Local Network Access check counts it as public
+  // and refuses its requests to this loopback preview server. (On a real server the page and the
+  // assets share one host; e2e/appmode-artifacts.spec.ts loads them from it.) The bytes are the REAL
+  // build's, and a fulfilled response has no CORS headers either, so a module script would still
+  // fail here: the classic script is what's proven.
+  await ctx.route("**/static/nightjar/tokens.css", (r) =>
+    r.fulfill({ contentType: "text/css", body: readFileSync(join(NIGHTJAR, "tokens.css"), "utf8") }),
+  );
+  await ctx.route("**/assets/artifact-md.*", (r) => {
+    const file = new URL(r.request().url()).pathname.split("/").pop()!;
+    return r.fulfill({
+      contentType: file.endsWith(".js") ? "text/javascript" : "text/css",
+      body: readFileSync(join(process.cwd(), "dist", "assets", file), "utf8"),
+    });
+  });
+  const downloads: string[] = [];
+  await ctx.route((u) => u.pathname === `${P}~/` && u.searchParams.get("download") === "1", (r) => {
+    downloads.push(r.request().url());
+    return r.fulfill({
+      status: 200,
+      contentType: "text/plain; charset=utf-8",
+      headers: { "Content-Disposition": 'attachment; filename="report.md"' },
+      body: MD_TEXT,
+    });
+  });
+  await page.goto(P);
+  const frame = page.frameLocator("[data-testid=artifact-frame]");
+  const doc = frame.locator("#md-doc");
+
+  // Rendered by the real bundle: headings, the table, the task list, the code block.
+  await expect(frame.locator("body")).toHaveAttribute("data-md", "rendered", { timeout: 15_000 });
+  await expect(doc.getByRole("heading", { level: 1 })).toHaveText("Operating model — concept map");
+  await expect(doc.getByRole("heading", { level: 2, name: "Roles" })).toBeVisible();
+  await expect(doc.locator("table tbody tr")).toHaveCount(3);
+  await expect(doc.locator("input[type=checkbox]")).toHaveCount(2);
+  await expect(doc.locator("[data-md-code=yaml]")).toBeVisible();
+  await expect(frame.locator("#md-source")).toBeHidden();
+  // The sandbox holds: an opaque origin, the raw HTML never ran, the remote image never loaded.
+  const inner = page.frames().find((f) => f !== page.mainFrame())!;
+  expect(await inner.evaluate(() => self.origin)).toBe("null");
+  await expect(frame.locator("body")).not.toHaveAttribute("data-injected", "1");
+  await expect(doc).toContainText('<script>document.body.dataset.injected = "1"</script>');
+  await expect(doc.locator("[data-md-remote-image=\"tracker.example\"]")).toBeVisible();
+  expect(await inner.evaluate(() => [...document.images].map((i) => i.src))).toEqual([]);
+  // External links leave in a new tab with no opener and no referrer.
+  const ext = doc.getByRole("link", { name: "the source" });
+  await expect(ext).toHaveAttribute("target", "_blank");
+  await expect(ext).toHaveAttribute("rel", "noopener noreferrer");
+
+  // No sideways scroll: the page fits; the wide table and the long code line scroll in their box.
+  const fits = await inner.evaluate(() => {
+    const root = document.scrollingElement!;
+    const wrap = document.querySelector("#md-doc table")!.parentElement!;
+    const cell = [...document.querySelectorAll("#md-doc td")].find((td) => td.textContent === "Operator")!;
+    return {
+      page: root.scrollWidth <= root.clientWidth,
+      wrap: getComputedStyle(wrap).overflowX,
+      scrolls: wrap.scrollWidth > wrap.clientWidth,
+      // A word stays whole: its text is one line box, not "Op / era / tor".
+      wordWhole: (() => {
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        return range.getClientRects().length === 1;
+      })(),
+    };
+  });
+  expect(fits.page).toBe(true);
+  expect(fits.wrap).toBe("auto");
+  expect(fits.wordWhole).toBe(true);
+  // The wide table is wider than a phone: it scrolls inside its own box, the page doesn't.
+  if (testInfo.project.name === "mobile") expect(fits.scrolls).toBe(true);
+
+  // The controls hold the 44 px floor on a phone.
+  const controls = [
+    frame.getByRole("button", { name: "Rendered" }),
+    frame.getByRole("button", { name: "Source" }),
+    frame.getByRole("link", { name: /Download/ }),
+  ];
+  for (const c of controls) {
+    await expect(c).toBeVisible();
+    if (testInfo.project.name === "mobile") {
+      const box = (await c.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    }
+  }
+
+  // Source: the stored text, exactly; Rendered brings the document back.
+  await frame.getByRole("button", { name: "Source" }).click();
+  await expect(frame.locator("body")).toHaveAttribute("data-md", "source");
+  await expect(frame.locator("#md-source")).toBeVisible();
+  expect(await frame.locator("#md-source").textContent()).toBe(MD_TEXT);
+  await expect(doc).toBeHidden();
+  expect(await inner.evaluate(() => document.scrollingElement!.scrollWidth <= document.scrollingElement!.clientWidth)).toBe(true);
+  await frame.getByRole("button", { name: "Rendered" }).click();
+  await expect(doc.getByRole("heading", { level: 1 })).toBeVisible();
+
+  // Download: the same path with ?download=1, answered as an attachment.
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    frame.getByRole("link", { name: /Download/ }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("report.md");
+  expect(downloads).toHaveLength(1);
   await ctx.close();
 });

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -33,6 +34,7 @@ from agent_sessions import (
     projects,
     secrets_broker,
 )
+from agent_sessions.routes.artifacts import SANDBOX_CSP
 
 SESSION = "claude:aaaaaaaa-0000-4000-8000-000000000001"
 OTHER = "claude:bbbbbbbb-0000-4000-8000-000000000002"
@@ -1507,3 +1509,201 @@ def test_without_a_viewer_build_the_link_still_opens_the_artifact(
     r = visitor.get(path, follow_redirects=False)
     assert r.status_code == 307 and r.headers["location"] == path + "~/"
     assert "<h1>hi</h1>" in visitor.get(path).text
+
+
+# ---- #2210: a Markdown artifact opened as a page is a rendered document -------------------------
+
+_HOSTILE_MD = (
+    "# Report\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+    "</pre><script>parent.x=1</script><!-- </script> -->\n<img src=x onerror=alert(1)>\n"
+    "& \"quotes\" 'single'\n"
+)
+
+
+@pytest.fixture
+def md_client(auth_cfg, monkeypatch, tmp_path):
+    from agent_sessions import main
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "artifact.html").write_text("<!doctype html><title>viewer</title>")
+    (dist / "assets" / "artifact-md.js").write_text("/* renderer */")
+    (dist / "assets" / "artifact-md.css").write_text("/* renderer css */")
+    monkeypatch.setattr(main, "_WEB_DIST", dist)
+    return TestClient(main.create_app(auth_cfg), base_url="https://your-domain.example")
+
+
+def _view_loc(c, cfg, aid: str) -> str:
+    _login(c, cfg)
+    return c.get(f"/artifacts/{aid}/", follow_redirects=False).headers["location"]
+
+
+def test_a_markdown_file_opened_as_a_page_is_the_document_shell(md_client, auth_cfg, origin, proj):
+    import html as _html
+    from html.parser import HTMLParser
+
+    (proj / "report.md").write_text(_HOSTILE_MD)
+    a = artifact_store.publish(origin, {"path": "report.md", "title": "R", "why": "w"})
+    loc = _view_loc(md_client, auth_cfg, a["id"])
+    for dest in ("document", "iframe", "frame"):
+        page = md_client.get(loc, headers={"Sec-Fetch-Dest": dest})
+        assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
+        assert page.headers["vary"] == "Sec-Fetch-Dest"
+        csp = page.headers["content-security-policy"]
+        assert csp == SANDBOX_CSP and "allow-same-origin" not in csp
+        assert page.headers["x-content-type-options"] == "nosniff"
+        assert page.headers["referrer-policy"] == "no-referrer"
+        assert page.headers["cache-control"] == "private, no-cache"
+        assert "access-control-allow-origin" not in page.headers
+        assert "cross-origin-resource-policy" not in page.headers
+
+    # Parsed like a browser: the hostile source yields NO element; its text is the <pre>'s exactly.
+    class Walk(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.tags: list[tuple[str, dict]] = []
+            self.pre: list[str] = []
+            self.in_pre = False
+
+        def handle_starttag(self, tag, attrs):
+            self.tags.append((tag, dict(attrs)))
+            self.in_pre = self.in_pre or (tag == "pre")
+
+        def handle_endtag(self, tag):
+            if tag == "pre":
+                self.in_pre = False
+
+        def handle_data(self, data):
+            if self.in_pre:
+                self.pre.append(data)
+
+        def handle_comment(self, data):
+            raise AssertionError(f"a comment escaped the text: {data!r}")
+
+    w = Walk()
+    w.feed(page.text)
+    tags = [t for t, _ in w.tags]
+    assert tags.count("pre") == 1 and tags.count("script") == 1 and "img" not in tags
+    assert "".join(w.pre) == "\n" + _HOSTILE_MD  # the parser drops that leading newline
+    assert _html.escape(_HOSTILE_MD) in page.text
+    # The renderer: ONE classic script and its stylesheet, content-hashed, from the app's assets.
+    (script,) = [a for t, a in w.tags if t == "script"]
+    assert re.fullmatch(r"/assets/artifact-md\.js\?v=[0-9a-f]{16}", script["src"])
+    assert "type" not in script and "crossorigin" not in script
+    assert script["onerror"] == "document.body.dataset.md='failed'"
+    sheets = [a["href"] for t, a in w.tags if t == "link" and a.get("rel") == "stylesheet"]
+    assert sheets[0] == "/static/nightjar/tokens.css"
+    assert re.fullmatch(r"/assets/artifact-md\.css\?v=[0-9a-f]{16}", sheets[1])
+    assert not any("crossorigin" in a for t, a in w.tags if t == "link")
+    # Download is the same path with ?download=1; the page names the file and its state.
+    (dl,) = [a for t, a in w.tags if t == "a"]
+    assert dl["href"] == "?download=1"
+    assert '<body data-md="text">' in page.text and "report.md" in page.text
+    (pre,) = [a for t, a in w.tags if t == "pre"]
+    assert pre["data-path"] == "report.md"
+
+
+def test_a_markdown_file_is_its_bytes_to_everything_but_a_page(md_client, auth_cfg, origin, proj):
+    (proj / "report.md").write_text(_HOSTILE_MD)
+    a = artifact_store.publish(origin, {"path": "report.md", "title": "R", "why": "w"})
+    loc = _view_loc(md_client, auth_cfg, a["id"])
+    for headers in ({}, {"Sec-Fetch-Dest": "empty"}, {"Sec-Fetch-Dest": "image"}):
+        raw = md_client.get(loc, headers=headers)
+        assert raw.text == _HOSTILE_MD
+        assert raw.headers["content-type"] == "text/plain; charset=utf-8"
+        assert raw.headers["vary"] == "Sec-Fetch-Dest"
+        assert "content-disposition" not in raw.headers
+        assert raw.headers["content-security-policy"] == SANDBOX_CSP
+    # ?download=1 wins over the destination: the bytes, as an attachment, under the same path.
+    for headers in ({"Sec-Fetch-Dest": "document"}, {"Sec-Fetch-Dest": "iframe"}, {}):
+        dl = md_client.get(loc + "?download=1", headers=headers)
+        assert dl.content == _HOSTILE_MD.encode()
+        assert dl.headers["content-disposition"].startswith('attachment; filename="report.md"')
+        assert dl.headers["vary"] == "Sec-Fetch-Dest"
+        assert dl.headers["content-security-policy"] == SANDBOX_CSP
+
+
+def test_only_markdown_by_name_gets_the_shell(md_client, auth_cfg, origin, proj):
+    """`.txt`, `.csv` and `.log` share Markdown's served type: the shell keys on the NAME."""
+    site(
+        proj / "notes", {"n.txt": "# not md", "d.csv": "a,b", "x.log": "# log", "README.md": "# Hi"}
+    )
+    a = artifact_store.publish(origin, {"path": "notes", "title": "N", "why": "w"})
+    loc = _view_loc(md_client, auth_cfg, a["id"])
+    for name, body in (("n.txt", "# not md"), ("d.csv", "a,b"), ("x.log", "# log")):
+        r = md_client.get(loc + name, headers={"Sec-Fetch-Dest": "document"})
+        assert r.text == body and "vary" not in r.headers
+        r = md_client.get(loc + name + "?download=1", headers={"Sec-Fetch-Dest": "document"})
+        assert r.text == body and "content-disposition" not in r.headers
+    # A Markdown file inside a site: the shell, with its path for relative links and images.
+    page = md_client.get(loc + "README.md", headers={"Sec-Fetch-Dest": "document"})
+    assert 'data-path="README.md"' in page.text and "artifact-md.js" in page.text
+
+
+def test_a_markdown_page_on_a_public_link_and_a_revision_pin(md_client, auth_cfg, origin, proj):
+    site(proj / "docs", {"index.html": "<h1>i</h1>", "guide/intro.md": "# Intro\n"})
+    a = artifact_store.publish(origin, {"path": "docs", "title": "D", "why": "w"})
+    _login(md_client, auth_cfg)
+    pin = md_client.get(f"/artifacts/{a['id']}@1/guide/intro.md", follow_redirects=False)
+    page = md_client.get(pin.headers["location"], headers={"Sec-Fetch-Dest": "document"})
+    assert 'data-path="guide/intro.md"' in page.text and page.headers["vary"] == "Sec-Fetch-Dest"
+    shared = md_client.post(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(md_client, auth_cfg)
+    ).json()
+    path = shared["public_url"].split("your-domain.example", 1)[1]
+    visitor = TestClient(md_client.app, base_url="https://your-domain.example")
+    page = visitor.get(path + "~/guide/intro.md", headers={"Sec-Fetch-Dest": "iframe"})
+    assert page.status_code == 200 and 'data-path="guide/intro.md"' in page.text
+    assert page.headers["content-security-policy"] == SANDBOX_CSP
+    assert page.headers["cache-control"] == "no-store"
+    raw = visitor.get(path + "~/guide/intro.md?download=1", headers={"Sec-Fetch-Dest": "iframe"})
+    assert raw.text == "# Intro\n" and raw.headers["content-disposition"].startswith("attachment")
+
+
+def test_a_markdown_page_reads_without_a_build_or_over_the_render_limit(
+    auth_cfg, origin, proj, monkeypatch, tmp_path
+):
+    from agent_sessions import main
+    from agent_sessions.routes import artifacts as routes
+
+    monkeypatch.setattr(main, "_WEB_DIST", tmp_path / "no-build")
+    c = TestClient(main.create_app(auth_cfg), base_url="https://your-domain.example")
+    (proj / "r.md").write_text("# Hi\n")
+    a = artifact_store.publish(origin, {"path": "r.md", "title": "R", "why": "w"})
+    loc = _view_loc(c, auth_cfg, a["id"])
+    page = c.get(loc, headers={"Sec-Fetch-Dest": "document"})
+    # No renderer to send: the server's page alone, the text and Download, still sandboxed.
+    assert "<script" not in page.text and "artifact-md" not in page.text
+    assert "# Hi" in page.text and 'href="?download=1"' in page.text
+    assert page.headers["content-security-policy"] == SANDBOX_CSP
+    # Over the render limit WITH a build: the renderer is not sent, and the page says why.
+    assets = tmp_path / "build" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "artifact-md.js").write_text("/* r */")
+    (assets / "artifact-md.css").write_text("/* r */")
+    monkeypatch.setattr(routes, "_RENDERER_DIR", assets)
+    page = c.get(loc, headers={"Sec-Fetch-Dest": "document"})
+    assert '<body data-md="text">' in page.text and "artifact-md.js?v=" in page.text
+    monkeypatch.setattr(routes, "MARKDOWN_RENDER_MAX", 3)
+    page = c.get(loc, headers={"Sec-Fetch-Dest": "document"})
+    assert '<body data-md="big">' in page.text and "<script" not in page.text
+    assert "artifact-md" not in page.text and "# Hi" in page.text
+
+
+#: The real-browser specs (`web/e2e/public-artifact.spec.ts`) frame this page as the server writes
+#: it, with the renderer at its built path. Regenerate after changing `markdown_page`:
+#: ``AGENT_SESSIONS_REGEN_FIXTURES=1 uv run pytest tests/test_artifacts.py -k fixture``.
+_MD_FIXTURE = Path(__file__).resolve().parents[1] / "web" / "e2e" / "fixtures" / "artifact-md"
+
+
+def test_the_e2e_markdown_page_fixture_is_the_servers_own_output():
+    from agent_sessions.routes.artifacts import markdown_page
+
+    data = (_MD_FIXTURE / "report.md").read_bytes()
+    page = markdown_page(
+        "report.md", "report.md", data, ("/assets/artifact-md.js", "/assets/artifact-md.css")
+    )
+    out = _MD_FIXTURE / "report.html"
+    if os.environ.get("AGENT_SESSIONS_REGEN_FIXTURES") == "1":
+        out.write_text(page, encoding="utf-8")
+    assert out.read_text(encoding="utf-8") == page, "stale fixture: see the comment above"

@@ -18,7 +18,8 @@ import remarkGfm from "remark-gfm";
 import { highlightFence, SYNTAX_CSS, type Segment } from "../editor/highlight";
 import { MarkdownImage } from "./MarkdownImage";
 import { MermaidBlock } from "./MermaidBlock";
-import { classifyLink, createSlugger, fenceLanguage, splitFrontMatter } from "./markdownView";
+import { classifyLink, fenceLanguage, splitFrontMatter } from "./markdownView";
+import { findAnchor, rehypeHeadingIds, textOf } from "./markdownPipeline";
 import styles from "./markdownDocument.module.css";
 
 /** A Markdown FILE, rendered (#2114) — the file viewer's Preview. Its own lazy chunk: a session
@@ -33,46 +34,6 @@ import styles from "./markdownDocument.module.css";
  *  - images load only from the box, through the files API (`MarkdownImage`);
  *  - diagrams render inside an `<img>` (`MermaidBlock`);
  *  - only `http(s):`/`mailto:` links leave the app, in a new tab with `noopener noreferrer`. */
-
-type HastNode = {
-  type: string;
-  tagName?: string;
-  value?: string;
-  properties?: Record<string, unknown>;
-  children?: HastNode[];
-};
-
-const HEADING = /^h[1-6]$/;
-
-function hastText(node: HastNode): string {
-  if (node.type === "text") return node.value ?? "";
-  return (node.children ?? []).map(hastText).join("");
-}
-
-/** Heading ids, given AFTER sanitising (which would otherwise prefix them a second time) and with
- *  the same `user-content-` prefix sanitising gives every other id, so `#anchor` lookups need one
- *  rule. A fresh slugger per document keeps the ids stable across renders. */
-function rehypeHeadingIds() {
-  return (tree: HastNode) => {
-    const slug = createSlugger();
-    const walk = (n: HastNode) => {
-      if (n.type === "element" && n.tagName && HEADING.test(n.tagName)) {
-        n.properties = { ...(n.properties ?? {}), id: `user-content-${slug(hastText(n))}` };
-      }
-      n.children?.forEach(walk);
-    };
-    walk(tree);
-  };
-}
-
-/** The text of a react-markdown `<code>` child. */
-function textOf(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(textOf).join("");
-  if (isValidElement(node)) return textOf((node.props as { children?: ReactNode }).children);
-  return "";
-}
 
 function FencedCode({ code, lang, label }: { code: string; lang: string | null; label?: string }) {
   const [segments, setSegments] = useState<{ code: string; s: Segment[] } | null>(null);
@@ -122,17 +83,6 @@ function FencedCode({ code, lang, label }: { code: string; lang: string | null; 
       </pre>
     </figure>
   );
-}
-
-/** Find an anchor target inside the preview: sanitised ids/names carry `user-content-`, a hand
- *  link (`#install`) names it without. */
-function findAnchor(root: HTMLElement, id: string): HTMLElement | null {
-  for (const candidate of [`user-content-${id}`, id]) {
-    const esc = CSS.escape(candidate);
-    const el = root.querySelector<HTMLElement>(`[id="${esc}"], [name="${esc}"]`);
-    if (el) return el;
-  }
-  return null;
 }
 
 function MarkdownDocumentImpl({

@@ -30,6 +30,7 @@ request, so a revoke ends the link on the next one; the link follows the latest 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import re
 from pathlib import Path
@@ -144,6 +145,146 @@ def _media_page(name: str, media: str) -> Response:
     return HTMLResponse(body, headers={**SANDBOX_HEADERS, "Vary": "Sec-Fetch-Dest"})
 
 
+#: Markdown opened as a page gets a rendered document (#2210). Chosen by the file NAME: the type,
+#: ``text/plain``, is also ``.txt``, ``.csv`` and ``.log``, which keep their bytes.
+_MARKDOWN_SUFFIXES = (".md",)
+#: Above this the page stays the server's text (no renderer is sent): rendering megabytes of
+#: Markdown in the browser is slow, and the text is still there with Download.
+MARKDOWN_RENDER_MAX = 1024 * 1024
+#: The renderer, built by ``web/vite.config.artifact-md.ts`` beside the app's assets. One CLASSIC
+#: script and one stylesheet: the page is an opaque origin, so a module script (a CORS request,
+#: never answered) would not load. Set by `register` from the app's web build.
+_RENDERER_DIR: Path | None = None
+_RENDERER_FILES = ("artifact-md.js", "artifact-md.css")
+_renderer_cache: dict[str, tuple[tuple[int, int], str]] = {}
+
+#: The page's own layout: inline, so the text, the header and Download read right even when the
+#: renderer is missing or fails. Tokens only, from the device-theme sheet the page links.
+_MARKDOWN_CSS = (
+    "*{box-sizing:border-box}[hidden]{display:none!important}"
+    "html,body{margin:0;background:var(--bg-0);color:var(--text-1)}"
+    "body{font:var(--fs-body,14px)/1.5 ui-sans-serif,system-ui,sans-serif}"
+    ".md-head{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;align-items:center;"
+    "gap:8px;min-height:44px;padding:6px 8px 6px 14px;background:var(--bg-1);"
+    "border-bottom:1px solid var(--line-strong)}"
+    ".md-name{flex:1 1 auto;min-width:0;font:600 12px var(--font-mono);overflow-wrap:anywhere}"
+    ".md-name small{margin-left:8px;font-weight:400;letter-spacing:.1em;color:var(--text-3)}"
+    ".md-seg{display:inline-flex;border:1px solid var(--line-strong)}"
+    ".md-seg button,.md-dl{display:inline-flex;align-items:center;justify-content:center;gap:6px;"
+    "min-height:32px;padding:0 12px;background:transparent;border:0;color:var(--text-2);"
+    "font:600 11px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;"
+    "text-decoration:none;cursor:pointer}"
+    ".md-dl{border:1px solid var(--line-strong)}"
+    ".md-seg button[aria-pressed=true]{background:var(--hud-tint);color:var(--hud-text);"
+    "box-shadow:inset 0 -2px 0 var(--hud)}"
+    ".md-seg button:focus-visible,.md-dl:focus-visible{outline:2px solid var(--accent-text);"
+    "outline-offset:2px}"
+    ".md-note{display:none;margin:12px 16px 0;padding:8px 12px;border:1px solid var(--line-strong);"
+    "border-left:2px solid var(--status-degraded);color:var(--text-2)}"
+    "body[data-md=big] #md-note-big,body[data-md=failed] #md-note-failed{display:block}"
+    "#md-source{margin:0;padding:16px 20px;font:12.5px/1.55 var(--font-mono);white-space:pre-wrap;"
+    "overflow-wrap:anywhere;color:var(--text-1)}"
+    "body[data-md=rendered] #md-source,body:not([data-md=rendered]) #md-doc{display:none}"
+    "@media (max-width:800px){.md-head{padding:6px 8px 8px 12px}"
+    ".md-name{flex-basis:100%;padding:4px 0}.md-seg{flex:1}.md-seg button{flex:1}"
+    ".md-seg button,.md-dl{min-height:44px}}"
+)
+
+
+def _is_markdown(name: str) -> bool:
+    return name.lower().endswith(_MARKDOWN_SUFFIXES)
+
+
+def _renderer_url(fname: str) -> str | None:
+    """``/assets/<fname>?v=<content hash>``, or ``None`` without a web build. The hash is cached by
+    the file's mtime and size, so a new release's renderer is never served under a stale URL."""
+    if _RENDERER_DIR is None:
+        return None
+    path = _RENDERER_DIR / fname
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        hit = _renderer_cache.get(fname)
+        if hit is None or hit[0] != key:
+            hit = (key, hashlib.sha256(path.read_bytes()).hexdigest()[:16])
+            _renderer_cache[fname] = hit
+    except OSError:
+        return None
+    return f"/assets/{fname}?v={hit[1]}"
+
+
+def _size_label(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _decode_text(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
+
+
+def markdown_page(name: str, rel: str, data: bytes, renderer: tuple[str, str] | None) -> str:
+    """A Markdown file opened AS A PAGE (#2210): the file's text in a ``<pre>``, HTML-escaped, under
+    a header with Download, plus the renderer that turns it into a document in place.
+
+    The ``<pre>`` is the whole fallback: no build, a failed script or a file over
+    `MARKDOWN_RENDER_MAX` still reads as text. It is also the renderer's input (``textContent``
+    undoes the escaping) and the Source view, so the text is inlined once. ``html.escape`` covers
+    ``&``, ``<``, ``>`` and quotes, so no ``</pre>``, ``</script>`` or ``<!--`` in the source can
+    end the element. The renderer is a classic script (no ``type=module``, no ``crossorigin``):
+    the page is an opaque origin, and a CORS request from it is never answered (no
+    ``Access-Control-Allow-Origin``, ever). Download is ``?download=1`` on the same path, which
+    holds under the stable link, a revision pin, a view token and a public ``~/`` alike.
+
+    ``renderer`` is the (script, stylesheet) URL pair, or ``None`` without a web build. A pure
+    function: ``web/e2e/fixtures/artifact-md/`` is its output, pinned against drift by
+    ``tests/test_artifacts.py``."""
+    text = _decode_text(data)
+    big = len(data) > MARKDOWN_RENDER_MAX
+    js, css = (None, None) if big or renderer is None else renderer
+    title = html.escape(name)
+    head = [
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        f"<title>{title}</title>",
+        '<link rel="stylesheet" href="/static/nightjar/tokens.css">',
+        f"<style>{_MARKDOWN_CSS}</style>",
+    ]
+    if js and css:
+        head.append(f'<link rel="stylesheet" href="{html.escape(css)}">')
+    state = "big" if big else "text"
+    body = [
+        f'</head><body data-md="{state}">',
+        '<header class="md-head">',
+        f'<span class="md-name">{title}<small>MARKDOWN · {_size_label(len(data))}</small></span>',
+        '<span id="md-switch" class="md-seg" role="group" aria-label="View" hidden>'
+        '<button type="button" data-view="rendered" aria-pressed="true">Rendered</button>'
+        '<button type="button" data-view="source" aria-pressed="false">Source</button></span>',
+        '<a class="md-dl" href="?download=1" download data-md-download="">'
+        '<span aria-hidden="true">↓</span> Download</a>',
+        "</header>",
+        f'<p class="md-note" id="md-note-big">This file is {_size_label(len(data))}: shown as'
+        " text. Download it to read it in an editor.</p>",
+        '<p class="md-note" id="md-note-failed">The renderer didn’t load, so the file is shown'
+        " as text.</p>",
+        '<main id="md-doc"></main>',
+        # The newline after <pre> is one the HTML parser drops, so the text's own first line
+        # survives even when it is blank.
+        f'<pre id="md-source" data-path="{html.escape(rel)}">\n{html.escape(text)}</pre>',
+    ]
+    if js and css:
+        body.append(
+            f'<script src="{html.escape(js)}" '
+            "onerror=\"document.body.dataset.md='failed'\"></script>"
+        )
+    body.append("</body></html>")
+    return "".join(head + body)
+
+
 async def _serve(aid: str, rel: str, revision: int | None, request: Request) -> Response:
     try:
         served = await asyncio.to_thread(artifact_store.resolve, aid, rel, revision=revision)
@@ -155,6 +296,17 @@ async def _serve(aid: str, rel: str, revision: int | None, request: Request) -> 
     except (artifact_store.NotServed, artifact_store.ArtifactsUnavailable):
         return _hosted_error(404, "not found")
     headers = dict(SANDBOX_HEADERS)
+    if _is_markdown(served.name):
+        # Every representation of a Markdown file varies on the destination (#2210).
+        headers["Vary"] = "Sec-Fetch-Dest"
+        if request.query_params.get("download") == "1":
+            headers["Content-Disposition"] = _download_name(served.name)
+        elif request.headers.get("sec-fetch-dest") in _PAGE_DESTS:
+            data = await asyncio.to_thread(served.blob.read_bytes)
+            js, css = (_renderer_url(f) for f in _RENDERER_FILES)
+            renderer = (js, css) if js and css else None
+            page = markdown_page(served.name, rel or served.name, data, renderer)
+            return HTMLResponse(page, headers=headers)
     if served.type is None:
         headers["Content-Disposition"] = _download_name(served.name)
         media = "application/octet-stream"
@@ -207,6 +359,8 @@ def register(
     app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard, web_dist: Path | None = None
 ) -> None:
     artifact_store.PUBLIC_AVAILABLE = cfg.auth_mode != "none"
+    global _RENDERER_DIR
+    _RENDERER_DIR = (web_dist / "assets") if web_dist is not None else None
     # ---- the operator API -----------------------------------------------------------------
 
     @app.get("/api/artifacts")

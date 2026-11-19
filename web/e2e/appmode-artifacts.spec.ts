@@ -34,6 +34,8 @@ const SESSION = `claude:${SESSION_UUID}`;
 
 let stack: Stack;
 let id = "";
+let mdId = "";
+const MD_TEXT = readFileSync(join(process.cwd(), "e2e", "fixtures", "artifact-md", "report.md"), "utf8");
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
@@ -73,6 +75,14 @@ fetch("/api/config", { credentials: "include" })
     },
   );
   ({ id } = JSON.parse(out.trim().split("\n").pop()!));
+  // #2210: a Markdown report, published as a single file.
+  writeFileSync(join(stack.repo, "report.md"), MD_TEXT);
+  const md = execFileSync(
+    "uv",
+    ["run", "python", "tests/appmode/seed_artifacts.py", stack.repo, SESSION, "report.md", "Operating model"],
+    { cwd: resolve(process.cwd(), ".."), env: stack.env, encoding: "utf8" },
+  );
+  ({ id: mdId } = JSON.parse(md.trim().split("\n").pop()!));
 });
 
 test.afterAll(async () => {
@@ -117,4 +127,62 @@ test("a hosted site loads its own assets and still cannot reach the cookie or /a
   await expect(page.locator("body")).toHaveAttribute("data-api", "blocked", {
     timeout: 30_000,
   });
+});
+
+test("a Markdown artifact opens as a rendered document, in a tab and in the preview frame (#2210)", async ({
+  page,
+}) => {
+  // Opened as a page (top level): the server's document page, the renderer from /assets.
+  const resp = await page.goto(`${base()}/artifacts/${mdId}/`);
+  expect(resp?.status()).toBe(200);
+  expect(resp!.headers()["content-type"]).toMatch(/^text\/html/);
+  const csp = resp!.headers()["content-security-policy"];
+  expect(csp.startsWith("sandbox ")).toBe(true);
+  expect(csp).not.toContain("allow-same-origin");
+  expect(resp!.headers()["access-control-allow-origin"]).toBeUndefined();
+  await expect(page.locator("body")).toHaveAttribute("data-md", "rendered", { timeout: 30_000 });
+  const doc = page.locator("#md-doc");
+  await expect(doc.getByRole("heading", { level: 1 })).toHaveText("Operating model — concept map");
+  await expect(doc.locator("table tbody tr")).toHaveCount(3);
+  // Still an opaque origin: no cookie, no storage, and the raw HTML in the source never ran.
+  expect(await page.evaluate(() => self.origin)).toBe("null");
+  expect(
+    await page.evaluate(() => {
+      try {
+        localStorage.setItem("x", "1");
+        return "read";
+      } catch {
+        return "blocked";
+      }
+    }),
+  ).toBe("blocked");
+  await expect(page.locator("body")).not.toHaveAttribute("data-injected", "1");
+  // The renderer and the device-theme tokens loaded (a module script would have been refused).
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+
+  // Source is the stored text, exactly.
+  await page.getByRole("button", { name: "Source" }).click();
+  await expect(page.locator("#md-source")).toBeVisible();
+  expect(await page.locator("#md-source").textContent()).toBe(MD_TEXT);
+
+  // Download: the stored bytes, as an attachment.
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("link", { name: /Download/ }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("report.md");
+  expect(readFileSync((await download.path())!, "utf8")).toBe(MD_TEXT);
+
+  // A fetch (not a page) still gets the bytes as text/plain.
+  const raw = await page.request.get(page.url().split("?")[0]);
+  expect(raw.headers()["content-type"]).toBe("text/plain; charset=utf-8");
+  expect(await raw.text()).toBe(MD_TEXT);
+
+  // The operator's preview frame (sandboxed, never allow-same-origin) shows the document too.
+  await page.goto(`${base()}/library/artifacts/${encodeURIComponent(mdId)}`);
+  const frame = page.frameLocator("[data-testid=artifact-preview]");
+  await expect(frame.locator("body")).toHaveAttribute("data-md", "rendered", { timeout: 30_000 });
+  await expect(frame.locator("#md-doc").getByRole("heading", { level: 1 })).toHaveText(
+    "Operating model — concept map",
+  );
 });

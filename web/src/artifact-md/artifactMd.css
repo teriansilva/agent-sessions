@@ -1,0 +1,8 @@
+/* The hosted Markdown page (#2210). The document's prose may break anywhere (a long URL must not
+   push the page sideways), but a table cell must not: with `overflow-wrap: anywhere` a wide table
+   shrinks into one-letter columns ("Op/era/tor") instead of scrolling inside its own box. Words
+   stay whole here, so the table takes its natural width and its wrapper scrolls. */
+#md-doc th,
+#md-doc td {
+  overflow-wrap: normal;
+}
