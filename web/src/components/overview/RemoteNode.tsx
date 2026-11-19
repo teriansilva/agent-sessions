@@ -1,6 +1,6 @@
 import { type NodeProps } from "@xyflow/react";
 import { remoteRowState } from "../../lib/federation";
-import { PeerBadge } from "../federation/PeerBadge";
+import { PeerBadge, ScreenTag } from "../federation/PeerBadge";
 import type { RemoteNodeData } from "./remoteNodes";
 
 /** A session another instance shares, on the map (#2055).
@@ -21,10 +21,13 @@ export function RemoteNode({ data }: NodeProps) {
       aria-label={row.label}
       title={`${row.title}\nShared by ${row.peer}`}
       data-testid="remote-node"
+      data-kind={row.screen ? "terminal" : "api"}
     >
       <span className="tr-ov-chip-head tr-ov-chip-head--remote">
         <PeerBadge name={row.peer} />
-        <span className="tr-ov-callsign">view only</span>
+        {/* A shared terminal (#2060) is a screen to watch: its tag says so where an API session
+            says "view only". */}
+        {row.screen ? <ScreenTag /> : <span className="tr-ov-callsign">view only</span>}
       </span>
       <span className="tr-ov-ttl">{row.title}</span>
       <span className="tr-ov-chip-foot">

@@ -13058,6 +13058,21 @@ def approval(mission_id: str, *, path: Path | None = None) -> dict | None:
         con.close()
 
 
+def approval_by_id(mission_id: str, approval_id: str, *, path: Path | None = None) -> dict | None:
+    """One approval of the mission by its id (in force or not), or None (#2023: the write fence
+    re-reads the approval a run was CLAIMED under, never whichever is in force now)."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT * FROM mission_plan_approvals WHERE mission_id=? AND id=?",
+            (mission_id, approval_id),
+        ).fetchone()
+        return None if row is None else _approval_row(row)
+    finally:
+        con.close()
+
+
 def record_refusal(
     mission_id: str,
     *,

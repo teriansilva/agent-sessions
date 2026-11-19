@@ -661,13 +661,38 @@ _CLASS_TEXT = {
     # the same one-per-change decision by the runner.
     "bound_reached": "the runs your approval covers for it are used",
     "rework_span_changed": "the steps a rework round re-runs changed since you approved",
+    # Per class, never "the plan changed" for what is not the plan (#2023).
+    "specialist_version_changed": "its specialist changed since you approved",
+    "specialist_archived": "its specialist was archived",
+    "model_changed": "its model changed since you approved",
+    "skill_pin_stale": "a skill its specialist uses changed since you approved",
+    "playbook_revision_changed": "its playbook changed since you approved",
+    "deployment_changed": "its playbook's deployment changed since you approved",
+    "equipment_changed": "its project's equipment changed since you approved",
 }
 _CHANGED_TEXT = "the plan changed since you approved it"
+#: A reason whose `cause` is the pick's CLIENT (`SWITCH_CAUSES`): named as that, never as a plan
+#: change (#2023: the gate keeps refusing on it, and says why).
+_CAUSE_TEXT = {
+    "usage_exhausted": "its model's client is out of usage",
+    "engine_not_mission_ready": "its model's client is not mission-ready",
+}
+
+
+#: A reason about the standing consent itself (`consent_verdict`), not the approval (#2023).
+_CONSENT_TEXT = {
+    "approval_revoked": "your standing consent no longer covers it",
+    "approval_expired": "your standing consent expired",
+}
 
 
 def class_text(reasons: list[dict]) -> str:
     """What kind of change refused a boundary, in the server's words."""
     for r in reasons:
+        if r.get("consent") and r.get("code") in _CONSENT_TEXT:
+            return _CONSENT_TEXT[r["code"]]
+        if r.get("cause") in _CAUSE_TEXT:
+            return _CAUSE_TEXT[r["cause"]]
         if r.get("code") in _CLASS_TEXT:
             return _CLASS_TEXT[r["code"]]
     return _CHANGED_TEXT
@@ -887,6 +912,12 @@ def consent_scope(approval: dict, title: str) -> dict:
     return {**scope, "digest": digest(scope)}
 
 
+def _of_consent(code: str, text: str) -> dict:
+    """A reason about the standing consent itself, not the approval: marked, so its class reads
+    as the consent's (`class_text`). The refusal's key ignores the mark."""
+    return {**_r(code, text), "consent": True}
+
+
 def consent_verdict(
     consent: dict | None,
     approval: dict | None,
@@ -902,25 +933,27 @@ def consent_verdict(
         return {
             "ok": False,
             "state": "absent",
-            "reasons": [_r("approval_revoked", "no standing consent covers this launch")],
+            "reasons": [_of_consent("approval_revoked", "no standing consent covers this launch")],
         }
     if consent.get("revoked_at") is not None:
         return {
             "ok": False,
             "state": "revoked",
-            "reasons": [_r("approval_revoked", "this standing consent was revoked")],
+            "reasons": [_of_consent("approval_revoked", "this standing consent was revoked")],
         }
     if ts >= consent["expires_at"]:
         return {
             "ok": False,
             "state": "expired",
-            "reasons": [_r("approval_expired", "this standing consent has expired")],
+            "reasons": [_of_consent("approval_expired", "this standing consent has expired")],
         }
     if approval is None or approval["id"] != consent["approval_id"]:
         return {
             "ok": False,
             "state": "void",
-            "reasons": [_r("approval_revoked", "the approval this consent rests on is gone")],
+            "reasons": [
+                _of_consent("approval_revoked", "the approval this consent rests on is gone")
+            ],
         }
     if check is None or not check["ok"]:
         return {"ok": False, "state": "void", "reasons": list((check or {}).get("reasons") or [])}
@@ -1067,6 +1100,16 @@ def parse_consent(body: object) -> dict:
 # ---- the boundary --------------------------------------------------------------------------------
 
 
+def _without_switch_causes(check: dict, step: str) -> dict:
+    """`check` without `step`'s reasons whose cause is its client's (`SWITCH_CAUSES`)."""
+    reasons = [
+        r
+        for r in check["reasons"]
+        if not (r.get("step") == step and r.get("cause") in SWITCH_CAUSES)
+    ]
+    return {"ok": not reasons, "reasons": reasons}
+
+
 def admit(
     mission_id: str,
     step: str,
@@ -1082,8 +1125,11 @@ def admit(
     new, change}`; `new` says whether this refusal was not recorded before (the one decision), and
     `change` is its key (`change_digest`), None when admitted.
 
-    A `consent` boundary must also name a standing consent that still covers the launch. An
-    `alternate` launch (D6) is checked on that approved alternate's own pin (slice B)."""
+    A `consent` boundary must also name a standing consent that still covers the launch, and so
+    must a `gate` asked with a `consent_id` (#2023: a step session started under a standing
+    consent): its gate re-checks the consent too, never the approval alone. An empty
+    `consent_id` (a consent run that lost its id) is consent-backed and covered by nothing: fail
+    closed. An `alternate` launch (D6) is checked on that approved alternate's own pin (slice B)."""
     from . import missions
 
     if boundary not in BOUNDARIES or boundary == "read":
@@ -1106,10 +1152,17 @@ def admit(
     facts = read_facts(doc)
     check = recheck(approval, doc, revision, ctx, facts, step=step, alternate=alternate)
     reasons = list(check["reasons"])
-    if boundary == "consent":
+    if boundary == "consent" or (boundary == "gate" and consent_id is not None):
         c = missions.consent(mission_id, consent_id) if consent_id else None
         # The consent is checked against the WHOLE plan: any change voids it (#1951 §5).
         full = recheck(approval, doc, revision, ctx, facts)
+        if alternate is not None and boundary == "gate":
+            # …except, at an alternate's GATE, this step's PICK's client (out of usage, not
+            # mission-ready): that is client state, not a change, and the alternate runs in its
+            # place on its OWN pin, re-checked above (#2023). Every other reason of the whole plan
+            # still voids the consent. A consent LAUNCH keeps the whole check: its scope lines
+            # say nothing of alternates, and nothing launches from a consent yet.
+            full = _without_switch_causes(full, step)
         verdict = consent_verdict(c, approval, full, now=now)
         if not verdict["ok"]:
             seen = {(r["code"], r.get("step"), r["text"]) for r in reasons}

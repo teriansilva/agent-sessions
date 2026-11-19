@@ -159,6 +159,42 @@
   margin-top: var(--sp-1);
   color: var(--text-2);
 }
+/* A terminal's limit (#2060): the first thing in the body. The amber attention edge AND a word
+ * (docs/design.md §3, §7): something the operator must read, not an error, so never red and
+ * never colour alone. The unprotected case is the bold sentence. */
+.limit {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2));
+  border-left: 3px solid var(--status-degraded);
+}
+.limit b {
+  font-weight: 600;
+}
+.limitWord {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.limitDetail {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--text-2);
+}
+/* When no screen is sent at all: part of the limit, in the limit's own ink. */
+.limitNotShown {
+  display: block;
+  margin-top: var(--sp-1);
+}
+
 /* A share that was made: said in neutral ink with the ok rule (a result, not an alarm). */
 .done {
   margin: var(--sp-3) 0 0;

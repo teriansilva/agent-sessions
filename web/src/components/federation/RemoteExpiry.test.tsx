@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   federationRemoteSnapshot: vi.fn(),
   federationRemoteEvents: vi.fn(),
   federationRemoteHistory: vi.fn(),
+  federationRemoteFrame: vi.fn(),
 }));
 vi.mock("../../lib/api", async (orig) => ({
   ...(await orig<typeof import("../../lib/api")>()),
@@ -28,6 +29,7 @@ vi.mock("../../lib/api", async (orig) => ({
 
 const { RemoteRow } = await import("./RemoteRow");
 const { RemotePane } = await import("./RemotePane");
+const { RemoteScreenPane } = await import("./RemoteScreenPane");
 const { RemoteNode } = await import("../overview/RemoteNode");
 
 const GPU = "m5tr2kxwq7ahd3ny6bpev4czj2osu7fl";
@@ -54,6 +56,7 @@ beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
   // The pane stays at "loading": what is under test is its banner, not its reads.
   api.federationRemoteSnapshot.mockReturnValue(new Promise(() => {}));
+  api.federationRemoteFrame.mockReturnValue(new Promise(() => {}));
 });
 
 test.each(HOSTILE)("the session list's remote row shows %s as an unknown date", (expires_at) => {
@@ -84,6 +87,34 @@ test.each(HOSTILE)("the read-only pane's banner shows %s as an unknown date", (e
   );
   expect(screen.getByTestId("remote-banner")).toHaveTextContent(
     `Shared by gpu-box · view only · until ${UNKNOWN_DATE}`,
+  );
+});
+
+// The same surfaces for a shared terminal (#2060): its row, its node and the screen pane's banner.
+const terminal = (expires_at: number): RemoteShare => ({ ...share(expires_at), kind: "terminal" });
+
+test.each(HOSTILE)("a terminal's row and node show %s as an unknown date", (expires_at) => {
+  render(
+    <MemoryRouter>
+      <ul>
+        <RemoteRow remote={terminal(expires_at)} />
+      </ul>
+      <RemoteNode {...({ data: { remote: terminal(expires_at) } } as unknown as NodeProps)} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("remote-row-meta")).toHaveTextContent(`until ${UNKNOWN_DATE}`);
+  expect(screen.getByTestId("remote-node")).toHaveTextContent(`until ${UNKNOWN_DATE}`);
+});
+
+test.each(HOSTILE)("the screen pane's banner shows %s as an unknown date", (expires_at) => {
+  shares.list = [terminal(expires_at)];
+  render(
+    <MemoryRouter>
+      <RemoteScreenPane peerId={GPU} grantId={GRANT} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("remote-banner")).toHaveTextContent(
+    `Shared by gpu-box · screen only · until ${UNKNOWN_DATE}`,
   );
 });
 

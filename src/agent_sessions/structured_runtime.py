@@ -909,14 +909,18 @@ async def _admit_gate(session_key: str) -> None:
     # An approved alternate's session is gated on ITS OWN pin, never the pick's (independent
     # review of #2019): the pick's state says nothing about what this session runs as.
     alt = run.get("alternate_index") if run.get("use_kind") == "alternate" else None
+    consented = run.get("authority") == "consent"
 
     def check() -> tuple[dict, str]:
-        verdict = mission_approval.admit(
-            run["mission_id"],
-            run["step_id"],
-            "gate",
-            **({"alternate": int(alt)} if alt is not None else {}),
-        )
+        # Inside the guarded re-check: a malformed run (an alternate index that is no index)
+        # fails closed with the 503 below, never a 500.
+        kw: dict = {"alternate": int(alt)} if alt is not None else {}
+        if consented:
+            # A session started under a STANDING CONSENT re-checks that consent too, not only
+            # the approval it rests on (#2023). A consent run that names no consent is asked
+            # with an empty id, which no consent covers: fail closed, never approval-only.
+            kw["consent_id"] = str(run.get("consent_id") or "")
+        verdict = mission_approval.admit(run["mission_id"], run["step_id"], "gate", **kw)
         state = ""
         if not verdict.get("ok"):
             # The remedy's wording only: a plan can be approved again only before it runs.
@@ -932,16 +936,21 @@ async def _admit_gate(session_key: str) -> None:
             503, "could not re-check the plan approval this step runs under; try again"
         ) from None
     if not verdict.get("ok"):
-        what = mission_approval.class_text(verdict.get("reasons") or [])
-        remedy = (
-            "approve the plan again or stop the step"
-            if state in ("draft", "planned")
-            else "stop the step; a running mission's plan can't be approved again"
-        )
+        reasons = verdict.get("reasons") or []
+        what = mission_approval.class_text(reasons)
+        if reasons and all(r.get("cause") in mission_approval.SWITCH_CAUSES for r in reasons):
+            # DECIDED on #2023 (reversible, the conservative option): the gate keeps refusing
+            # while the pick's client can't run it, and says that: no new approval fixes it.
+            remedy = "wait until its client can run it again, or stop the step"
+        elif state in ("draft", "planned"):
+            remedy = "approve the plan again or stop the step"
+        else:
+            remedy = "stop the step; a running mission's plan can't be approved again"
+        under = "your standing consent" if consented else "your plan approval"
         raise StructuredError(
             409,
-            f"This step was started under your plan approval, and {what}: {remedy}. Declining "
-            "is always possible.",
+            f"This step was started under {under}, and {what}: {remedy}. Declining is always "
+            "possible.",
             reason="approval_refused",
         )
 

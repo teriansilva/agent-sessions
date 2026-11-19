@@ -164,11 +164,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
-        if out.get("outcome") == "started":
-            # The operator started a step whose launch the approval refused: its notification no
-            # longer stands (#1951 slice B).
-            from .. import mission_runner
+        from .. import mission_runner
 
+        if mission_runner.wrote_run(out):
+            # The operator started a step whose launch the approval refused: its notification no
+            # longer stands (#1951 slice B), whether the run started or then failed (#2023).
             await asyncio.to_thread(mission_runner.retract_sync, mission_id, step_id=step_id)
         return _json(out)
 

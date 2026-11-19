@@ -356,8 +356,10 @@ def fence_verdict(plan_id: str) -> str | None:
         moved: list[dict] = []
         if run["approval_id"] is not None:
             # EVERY OTHER MUTABLE PIN (#1951 slice B, Hermes 128628): the objective's project,
-            # procedure and deployment, and the project's equipment, re-read at each effect.
-            approval = missions.approval(run["mission_id"])
+            # procedure and deployment, and the project's equipment, re-read at each effect,
+            # against the pins of the approval the run was CLAIMED under (#2023), never whichever
+            # is in force now. A missing record raises: fail closed.
+            approval = missions.approval_by_id(run["mission_id"], run["approval_id"])
             moved = mission_approval.effect_reasons(approval, latest["document"], run["step_id"])
     except Exception:  # noqa: BLE001 — an unreadable fact is not permission
         return "what this step starts as could not be re-read, so nothing was started"
@@ -832,13 +834,26 @@ def public_run(run: dict) -> dict:
     return out
 
 
+def _answers(run: dict, at: float) -> bool:
+    """Does `run` answer a refusal recorded at `at`? A run that started something (not `refused`)
+    and is open now (a running step is never `refused`, whichever was written first: the race of
+    the runner's admission with the operator's Start), or was written AFTER the refusal (claimed
+    or ended since). EPISODE-AWARE (#2023): an earlier episode that ended before the refusal never
+    hides it (a refused rework reopen, `bound_reached`)."""
+    if run.get("state") == "refused":
+        return False
+    if run.get("state") in missions.OPEN_STEP_STATES:
+        return True
+    return max(float(run.get("created_at") or 0), float(run.get("ended_at") or 0)) > at
+
+
 def _refusal_view(refusals: list[dict], runs: list[dict], state: str = "") -> dict | None:
     """A step's standing refusal under the approval in force (#1951 slice B, D-P6-8): the newest
-    recorded one, unless the step started since. Server text and the closed codes only."""
+    recorded one, unless a run answers it (`_answers`). Server text and the closed codes only."""
     if not refusals:
         return None
     last = refusals[-1]
-    if any(float(r.get("created_at") or 0) > float(last["created_at"]) for r in runs):
+    if any(_answers(r, float(last["created_at"])) for r in runs):
         return None
     reasons = [{k: r[k] for k in ("code", "text", "old", "new") if k in r} for r in last["reasons"]]
     codes = sorted({r["code"] for r in reasons})
@@ -859,8 +874,10 @@ def _refusal_view(refusals: list[dict], runs: list[dict], state: str = "") -> di
         "at": last["created_at"],
         "codes": codes,
         "reasons": reasons,
-        "text": f"Not started: {mission_approval.class_text(reasons)}. Nothing was reserved, "
-        "given or started. HQ asks once per change.",
+        # Worded from the RECORDED reasons, whose `cause` and consent marks the public ones
+        # drop: the board names what the bell row and the gate name (#2023).
+        "text": f"Not started: {mission_approval.class_text(last['reasons'])}. Nothing was "
+        "reserved, given or started. HQ asks once per change.",
         "remedy": remedy,
     }
 

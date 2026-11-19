@@ -44,6 +44,7 @@ import type {
   RemoteShare,
   RemoteSnapshot,
 } from "./federation";
+import type { RemoteFrameAnswer } from "./federationScreen";
 import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -377,12 +378,17 @@ async function getJsonWithDetail<T>(
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
     let detail = "";
+    let body: unknown;
     try {
-      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+      body = await r.json();
+      detail = (body as { detail?: string })?.detail ?? "";
     } catch {
       /* non-JSON body */
     }
-    throw new ApiError(r.status, detail || `GET ${path} → ${r.status}`);
+    // The parsed body rides along as `record`: a caller whose answer depends on the server's
+    // `code` (a frame read tells "the screen can't be read" from "the peer is offline", both
+    // 503) reads it there.
+    throw new ApiError(r.status, detail || `GET ${path} → ${r.status}`, body);
   }
   return (await r.json()) as T;
 }
@@ -1137,6 +1143,22 @@ export const api = {
   ) =>
     getJsonWithDetail<RemoteHistoryPage>(
       `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/history?before=${enc(before)}`,
+      signal,
+      NO_STORE,
+    ),
+  /** A shared terminal's screen (#2060). `have` is the fingerprint of the frame on screen, or
+   *  `null` with nothing on screen: then the key is not sent at all, and the owner answers with
+   *  the current frame. A refusal is an `ApiError` whose `record` carries the server's `code`. */
+  federationRemoteFrame: (
+    peerId: string,
+    grantId: string,
+    have: string | null,
+    wait: number,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteFrameAnswer>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/frame?wait=${wait}` +
+        (have ? `&have=${enc(have)}` : ""),
       signal,
       NO_STORE,
     ),

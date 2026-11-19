@@ -75,6 +75,8 @@ import { xtermThemeFor } from "../../theme/termSchemes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle, type TemplateDraft } from "./Compose";
 import { draftSessionKey } from "../../lib/draftSessionKey";
+import { PeerGlyph } from "../federation/PeerBadge";
+import { SharePeerModal } from "../federation/SharePeerModal";
 import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { HeadFacts } from "./HeadFacts";
@@ -1926,6 +1928,10 @@ export function Terminal({
   // Hand-off modal (#597): same trigger-capture pattern as the recap. Hidden for the
   // non-agent shell engine and for a still-unreconciled placeholder id (no transcript
   // under that id yet — the source of a handoff is its real, scanned identity).
+  const [sharePeer, setSharePeer] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(
     null,
@@ -2206,6 +2212,33 @@ export function Terminal({
             run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
           },
         ]),
+    // Share with a peer… (#2060): let one paired instance watch this terminal's screen, as text.
+    //
+    // A MENU ITEM, by design: `menuFirst` makes the overflow menu its home, so it gives way before
+    // any chip does (a middle fold leaves no hole, #1329) and it is the very last entry, so on a
+    // bar with room it surfaces after the zoom pair and never pushes Hand off or the zoom pair
+    // into the fold (the #783 / #744 contract above). At ≤800px it is one more item of the one
+    // Actions menu, which stays an anchored popover (docs/design.md §5). Offered under the same
+    // conditions as the mission entry: a known, live row with a real id (the server refuses an
+    // archived session and cannot canonicalize a `new-<uuid>` placeholder).
+    ...(row && !row.archived && !isNewSessionPlaceholder(actionKey)
+      ? [
+          {
+            id: "share-peer",
+            label: "Share with a peer…",
+            aria: "Share this terminal's screen with a paired instance",
+            title:
+              "Share with a peer: let one paired BattleLab instance watch this terminal's screen as text. View only, with an expiry",
+            icon: <PeerGlyph size={13} />,
+            menuFirst: true,
+            run: (trigger?: HTMLElement | null) =>
+              setSharePeer({
+                open: true,
+                trigger: trigger ?? (document.activeElement as HTMLElement | null),
+              }),
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -2285,6 +2318,16 @@ export function Terminal({
           reviewExcluded={row?.review_excluded}
           onClose={() => setRecapOpen(false)}
           returnFocusTo={recapTrigger}
+        />
+      )}
+      {sharePeer.open && (
+        <SharePeerModal
+          kind="terminal"
+          sessionKey={actionKey}
+          title={title}
+          agent={engine}
+          onClose={() => setSharePeer({ open: false, trigger: null })}
+          returnFocusTo={sharePeer.trigger}
         />
       )}
       {handoffOpen && (

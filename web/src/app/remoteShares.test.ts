@@ -15,10 +15,21 @@ test("an API share is listed, with or without a kind (an owner before kinds has 
   expect(isRow({ ...row, kind: "api" })).toBe(true);
 });
 
-test("a terminal share is not drawn as a conversation row: this build has no screen pane (#2060)", () => {
-  expect(isRow({ ...row, kind: "terminal" })).toBe(false);
-  expect(isRow({ ...row, kind: "something-newer" })).toBe(false);
-  expect(isRow({ ...row, kind: 7 })).toBe(false);
+test("a terminal share is listed: this build has its screen pane (#2060)", () => {
+  expect(isRow({ ...row, kind: "terminal" })).toBe(true);
+});
+
+test("a kind this build has no pane for is skipped, never drawn as another kind", () => {
+  for (const kind of ["something-newer", "Terminal", "API", "", 7, null, {}, ["terminal"]])
+    expect(isRow({ ...row, kind }), JSON.stringify(kind)).toBe(false);
+});
+
+test("a terminal share is held to every other check", () => {
+  const t = { ...row, kind: "terminal" };
+  expect(isRow({ ...t, title: 3 })).toBe(false);
+  expect(isRow({ ...t, peer_name: undefined })).toBe(false);
+  for (const expires_at of [1e300, Infinity, NaN, -1, 0, "1800000000"])
+    expect(isRow({ ...t, expires_at }), String(expires_at)).toBe(false);
 });
 
 test("a malformed entry is not listed", () => {

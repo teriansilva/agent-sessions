@@ -16,11 +16,14 @@ and no fence of its own: it only decides WHICH step to offer the seam, and when.
   its own pin. A full pool is a reason to wait.
 * **A refusal** is the seam's: `admit` records it once per (approval, step, change) (D-P6-8). A
   refusal nobody tapped for raises ONE bell row and push per refusal record (D-P6-9), retracted
-  when the approval it was recorded under is no longer in force, or the step starts.
+  when the approval it was recorded under is no longer in force, or a run of the step is written
+  after it (`wrote_run`: started, or claimed and then failed; #2023).
 * **A refused step is offered again no sooner than `RETRY_S`**, doubling per consecutive
   refusal: up to `ADMISSION_RETRY_MAX_S` when nothing was claimed (a remap back launches within
   minutes), up to `RETRY_MAX_S` for a launch refused at its effects. A different change than the
-  last one, or a new approval, starts the back-off again.
+  last one, or a new approval, starts the back-off again. The back-off is bounded (#2023): a
+  step that left the plan, an approval no longer in force and a mission that left the worklist
+  lose theirs; a held or busy step keeps its own; a failed read prunes nothing.
 * **Each step once**: a step that has run, whoever started it, is never offered again (the
   claim's `already_ran` enforces it at the seam).
 
@@ -104,6 +107,9 @@ def offers_sync(mission_id: str) -> dict:
         "title": str(view.get("title") or ""),
         "revision": view["revision"],
         "steps": steps,
+        # EVERY step of the latest plan, startable or not: what the back-off is pruned against,
+        # so a held or busy step keeps its deadline (#2023).
+        "step_ids": [s["id"] for s in view["steps"]],
     }
 
 
@@ -176,6 +182,18 @@ def _notify_unless_started(mission_id: str, title: str, step_id: str, extra: dic
             retract_sync(mission_id)  # every notice of an approval no longer in force
     except Exception:  # noqa: BLE001
         log.debug("mission %s: state unreadable after a notice", mission_id, exc_info=True)
+
+
+def wrote_run(out: dict) -> bool:
+    """Did a launch (`mission_steps.start_step`'s result) WRITE a run that answers a refusal: one
+    that started, or was claimed and then failed or went unknown, not one refused at its effects
+    (which started nothing)? Such a run is written after every refusal already recorded for the
+    step, so its notices no longer stand (#2023: retracted on any qualifying run, not only
+    `started`)."""
+    if out.get("outcome") == "started":
+        return True
+    state = (out.get("run") or {}).get("state")
+    return state is not None and state != "refused"
 
 
 def retract_sync(mission_id: str, *, step_id: str | None = None) -> int:
@@ -274,6 +292,8 @@ async def _offer(
     first_admission: dict | None = None
     i = 0
     while i < len(uses):
+        if i and _closing:  # shutdown began: no further alternate (#2023)
+            break
         use = uses[i]
         i += 1
         try:
@@ -294,8 +314,10 @@ async def _offer(
         except missions.MissionError as e:
             log.info("mission %s: step %s not offered: %s", mission_id, sid, e)
             return "wait", None
-        if out.get("outcome") == "started":
+        if wrote_run(out):
+            # A run written after the refusal answers it, whether it started or failed (#2023).
             await asyncio.to_thread(retract_sync, mission_id, step_id=sid)
+        if out.get("outcome") == "started":
             return "started", None
         return "refused", None  # refused or failed at its effects: the run says so
     if first_admission is None and last is not None and last.code == "bound_reached":
@@ -312,6 +334,14 @@ async def _offer(
     return "refused", str(what)
 
 
+def _prune(drop) -> None:
+    """Forget the back-off of every `(mission, step, approval)` key `drop` says is gone, in all
+    three maps together (they share their keys), so they stay bounded by the live work (#2023)."""
+    for book in (_retry_at, _failures, _changes):
+        for key in [k for k in book if drop(k)]:
+            book.pop(key, None)
+
+
 async def advance(mission_id: str, registry=None, *, now: float | None = None) -> dict:
     """Offer every step the runner may start now, in plan order. Returns `{step: outcome}`.
     Never raises an `Exception` (the supervisor calls it)."""
@@ -320,8 +350,12 @@ async def advance(mission_id: str, registry=None, *, now: float | None = None) -
         offers = await missions.run_admitted(lambda: offers_sync(mission_id))
     except Exception:  # noqa: BLE001 — retried by the next sweep
         log.debug("mission %s: runner could not read", mission_id, exc_info=True)
-        return out
-    if offers["approval_id"] is None:
+        return out  # an unreadable plan is not an empty one: nothing is pruned
+    # BOUNDED (#2023): this mission's back-off for a step that left the plan, or under an approval
+    # that is no longer the one in force. A step that is only held or busy keeps its own.
+    live, step_ids = offers["approval_id"], set(offers.get("step_ids") or ())
+    _prune(lambda k: k[0] == mission_id and (k[2] != live or k[1] not in step_ids))
+    if live is None:
         return out
     await asyncio.to_thread(retract_sync, mission_id)
     t = time.monotonic() if now is None else now
@@ -374,7 +408,11 @@ async def sweep(registry=None) -> int:
         mids = await missions.run_admitted(missions.approved_missions)
     except Exception:  # noqa: BLE001 — retried by the next sweep
         log.debug("mission runner: worklist unavailable", exc_info=True)
-        return 0
+        return 0  # a failed read is not an empty worklist: nothing is pruned
+    # BOUNDED (#2023): a mission that left the worklist (no approval in force, archived, past
+    # its launch states) has no step the runner may offer, so none of its back-off stands.
+    worklist = set(mids)
+    _prune(lambda k: k[0] not in worklist)
     n = 0
     for mid in mids:
         if _closing:  # shutdown began while the worklist was read
@@ -401,15 +439,20 @@ async def drain(timeout: float = SHUTDOWN_WAIT_S) -> None:
     running (the seam joins a claim to its launch even then). No new pass starts after it."""
     global _closing
     _closing = True
-    pending = {t for t in _inflight.values() if not t.done()}
-    if not pending:
-        return
-    log.info("waiting for %d mission runner pass(es) to settle", len(pending))
-    _done, late = await asyncio.wait(pending, timeout=timeout)
-    for t in late:
-        t.cancel()
-    if late:
-        await asyncio.wait(late, timeout=5)
+    try:
+        pending = {t for t in _inflight.values() if not t.done()}
+        if not pending:
+            return
+        log.info("waiting for %d mission runner pass(es) to settle", len(pending))
+        _done, late = await asyncio.wait(pending, timeout=timeout)
+        for t in late:
+            t.cancel()
+        if late:
+            await asyncio.wait(late, timeout=5)
+    except asyncio.CancelledError:
+        # The shutdown itself was cancelled: the app goes on, and so does the runner (#2023).
+        _closing = False
+        raise
 
 
 def reset_for_test() -> None:
@@ -432,4 +475,5 @@ __all__ = [
     "retract_sync",
     "runs",
     "sweep",
+    "wrote_run",
 ]

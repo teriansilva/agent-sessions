@@ -207,6 +207,148 @@ test("Escape and Cancel close it", async () => {
   expect(onClose).toHaveBeenCalledTimes(2);
 });
 
+// ---- a terminal (#2060) -------------------------------------------------------------------------
+
+const TERM_KEY = "claude:7c1e3d2f-9a4b-4d8e-8f32-7b5c4d3e2f10";
+function openTerminal() {
+  render(
+    <MemoryRouter>
+      <SharePeerModal
+        kind="terminal"
+        sessionKey={TERM_KEY}
+        title="Deploy the staging stack"
+        agent="claude"
+        onClose={vi.fn()}
+      />
+    </MemoryRouter>,
+  );
+  return screen.getByRole("dialog", { name: "Share with a peer" });
+}
+
+test("a terminal: the limit is the first thing in the body, with the unprotected case in bold", async () => {
+  const dialog = openTerminal();
+  await within(dialog).findByRole("radio", { name: /gpu-box/ });
+  const body = within(dialog).getByTestId("share-peer-body");
+  const limit = within(dialog).getByTestId("share-peer-limit");
+  expect(body.firstElementChild).toBe(limit);
+  // What is masked, what is not, and what is never sent: docs/invariants/federation.md's stated
+  // limits and the renderer's one-cell allowlist, in the dialog's words.
+  expect(limit.textContent).toBe(
+    "Know the limit" +
+      "The peer sees this terminal's screen. A secret we know of is hidden when all of it is on one line or it wraps at the screen's edge. " +
+      "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden." +
+      "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable." +
+      "It is a picture of the screen as text. The peer cannot type, resize or scroll back.",
+  );
+  expect(limit.querySelector("b")?.textContent).toBe(
+    "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden.",
+  );
+  expect(within(limit).getByTestId("share-peer-not-shown").textContent).toBe(
+    "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.",
+  );
+  // Before the peer picker in the document, not only in the box model.
+  const firstPeer = within(dialog).getByRole("radio", { name: /gpu-box/ });
+  expect(limit.compareDocumentPosition(firstPeer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The session line says what it is, and the API disclosure is not this dialog's.
+  expect(dialog).toHaveTextContent("Terminal");
+  expect(within(dialog).queryByTestId("share-peer-disclosure")).toBeNull();
+});
+
+test("a terminal: the limit is there before anything loaded, and with no paired instance", async () => {
+  api.federation.mockResolvedValue(state([]));
+  const dialog = openTerminal();
+  expect(within(dialog).getByTestId("share-peer-limit")).toBeInTheDocument(); // not waited for
+  await within(dialog).findByTestId("share-peer-none");
+  expect(within(dialog).getByTestId("share-peer-limit")).toBeInTheDocument();
+});
+
+test("a terminal: Access offers View alone, and says a terminal can only be watched", async () => {
+  const dialog = openTerminal();
+  await within(dialog).findByRole("radio", { name: /gpu-box/ });
+  const access = within(dialog).getByRole("radiogroup", { name: "Access" });
+  const levels = within(access).getAllByRole("radio");
+  expect(levels).toHaveLength(1);
+  expect(levels[0]).toHaveTextContent("View");
+  expect(levels[0]).toHaveTextContent("Watch the screen");
+  expect(levels[0]).toHaveAttribute("aria-checked", "true");
+  expect(within(dialog).queryByText("Suggest")).toBeNull();
+  expect(within(dialog).queryByText("Send")).toBeNull();
+  expect(within(dialog).queryByText("later")).toBeNull();
+  expect(within(dialog).getByTestId("share-peer-terminal-only")).toHaveTextContent(
+    "A terminal can only be watched.",
+  );
+});
+
+test("a terminal: the grant is made with the terminal session's key, and its shares are revocable", async () => {
+  api.federationGrants.mockResolvedValue(
+    list([grant({ session_key: TERM_KEY, kind: "terminal", peer_id: LAPTOP, peer_name: "laptop" })]),
+  );
+  api.createFederationGrant.mockResolvedValue({
+    grant: grant({ session_key: TERM_KEY, kind: "terminal", expires_at: NOW + 7 * 86400 }),
+    generation: 2,
+  });
+  const dialog = openTerminal();
+  await within(dialog).findByRole("radio", { name: /gpu-box/ });
+  expect(api.federationGrants).toHaveBeenCalledWith(TERM_KEY);
+  await userEvent.click(within(dialog).getByTestId("share-peer-go"));
+  await waitFor(() =>
+    expect(api.createFederationGrant).toHaveBeenCalledWith({
+      session_key: TERM_KEY,
+      peer_id: GPU,
+      expires_in: 7 * 86400,
+    }),
+  );
+  await within(dialog).findByTestId("share-peer-done");
+  api.revokeFederationGrant.mockResolvedValue({ grant: grant(), generation: 3 });
+  await userEvent.click(within(dialog).getByRole("button", { name: "Revoke laptop" }));
+  await waitFor(() => expect(api.revokeFederationGrant).toHaveBeenCalledWith("g7Jx9aBcDeFgHiJkLmNoPq"));
+});
+
+// #2055 review (P2) for the terminal variant: under <StrictMode> (main.tsx) the dialog must
+// finish loading, show the session's existing terminal shares, and take a share's answer.
+test("a terminal under StrictMode: the limit, the peers, the shares, and a share's answer", async () => {
+  api.federationGrants.mockResolvedValue(
+    list([grant({ session_key: TERM_KEY, kind: "terminal", peer_id: LAPTOP, peer_name: "laptop" })]),
+  );
+  api.createFederationGrant.mockResolvedValue({
+    grant: grant({ session_key: TERM_KEY, kind: "terminal", expires_at: NOW + 7 * 86400 }),
+    generation: 2,
+  });
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <SharePeerModal
+          kind="terminal"
+          sessionKey={TERM_KEY}
+          title="Deploy the staging stack"
+          agent="claude"
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  const dialog = screen.getByRole("dialog", { name: "Share with a peer" });
+  expect(within(dialog).getByTestId("share-peer-limit")).toBeInTheDocument();
+  expect(await within(dialog).findByRole("radiogroup", { name: "Peer" })).toBeInTheDocument();
+  expect(await within(dialog).findByTestId("share-peer-grant")).toHaveTextContent(/laptop\s*View\s*until/);
+  expect(within(dialog).queryByText("Loading the paired instances…")).toBeNull();
+  const go = within(dialog).getByTestId("share-peer-go");
+  await waitFor(() => expect(go).toBeEnabled());
+  await userEvent.click(go);
+  expect(await within(dialog).findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box until /);
+  await waitFor(() => expect(go).toBeEnabled());
+});
+
+test("a terminal: a refusal is shown with the server's words", async () => {
+  api.createFederationGrant.mockRejectedValue(new ApiError(422, "a terminal session can only be viewed"));
+  const dialog = openTerminal();
+  await within(dialog).findByRole("radio", { name: /gpu-box/ });
+  await userEvent.click(within(dialog).getByTestId("share-peer-go"));
+  expect(await within(dialog).findByTestId("share-peer-error")).toHaveTextContent(
+    "a terminal session can only be viewed",
+  );
+});
+
 // #2055 review (P2): the app mounts under <StrictMode> (main.tsx). Its effect replay ran the old
 // `alive` ref's cleanup and nothing set it again, so every answer was discarded: the dialog said
 // "Loading the paired instances…" for ever and its "Shared with" list stayed empty.

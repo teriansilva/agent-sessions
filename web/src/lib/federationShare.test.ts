@@ -173,6 +173,7 @@ describe("a remote row", () => {
       title: "Tune the render queue",
       peer: "gpu-box",
       offline: false,
+      screen: false,
       meta: "view only · until 22 Nov",
       until: "until 22 Nov",
       label: "Open Tune the render queue, shared by gpu-box, view only",

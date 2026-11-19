@@ -273,6 +273,9 @@ export interface FederationGrant {
   session_key: string;
   peer_id: string;
   peer_name: string;
+  /** What the grant shares (#2056): an API session's conversation, or a terminal's screen. An
+   *  answer without it is from before kinds: an API grant. */
+  kind?: string;
   level: string;
   expires_at: number;
   revision: number;
@@ -303,11 +306,19 @@ export interface RemoteShare {
   engine: string;
   native_id: string;
   title: string;
+  /** `api` or `terminal` (#2056). Absent on an answer from before kinds: an API session. */
+  kind?: string;
   level: string;
   expires_at: number;
   revision: number;
   seen_at: number;
 }
+
+/** What a share is, for everything that draws it differently: a conversation, or a screen. */
+export type ShareKind = "api" | "terminal";
+/** The kind of a listed share. Only the server's own word makes one a terminal. */
+export const shareKind = (r: { kind?: string }): ShareKind =>
+  r.kind === "terminal" ? "terminal" : "api";
 
 /** The expiry choices of the dialog, in days. Seven is the server's default too. */
 export const GRANT_EXPIRY_DAYS = [1, 7, 30, 90] as const;
@@ -322,6 +333,33 @@ export const PEER_DISCLOSURE =
 export const PEER_DISCLOSURE_DETAIL =
   "It gets the turns and the tool activity. Never the folder, the model settings or files; an" +
   " image shows as its name only.";
+
+/** What the dialog says FIRST about a terminal (#2060): the limit of what is hidden, before the
+ *  operator picks anything. The second sentence is the unprotected case and is set in bold.
+ *
+ *  It says exactly what `docs/invariants/federation.md` ("The stated limits") says, in plain
+ *  words, and nothing more: masked is a complete known secret on one line or wrapped at the
+ *  screen's edge; not masked is a value cut off, a value a program lays out across lines itself,
+ *  and a secret BattleLab does not know; not shown at all is a screen after a control the renderer
+ *  does not model, and a screen with any character outside `vtscreen._one_cell`'s allowlist. A
+ *  change that claims more must change that paragraph in the same commit. */
+export const TERMINAL_LIMIT_WORD = "Know the limit";
+export const TERMINAL_LIMIT_LEAD =
+  "The peer sees this terminal's screen. A secret we know of is hidden when all of it is on one" +
+  " line or it wraps at the screen's edge.";
+export const TERMINAL_LIMIT_UNPROTECTED =
+  "A secret that is cut off, one a program lays out across lines itself, or one we don't know" +
+  " about is not hidden.";
+/** When the peer gets no screen at all: what the renderer refuses rather than risk a misplaced
+ *  mask. Shared by the dialog and the screen pane's "can't be shown" state. */
+export const TERMINAL_NOT_SHOWN =
+  "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or" +
+  " while the screen shows any character outside plain Latin, Greek and Cyrillic text," +
+  " punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar" +
+  " scripts, or combining characters. An agent that draws emoji is often not viewable.";
+export const TERMINAL_LIMIT_DETAIL =
+  "It is a picture of the screen as text. The peer cannot type, resize or scroll back.";
+export const TERMINAL_VIEW_ONLY = "A terminal can only be watched.";
 
 const dayMonth = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
 /** The latest instant a JS `Date` can hold, in seconds (±8.64e15 ms). */
@@ -389,7 +427,10 @@ export interface RemoteRowState {
   title: string;
   peer: string;
   offline: boolean;
-  /** "view only · until 22 Nov", or "offline" while the peer's channel is down. */
+  /** A terminal's screen (#2060): the row and the node carry the SCREEN tag. */
+  screen: boolean;
+  /** "view only · until 22 Nov" (a screen: "until 22 Nov", beside its tag), or "offline" while
+   *  the peer's channel is down. */
   meta: string;
   /** "until 22 Nov": the expiry alone, for a surface that shows the access elsewhere. */
   until: string;
@@ -401,16 +442,23 @@ export interface RemoteRowState {
 export function remoteRowState(r: RemoteShare): RemoteRowState {
   const title = r.title || "(untitled)";
   const peer = r.peer_name || r.peer_id.slice(0, 8);
-  const access = r.level === "view" ? "view only" : levelLabel(r.level).toLowerCase();
+  const screen = shareKind(r) === "terminal";
+  const access = screen
+    ? "screen only"
+    : r.level === "view"
+      ? "view only"
+      : levelLabel(r.level).toLowerCase();
   const offline = !r.connected;
   const until = `until ${shortDate(r.expires_at)}`;
   return {
     title,
     peer,
     offline,
-    meta: offline ? "offline" : `${access} · ${until}`,
+    screen,
+    // A screen's access is said by its tag, so the words beside it are the end date alone.
+    meta: offline ? "offline" : screen ? until : `${access} · ${until}`,
     until,
-    label: `Open ${title}, shared by ${peer}, ${offline ? "offline" : access}`,
+    label: `Open ${title}, shared by ${peer}, ${offline ? `${screen ? "screen, " : ""}offline` : access}`,
   };
 }
 
@@ -432,6 +480,20 @@ export const REMOTE_RETRY_MS = 3_000;
 /** A read that fails for a reason that says nothing about the grant (a timeout, a busy peer) is
  *  retried with the turns kept; after this many in a row the pane shows nothing. */
 export const REMOTE_STALL_LIMIT = 3;
+
+/** A wait that ends early, without throwing, when the read it belongs to is aborted. */
+export function abortablePause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted || ms <= 0) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
+}
 
 /** A turn as the projection carries it. Structural, so this module needs nothing from the
  *  viewer; the pane hands the same objects to the viewer's turn component. */

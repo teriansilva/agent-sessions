@@ -40,7 +40,7 @@ import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
 import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
-import { RemoteSessionView } from "../components/federation/RemotePane";
+import { RemoteSessionView } from "../components/federation/RemoteSessionView";
 import { REMOTE_ROUTE } from "../lib/federation";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
 import { Atmosphere } from "../components/hud/Atmosphere";

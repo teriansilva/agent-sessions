@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
 import { refreshRemoteShares, useRemoteShares } from "../../app/remoteShares";
 import { ApiError, api } from "../../lib/api";
 import {
-  GRANT_ID_RE,
-  PEER_ID_RE,
   REMOTE_EVENTS_WAIT_S,
   REMOTE_GONE,
   REMOTE_RETRY_MS,
+  abortablePause as pause,
   remoteOfflineText,
   remotePaneBadge,
   remotePaneInit,
@@ -19,94 +17,11 @@ import {
 } from "../../lib/federation";
 import { ShareApproval, ShareTurn } from "../../share/Turns";
 import viewer from "../../share/ShareViewer.module.css";
-import { Led } from "../hud/Meters";
 import btn from "../ui/actionButton.module.css";
-import { PeerBadge } from "./PeerBadge";
+import { RemoteFrame } from "./RemoteFrame";
 import styles from "./Remote.module.css";
 
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : 0);
-
-/** A wait that ends early, without throwing, when the read it belongs to is aborted. */
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted || ms <= 0) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done);
-  });
-}
-
-/** The route `/remote/:peerId/:grantId` (#2055): a session another instance shares, read only.
- *
- *  It is its own route and component tree. It never goes through the local session route,
- *  `useSessionRow`, or anything keyed by a local session key, and the remote key is not parsed
- *  here: the two route ids go to the server as they are, once their shape is checked. */
-export function RemoteSessionView() {
-  const { peerId = "", grantId = "" } = useParams<{ peerId: string; grantId: string }>();
-  if (!PEER_ID_RE.test(peerId) || !GRANT_ID_RE.test(grantId))
-    return <RemoteFrame title="Shared session" peer={null} word="unavailable" empty={REMOTE_GONE} />;
-  return <RemotePane peerId={peerId} grantId={grantId} />;
-}
-
-/** The frame every state of the pane is drawn in: dashed, with the banner, never a composer. */
-function RemoteFrame({
-  title,
-  peer,
-  until,
-  led = "idle",
-  word,
-  empty,
-  children,
-  foot,
-}: {
-  title: string;
-  peer: string | null;
-  until?: string | null;
-  led?: "up" | "idle";
-  word: string;
-  empty?: string;
-  children?: React.ReactNode;
-  foot?: React.ReactNode;
-}) {
-  return (
-    <div className={styles.paneWrap}>
-      <section
-        className={styles.pane}
-        aria-label={`${title}, shared by ${peer ?? "another instance"}, view only`}
-        data-testid="remote-pane"
-      >
-        <header className={styles.head}>
-          <h1 className={styles.title} data-testid="remote-title">
-            {title}
-          </h1>
-          {peer && <PeerBadge name={peer} />}
-        </header>
-        <div className={styles.banner} role="note" data-testid="remote-banner">
-          <span className={styles.bannerText}>
-            Shared by <b>{peer ?? "another instance"}</b>
-            {until ? ` · view only · until ${until}` : ""}
-          </span>
-          <span className={styles.state} data-testid="remote-state">
-            <Led tone={led} />
-            <span className={led === "up" ? styles.wordOk : undefined}>{word}</span>
-          </span>
-        </div>
-        {empty !== undefined ? (
-          <div className={styles.empty} role="status" data-testid="remote-empty">
-            <p>{empty}</p>
-          </div>
-        ) : (
-          children
-        )}
-        {foot}
-      </section>
-    </div>
-  );
-}
 
 /** The read-only pane.
  *

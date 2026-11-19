@@ -29,7 +29,9 @@ export interface FederationPair {
   stop: () => Promise<void>;
 }
 
-export async function startFederationPair(): Promise<FederationPair> {
+/** `terminal`: a shell session id. alpha then hosts a REAL terminal session under it (a `dtach`
+ *  master running `cat`, see `federation_instance.py`), for the spec that shares one (#2060). */
+export async function startFederationPair(opts: { terminal?: string } = {}): Promise<FederationPair> {
   const procs: ChildProcess[] = [];
   const runtimeDirs: string[] = [];
   const killAll = () => killGroupsAndWait(procs);
@@ -45,7 +47,7 @@ export async function startFederationPair(): Promise<FederationPair> {
       ) as Record<string, string>;
       mkdirSync(join(homedir(), ".cache"), { recursive: true });
 
-      const start = async (name: string): Promise<FederationInstance> => {
+      const start = async (name: string, extra: string[] = []): Promise<FederationInstance> => {
         const home = join(root, name);
         const prefs = join(home, ".config", "agent-sessions");
         mkdirSync(prefs, { recursive: true });
@@ -61,7 +63,16 @@ export async function startFederationPair(): Promise<FederationPair> {
         const origin = `http://127.0.0.1:${port}`;
         const child = spawn(
           "uv",
-          ["run", "python", "tests/appmode/federation_instance.py", "--port", String(port), "--name", name],
+          [
+            "run",
+            "python",
+            "tests/appmode/federation_instance.py",
+            "--port",
+            String(port),
+            "--name",
+            name,
+            ...extra,
+          ],
           {
             cwd: REPO_ROOT,
             // Its own process GROUP: `uv run` execs a child python.
@@ -97,7 +108,7 @@ export async function startFederationPair(): Promise<FederationPair> {
         return { name, origin };
       };
 
-      const a = await start("alpha");
+      const a = await start("alpha", opts.terminal ? ["--terminal", opts.terminal] : []);
       const b = await start("beta");
       return {
         a,

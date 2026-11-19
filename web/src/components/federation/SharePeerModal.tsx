@@ -8,6 +8,12 @@ import {
   GRANT_EXPIRY_DEFAULT,
   PEER_DISCLOSURE,
   PEER_DISCLOSURE_DETAIL,
+  TERMINAL_LIMIT_DETAIL,
+  TERMINAL_LIMIT_LEAD,
+  TERMINAL_LIMIT_UNPROTECTED,
+  TERMINAL_LIMIT_WORD,
+  TERMINAL_NOT_SHOWN,
+  TERMINAL_VIEW_ONLY,
   expiresInSeconds,
   grantFor,
   grantRowState,
@@ -17,6 +23,7 @@ import {
   type FederationGrant,
   type FederationState,
   type GrantExpiryDays,
+  type ShareKind,
 } from "../../lib/federation";
 import { nowSeconds } from "../../lib/shareFormat";
 import { settingsPath } from "../../routes/settingsTabs";
@@ -43,11 +50,19 @@ const EXPIRY_OPTIONS = GRANT_EXPIRY_DAYS.map((d) => ({
  *  View is the only level this build grants; Suggest and Send are shown, disabled, so the levels
  *  are understood before they exist. What the other instance will see is stated in the dialog at
  *  all times, never behind a toggle. On a phone the body scrolls and the action row stays at the
- *  sheet's floor (`HudDialog.module.css` `.pinned`), so Share is reachable under a long list. */
+ *  sheet's floor (`HudDialog.module.css` `.pinned`), so Share is reachable under a long list.
+ *
+ *  **A terminal (`kind="terminal"`, #2060)** is shared as its screen. Its dialog says the limit
+ *  of what is hidden FIRST, directly under the session line and above the peer picker, so it is
+ *  on screen when the dialog or the phone sheet opens: the operator reads it before choosing
+ *  anything. Access offers View alone, as the one thing a terminal can be shared for: Suggest
+ *  and Send are not shown as "later", because the server refuses them for a terminal for good.
+ *  The grant is made with the terminal session's key; the server stores its kind. */
 export function SharePeerModal({
   sessionKey,
   title,
   agent,
+  kind = "api",
   onClose,
   returnFocusTo,
 }: {
@@ -55,6 +70,8 @@ export function SharePeerModal({
   title: string;
   /** The agent's label, for the badge beside the title. */
   agent: string;
+  /** What is shared: an API session's conversation (the default) or a terminal's screen. */
+  kind?: ShareKind;
   onClose: () => void;
   returnFocusTo?: HTMLElement | null;
 }) {
@@ -170,6 +187,7 @@ export function SharePeerModal({
 
   const titleId = "share-peer-title";
   const none = peers !== null && peers.length === 0;
+  const terminal = kind === "terminal";
 
   return createPortal(
     <div className={dlg.backdrop} onMouseDown={onClose}>
@@ -181,6 +199,7 @@ export function SharePeerModal({
         aria-labelledby={titleId}
         className={`${dlg.dialog} ${dlg.pinned} ${styles.dialog}`}
         data-testid="share-peer"
+        data-kind={kind}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className={dlg.head}>
@@ -200,10 +219,24 @@ export function SharePeerModal({
         <p className={`${dlg.from} ${styles.from}`}>
           <span className={dlg.fromLabel}>SESSION</span>
           <span className={dlg.fromTitle}>{title}</span>
-          <span className={styles.tagBox}>{agent}</span>
+          <span className={styles.tagBox}>{terminal ? "Terminal" : agent}</span>
         </p>
 
         <div className={`${dlg.sheetBody} ${styles.body}`} data-testid="share-peer-body">
+          {/* A terminal: the limit comes first, whatever else the body goes on to show. */}
+          {terminal && (
+            <div className={styles.limit} role="note" data-testid="share-peer-limit">
+              <span className={styles.limitWord}>
+                <Led tone="att" />
+                {TERMINAL_LIMIT_WORD}
+              </span>
+              {TERMINAL_LIMIT_LEAD} <b>{TERMINAL_LIMIT_UNPROTECTED}</b>
+              <span className={styles.limitNotShown} data-testid="share-peer-not-shown">
+                {TERMINAL_NOT_SHOWN}
+              </span>
+              <span className={styles.limitDetail}>{TERMINAL_LIMIT_DETAIL}</span>
+            </div>
+          )}
           {loadError && (
             <p className={dlg.error} role="alert">
               {loadError}
@@ -227,7 +260,10 @@ export function SharePeerModal({
           )}
           {peers !== null && peers.length > 0 && (
             <>
-              <span className={`${dlg.label} ${styles.label} ${styles.first}`} id="share-peer-who">
+              <span
+                className={`${dlg.label} ${styles.label} ${terminal ? "" : styles.first}`}
+                id="share-peer-who"
+              >
                 Peer
               </span>
               <div className={styles.tiles} role="radiogroup" aria-labelledby="share-peer-who">
@@ -265,17 +301,19 @@ export function SharePeerModal({
                 Access
               </span>
               <div
-                className={`${styles.tiles} ${styles.three}`}
+                className={`${styles.tiles} ${terminal ? "" : styles.three}`}
                 role="radiogroup"
                 aria-labelledby="share-peer-access"
               >
                 <button type="button" role="radio" aria-checked="true" className={styles.tile}>
                   <span className={styles.tileBody}>
                     <span className={styles.tileName}>View</span>
-                    <span className={styles.tileDesc}>Read the conversation</span>
+                    <span className={styles.tileDesc}>
+                      {terminal ? "Watch the screen" : "Read the conversation"}
+                    </span>
                   </span>
                 </button>
-                {(
+                {!terminal && (
                   [
                     ["Suggest", "Propose a message"],
                     ["Send", "Send messages"],
@@ -299,6 +337,11 @@ export function SharePeerModal({
                   </button>
                 ))}
               </div>
+              {terminal && (
+                <p className={styles.help} data-testid="share-peer-terminal-only">
+                  {TERMINAL_VIEW_ONLY}
+                </p>
+              )}
 
               <span className={`${dlg.label} ${styles.label}`}>Expires</span>
               <Seg
@@ -318,7 +361,8 @@ export function SharePeerModal({
               </p>
               {chosen && chosen.connected === false && (
                 <p className={styles.help} data-testid="share-peer-offline">
-                  {chosen.name} is offline. It sees the session when it next connects.
+                  {chosen.name} is offline. It sees the {terminal ? "screen" : "session"} when it
+                  next connects.
                 </p>
               )}
               {existing && chosen && (
@@ -330,7 +374,7 @@ export function SharePeerModal({
             </>
           )}
           {/* Always visible, with or without a peer to pick: what leaves this instance. */}
-          {!none && (
+          {!none && !terminal && (
             <p className={styles.disclosure} data-testid="share-peer-disclosure">
               {PEER_DISCLOSURE}
               <span>{PEER_DISCLOSURE_DETAIL}</span>

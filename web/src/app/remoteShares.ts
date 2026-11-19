@@ -23,21 +23,29 @@ let signature = "";
 let watchers = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight: AbortController | null = null;
+/** What is known of the list itself: whether it was ever read, and how many reads have ended
+ *  (either way). A fresh object whenever it changes, so it is a store snapshot. */
+let status: RemoteSharesStatus = Object.freeze({ loaded: false, attempts: 0 });
 const listeners = new Set<() => void>();
+
+/** The kinds this build draws, each with its own pane: an API session's conversation
+ *  (`RemotePane`) and a terminal's screen (`RemoteScreenPane`, #2060). `undefined` is an owner from
+ *  before kinds, whose grants are all API grants. */
+const KNOWN_KINDS: ReadonlySet<unknown> = new Set([undefined, "api", "terminal"]);
 
 /** Whether a listed entry is one this build can show.
  *
- *  Besides the shape, the `kind`: the server lists a peer's terminal shares too (#2056), and this
- *  build only has the conversation pane. A terminal share drawn as a conversation row would open
- *  a pane whose every read the owner refuses, and read as "no longer shared" when it is shared.
- *  So only `api` entries (and entries from an owner that predates kinds, which are all API
- *  shares) are listed; the terminal screen pane (#2060) widens this. The expiry must be a date
- *  (`isEpochS`): finite, after 0, within what a `Date` holds. */
+ *  Besides the shape, the `kind`: only a kind this build has a pane for is listed. An entry of a
+ *  kind it does not know (a later build's, or anything else a peer sends) is skipped, never shown
+ *  as another kind: drawn through the wrong pane, every read of it would be refused by the owner
+ *  and read as "no longer shared" when it is shared. The route picks the pane by this same field
+ *  (`RemoteSessionView`). The expiry must be a date (`isEpochS`): finite, after 0, within what a
+ *  `Date` holds. */
 export function isRow(r: unknown): r is RemoteShare {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
   return (
-    (x.kind === undefined || x.kind === "api") &&
+    KNOWN_KINDS.has(x.kind) &&
     typeof x.peer_id === "string" &&
     typeof x.grant_id === "string" &&
     typeof x.title === "string" &&
@@ -49,13 +57,15 @@ export function isRow(r: unknown): r is RemoteShare {
   );
 }
 
-function commit(next: readonly RemoteShare[]) {
+function commit(next: readonly RemoteShare[] | null) {
   // Same content keeps the same array: the map must not rebuild its nodes on an idle poll
-  // (docs/invariants/map-window-layer.md, the #936 rule).
-  const sig = JSON.stringify(next);
-  if (sig === signature) return;
-  signature = sig;
-  rows = next.length ? next : EMPTY;
+  // (docs/invariants/map-window-layer.md, the #936 rule). `null`: the read failed, the rows stay.
+  const sig = next ? JSON.stringify(next) : signature;
+  if (next && sig !== signature) {
+    signature = sig;
+    rows = next.length ? next : EMPTY;
+  }
+  status = Object.freeze({ loaded: status.loaded || next !== null, attempts: status.attempts + 1 });
   for (const fn of listeners) fn();
 }
 
@@ -71,6 +81,7 @@ async function read() {
   } catch {
     // A failed read lists nothing new and removes nothing: the rows open a pane that asks the
     // owner anyway, and the next read corrects the list.
+    if (!ctl.signal.aborted) commit(null);
   } finally {
     if (inflight === ctl) inflight = null;
   }
@@ -117,8 +128,24 @@ export function useRemoteShares(): readonly RemoteShare[] {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
+export interface RemoteSharesStatus {
+  /** A read of the list has succeeded: "not listed" now means the mirror has no such share. */
+  loaded: boolean;
+  /** Reads that have ended, successful or not. */
+  attempts: number;
+}
+const statusSnapshot = () => status;
+
+/** Whether the list was read yet (#2060). The route of a shared session picks its pane by the
+ *  listed kind, so it must tell "not listed" from "not read yet". It does not start a read:
+ *  `useRemoteShares` in the same component does. */
+export function useRemoteSharesStatus(): RemoteSharesStatus {
+  return useSyncExternalStore(subscribe, statusSnapshot, statusSnapshot);
+}
+
 /** Test seam: forget everything (the store is module state). */
 export function resetRemoteSharesForTest() {
+  status = Object.freeze({ loaded: false, attempts: 0 });
   rows = EMPTY;
   signature = "";
   watchers = 0;
