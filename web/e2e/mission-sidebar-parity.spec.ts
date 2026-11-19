@@ -48,7 +48,13 @@ async function setup(page: Page) {
         sessions: [SESSION],
         total: 1,
         next_offset: null,
-        facets: { projects: [{ kind: "project", id: "p1", name: "Alpha", count: 1 }], engines: ["claude"] },
+        // `missions: []` so the sessions side has its one select left (#2187: the project
+        // dropdown is gone; the project tree is the project filter).
+        facets: {
+          projects: [{ kind: "project", id: "p1", name: "Alpha", count: 1 }],
+          engines: ["claude"],
+          missions: [],
+        },
       },
     }),
   );
@@ -80,7 +86,9 @@ function controls(page: Page, route: "sessions" | "missions") {
   return {
     "new button": s ? page.getByRole("link", { name: "New session" }) : page.getByTestId("rail-new-mission"),
     search: page.getByLabel(s ? "Search sessions" : "Search missions"),
-    "project select": page.getByLabel(s ? "Filter by project" : "Filter missions by project"),
+    // The two sidebars' dropdowns share `.selects` (#948 P2): the sessions side's is the mission
+    // filter since the project dropdown became the tree (#2187).
+    select: page.getByLabel(s ? "Filter by mission" : "Filter missions by project"),
     "active tab": page
       .getByRole("tablist", { name: s ? "Archived filter" : "Mission scope" })
       .getByRole("tab", { name: "Active" }),
@@ -147,7 +155,7 @@ test("both sidebars keep the 44px touch floor on a phone", async ({ page }, test
     await page.goto(route === "sessions" ? NEW_SESSION_PATH : "/mission");
     await openMissionRail(page);
     const c = controls(page, route);
-    for (const name of ["new button", "search", "project select", "active tab"] as const) {
+    for (const name of ["new button", "search", "select", "active tab"] as const) {
       const box = (await c[name].first().boundingBox())!;
       expect(box.height, `${route} ${name}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }

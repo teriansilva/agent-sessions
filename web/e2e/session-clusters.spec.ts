@@ -28,6 +28,8 @@ interface State {
   rows: Row[];
   writes: { method: string; path: string; body: unknown }[];
   queries: URLSearchParams[];
+  /** Extra, empty projects after alpha: a long tree (#2187). */
+  extra?: number;
 }
 
 function fresh(): State {
@@ -78,7 +80,16 @@ function sessionRow(s: State, r: Row) {
 function facets(s: State) {
   const count = (id: string) => s.rows.filter((r) => r.cluster === id && !r.mission).length;
   return {
-    projects: [{ ...PROJECT, count: s.rows.length }],
+    projects: [
+      { ...PROJECT, count: s.rows.length },
+      ...Array.from({ length: s.extra ?? 0 }, (_, i) => ({
+        kind: "project",
+        id: `p-x${i}`,
+        name: `project-${String(i).padStart(2, "0")}`,
+        color: "#64748b",
+        count: 0,
+      })),
+    ],
     engines: ["claude"],
     missions: [{ ...MISSION, count: 1, by_project: { "p-a": 1 } }],
     no_mission: s.rows.length - 1,
@@ -302,7 +313,7 @@ test("the tree, the head and the picker meet the touch floor and fit the sidebar
     () => matchMedia("(pointer: coarse)").matches || matchMedia("(max-width: 800px)").matches,
   );
   const controls = [
-    sidebar(page).getByTestId("cluster-tree-toggle"),
+    sidebar(page).getByTestId("filters-toggle"),
     sidebar(page).getByRole("button", { name: "Fold alpha" }),
     sidebar(page).getByTestId("cluster-node").first(),
     sidebar(page).getByTestId("cluster-none-node"),
@@ -325,7 +336,7 @@ test("the tree, the head and the picker meet the touch floor and fit the sidebar
   // Nothing in the tree or the head is wider than the sidebar that holds it.
   const overflow = await sidebar(page).evaluate((aside) => {
     const max = aside.getBoundingClientRect().right + 0.5;
-    return [...aside.querySelectorAll("[data-testid='cluster-tree'] *, [data-testid='cluster-head'] *")]
+    return [...aside.querySelectorAll("[data-testid='project-tree'] *, [data-testid='cluster-head'] *")]
       .filter((el) => el.getBoundingClientRect().right > max)
       .map((el) => el.outerHTML.slice(0, 60));
   });
@@ -345,13 +356,18 @@ test("the tree, the head and the picker meet the touch floor and fit the sidebar
   await expect(head.getByRole("textbox", { name: "Cluster title" })).toHaveCount(0);
 });
 
-test("with clusters turned off there is no tree, no chip and no menu item", async ({
+test("with clusters turned off the tree lists projects with no clusters, and there is no chip or menu item", async ({
   page,
 }, testInfo) => {
   const s = fresh();
   s.enabled = false;
   await setup(page, testInfo.project.name, s);
-  await expect(sidebar(page).getByTestId("cluster-tree")).toHaveCount(0);
+  // The tree is the project filter (#2187): it stays, only the clusters in it go.
+  const tree = sidebar(page).getByTestId("project-tree");
+  await expect(tree).toBeVisible();
+  await expect(sidebar(page).getByLabel("Filter by project")).toHaveCount(0);
+  await expect(tree.getByTestId("cluster-node")).toHaveCount(0);
+  await expect(tree.getByTestId("cluster-none-node")).toHaveCount(0);
   await expect(sidebar(page).getByTestId("row-cluster-tag")).toHaveCount(0);
   await sidebar(page)
     .locator("li", { hasText: "Bump vitest" })
@@ -359,4 +375,54 @@ test("with clusters turned off there is no tree, no chip and no menu item", asyn
     .click();
   await expect(page.getByRole("menu")).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Move session to a cluster" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // A project still filters the list, and still lists its missions.
+  await tree.getByRole("button", { name: /^alpha/ }).click();
+  await expect.poll(() => s.queries.at(-1)?.get("project")).toBe("p-a");
+  await expect(tree.getByTestId("cluster-mission-node")).toBeVisible();
+  await tree.getByTestId("cluster-mission-node").click();
+  await expect.poll(() => s.queries.at(-1)?.get("mission")).toBe(MISSION.id);
+  await expect(sidebar(page).getByTestId("filters-scope")).toHaveText(`alpha › ${MISSION.title}`);
+});
+
+test("a long tree scrolls to its last project, which a keyboard selects; folded, the chip keeps the whole scope (#2187)", async ({
+  page,
+}, testInfo) => {
+  const s = fresh();
+  s.extra = 30;
+  const st = await setup(page, testInfo.project.name, s);
+  const tree = sidebar(page).getByTestId("project-tree");
+  const last = tree.getByRole("button", { name: /^project-29/ });
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+  const coarse = await page.evaluate(
+    () => matchMedia("(pointer: coarse)").matches || matchMedia("(max-width: 800px)").matches,
+  );
+  expect((await last.boundingBox())!.height).toBeGreaterThanOrEqual(coarse ? TOUCH_FLOOR : 24);
+  // A keyboard reaches and presses it like any node.
+  await last.focus();
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => st.queries.at(-1)?.get("project")).toBe("p-x29");
+  await expect(last).toHaveAttribute("aria-current", "true");
+  // The list below the tree is still reachable.
+  await tree.getByRole("button", { name: /^All sessions/ }).click();
+  const row = sidebar(page).locator("ul[aria-label$='sessions'] > li").last();
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
+
+  // A long scope, folded: the chip gives way, never past the header, and the whole scope stays
+  // in the toggle's accessible name (the ellipsis is CSS, not a cut string).
+  await sidebar(page).getByTestId("filters-toggle").scrollIntoViewIfNeeded();
+  await selectCluster(page, /Login flow/);
+  const toggle = sidebar(page).getByTestId("filters-toggle");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  const chip = sidebar(page).getByTestId("filters-scope");
+  await expect(chip).toHaveText("alpha › Login flow");
+  await expect(toggle).toHaveAccessibleName(/alpha › Login flow/);
+  const [c, t] = [(await chip.boundingBox())!, (await toggle.boundingBox())!];
+  expect(c.x + c.width).toBeLessThanOrEqual(t.x + t.width + 0.5);
+  await expect(toggle).toContainText("Active");
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(coarse ? TOUCH_FLOOR : 30);
 });

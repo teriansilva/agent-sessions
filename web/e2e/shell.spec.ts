@@ -154,9 +154,9 @@ test("on a phone the drawer carries no second copy of the sections, and its filt
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(search).toBeHidden();
   const foldedBottom = (await toggle.evaluate((el) => el.parentElement!.getBoundingClientRect().bottom));
-  // This fixture has one engine and no mission facet, so the block is search + project select +
-  // the Active/Archived row: three 44px rows plus gaps. A live install with more agents and
-  // missions gives back more.
+  // This fixture has one engine and no mission facet, so the block is search, the Active/Archived
+  // row and the project tree (#2187): at least three 44px rows plus gaps. A live install with
+  // more agents, missions and projects gives back more.
   expect(openBottom - foldedBottom).toBeGreaterThanOrEqual(3 * 44);
   // …and the choice survives a reload on this device.
   await page.reload();

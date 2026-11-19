@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 //     synthetic "Default" cluster, never per-folder nodes;
 //  2. the Folders layout still draws folder nodes, each tagged with its owning-project badge
 //     (the adopting entity, else Default);
-//  3. the sidebar "Filter by project" dropdown lists project ENTITIES (incl. empty ones + the
+//  3. the sidebar project tree (#2187; it was the "Filter by project" dropdown) lists project ENTITIES (incl. empty ones + the
 //     Default catch-all), never folder paths.
 // Network is mocked so the map + sidebar render without a backend.
 
@@ -136,28 +136,21 @@ test("Folders layout: each folder node carries its owning-project badge (#445)",
   await expect(plainNode.locator(".tr-ov-owner")).toHaveText("Default");
 });
 
-test("sidebar dropdown lists project entities incl. Default, not folder paths (#445)", async ({
+test("sidebar project tree lists project entities incl. Default, not folder paths (#445, #2187)", async ({
   page,
 }, testInfo) => {
   test.skip(
     testInfo.project.name === "mobile",
-    "sidebar dropdown covered on desktop",
+    "sidebar tree covered on desktop",
   );
   await page.goto("/overview");
-  const select = page.getByLabel("Filter by project");
-  await expect(select).toBeVisible();
+  // The tree is the sidebar's project filter; there is no project dropdown (#2187).
+  await expect(page.getByLabel("Filter by project")).toHaveCount(0);
+  const tree = page.getByRole("list", { name: "Projects" });
+  await expect(tree).toBeVisible();
   // Project entities (incl. the empty one) + Default — never the launch-folder paths.
-  await expect(select.getByRole("option", { name: "Side (1)" })).toHaveCount(1);
-  await expect(select.getByRole("option", { name: "Empty (0)" })).toHaveCount(
-    1,
-  );
-  await expect(select.getByRole("option", { name: "Default (2)" })).toHaveCount(
-    1,
-  );
-  await expect(
-    select.getByRole("option", { name: "/home/u/plain" }),
-  ).toHaveCount(0);
-  await expect(
-    select.getByRole("option", { name: "/home/u/scratch" }),
-  ).toHaveCount(0);
+  await expect(tree.getByRole("button", { name: /^Side\s*1$/ })).toHaveCount(1);
+  await expect(tree.getByRole("button", { name: /^Empty\s*0$/ })).toHaveCount(1);
+  await expect(tree.getByRole("button", { name: /^Default\s*2$/ })).toHaveCount(1);
+  await expect(tree.getByRole("button", { name: /\/home\/u\// })).toHaveCount(0);
 });

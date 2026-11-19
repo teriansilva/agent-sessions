@@ -27,12 +27,12 @@
   overflow-y: auto;
   flex: 1;
 }
-/* With the Projects & clusters tree above it (#1997) the list can run out of room on a short
- * screen. It keeps three rows' height, and the sidebar itself scrolls to reach it. */
-.wrapClusters {
+/* With the project tree in the Filters block above it (#1997) the list can run out of room on a
+ * short screen. It keeps three rows' height, and the sidebar itself scrolls to reach it. */
+.wrapTree {
   overflow-y: auto;
 }
-.wrapClusters .list {
+.wrapTree .list {
   min-height: 132px;
 }
 .more {

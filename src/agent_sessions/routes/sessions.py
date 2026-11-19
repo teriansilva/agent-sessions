@@ -1000,7 +1000,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     continue
                 entry = by_mission.setdefault(ref["id"], {**ref, "count": 0, "by_project": {}})
                 entry["count"] += 1
-                # Per project (#1997): the Projects & clusters tree lists a mission under each
+                # Per project (#1997): the sidebar project tree lists a mission under each
                 # project it has sessions in, with that project's count.
                 pid = session_clusters.project_id_of(r["project"])
                 entry["by_project"][pid] = entry["by_project"].get(pid, 0) + 1

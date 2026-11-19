@@ -8,6 +8,7 @@ import { ConfigCtx } from "../../app/config";
 import { SectionStateContext } from "../../app/sectionState";
 import { api, ApiError } from "../../lib/api";
 import type { AppConfig, ClustersList, Session, SessionsPage } from "../../types/api";
+import { FILTERS_OPEN_KEY } from "./Filters";
 import { SessionList } from "./SessionList";
 
 vi.mock("../../lib/api", async (importOriginal) => {
@@ -138,7 +139,7 @@ test("selecting a cluster in the tree filters the list by it and shows its head"
   expect(await within(head).findByText("Sign-in work.")).toBeVisible();
 });
 
-test("picking another project in Filters drops the cluster filter", async () => {
+test("picking another project in the tree drops the cluster filter", async () => {
   vi.mocked(api.sessions).mockResolvedValue(
     page([IN], {
       facets: {
@@ -152,15 +153,82 @@ test("picking another project in Filters drops the cluster filter", async () => 
   );
   list();
   await screen.findByText("Fix the login redirect");
+  // The tree is the project filter (#2187): there is no dropdown beside it.
+  expect(screen.queryByRole("combobox", { name: "Filter by project" })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
   await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
   await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
-  await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by project" }), "p-b");
+  await userEvent.click(screen.getByRole("button", { name: /^beta/ }));
   await waitFor(() => expect(lastQuery().project).toBe("p-b"));
   expect(lastQuery().cluster).toBeUndefined();
 });
 
-test("with clusters off there is no tree, no menu item, and a cluster filter from this visit is cleared", async () => {
+test("cluster, then a mission from the dropdown, then Clear: every step names a true scope (#2187)", async () => {
+  list();
+  await screen.findByText("Fix the login redirect");
+  await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
+  await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
+  await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC }));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("alpha › Login flow");
+  await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by mission" }), "msn_1");
+  await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", mission: "msn_1" }));
+  expect(lastQuery().cluster).toBeUndefined();
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("alpha › Release");
+  await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(lastQuery().mission).toBeUndefined());
+  expect(lastQuery().project).toBeUndefined();
+  expect(lastQuery().cluster).toBeUndefined();
+  expect(screen.queryByTestId("filters-scope")).toBeNull();
+  expect(screen.getByRole("button", { name: /^All sessions/ })).toHaveAttribute("aria-current", "true");
+});
+
+test("a folded block, opened again on this device, still names the scope in force (#2187)", async () => {
+  localStorage.setItem(FILTERS_OPEN_KEY, "0");
+  const memory = new Map<string, unknown>([
+    ["sessions.filters", { q: "", project: "p-a", engine: "", mission: "", cluster: TC, archived: false }],
+  ]);
+  list(SETTINGS, memory);
+  await screen.findByText("Fix the login redirect");
+  const toggle = screen.getByTestId("filters-toggle");
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC });
+  // The full scope is the chip's TEXT (the ellipsis is CSS), so it is in the toggle's name.
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("alpha › Login flow");
+  expect(toggle).toHaveAccessibleName(/alpha › Login flow/);
+});
+
+test("folded and reloaded with a project the facets do not list, the header still names it and Clear removes it (Hermes, PR #2188)", async () => {
+  localStorage.setItem(FILTERS_OPEN_KEY, "0");
+  const memory = new Map<string, unknown>([
+    ["sessions.filters", { q: "", project: "/home/m/legacy", engine: "", mission: "", cluster: "", archived: false }],
+  ]);
+  list(SETTINGS, memory);
+  await screen.findByText("Fix the login redirect");
+  expect(lastQuery()).toMatchObject({ project: "/home/m/legacy" });
+  const toggle = screen.getByTestId("filters-toggle");
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("legacy");
+  expect(toggle).toHaveAccessibleName(/legacy/);
+  await userEvent.click(toggle);
+  await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(lastQuery().project).toBeUndefined());
+  expect(screen.queryByTestId("filters-scope")).toBeNull();
+});
+
+test("the project tree sits inside the Filters fold, with no fold of its own (#2187)", async () => {
+  list();
+  await screen.findByText("Fix the login redirect");
+  const toggle = screen.getByTestId("filters-toggle");
+  const body = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+  expect(body).toContainElement(screen.getByTestId("project-tree"));
+  expect(screen.queryByTestId("cluster-tree-toggle")).toBeNull();
+  await userEvent.click(toggle);
+  // Folding Filters folds the tree with it: there is one fold.
+  expect(body).toHaveAttribute("hidden");
+  expect(screen.getByTestId("project-tree")).not.toBeVisible();
+});
+
+test("with clusters off the tree has no clusters, there is no menu item, and a cluster filter from this visit is cleared", async () => {
   // The visit's view state still holds a cluster filter from before clusters were turned off.
   const memory = new Map<string, unknown>([
     [
@@ -171,7 +239,10 @@ test("with clusters off there is no tree, no menu item, and a cluster filter fro
   list({ ...SETTINGS, enabled: false }, memory);
   await screen.findByText("Fix the login redirect");
   expect(vi.mocked(api.sessions).mock.calls[0][0]).toMatchObject({ cluster: TC });
-  expect(screen.queryByTestId("cluster-tree")).toBeNull();
+  // The tree stays: it is the project filter (#2187). Only the clusters in it go.
+  expect(screen.getByTestId("project-tree")).toBeInTheDocument();
+  expect(screen.queryByTestId("cluster-node")).toBeNull();
+  expect(screen.queryByTestId("cluster-none-node")).toBeNull();
   expect(screen.queryByTestId("cluster-head")).toBeNull();
   await waitFor(() => expect(lastQuery().cluster).toBeUndefined());
   expect(lastQuery().project).toBe("p-a");
@@ -182,7 +253,11 @@ test("with clusters off there is no tree, no menu item, and a cluster filter fro
 test("an older server (no clusters block) shows nothing of clusters", async () => {
   list(null);
   await screen.findByText("Fix the login redirect");
-  expect(screen.queryByTestId("cluster-tree")).toBeNull();
+  // The project tree is still the project filter (#2187); nothing in it is about clusters.
+  expect(screen.getByTestId("project-tree")).toBeInTheDocument();
+  expect(screen.queryByTestId("cluster-node")).toBeNull();
+  expect(screen.queryByTestId("cluster-none-node")).toBeNull();
+  expect(screen.queryByTestId("cluster-tree-unconfigured")).toBeNull();
 });
 
 test("Move to cluster places the session and the list re-reads", async () => {

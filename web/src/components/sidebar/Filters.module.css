@@ -44,6 +44,24 @@
   background: var(--hud-tint);
   color: var(--hud-text);
 }
+/* The selected scope by name ("project › cluster"), so a folded block still says WHERE the list
+ * is narrowed to. It gives way first: it ellipsizes, the word and Active/Archived never do. */
+.toggle > span {
+  flex: none;
+}
+.toggle small.scope {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+.toggle small.scope + small {
+  flex: none;
+  margin-left: 0;
+}
 .chev {
   flex: none;
   transition: transform var(--t-fast) var(--ease-out);
@@ -116,11 +134,22 @@
   display: flex;
   gap: 6px;
 }
+.searchRow {
+  display: flex;
+  gap: 6px;
+}
+.searchRow .search {
+  flex: 1;
+  min-width: 0;
+}
+.selects:empty {
+  display: none;
+}
 .selects select {
   flex: 1;
   min-width: 0;
 }
-/* CLEAR is THE ghost action button. LOCAL MODIFIER: it sits in the selects' row, so on a desktop
+/* CLEAR is THE ghost action button. LOCAL MODIFIER: it sits in the search row, so on a desktop
  * it takes the row's height instead of the shared 44px; the touch floor below restores it. */
 .clear {
   composes: ghost from "../ui/actionButton.module.css";

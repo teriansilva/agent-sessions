@@ -37,8 +37,10 @@ you made.
 With many sessions in one project the list stays flat: five sessions fixing one bug and five on
 a release look alike. HQ groups a project's sessions by **topic** and names each group.
 
-- **Projects & clusters** in the sidebar lists each project with its clusters, its missions and
-  *Not clustered*. Press one to filter the list to it. Each session row shows its cluster.
+- The project tree in the sidebar's **Filters** block lists each project with its clusters, its
+  missions and *Not clustered*. Press one to filter the list to it. The folded **Filters** header
+  names what you picked. Each session row shows its cluster. With clusters off, the tree lists
+  the projects and their missions.
 - Clusters follow the work. A new session joins a cluster, a new topic becomes a cluster once two
   sessions work on it, and a cluster that runs out of sessions goes away.
 - **Rename** a cluster and the title is yours: HQ keeps moving sessions in and out but no longer

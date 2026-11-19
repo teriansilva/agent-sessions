@@ -148,9 +148,9 @@ session you assigned yourself.
 HQ groups each project's sessions by topic, with the AI endpoint from *Endpoint & model*. On by
 default; it does nothing until an endpoint is set.
 
-- *Group sessions into clusters* (on): shows **Projects & clusters** in the sidebar and the
-  cluster on each session row. Off hides them and stops the sweep; your clusters are kept and
-  come back when you turn it on again.
+- *Group sessions into clusters* (on): shows the clusters in the sidebar's project tree and the
+  cluster on each session row. Off hides them (the tree still lists your projects and missions)
+  and stops the sweep; your clusters are kept and come back when you turn it on again.
 - *Sessions see their cluster* (on): agents get the BattleLab cluster tool from their next launch.
 - *Re-cluster*: every 15 minutes, 30 minutes (default), hour or 4 hours. Only projects whose
   sessions changed are sent to the model.

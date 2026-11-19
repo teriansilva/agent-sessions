@@ -1,42 +1,15 @@
-/* SESSION CLUSTERS IN THE SIDEBAR (#1997): the Projects & clusters tree, the selected cluster's
- * head, and the picker's extras. Tokens only, square boxes, no gradient (docs/design.md).
+/* SESSION CLUSTERS IN THE SIDEBAR (#1997): the project tree, the selected cluster's head, and the
+ * picker's extras. Tokens only, square boxes, no gradient (docs/design.md).
  *
- * The fold header and its expansion are the Filters block's own (composed, not restated), so the
- * two folds in the sidebar cannot drift apart. */
-
+ * The tree lives inside the Filters fold (#2187): the sidebar has one fold, not two, and the tree
+ * takes the block's gap instead of a fold of its own. */
 .tree {
-  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 0 var(--sp-3) var(--sp-2);
-}
-.toggle {
-  composes: toggle from "./Filters.module.css";
-}
-.toggle > span {
-  white-space: nowrap;
-}
-.toggle small.summaryOn {
-  min-width: 0;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 1px var(--sp-1);
-  border: 1px solid var(--hud-dim);
-  background: var(--hud-tint);
-  color: var(--hud-text);
+  gap: 2px;
 }
 .chev {
   composes: chev from "./Filters.module.css";
-}
-.body {
-  composes: body from "./Filters.module.css";
-}
-.bodyInner {
-  composes: bodyInner from "./Filters.module.css";
-  gap: 2px;
 }
 
 .note {
@@ -135,6 +108,11 @@
   border-radius: 0;
   color: var(--text-3);
   cursor: pointer;
+}
+/* A project with nothing under it keeps its swatch in line with the others. */
+.foldSpacer {
+  flex: none;
+  width: 24px;
 }
 .fold:hover {
   color: var(--text-1);
@@ -307,7 +285,8 @@ input.renameInput {
   .node {
     min-height: 44px;
   }
-  .fold {
+  .fold,
+  .foldSpacer {
     width: 44px;
     min-height: 44px;
   }

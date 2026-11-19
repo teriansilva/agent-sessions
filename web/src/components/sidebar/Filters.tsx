@@ -1,8 +1,9 @@
 import { ChevronRight } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 import type { Filters } from "../../hooks/useSessionsList";
-import type { ProjectRef } from "../../types/api";
+import { isClusterId } from "../../lib/clusters";
+import type { ProjectRef, SessionClusterFacet } from "../../types/api";
 import styles from "./Filters.module.css";
 
 interface Props {
@@ -12,11 +13,14 @@ interface Props {
     engines: string[];
     missions?: { id: string; title: string; count: number }[];
     no_mission?: number;
+    clusters?: SessionClusterFacet[];
   };
   /** The server could not apply a mission filter (#948). */
   missionFilterUnavailable?: boolean;
   onChange: (patch: Partial<Filters>) => void;
   onClear: () => void;
+  /** The project tree (`ProjectTree`): THE project filter, inside this fold (#2187). */
+  children?: ReactNode;
 }
 
 /** Device-local: whether the filter block is open. Like the map workspace (`windowStore.ts`), a
@@ -32,31 +36,58 @@ function readOpen(): boolean {
   }
 }
 
+/** A project filter the facets do not name still narrows the list, so it still gets a name: a
+ *  saved folder path (the server accepts a legacy cwd as `project`; its facets list entities
+ *  only) by its last segment, anything else (a project that has since gone) generically. */
+function unlistedProject(id: string): string {
+  if (id.startsWith("/")) return id.replace(/\/+$/, "").split("/").pop() || id;
+  return "Selected project";
+}
+
+/** The scope the tree (or the mission dropdown) narrows the list to, by name: "project",
+ *  "project › cluster" or "project › mission". Empty for all sessions (#2187). Never empty while
+ *  a scope filter is set, so the folded header cannot hide one. */
+function scopeLabel(filters: Filters, facets: Props["facets"]): string {
+  const project = filters.project
+    ? (facets.projects.find((p) => p.id === filters.project)?.name ??
+      unlistedProject(filters.project))
+    : "";
+  const cluster = filters.cluster ?? "";
+  const mission = filters.mission ?? "";
+  const leaf = isClusterId(cluster)
+    ? (facets.clusters?.find((c) => c.id === cluster)?.title ?? "Cluster")
+    : cluster === "none"
+      ? "Not clustered"
+      : mission === "none"
+        ? "Not in a mission"
+        : mission
+          ? (facets.missions?.find((m) => m.id === mission)?.title ?? "Mission")
+          : "";
+  return [project, leaf].filter(Boolean).join(" › ");
+}
+
 /** What the folded header says is in force, so a collapsed block can never hide a filter that is
- *  quietly narrowing the list. */
-function summary(filters: Filters): string {
-  const n = [
-    filters.q,
-    filters.project,
-    filters.engine,
-    filters.mission,
-    filters.cluster,
-  ].filter(Boolean).length;
+ *  quietly narrowing the list. The scope has its own chip; this is Active/Archived and how many
+ *  of search and agent are set — "+N" beside a scope chip, "N filters" without one. */
+function summary(filters: Filters, scoped: boolean): string {
+  const n = [filters.q, filters.engine].filter(Boolean).length;
   const parts = [filters.archived ? "Archived" : "Active"];
-  if (n) parts.push(`${n} filter${n === 1 ? "" : "s"}`);
+  if (n) parts.push(scoped ? `+${n}` : `${n} filter${n === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
 
-/** Search + project/agent dropdowns (server facets) + active/archived tabs, behind one
- *  collapsible "Filters" header (#1069 follow-up: on a phone the open block took a third of the
- *  drawer). Open by default; the operator's choice is remembered per device. The controls stay
- *  MOUNTED while folded (`hidden`), so folding never drops a half-typed search. */
+/** Search, the agent and mission dropdowns (server facets), Active/Archived and the project tree,
+ *  behind ONE collapsible "Filters" header (#1069 follow-up: on a phone the open block took a
+ *  third of the drawer). The tree is the project filter, so there is no project dropdown and no
+ *  second fold for it (#2187). Open by default; the operator's choice is remembered per device.
+ *  The controls stay MOUNTED while folded (`hidden`), so folding never drops a half-typed search. */
 export function FiltersBar({
   filters,
   facets,
   onChange,
   onClear,
   missionFilterUnavailable,
+  children,
 }: Props) {
   const mission = filters.mission ?? "";
   const hasFilter = !!(
@@ -66,6 +97,7 @@ export function FiltersBar({
     mission ||
     filters.cluster
   );
+  const scope = scopeLabel(filters, facets);
   const [open, setOpen] = useState(readOpen);
   const bodyId = useId();
   const toggle = () => {
@@ -89,8 +121,17 @@ export function FiltersBar({
       >
         <ChevronRight size={14} aria-hidden="true" className={styles.chev} />
         <span>Filters</span>
-        <small className={hasFilter ? styles.summaryOn : undefined}>
-          {summary(filters)}
+        {scope ? (
+          <small
+            className={`${styles.summaryOn} ${styles.scope}`}
+            title={scope}
+            data-testid="filters-scope"
+          >
+            {scope}
+          </small>
+        ) : null}
+        <small className={hasFilter && !scope ? styles.summaryOn : undefined}>
+          {summary(filters, !!scope)}
         </small>
       </button>
       {/* The fold expands (#1568): `.body` is a one-row grid whose row grows 0fr → 1fr, so the
@@ -98,30 +139,34 @@ export function FiltersBar({
           state (the controls stay mounted, and leave the tab order while folded). */}
       <div id={bodyId} className={styles.body} hidden={!open}>
         <div className={styles.bodyInner}>
-          <input
-            className={styles.search}
-            type="search"
-            placeholder="Search titles…"
-            aria-label="Search sessions"
-            value={filters.q}
-            onChange={(e) => onChange({ q: e.target.value })}
-          />
+          {/* CLEAR rides the search row (#2187): the search is the one wide field, so the
+              dropdown row below keeps room for both dropdowns in a 300px sidebar. */}
+          <div className={styles.searchRow}>
+            <input
+              className={styles.search}
+              type="search"
+              placeholder="Search titles…"
+              aria-label="Search sessions"
+              value={filters.q}
+              onChange={(e) => onChange({ q: e.target.value })}
+            />
+            {hasFilter && (
+              <button
+                type="button"
+                className={styles.clear}
+                onClick={onClear}
+                aria-label="Clear filters"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {/* Agent and mission share one row (#2187). The mission dropdown stays: the tree shows a
+              mission under each project it touches, but only this reaches a mission across
+              projects, and "Not in a mission". It is offered only when the server could read
+              memberships (#948) — a dropdown of "no missions" would be a claim, not a fact. The
+              selected value stays listed even when no session in scope carries it any more. */}
           <div className={styles.selects}>
-            <select
-              aria-label="Filter by project"
-              value={filters.project}
-              onChange={(e) => onChange({ project: e.target.value })}
-            >
-              <option value="">All projects</option>
-              {facets.projects.map((p) => (
-                // The dropdown lists PROJECT ENTITIES (#445): the user's projects (incl. empty
-                // ones) plus the synthetic "Default" catch-all — never folder paths. A server-side
-                // member count (#361 Phase 3) renders as "Name (N)"; older servers omit it.
-                <option key={p.id} value={p.id}>
-                  {p.name + (p.count != null ? ` (${p.count})` : "")}
-                </option>
-              ))}
-            </select>
             {facets.engines.length > 1 && (
               <select
                 aria-label="Filter by agent"
@@ -136,26 +181,13 @@ export function FiltersBar({
                 ))}
               </select>
             )}
-            {hasFilter && (
-              <button
-                type="button"
-                className={styles.clear}
-                onClick={onClear}
-                aria-label="Clear filters"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          {/* Filter by mission (#948). Offered only when the server could read memberships — the facet
-              is absent otherwise, and a dropdown of "no missions" would be a claim, not a fact. The
-              selected value stays listed even when no session in scope carries it any more. */}
-          {facets.missions ? (
-            <div className={styles.selects}>
+            {facets.missions ? (
               <select
                 aria-label="Filter by mission"
                 value={mission}
-                onChange={(e) => onChange({ mission: e.target.value })}
+                // A session a mission holds is never in a cluster, so a mission picked here
+                // replaces the cluster rather than intersecting with it (the scope stays true).
+                onChange={(e) => onChange({ mission: e.target.value, cluster: "" })}
               >
                 <option value="">All missions</option>
                 <option value="none">
@@ -170,8 +202,8 @@ export function FiltersBar({
                   </option>
                 ))}
               </select>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
           {missionFilterUnavailable ? (
             <div className={styles.note} role="status">
               The mission filter could not be applied — mission memberships are unavailable.
@@ -197,6 +229,7 @@ export function FiltersBar({
               Archived
             </button>
           </div>
+          {children}
         </div>
       </div>
     </div>

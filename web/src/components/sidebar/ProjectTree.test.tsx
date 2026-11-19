@@ -1,9 +1,9 @@
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Filters } from "../../hooks/useSessionsList";
-import { CLUSTERS_OPEN_KEY, ClusterTree } from "./ClusterTree";
+import { ProjectTree } from "./ProjectTree";
 
 const EMPTY: Filters = { q: "", project: "", engine: "", mission: "", cluster: "", archived: false };
 const TC = "tc_0a1b2c3d4e5f";
@@ -21,11 +21,11 @@ const FACETS = {
   ],
 };
 
-function tree(over: Partial<Parameters<typeof ClusterTree>[0]> = {}) {
+function tree(over: Partial<Parameters<typeof ProjectTree>[0]> = {}) {
   const onChange = vi.fn();
   render(
     <MemoryRouter>
-      <ClusterTree filters={EMPTY} facets={FACETS} configured onChange={onChange} {...over} />
+      <ProjectTree filters={EMPTY} facets={FACETS} clusters configured onChange={onChange} {...over} />
     </MemoryRouter>,
   );
   return onChange;
@@ -36,7 +36,7 @@ beforeEach(() => localStorage.clear());
 test("a project lists its own clusters, its missions with their count in it, and the rest", async () => {
   tree();
   await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
-  const nodes = screen.getByRole("list", { name: "Projects and clusters" });
+  const nodes = screen.getByRole("list", { name: "Projects" });
   expect(within(nodes).getByRole("button", { name: /Login flow\s*3/ })).toBeVisible();
   // The mission spans two projects: under alpha it counts alpha's two sessions.
   expect(within(nodes).getByRole("button", { name: /Mission · Release\s*2/ })).toBeVisible();
@@ -59,11 +59,37 @@ test("selecting a node replaces the project, cluster and mission filters togethe
   expect(onChange).toHaveBeenLastCalledWith({ project: "", cluster: "", mission: "" });
 });
 
-test("the selected cluster is marked, its project is open and the folded header names it", () => {
+test("the selected cluster is marked and its project is open", () => {
   tree({ filters: { ...EMPTY, project: "p-a", cluster: TC } });
   expect(screen.getByTestId("cluster-node")).toHaveAttribute("aria-current", "true");
   expect(screen.getByRole("button", { name: "Fold alpha" })).toHaveAttribute("aria-expanded", "true");
-  expect(screen.getByTestId("cluster-tree-toggle")).toHaveTextContent("Login flow");
+});
+
+test("with clusters off it lists projects and their missions, and nothing about clusters (#2187)", async () => {
+  tree({ clusters: false, configured: false });
+  expect(screen.queryByTestId("cluster-tree-unconfigured")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
+  expect(screen.getByRole("button", { name: /Mission · Release\s*2/ })).toBeVisible();
+  expect(screen.queryByTestId("cluster-node")).toBeNull();
+  expect(screen.queryByTestId("cluster-none-node")).toBeNull();
+  expect(screen.queryByText(/A cluster needs two sessions/)).toBeNull();
+  // A project with nothing under it has no fold, and still filters.
+  cleanup();
+  const bare = { projects: [{ kind: "project" as const, id: "p-c", name: "gamma", count: 2 }] };
+  const onChange = tree({ clusters: false, facets: bare });
+  expect(screen.queryByRole("button", { name: /Unfold gamma/ })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: /^gamma/ }));
+  expect(onChange).toHaveBeenLastCalledWith({ project: "p-c", cluster: "", mission: "" });
+});
+
+test("with clusters off and no clusters facet at all, a project still lists its missions (#2187)", async () => {
+  const { clusters: _omit, ...noClusters } = FACETS;
+  void _omit;
+  tree({ clusters: false, facets: noClusters });
+  expect(screen.queryByText(/Clusters are unavailable/)).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
+  expect(screen.getByRole("button", { name: /Mission · Release\s*2/ })).toBeVisible();
+  expect(screen.queryByTestId("cluster-none-node")).toBeNull();
 });
 
 test("a kept cluster says so", async () => {
@@ -107,10 +133,7 @@ test("a project with nothing to group says when HQ will", () => {
   expect(notes.filter((n) => !n.closest("[hidden]"))).toHaveLength(1);
 });
 
-test("the fold is remembered on this device and a failed filter is said", async () => {
+test("a failed cluster filter is said", () => {
   tree({ filterUnavailable: true });
   expect(screen.getByText(/The cluster filter could not be applied/)).toBeVisible();
-  await userEvent.click(screen.getByTestId("cluster-tree-toggle"));
-  expect(localStorage.getItem(CLUSTERS_OPEN_KEY)).toBe("0");
-  expect(screen.getByTestId("cluster-tree-toggle")).toHaveAttribute("aria-expanded", "false");
 });

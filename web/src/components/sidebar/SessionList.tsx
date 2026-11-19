@@ -36,8 +36,8 @@ import { SESSIONS_PATH } from "../../lib/routes";
 import { isClusterId } from "../../lib/clusters";
 import type { ProjectRef, Session } from "../../types/api";
 import { ClusterHead } from "./ClusterHead";
-import { ClusterTree } from "./ClusterTree";
 import { FiltersBar } from "./Filters";
+import { ProjectTree } from "./ProjectTree";
 import { RowMenu } from "./RowMenu";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
 import styles from "./SessionList.module.css";
@@ -606,23 +606,19 @@ export function SessionList({
     counts,
   } = useSessionsList();
   const remote = useRemoteShares();
-  // Session clusters (#1997). Off (or an older server): no tree, no head, no chip.
+  // Session clusters (#1997). Off (or an older server): no clusters in the project tree, no head,
+  // no chip. The tree itself always shows: it is the project filter (#2187).
   const config = useConfig();
   const clustersCfg = config?.clusters;
   const clustersOn = clustersCfg?.enabled ?? false;
   const selectedCluster = isClusterId(filters.cluster) ? filters.cluster : null;
-  // A cluster filter saved while clusters were on must not outlive them: with the tree hidden
-  // there would be nothing left to clear it with. Only once the config has answered.
+  // A cluster filter saved while clusters were on must not outlive them: the tree no longer shows
+  // clusters, so nothing would name it or clear it, and the list would stay narrowed by a
+  // restriction the operator cannot see (#2187). Only once the config has answered.
   const staleClusterFilter = !!config && !clustersOn && !!filters.cluster;
   useEffect(() => {
     if (staleClusterFilter) update({ cluster: "" });
   }, [staleClusterFilter, update]);
-  // A cluster belongs to one project, so picking another project in Filters drops it.
-  const updateFilters = useCallback(
-    (patch: Parameters<typeof update>[0]) =>
-      update("project" in patch && !("cluster" in patch) ? { ...patch, cluster: "" } : patch),
-    [update],
-  );
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
   const reorderTimers = useRef<number[]>([]);
@@ -822,7 +818,7 @@ export function SessionList({
 
   return (
     <div
-      className={clustersOn ? `${styles.wrap} ${styles.wrapClusters}` : styles.wrap}
+      className={`${styles.wrap} ${styles.wrapTree}`}
       hidden={hidden}
     >
       {/* Pressing this with the map up should land the new session ON the map, not full screen
@@ -841,19 +837,19 @@ export function SessionList({
       <FiltersBar
         filters={filters}
         facets={facets}
-        onChange={updateFilters}
+        onChange={update}
         onClear={clear}
         missionFilterUnavailable={missionFilterUnavailable}
-      />
-      {clustersOn ? (
-        <ClusterTree
+      >
+        <ProjectTree
           filters={filters}
           facets={facets}
+          clusters={clustersOn}
           configured={clustersCfg?.configured ?? false}
           filterUnavailable={clusterFilterUnavailable}
           onChange={update}
         />
-      ) : null}
+      </FiltersBar>
       {clustersOn && selectedCluster && facets.clusters ? (
         <ClusterHead
           key={selectedCluster}

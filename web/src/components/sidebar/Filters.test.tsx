@@ -23,45 +23,91 @@ const facets = {
 const base = { q: "", project: "", engine: "", archived: false };
 const noop = () => {};
 
-test("lists project entities (incl. Default) from facets, not folder paths (#445)", () => {
+test("there is no project dropdown: the project tree is the project filter (#2187)", () => {
   render(
-    <FiltersBar
-      filters={base}
-      facets={facets}
-      onChange={noop}
-      onClear={noop}
-    />,
+    <FiltersBar filters={base} facets={facets} onChange={noop} onClear={noop}>
+      <div data-testid="tree-slot" />
+    </FiltersBar>,
   );
-  expect(screen.getByLabelText("Filter by project")).toBeInTheDocument();
-  expect(screen.getByRole("option", { name: "SampleProject (3)" })).toBeInTheDocument();
-  expect(
-    screen.getByRole("option", { name: "Default (2)" }),
-  ).toBeInTheDocument();
+  expect(screen.queryByLabelText("Filter by project")).toBeNull();
   expect(screen.getByLabelText("Filter by agent")).toBeInTheDocument(); // shown: >1 engine
+  // The tree renders INSIDE the fold, after Active/Archived.
+  const toggle = screen.getByTestId("filters-toggle");
+  const body = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+  const slot = screen.getByTestId("tree-slot");
+  expect(body).toContainElement(slot);
+  const tabs = screen.getByRole("tablist", { name: "Archived filter" });
+  expect(tabs.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("lists empty (0-count) projects too, rendered as Name (N) (#445)", () => {
-  const counted = {
-    projects: [
-      projectRef("p-1", "SampleProject", 3),
-      projectRef("p-2", "Empty", 0),
-      projectRef("__default__", "Default", 2),
-    ],
-    engines: ["claude"],
-  };
+test("agent and mission share one row; Clear rides the search row (#2187)", () => {
   render(
     <FiltersBar
-      filters={base}
-      facets={counted}
+      filters={{ ...base, q: "x" }}
+      facets={{ ...facets, missions: [{ id: "msn_1", title: "Release", count: 2 }] }}
       onChange={noop}
       onClear={noop}
     />,
   );
-  expect(screen.getByRole("option", { name: "SampleProject (3)" })).toBeInTheDocument();
-  expect(screen.getByRole("option", { name: "Empty (0)" })).toBeInTheDocument();
-  expect(
-    screen.getByRole("option", { name: "Default (2)" }),
-  ).toBeInTheDocument();
+  const agent = screen.getByLabelText("Filter by agent");
+  expect(screen.getByLabelText("Filter by mission").parentElement).toBe(agent.parentElement);
+  expect(screen.getByLabelText("Clear filters").parentElement).toBe(
+    screen.getByLabelText("Search sessions").parentElement,
+  );
+});
+
+test("picking a mission replaces a selected cluster, so the scope stays true (#2187)", () => {
+  const onChange = vi.fn();
+  render(
+    <FiltersBar
+      filters={{ ...base, project: "p-1", cluster: "tc_0a1b2c3d4e5f" }}
+      facets={{ ...facets, missions: [{ id: "msn_1", title: "Release", count: 2 }] }}
+      onChange={onChange}
+      onClear={noop}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Filter by mission"), { target: { value: "msn_1" } });
+  // The project stays: "project › mission" is a scope the tree also offers.
+  expect(onChange).toHaveBeenCalledWith({ mission: "msn_1", cluster: "" });
+});
+
+test("the header names the selected scope, so a folded block still says where the list is (#2187)", () => {
+  const TC = "tc_0a1b2c3d4e5f";
+  const scoped = {
+    ...facets,
+    projects: [projectRef("p-1", "SampleProject", 3)],
+    missions: [{ id: "msn_1", title: "Release", count: 2 }],
+    clusters: [{ id: TC, title: "Login flow", kept: false, project_id: "p-1", count: 2 }],
+  };
+  const bar = (filters: typeof base & { mission?: string; cluster?: string }) => (
+    <FiltersBar filters={filters} facets={scoped} onChange={noop} onClear={noop} />
+  );
+  const { rerender } = render(bar({ ...base, project: "p-1", cluster: TC, q: "x" }));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("SampleProject › Login flow");
+  // Search and agent are counted after it.
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent("Active · +1");
+  rerender(bar({ ...base, project: "p-1", mission: "msn_1" }));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("SampleProject › Release");
+  rerender(bar({ ...base, project: "p-1", cluster: "none" }));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("SampleProject › Not clustered");
+  rerender(bar({ ...base, mission: "none" }));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("Not in a mission");
+  rerender(bar(base));
+  expect(screen.queryByTestId("filters-scope")).toBeNull();
+});
+
+test("a project filter the facets do not list still gets a name (Hermes, PR #2188)", () => {
+  const bar = (project: string) => (
+    <FiltersBar filters={{ ...base, project }} facets={facets} onChange={noop} onClear={noop} />
+  );
+  // A legacy saved folder path: the server still filters by it, its facets list entities only.
+  const { rerender } = render(bar("/home/u/plain/"));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("plain");
+  expect(screen.getByTestId("filters-scope")).toHaveAttribute("title", "plain");
+  expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
+  // A project id that has left the facets.
+  rerender(bar("p-gone"));
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("Selected project");
 });
 
 test("agent select is hidden when only one engine exists", () => {

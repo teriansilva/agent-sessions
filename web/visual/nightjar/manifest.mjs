@@ -1319,7 +1319,7 @@ export const SWEEP = [
     open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Rename session" }],
     expectCss: "input[aria-label='Session title']",
   },
-  // Session clusters (#1997): the Projects & clusters tree, a selected cluster's head (an AI
+  // Session clusters (#1997): the project tree (in the Filters fold, #2187), a selected cluster's head (an AI
   // title, then a kept one), the tree without an AI endpoint, the cluster's menu and the picker.
   { id: "route:sidebar-clusters", path: S1, phoneFirst: DRAWER, mock: { clusters: true }, open: [{ role: "button", name: "Unfold orbital-api" }], present: "[data-testid='cluster-node']" },
   {
@@ -1329,6 +1329,19 @@ export const SWEEP = [
     mock: { clusters: true },
     open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Ingest rate limiting", partial: true }],
     present: "[data-testid='cluster-head']",
+  },
+  // The Filters fold, folded with a cluster selected: the header still names the scope.
+  {
+    id: "route:sidebar-scope-folded",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [
+      { role: "button", name: "Unfold orbital-api" },
+      { role: "button", name: "Ingest rate limiting", partial: true },
+      { testId: "filters-toggle" },
+    ],
+    present: "[data-testid='filters-scope']",
   },
   {
     id: "route:sidebar-cluster-kept",

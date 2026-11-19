@@ -144,8 +144,9 @@ export function ClustersSettings() {
         <span>Group sessions into clusters</span>
       </label>
       <p className={styles.hint}>
-        Shows Projects &amp; clusters in the sidebar and the cluster on each session row. Off
-        hides them and stops the sweep; your clusters come back when you turn it on again.
+        Shows the clusters in the sidebar’s project tree and the cluster on each session
+        row. Off hides them and stops the sweep; your clusters come back when you turn it on
+        again.
       </p>
       {block.enabled && !block.configured && (
         <p className={styles.hint}>
