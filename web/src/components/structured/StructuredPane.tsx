@@ -79,6 +79,8 @@ import { shareHeadAction } from "../sessions/shareAction";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import { missionLink } from "../../lib/missionLink";
 import { SharePeerModal } from "../federation/SharePeerModal";
+import { PeerSuggestions } from "../federation/PeerSuggestions";
+import { PeerAttribution } from "../../share/Turns";
 import { ReplyShareModal } from "../shares/ReplyShareModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
@@ -1147,6 +1149,7 @@ const OperatorAvatar = createContext<AvatarSpec>({ kind: "accent", initial: "Y" 
 /** Who sent a user turn, as a disc: a visitor by name, unknown as `?`, else the operator. */
 function turnAvatar(author: StructuredTurn["author"], operator: AvatarSpec): AvatarSpec {
   if (author?.via === "public_link") return { kind: "who", name: author.name };
+  if (author?.via === "peer") return { kind: "peer" };
   if (author?.via === "unknown") return { kind: "unknown" };
   return operator;
 }
@@ -1155,7 +1158,7 @@ function turnAvatar(author: StructuredTurn["author"], operator: AvatarSpec): Ava
 const ReplyShareCtx = createContext<((turnId: string, trigger: HTMLElement) => void) | null>(null);
 
 function MessageHeader({ speaker, title, kind, ts, author, shareTurn }: {
-  speaker: string;
+  speaker: React.ReactNode;
   title?: string;
   kind: "user" | "assistant";
   ts?: number | null;
@@ -1308,14 +1311,20 @@ function TurnView({
             attribution can't be read, no turn claims to be the operator's. */}
         <MessageHeader
           speaker={
-            turn.author?.via === "public_link"
+            turn.author?.via === "peer"
+              // A paired instance's turn (#2061): the SAME label the public viewer and the remote
+              // pane draw (`share/Turns.tsx`), so it never passes for the operator's.
+              ? <PeerAttribution author={{ name: turn.author.name ?? "", edited: turn.author.edited }} owner />
+              : turn.author?.via === "public_link"
               ? `${turn.author.name} · via public link`
               : turn.author?.via === "unknown"
                 ? "sender unknown"
                 : "you"
           }
           title={
-            turn.author?.via === "public_link"
+            turn.author?.via === "peer"
+              ? "Sent by a paired instance"
+              : turn.author?.via === "public_link"
               ? "Sent through a public link — a name the visitor chose"
               : turn.author?.via === "unknown"
                 ? "Who sent this can't be read right now — it may have come through a public link"
@@ -3554,6 +3563,7 @@ export function StructuredPane({
           sessionKey={actionKey}
           title={row?.title || "BattleLab session"}
           agent={engineLabel(engine)}
+          missionHeld={!!row?.mission}
           onClose={() => setSharePeer({ open: false, trigger: null })}
           returnFocusTo={sharePeer.trigger}
         />
@@ -4115,6 +4125,9 @@ export function StructuredPane({
           {sendError ?? actionError}
         </p>
       )}
+      {/* What a paired instance suggests (#2061): above the composer, each one the operator's own
+          decision. Not part of the conversation and not shown to the agent until approved. */}
+      {!readOnly && <PeerSuggestions sessionKey={actionKey} sharesOpen={sharePeer.open} />}
       {/* The terminal session's composer (#1348): Compose.module.css itself, so the two cannot
           drift — pills, the text box, then ONE row of chips, the push-to-talk chip and Send.
           Archived (#2064): the ARCHIVED strip takes its place; the draft is kept for the composer

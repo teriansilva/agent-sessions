@@ -36,6 +36,16 @@
 .avatar[data-kind="neutral"] {
   color: var(--text-2);
 }
+/* A paired instance (#2061): square and dashed like the peer badge, no chamfer, neutral ink. */
+.avatar[data-kind="peer"] {
+  clip-path: none;
+  background: transparent;
+  color: var(--text-1);
+  border: 1px dashed var(--text-2);
+}
+.avatar[data-kind="peer"]::after {
+  content: none;
+}
 .avatar[data-kind="agent"] {
   font-family: inherit;
   font-size: var(--fs-body);

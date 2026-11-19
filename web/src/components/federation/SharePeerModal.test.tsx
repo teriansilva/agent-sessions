@@ -69,14 +69,26 @@ const list = (grants: unknown[]) => ({
   max_expires_in: 7776000,
 });
 
-function open(onClose = vi.fn()) {
-  render(
-    <MemoryRouter>
-      <SharePeerModal sessionKey={KEY} title="Refactor the importer" agent="API" onClose={onClose} />
-    </MemoryRouter>,
-  );
-  return onClose;
+function open(onClose = vi.fn(), missionHeld = false) {
+  return {
+    onClose,
+    ...render(
+      <MemoryRouter>
+        <SharePeerModal
+          sessionKey={KEY}
+          title="Refactor the importer"
+          agent="API"
+          missionHeld={missionHeld}
+          onClose={onClose}
+        />
+      </MemoryRouter>,
+    ),
+  };
 }
+const level = (name: string) =>
+  within(screen.getByRole("radiogroup", { name: "Access" })).getByRole("radio", { name: new RegExp(`^${name}`) });
+const share = () => screen.getByRole("button", { name: "Share" });
+const ack = () => screen.getByRole("checkbox", { name: "I understand and want to allow this." });
 
 beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
@@ -103,10 +115,12 @@ test("it lists trusted peers with their state, View chosen, 7 days, and the disc
   const access = within(screen.getByRole("radiogroup", { name: "Access" })).getAllByRole("radio");
   expect(access[0]).toHaveAttribute("aria-checked", "true");
   expect(access[0]).toHaveTextContent("View");
-  expect(access[1]).toBeDisabled();
-  expect(access[1]).toHaveTextContent(/Suggest\s*later/);
-  expect(access[2]).toBeDisabled();
-  expect(access[2]).toHaveTextContent(/Send\s*later/);
+  expect(access[1]).toBeEnabled();
+  expect(access[1]).toHaveTextContent("SuggestProposes messages. You approve each one.");
+  expect(access[1]).toHaveAttribute("aria-checked", "false");
+  expect(access[2]).toBeEnabled();
+  expect(access[2]).toHaveTextContent("SendMessages go straight to the agent.");
+  expect(access[2]).toHaveAttribute("aria-checked", "false"); // never preselected
 
   const expiry = within(screen.getByRole("radiogroup", { name: "Expires" })).getAllByRole("radio");
   expect(expiry.map((b) => b.textContent)).toEqual(["1 day", "7 days", "30 days", "90 days"]);
@@ -134,6 +148,7 @@ test("Share creates a view grant for the chosen peer and expiry, and lists it", 
     expect(api.createFederationGrant).toHaveBeenCalledWith({
       session_key: KEY,
       peer_id: LAPTOP,
+      level: "view",
       expires_in: 30 * 86400,
     }),
   );
@@ -141,7 +156,7 @@ test("Share creates a view grant for the chosen peer and expiry, and lists it", 
   const row = await screen.findByTestId("share-peer-grant");
   expect(row).toHaveTextContent(/laptop\s*View\s*until/);
   expect(screen.getByRole("heading", { name: "Shared with · 1" })).toBeInTheDocument();
-  expect(screen.getByTestId("share-peer-done")).toHaveTextContent(/^Shared with laptop until /);
+  expect(screen.getByTestId("share-peer-done")).toHaveTextContent(/^Shared with laptop \(View\) until /);
 });
 
 test("sharing again with the same peer changes the existing grant with its revision", async () => {
@@ -149,12 +164,16 @@ test("sharing again with the same peer changes the existing grant with its revis
   api.changeFederationGrant.mockResolvedValue({ grant: grant({ revision: 5 }), generation: 3 });
   open();
   expect(await screen.findByTestId("share-peer-existing")).toHaveTextContent(
-    /Already shared with gpu-box until .*Sharing again changes when it ends\./,
+    /Already shared with gpu-box \(View\), until .*Sharing again replaces its access and when it ends\./,
   );
   await userEvent.click(screen.getByRole("radio", { name: "90 days" }));
   await userEvent.click(screen.getByRole("button", { name: "Share" }));
   await waitFor(() =>
-    expect(api.changeFederationGrant).toHaveBeenCalledWith("g7Jx9aBcDeFgHiJkLmNoPq", 90 * 86400, 4),
+    expect(api.changeFederationGrant).toHaveBeenCalledWith("g7Jx9aBcDeFgHiJkLmNoPq", {
+      level: "view",
+      expires_in: 90 * 86400,
+      revision: 4,
+    }),
   );
   expect(api.createFederationGrant).not.toHaveBeenCalled();
 });
@@ -176,7 +195,7 @@ test("a refusal is shown with the server's own words, and the dialog stays open"
   api.createFederationGrant.mockRejectedValue(
     new ApiError(409, "this peer already holds 200 shared sessions"),
   );
-  const onClose = open();
+  const { onClose } = open();
   await userEvent.click(await screen.findByRole("button", { name: "Share" }));
   expect(await screen.findByTestId("share-peer-error")).toHaveTextContent(
     "this peer already holds 200 shared sessions",
@@ -199,12 +218,210 @@ test("with no paired instances it says so, links to Settings → Peers, and cann
 });
 
 test("Escape and Cancel close it", async () => {
-  const onClose = open();
+  const { onClose } = open();
   await screen.findByRole("radiogroup", { name: "Peer" });
   await userEvent.keyboard("{Escape}");
   expect(onClose).toHaveBeenCalledTimes(1);
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(onClose).toHaveBeenCalledTimes(2);
+});
+
+// ---- the levels (#2061) -----------------------------------------------------------------------
+const expiries = () =>
+  within(screen.getByRole("radiogroup", { name: "Expires" }))
+    .getAllByRole("radio")
+    .map((b) => `${b.textContent}${b.getAttribute("aria-checked") === "true" ? "*" : ""}`);
+
+test("Suggest: 1, 7 (default), 30 days, its line, and a request without accept_risk", async () => {
+  api.createFederationGrant.mockResolvedValue({ grant: grant({ level: "suggest" }), generation: 2 });
+  open();
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  await userEvent.click(level("Suggest"));
+  expect(expiries()).toEqual(["1 day", "7 days*", "30 days"]);
+  expect(screen.getByTestId("share-peer-suggest-line")).toHaveTextContent(
+    "A suggestion reaches the agent only after you approve that one message. Nothing approves it for you.",
+  );
+  expect(screen.queryByTestId("share-peer-risk")).toBeNull();
+  await userEvent.click(share());
+  await waitFor(() =>
+    expect(api.createFederationGrant).toHaveBeenCalledWith({
+      session_key: KEY,
+      peer_id: GPU,
+      level: "suggest",
+      expires_in: 7 * 86400,
+    }),
+  );
+});
+
+test("Send: 1 hour (default), 4, 24 hours; the risk box; Share waits for the tick", async () => {
+  api.createFederationGrant.mockResolvedValue({
+    grant: grant({ level: "send", expires_at: NOW + 4 * 3600 }),
+    generation: 2,
+  });
+  open();
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  await userEvent.click(level("Send"));
+  expect(expiries()).toEqual(["1 hour*", "4 hours", "24 hours"]);
+  expect(screen.getByTestId("share-peer-hint")).toHaveTextContent(
+    "It ends by itself after 1 hour. Only you can renew it.",
+  );
+  const risk = screen.getByTestId("share-peer-risk");
+  expect(risk).toHaveTextContent(
+    "RiskSend lets gpu-box's operator instruct this agent directly. Whatever this agent can do on this machine, their messages can ask it to do.",
+  );
+  expect(ack()).not.toBeChecked();
+  expect(ack()).toBeRequired();
+  expect(share()).toBeDisabled();
+  await userEvent.click(share()); // a disabled button does nothing
+  expect(api.createFederationGrant).not.toHaveBeenCalled();
+
+  await userEvent.click(screen.getByRole("radio", { name: "4 hours" }));
+  expect(screen.getByTestId("share-peer-hint")).toHaveTextContent("after 4 hours");
+  expect(share()).toBeDisabled(); // an expiry is not an acknowledgement
+  await userEvent.click(ack());
+  expect(share()).toBeEnabled();
+  await userEvent.click(share());
+  await waitFor(() =>
+    expect(api.createFederationGrant).toHaveBeenCalledWith({
+      session_key: KEY,
+      peer_id: GPU,
+      level: "send",
+      expires_in: 4 * 3600,
+      accept_risk: true,
+    }),
+  );
+  // one acknowledgement, one grant: sharing again asks again
+  await waitFor(() => expect(ack()).not.toBeChecked());
+  expect(share()).toBeDisabled();
+});
+
+test("the acknowledgement unticks on another peer, another level, and a reopened dialog", async () => {
+  api.federationGrants.mockResolvedValue(list([grant({ level: "send", expires_at: NOW + 1800 })]));
+  const first = open();
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  // a session that already has a Send grant still opens on View
+  expect(level("View")).toHaveAttribute("aria-checked", "true");
+  expect(level("Send")).toHaveAttribute("aria-checked", "false");
+  expect(share()).toBeEnabled();
+
+  await userEvent.click(level("Send"));
+  await userEvent.click(ack());
+  expect(share()).toBeEnabled();
+  await userEvent.click(screen.getByRole("radio", { name: /laptop/ })); // another peer
+  expect(level("Send")).toHaveAttribute("aria-checked", "true");
+  expect(ack()).not.toBeChecked();
+  expect(share()).toBeDisabled();
+  expect(screen.getByTestId("share-peer-risk")).toHaveTextContent("Send lets laptop's operator");
+
+  await userEvent.click(ack());
+  await userEvent.click(level("Suggest")); // another level
+  expect(share()).toBeEnabled();
+  await userEvent.click(level("Send")); // and back
+  expect(ack()).not.toBeChecked();
+  expect(share()).toBeDisabled();
+
+  await userEvent.click(ack());
+  first.unmount(); // closed
+  open(); // and opened again
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  expect(level("View")).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(level("Send"));
+  expect(ack()).not.toBeChecked();
+  expect(share()).toBeDisabled();
+  expect(api.createFederationGrant).not.toHaveBeenCalled();
+  expect(api.changeFederationGrant).not.toHaveBeenCalled();
+});
+
+test("renewing a Send grant is the same flow: the PATCH carries accept_risk only after the tick", async () => {
+  api.federationGrants.mockResolvedValue(list([grant({ level: "send", expires_at: NOW + 600 })]));
+  api.changeFederationGrant.mockResolvedValue({ grant: grant({ level: "send", revision: 5 }), generation: 3 });
+  open();
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  await userEvent.click(level("Send"));
+  expect(share()).toBeDisabled();
+  await userEvent.click(ack());
+  await userEvent.click(share());
+  await waitFor(() =>
+    expect(api.changeFederationGrant).toHaveBeenCalledWith("g7Jx9aBcDeFgHiJkLmNoPq", {
+      level: "send",
+      expires_in: 3600,
+      accept_risk: true,
+      revision: 4,
+    }),
+  );
+});
+
+test("existing shares show their level, and a countdown when they end within a day", async () => {
+  api.federationGrants.mockResolvedValue(
+    list([
+      grant({ grant_id: "a".repeat(22), peer_id: LAPTOP, peer_name: "laptop" }),
+      grant({ level: "send", expires_at: NOW + 42 * 60 + 20 }),
+    ]),
+  );
+  open();
+  const rows = await screen.findAllByTestId("share-peer-grant");
+  expect(rows[0]).toHaveTextContent(/laptop\s*View\s*until /);
+  expect(rows[1]).toHaveTextContent(/gpu-box\s*Send\s*ends in 42 min/);
+});
+
+test("a mission-held session offers only View, with the line", async () => {
+  open(vi.fn(), true);
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  expect(level("View")).toHaveAttribute("aria-checked", "true");
+  expect(level("Suggest")).toBeDisabled();
+  expect(level("Send")).toBeDisabled();
+  expect(screen.getByTestId("share-peer-held")).toHaveTextContent(
+    "This session belongs to a mission right now. It can only be watched.",
+  );
+  expect(screen.queryByTestId("share-peer-risk")).toBeNull();
+  expect(share()).toBeEnabled();
+});
+
+test("the server's 409 held closes the two higher levels, whatever the list said", async () => {
+  api.createFederationGrant.mockRejectedValue(
+    new ApiError(409, "this session is part of a mission", { code: "held" }),
+  );
+  open();
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  await userEvent.click(level("Send"));
+  await userEvent.click(ack());
+  await userEvent.click(share());
+  expect(await screen.findByTestId("share-peer-held")).toBeInTheDocument();
+  expect(level("Send")).toBeDisabled();
+  expect(level("View")).toHaveAttribute("aria-checked", "true");
+  expect(screen.queryByTestId("share-peer-done")).toBeNull();
+});
+
+test("503 busy on Revoke: nothing changed, a retry, never success", async () => {
+  api.federationGrants.mockResolvedValue(list([grant({ level: "send", expires_at: NOW + 1800 })]));
+  api.revokeFederationGrant.mockRejectedValueOnce(
+    new ApiError(503, "a delivery under this grant is in flight — try again", { code: "busy" }),
+  );
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Revoke gpu-box" }));
+  const stuck = await screen.findByTestId("share-peer-busy");
+  expect(stuck).toHaveTextContent("A message is being delivered. Nothing changed. Try again.");
+  expect(screen.queryByTestId("share-peer-done")).toBeNull();
+  expect(screen.getByTestId("share-peer-grant")).toBeInTheDocument(); // still listed: still live
+  api.revokeFederationGrant.mockResolvedValue({ grant: grant({ state: "revoked" }), generation: 4 });
+  api.federationGrants.mockResolvedValue(list([]));
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(api.revokeFederationGrant).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByTestId("share-peer-busy")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("share-peer-grant")).toBeNull());
+});
+
+test("503 busy on a change: the same state, and the grant is not reported as shared", async () => {
+  api.federationGrants.mockResolvedValue(list([grant()]));
+  api.changeFederationGrant.mockRejectedValue(new ApiError(503, "busy", { code: "busy" }));
+  open();
+  await screen.findByTestId("share-peer-existing");
+  await userEvent.click(share());
+  expect(await screen.findByTestId("share-peer-busy")).toHaveTextContent(
+    "A message is being delivered. Nothing changed. Try again.",
+  );
+  expect(screen.queryByTestId("share-peer-done")).toBeNull();
+  expect(screen.queryByTestId("share-peer-error")).toBeNull();
 });
 
 // ---- a terminal (#2060) -------------------------------------------------------------------------
@@ -295,6 +512,7 @@ test("a terminal: the grant is made with the terminal session's key, and its sha
     expect(api.createFederationGrant).toHaveBeenCalledWith({
       session_key: TERM_KEY,
       peer_id: GPU,
+      level: "view",
       expires_in: 7 * 86400,
     }),
   );
@@ -335,7 +553,7 @@ test("a terminal under StrictMode: the limit, the peers, the shares, and a share
   const go = within(dialog).getByTestId("share-peer-go");
   await waitFor(() => expect(go).toBeEnabled());
   await userEvent.click(go);
-  expect(await within(dialog).findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box until /);
+  expect(await within(dialog).findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box \(View\) until /);
   await waitFor(() => expect(go).toBeEnabled());
 });
 
@@ -380,7 +598,7 @@ test("under StrictMode a share's answer and the list read after it are shown", a
   await waitFor(() => expect(go).toBeEnabled());
   api.federationGrants.mockResolvedValue(list([grant()]));
   await userEvent.click(go);
-  expect(await screen.findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box until /);
+  expect(await screen.findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box \(View\) until /);
   expect(await screen.findByTestId("share-peer-grant")).toBeInTheDocument();
   await waitFor(() => expect(screen.getByRole("button", { name: "Share" })).toBeEnabled());
 });
@@ -417,3 +635,130 @@ test("a late answer for the session the dialog showed before is dropped", async 
   expect(screen.queryByTestId("share-peer-grant")).toBeNull();
   expect(screen.queryByTestId("share-peer-existing")).toBeNull();
 });
+
+// ---- the levels are an API session's: never a terminal's (#2060 x #2061) -------------------------
+
+test("a terminal never offers Suggest or Send, not even for a terminal grant listed above View", async () => {
+  // A row an earlier or a hostile build might list: a terminal grant that says `send`. The
+  // dialog reads no level into its choice, so it is still View, and a renewal asks for View.
+  api.federationGrants.mockResolvedValue(
+    list([grant({ session_key: TERM_KEY, kind: "terminal", level: "send", expires_at: NOW + 1800 })]),
+  );
+  api.changeFederationGrant.mockResolvedValue({
+    grant: grant({ session_key: TERM_KEY, kind: "terminal", revision: 5 }),
+    generation: 3,
+  });
+  const dialog = openTerminal();
+  await within(dialog).findByTestId("share-peer-existing");
+  const access = within(dialog).getByRole("radiogroup", { name: "Access" });
+  expect(within(access).getAllByRole("radio").map((r) => r.dataset.level)).toEqual(["view"]);
+  expect(within(dialog).queryByTestId("share-peer-risk")).toBeNull();
+  expect(within(dialog).queryByRole("checkbox")).toBeNull();
+  expect(within(dialog).queryByTestId("share-peer-suggest-line")).toBeNull();
+  await userEvent.click(within(dialog).getByTestId("share-peer-go"));
+  await waitFor(() =>
+    expect(api.changeFederationGrant).toHaveBeenCalledWith("g7Jx9aBcDeFgHiJkLmNoPq", {
+      level: "view",
+      expires_in: 7 * 86400,
+      revision: 4,
+    }),
+  );
+  const body = api.changeFederationGrant.mock.calls[0][1] as Record<string, unknown>;
+  expect("accept_risk" in body).toBe(false);
+  expect(api.createFederationGrant).not.toHaveBeenCalled();
+});
+
+test("a terminal under StrictMode: still View alone, and the request is View without accept_risk", async () => {
+  api.createFederationGrant.mockResolvedValue({
+    grant: grant({ session_key: TERM_KEY, kind: "terminal", expires_at: NOW + 86400 }),
+    generation: 2,
+  });
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <SharePeerModal kind="terminal" sessionKey={TERM_KEY} title="Deploy" agent="claude" onClose={vi.fn()} />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  const dialog = screen.getByRole("dialog", { name: "Share with a peer" });
+  await within(dialog).findByRole("radio", { name: /gpu-box/ });
+  expect(within(within(dialog).getByRole("radiogroup", { name: "Access" })).getAllByRole("radio")).toHaveLength(1);
+  await userEvent.click(within(dialog).getByRole("radio", { name: "1 day" }));
+  await userEvent.click(within(dialog).getByTestId("share-peer-go"));
+  await waitFor(() =>
+    expect(api.createFederationGrant).toHaveBeenCalledWith({
+      session_key: TERM_KEY,
+      peer_id: GPU,
+      level: "view",
+      expires_in: 86400,
+    }),
+  );
+});
+
+// ---- StrictMode: the level section (#2061) --------------------------------------------------------
+
+test("under StrictMode the levels work: Send's risk, the tick, accept_risk, and the countdown", async () => {
+  api.federationGrants.mockResolvedValue(
+    list([grant({ grant_id: "a".repeat(22), peer_id: LAPTOP, peer_name: "laptop", level: "send", expires_at: NOW + 42 * 60 + 20 })]),
+  );
+  api.createFederationGrant.mockResolvedValue({
+    grant: grant({ level: "send", expires_at: NOW + 3600 }),
+    generation: 2,
+  });
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <SharePeerModal sessionKey={KEY} title="Refactor the importer" agent="API" onClose={vi.fn()} />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  await screen.findByRole("radiogroup", { name: "Peer" });
+  expect(await screen.findByTestId("share-peer-grant")).toHaveTextContent(/laptop\s*Send\s*ends in 42 min/);
+  expect(level("View")).toHaveAttribute("aria-checked", "true"); // never Send, also here
+  await userEvent.click(level("Send"));
+  expect(screen.getByTestId("share-peer-risk")).toBeInTheDocument();
+  expect(share()).toBeDisabled();
+  await userEvent.click(ack());
+  await userEvent.click(share());
+  await waitFor(() =>
+    expect(api.createFederationGrant).toHaveBeenCalledWith({
+      session_key: KEY,
+      peer_id: GPU,
+      level: "send",
+      expires_in: 3600,
+      accept_risk: true,
+    }),
+  );
+  expect(await screen.findByTestId("share-peer-done")).toHaveTextContent(/^Shared with gpu-box \(Send\) · ends in /);
+  await waitFor(() => expect(ack()).not.toBeChecked()); // one tick, one grant
+});
+
+test("under StrictMode a 503 busy revoke shows its retry state, never success", async () => {
+  api.federationGrants.mockResolvedValue(list([grant({ level: "send", expires_at: NOW + 1800 })]));
+  api.revokeFederationGrant.mockRejectedValueOnce(new ApiError(503, "busy", { code: "busy" }));
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <SharePeerModal sessionKey={KEY} title="Refactor the importer" agent="API" onClose={vi.fn()} />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Revoke gpu-box" }));
+  expect(await screen.findByTestId("share-peer-busy")).toHaveTextContent(
+    "A message is being delivered. Nothing changed. Try again.",
+  );
+  expect(screen.queryByTestId("share-peer-done")).toBeNull();
+});
+
+// ---- a grant whose numbers are not a date ----------------------------------------------------------
+
+test.each([1e300, Number.MAX_VALUE, Infinity, NaN, -1, 0])(
+  "an existing share ending at %s reads as an unknown date, never a countdown or a throw",
+  async (expires_at) => {
+    api.federationGrants.mockResolvedValue(list([grant({ expires_at })]));
+    open();
+    const row = await screen.findByTestId("share-peer-grant");
+    expect(row).toHaveTextContent(/gpu-box\s*View\s*until an unknown date/);
+    expect(screen.getByTestId("share-peer-existing")).toHaveTextContent("until an unknown date");
+  },
+);

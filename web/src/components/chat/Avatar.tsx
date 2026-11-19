@@ -18,6 +18,9 @@ export type AvatarSpec =
   | { kind: "accent"; initial: string }
   /** Nobody can say who sent it. */
   | { kind: "unknown" }
+  /** A paired instance (#2061): the linked-instances glyph in a dashed box. An origin, not a
+   *  person and not the operator: it never takes the accent or a name's colour. */
+  | { kind: "peer" }
   | { kind: "agent" };
 
 
@@ -49,6 +52,17 @@ export function Avatar({ spec, className }: { spec: AvatarSpec; className?: stri
         style={{ background: whoColor(spec.name) }}
       >
         {whoInitial(spec.name)}
+      </span>
+    );
+  }
+  if (spec.kind === "peer") {
+    return (
+      <span className={cls} data-kind="peer" data-avatar="" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="3" y="4" width="7" height="7" />
+          <rect x="14" y="13" width="7" height="7" />
+          <path d="M10 7.5h4.5V13M14 16.5H9.5V11" />
+        </svg>
       </span>
     );
   }

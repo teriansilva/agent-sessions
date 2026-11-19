@@ -6,9 +6,10 @@ import { setupBench } from "./terminal/harness";
 import { SHARE_CHIP } from "./headActions";
 import { remotePath } from "../src/lib/federation";
 
-// The in-test model of `routes/federation.py`'s grant and remote routes, and the helpers around
-// it, shared by the specs that drive the sharing UI: `share-peer.spec.ts` (an API session, #2055)
-// and `share-terminal.spec.ts` (a terminal's screen, #2060). One model, so the two cannot drift.
+// The in-test model of `routes/federation.py`'s grant, suggestion and remote routes, and the
+// helpers around it, shared by the specs that drive the sharing UI: `share-peer.spec.ts` (an API
+// session, view, #2055), `peer-input.spec.ts` (suggest and send, #2061) and
+// `share-terminal.spec.ts` (a terminal's screen, #2060). One model, so they cannot drift.
 
 export const ID = "5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
 export const ID2 = "6c1e3d2f-9a4b-4d8e-8f32-7b5c4d3e2f10";
@@ -80,6 +81,26 @@ export const turn = (id: string, text: string, reply: string, over: Json = {}): 
   reply,
   reply_ts: 1_800_000_000,
   reply_truncated: false,
+  attachments: [],
+  tools: [],
+  tools_truncated: false,
+  author: null,
+  ...over,
+});
+
+/** A turn of the OWNER's own pane (`StructuredTurn`). */
+export const localTurn = (id: string, text: string, reply: string | null, over: Json = {}): Json => ({
+  kind: "operator",
+  turn_id: id,
+  operation_id: id,
+  state: "completed",
+  text,
+  reply,
+  ts: Math.floor(NOW()) - 300,
+  reply_ts: reply === null ? null : Math.floor(NOW()) - 280,
+  text_truncated: false,
+  reply_truncated: false,
+  reason: null,
   attachments: [],
   tools: [],
   tools_truncated: false,
@@ -199,6 +220,74 @@ export class FakeShare {
   sent: string[] = [];
   listReads = 0;
   sessionQueries: string[] = [];
+  // ---- suggest and send (#2061) ----
+  /** A mission holds the owner's session: the row says so, and the server refuses Send. */
+  mission = false;
+  /** Coded refusals of the next matching write: `"POST /grants/<id>/revoke"` → status + body. */
+  refuseCoded: Record<string, { status: number; json: Json; times?: number }> = {};
+  /** What peers suggested for the owner's session (`GET /suggestions`), any order. */
+  suggestions: Json[] = [];
+  /** How a decision is answered; `undefined` = the default (approve → approved, reject → rejected). */
+  onDecide: (id: string, verb: "approve" | "reject", body: Json | null) => Answer | undefined = () => undefined;
+  /** The owner's local conversation (the structured snapshot's turns). */
+  localTurns: Json[] = [];
+  /** The bell's rows. */
+  notifications: Json[] = [];
+  /** This instance's suggestions per remote grant, as the owner lists them (no text). */
+  own: Record<string, Json[]> = {};
+  /** How a write to a remote session is answered; `undefined` = the default below. */
+  onWrite: (kind: "suggest" | "turns" | "withdraw", grant: string, body: Json | null, n: number) => Answer | undefined =
+    () => undefined;
+  /** How a status read (`…/operations/<key>`) is answered. Default: unknown. */
+  onStatus: (key: string, grant: string, n: number) => Answer = () => ({ json: { known: false } });
+  statusReads: string[] = [];
+  private made = 0;
+  private async answer(route: Route, answer: Answer, fallbackStatus = 200) {
+    if (answer.hold) await answer.hold;
+    try {
+      await route.fulfill({ status: answer.status ?? fallbackStatus, json: answer.json ?? {} });
+    } catch {
+      // The page gave the request up while it was held: nothing to answer.
+    }
+    if (answer.label) this.sent.push(answer.label);
+  }
+  suggestion(over: Json = {}): Json {
+    this.made += 1;
+    return {
+      suggestion_id: `sugg${this.made}`.padEnd(22, "x"),
+      grant_id: "grant1".padEnd(22, "x"),
+      session_key: KEY,
+      peer_id: GPU,
+      peer_name: "gpu-box",
+      actor: "",
+      text: "Please also keep the old batch entry point for one release.",
+      state: "pending",
+      approved_text: null,
+      approved_by: null,
+      approved_at: null,
+      edited: false,
+      handoff: null,
+      end_reason: null,
+      created_at: NOW() - 60 + this.made,
+      updated_at: NOW() - 60 + this.made,
+      expires_at: NOW() + DAY,
+      ...over,
+    };
+  }
+  ownRow(grant: string, over: Json = {}): Json {
+    this.made += 1;
+    const row = {
+      suggestion_id: `mine${this.made}`.padEnd(22, "x"),
+      client_key: "",
+      state: "pending",
+      handoff: null,
+      created_at: NOW() - 30 + this.made,
+      updated_at: NOW() - 30 + this.made,
+      ...over,
+    };
+    this.own[grant] = [row, ...(this.own[grant] ?? [])];
+    return row;
+  }
   /** How a remote read is answered. The default is a live session with two turns. */
   onRead: (kind: string, grant: string, url: URL, n: number) => Answer = (kind) =>
     kind === "snapshot"
@@ -256,9 +345,12 @@ export class FakeShare {
     return {
       grants,
       generation: 1,
-      levels: ["view"],
-      default_expires_in: { view: 7 * DAY },
+      levels: ["view", "suggest", "send"],
+      default_level: "view",
+      default_expires_in: { view: 7 * DAY, suggest: 7 * DAY, send: 3600 },
       max_expires_in: 90 * DAY,
+      max_expires_in_by_level: { view: 90 * DAY, suggest: 30 * DAY, send: DAY },
+      send_risk: "The other instance can instruct the agent with this session's permissions.",
     };
   }
 
@@ -297,6 +389,23 @@ export class FakeShare {
         this.listReads++;
         return json({ remote: this.remote });
       }
+      if (path === "/suggestions") {
+        const session = url.searchParams.get("session");
+        return json({ suggestions: this.suggestions.filter((x) => !session || x.session_key === session) });
+      }
+      if ((m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/suggestions$/))) {
+        this.reads.push({ kind: "suggestions", peer: m[1], grant: m[2], search: url.search });
+        const custom = this.onRead("suggestions", m[2], url, 0);
+        // The default `onRead` knows three kinds; anything else it answers is a test's own.
+        if (custom !== GONE) return this.answer(route, custom);
+        return json({ suggestions: this.own[m[2]] ?? [] });
+      }
+      if ((m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/operations\/([^/]+)$/))) {
+        const key = decodeURIComponent(m[3]);
+        this.statusReads.push(key);
+        const n = (this.counts[`status/${key}`] = (this.counts[`status/${key}`] ?? 0) + 1);
+        return this.answer(route, this.onStatus(key, m[2], n));
+      }
       if ((m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/(snapshot|events|history|frame)$/))) {
         const [, peerId, grant, kind] = m;
         this.reads.push({ kind, peer: peerId, grant, search: url.search });
@@ -321,15 +430,74 @@ export class FakeShare {
       delete this.refuse[`${method} ${path}`];
       return json({ detail: refusal.detail, code: "conflict" }, refusal.status);
     }
+    const coded = this.refuseCoded[`${method} ${path}`];
+    if (coded) {
+      if ((coded.times ?? 1) <= 1) delete this.refuseCoded[`${method} ${path}`];
+      else coded.times = (coded.times ?? 1) - 1;
+      return json(coded.json, coded.status);
+    }
+    // As `grants.py`: Send exists only on `accept_risk: true` in THIS request, and never for a
+    // session a mission holds.
+    const wants = (m_: Json | null, current = "view") => String(m_?.level ?? current);
+    const refusedSend = (level: string): [Json, number] | null => {
+      if (level !== "send") return null;
+      if (body?.accept_risk !== true) return [{ detail: "Send accept_risk: true to grant it.", code: "risk" }, 422];
+      if (this.mission) return [{ detail: "this session is part of a mission", code: "held" }, 409];
+      return null;
+    };
+    if (method === "POST" && (m = path.match(/^\/suggestions\/([^/]+)\/(approve|reject)$/))) {
+      const [, id, verb] = m as unknown as [string, string, "approve" | "reject"];
+      const custom = this.onDecide(id, verb, body);
+      if (custom) return this.answer(route, custom);
+      const row = this.suggestions.find((x) => x.suggestion_id === id);
+      if (!row) return json({ detail: "unknown suggestion", code: "not_found" }, 404);
+      if (row.state !== "pending")
+        return json({ detail: `this suggestion is already ${row.state}`, code: "conflict", state: row.state }, 409);
+      if (verb === "approve") {
+        const text = typeof body?.text === "string" ? body.text : row.text;
+        Object.assign(row, { state: "approved", approved_text: text, edited: text !== row.text, handoff: "sent" });
+        this.localTurns = [
+          ...this.localTurns,
+          localTurn(`bbbbbbbb-0000-4000-8000-${String(this.localTurns.length).padStart(12, "0")}`, String(text), null, {
+            author: { name: row.peer_name, via: "peer", ...(row.edited ? { edited: true } : {}) },
+          }),
+        ];
+      } else Object.assign(row, { state: "rejected", end_reason: "rejected" });
+      return json({ suggestion: row });
+    }
+    if (method === "POST" && (m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/(suggest|turns)$/))) {
+      const [, , grant, kind] = m as unknown as [string, string, string, "suggest" | "turns"];
+      const n = (this.counts[`${grant}/${kind}`] = (this.counts[`${grant}/${kind}`] ?? 0) + 1);
+      const custom = this.onWrite(kind, grant, body, n);
+      if (custom) return this.answer(route, custom, kind === "suggest" ? 201 : 202);
+      if (kind === "turns") return json({ operation_id_known: true, handoff: "sent" }, 202);
+      const before = (this.own[grant] ?? []).find((x) => x.client_key === body?.client_key);
+      const row = before ?? this.ownRow(grant, { client_key: String(body?.client_key) });
+      return json({ suggestion_id: row.suggestion_id, state: row.state }, 201);
+    }
+    if (method === "POST" && (m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/suggestions\/([^/]+)\/withdraw$/))) {
+      const [, , grant, id] = m;
+      const custom = this.onWrite("withdraw", grant, body, 0);
+      if (custom) return this.answer(route, custom);
+      const row = (this.own[grant] ?? []).find((x) => x.suggestion_id === id);
+      if (!row) return json({ detail: "no such suggestion", code: "not_found" }, 404);
+      if (row.state !== "pending") return json({ detail: "decided first", code: "conflict" }, 409);
+      row.state = "withdrawn";
+      return json({ suggestion_id: id, state: "withdrawn" });
+    }
     if (method === "POST" && path === "/grants") {
       // As on the server: the session's key says what is shared, and the grant stores its kind.
+      // A terminal is shared View only (`grants.create`), whatever the request says.
       const key = String(body?.session_key ?? KEY);
       const terminal = !key.startsWith("codex-api:");
       if (terminal && body?.level !== "view")
         return json({ detail: "a terminal session can only be viewed", code: "invalid" }, 422);
+      const no = refusedSend(wants(body));
+      if (no) return json(...no);
       const made = this.grant(String(body?.peer_id), {
         session_key: key,
         kind: terminal ? "terminal" : "api",
+        level: wants(body),
         expires_at: NOW() + Number(body?.expires_in),
         title: terminal ? TERM_TITLE : TITLE,
       });
@@ -340,6 +508,11 @@ export class FakeShare {
       const g = this.grants.find((x) => x.grant_id === m![1]);
       if (!g) return json({ detail: "unknown grant" }, 404);
       if (g.revision !== body?.revision) return json({ detail: "the grant changed" }, 409);
+      if (g.kind === "terminal" && wants(body, g.level) !== "view")
+        return json({ detail: "a terminal session can only be viewed", code: "invalid" }, 422);
+      const no = refusedSend(wants(body, g.level));
+      if (no) return json(...no);
+      g.level = wants(body, g.level);
       g.expires_at = NOW() + Number(body?.expires_in);
       g.revision += 1;
       return json({ grant: g, generation: 3 });
@@ -391,6 +564,7 @@ export async function setup(
     sticky: false,
     archived: false,
     ai_summary: "",
+    mission: id === ID && fake.mission ? { id: "msn_1", title: "Ship the importer", state: "running" } : null,
   });
   const rows = [local(ID, TITLE, 120), local(ID2, TITLE2, 3600)];
   await page.route("**/api/sessions**", (r) => {
@@ -411,19 +585,22 @@ export async function setup(
       new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${row.uuid}(/[a-z]+)?(\\?.*)?$`),
       (r) => {
         const sub = r.request().url().match(/\/(events)(\?|$)/)?.[1];
+        // The journal's revision moves with the conversation, so a turn a decision caused is
+        // read by the pane's own cursor loop.
+        const revision = 4 + (row.uuid === ID ? fake.localTurns.length : 0);
         if (sub === "events")
-          return r.fulfill({ json: { session_key: row.id, revision: 4, next_cursor: 4, events: [] } });
+          return r.fulfill({ json: { session_key: row.id, revision, next_cursor: revision, events: [] } });
         return r.fulfill({
           json: {
             session_key: row.id,
-            revision: 4,
-            event_cursor: 4,
+            revision,
+            event_cursor: revision,
             cwd: "/home/u/proj",
             state: "idle",
             active_turn: null,
             model_requested: null,
             model_effective: "gpt-5-codex",
-            turns: [],
+            turns: row.uuid === ID ? fake.localTurns : [],
             omitted_turns: 0,
             pending_requests: [],
             native: { native_id: "n1", worker: null, background_active: false },
@@ -434,6 +611,16 @@ export async function setup(
     );
   }
   await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/pulse\/notifications(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        notifications: fake.notifications,
+        unread: fake.notifications.filter((n) => !n.read).length,
+        settled: [],
+        uncertain: 0,
+      },
+    }),
+  );
   await mockRoster(page, {
     overrides: {
       "codex-api": {

@@ -38,6 +38,8 @@ import type {
   CreatedInvite,
   FederationGrant,
   FederationGrantList,
+  OperationStatus,
+  OwnSuggestion,
   FederationPairing,
   FederationState,
   RemoteEventPage,
@@ -45,6 +47,7 @@ import type {
   RemoteShare,
   RemoteSnapshot,
 } from "./federation";
+import type { PeerSuggestion } from "./federationInput";
 import type { RemoteFrameAnswer } from "./federationScreen";
 import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
@@ -1104,15 +1107,38 @@ export const api = {
     getJsonWithDetail<FederationGrantList>(`/api/federation/grants?peer=${enc(peerId)}`),
   createFederationGrant: (body: { session_key: string; peer_id: string; expires_in: number }) =>
     mutateJson<{ grant: FederationGrant; generation: number }>("POST", "/api/federation/grants", {
-      ...body,
       level: "view",
+      ...body,
     }),
-  /** A new expiry, counted from now. `revision` is the grant's current one (409 when it moved). */
-  changeFederationGrant: (grantId: string, expires_in: number, revision: number) =>
+  /** A new expiry (counted from now) and level. `revision` is the grant's current one (409 when
+   *  it moved). `accept_risk` as for a creation: a grant that ends up at `send` needs it. */
+  changeFederationGrant: (
+    grantId: string,
+    body: { expires_in: number; revision: number; level?: string; accept_risk?: true },
+  ) =>
     mutateJson<{ grant: FederationGrant; generation: number }>(
       "PATCH",
       `/api/federation/grants/${enc(grantId)}`,
-      { expires_in, revision },
+      body,
+    ),
+  // What a peer suggests for a session of this instance (#2057, #2061). The list carries the
+  // suggested text: it is shown to the operator as plain text and goes nowhere else.
+  federationSuggestions: (session: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ suggestions: PeerSuggestion[] }>(
+      `/api/federation/suggestions?session=${enc(session)}`,
+      signal,
+    ),
+  /** THE approval: one suggestion, on the operator's tap. `text` only when they edited it. */
+  approveFederationSuggestion: (suggestionId: string, text?: string) =>
+    mutateJson<{ suggestion: PeerSuggestion }>(
+      "POST",
+      `/api/federation/suggestions/${enc(suggestionId)}/approve`,
+      text === undefined ? {} : { text },
+    ),
+  rejectFederationSuggestion: (suggestionId: string) =>
+    mutateJson<{ suggestion: PeerSuggestion }>(
+      "POST",
+      `/api/federation/suggestions/${enc(suggestionId)}/reject`,
     ),
   revokeFederationGrant: (grantId: string) =>
     mutateJson<{ grant: FederationGrant; generation: number }>(
@@ -1121,6 +1147,38 @@ export const api = {
     ),
   // The receiving side: reads only. Each read is answered by the owning instance for that call;
   // 503 = it is not connected, 404 = the share ended. Nothing here is cached by this client.
+  // Writing to a session a peer shares (#2057, #2061). `client_key` is this browser's retry key
+  // for ONE message; the owner decides on every call. These are never retried by this client.
+  federationRemoteSuggest: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ suggestion_id: string; state: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggest`,
+      body,
+    ),
+  federationRemoteSend: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ operation_id_known: boolean; handoff: string | null }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/turns`,
+      body,
+    ),
+  federationRemoteSuggestions: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ suggestions: OwnSuggestion[] }>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggestions`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteWithdraw: (peerId: string, grantId: string, suggestionId: string) =>
+    mutateJson<{ suggestion_id: string; state: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggestions/${enc(suggestionId)}/withdraw`,
+    ),
+  /** What became of one message this browser submitted, by its retry key: a read, no text. */
+  federationRemoteOperation: (peerId: string, grantId: string, clientKey: string, signal?: AbortSignal) =>
+    getJsonWithDetail<OperationStatus>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/operations/${enc(clientKey)}`,
+      signal,
+      NO_STORE,
+    ),
   federationRemote: (signal?: AbortSignal) =>
     getJsonWithDetail<{ remote: RemoteShare[] }>("/api/federation/remote", signal),
   federationRemoteSnapshot: (peerId: string, grantId: string, signal?: AbortSignal) =>
@@ -2566,7 +2624,7 @@ export const api = {
     getJsonWithDetail<ShelfManifest>(
       `/api/missions/${enc(missionId)}/shelf${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       signal,
-      { cache: "no-store" },
+      NO_STORE,
     ),
   /** The mission debrief (#1740 P2): the facts from the records now, and the stored summary
    *  with whether it still describes them. Never cached. */

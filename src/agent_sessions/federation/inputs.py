@@ -1,11 +1,14 @@
 """Input from a peer: a message it SUGGESTS, and a message it SENDS (#1246 §5 and §7, #2057).
 
-Four verbs answer here (``verbs.py`` holds their validators and the table):
+Five verbs answer here (``verbs.py`` holds their validators and the table):
 
 * ``input.suggest``: record a message for the operator to decide (grant level ``suggest``);
 * ``input.suggestions``: the caller's own suggestions under one grant, ids and states, no text;
 * ``input.withdraw``: take a pending suggestion back;
-* ``input.send``: deliver a message as a turn (grant level ``send``).
+* ``input.send``: deliver a message as a turn (grant level ``send``);
+* ``input.status``: what became of one of the caller's own messages, by its retry key (#2061):
+  a read with no text. ``{"known": false}`` is "this grant has no such key NOW", never "it did
+  not arrive": a request still on its way is admitted after this answer.
 
 **A suggestion's text goes nowhere but the store and the operator's screen.** It is not passed to
 the agent, to HQ, to a summary, to retrieval or to any model while it is pending or rejected. No
@@ -273,6 +276,26 @@ async def input_suggestions(channel: ch.Channel, args: dict) -> dict:
     except store.StoreError:
         raise ch.VerbError(sharing.UNAVAILABLE) from None
     answer = {"suggestions": rows}
+    # The second check, directly before the answer is returned: nothing may wait after it.
+    await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)
+    return answer
+
+
+async def input_status(channel: ch.Channel, args: dict) -> dict:
+    """What became of ONE message this peer submitted under this grant, by its ``client_key``:
+    a sent message's stored receipt, a suggestion's state, or ``{"known": False}``. The lookup is
+    keyed by the grant the call was authorized for, so a key of another grant (this peer's or
+    anyone's) is unknown here exactly as a key nobody used is. No text and no operation id. An API
+    grant's verb: a terminal grant is refused like an unknown one."""
+    fed, peer_id = channel.context
+    grant = await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)
+    try:
+        found = await asyncio.to_thread(
+            fed.store.operation_status, grant.grant_id, args["client_key"]
+        )
+    except store.StoreError:
+        raise ch.VerbError(sharing.UNAVAILABLE) from None
+    answer = {"known": False} if found is None else {"known": True, **found}
     # The second check, directly before the answer is returned: nothing may wait after it.
     await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)
     return answer

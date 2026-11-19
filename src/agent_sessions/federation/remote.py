@@ -531,6 +531,27 @@ def check_sent(doc: dict) -> dict:
     return doc
 
 
+def check_status(doc: dict) -> dict:
+    """An ``input.status`` answer: unknown, a sent message's receipt, or a suggestion's state.
+    Exactly these shapes; anything else from a peer is refused here."""
+    if doc == {"known": False} and doc["known"] is False:
+        return doc
+    if doc.get("known") is not True:
+        raise Invalid("status")
+    if doc.get("kind") == "send":
+        if set(doc) != {"known", "kind", "handoff"}:
+            raise Invalid("status")
+    elif doc.get("kind") == "suggest":
+        if set(doc) != {"known", "kind", "suggestion_id", "state", "handoff"}:
+            raise Invalid("status")
+        _suggestion_ref(doc)
+    else:
+        raise Invalid("status kind")
+    if doc["handoff"] is not None and doc["handoff"] not in HANDOFFS:
+        raise Invalid("handoff")
+    return doc
+
+
 ACCESS_STATES = frozenset(store.ACCESS_STATES)
 DECISION_OUTCOMES = frozenset({"accepted", "settled", "uncertain"})
 NOTE_KEYS = frozenset(
@@ -688,15 +709,33 @@ def events_timeout(wait: float) -> float:
     return float(wait) + sharing.WAIT_CALL_MARGIN_S
 
 
-async def _call(channel, verb: str, args: dict, timeout: float) -> dict:
-    """One call for a read. A refusal by the owner is returned as ``None``; every other failure
-    is a :class:`ReadError`."""
+#: A WRITE whose channel ended after the request was handed to it (#2061): the owner may have
+#: admitted it, or not. Never ``peer_offline``, which says nothing was sent.
+PEER_LOST = "peer_lost"
+
+
+async def _call(channel, verb: str, args: dict, timeout: float, *, write: bool = False) -> dict:
+    """One call. A refusal by the owner is returned as ``None``; every other failure is a
+    :class:`ReadError`.
+
+    A channel that closed is ``peer_offline`` for a read (it has no effect, and the peer is not
+    connected now). For a ``write`` it is ``peer_offline`` only when the channel says the
+    request never left (``CallError.dispatched`` is false: refused before anything was queued);
+    otherwise it is ``peer_lost``: the request was queued and the answer never came, so the owner
+    may have carried it out. Nothing here calls again."""
     try:
         return await channel.call(verb, args, timeout=timeout)
     except ch.CallError as exc:
         if exc.code == sharing.NO_GRANT:
             return None
-        raise ReadError("peer_offline" if exc.code == "closed" else exc.code) from None
+        if exc.code == ch.ANSWER_LOST:
+            # The owner's handler ran and its answer was withheld (its byte budget, a size cap).
+            # A read had no effect and is simply asked again later: `busy`, as before. A write
+            # may have been carried out: the same answer as a channel lost under it.
+            raise ReadError(PEER_LOST if write else "busy") from None
+        if exc.code != "closed":
+            raise ReadError(exc.code) from None
+        raise ReadError(PEER_LOST if write and exc.dispatched else "peer_offline") from None
 
 
 async def _re_resolve(fed, peer_id: str, grant_id: str):
@@ -758,6 +797,13 @@ async def read(
     Sending a message a second time is the operator's decision, never this function's: a
     repeated send could deliver it under a grant the owner's operator just changed.
 
+    **A write's lost answer is not a refusal** (#2061). ``peer_offline`` for a write means the
+    request provably never left: no channel, or the channel refused it before queuing anything.
+    A channel that ended after the request was queued is ``peer_lost`` (504): the owner may have
+    carried it out. So is an answer the owner withheld AFTER its handler ran (``answer_lost``:
+    its byte budget or a size cap), which is never passed on as ``busy`` or ``too_large``.
+    It is never retried here; the caller asks ``input.status`` for the same key.
+
     ``revision`` pins the call to a revision the caller was BOUND to earlier (#2059, Continue
     here) and not to whatever the mirror holds now: when the grant moved since, the owner
     refuses, which is the point. A pinned call is therefore never re-resolved (that would be a
@@ -803,7 +849,10 @@ async def read_bound(
     if channel is None:
         raise ReadError("peer_offline")
     used = row.revision if revision is None else revision
-    answer = await _call(channel, verb, {"grant_id": grant_id, "revision": used, **extra}, timeout)
+    # `retry=False` is a write (or the pinned read that gates one): a lost answer is not a refusal.
+    answer = await _call(
+        channel, verb, {"grant_id": grant_id, "revision": used, **extra}, timeout, write=not retry
+    )
     if answer is None:
         if not retry:
             fed.refresh_remote(peer_id)

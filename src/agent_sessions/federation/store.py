@@ -1822,6 +1822,35 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
+    def operation_status(self, grant_id: str, client_key: str) -> dict | None:
+        """What became of ONE message a peer submitted under ``grant_id`` with ``client_key``
+        (``input.status``, #2061): a sent message's stored receipt, a suggestion's state, or
+        ``None`` when this grant has no such key. Keyed by the grant AND the key, so a key of
+        another grant is simply not found. No text, no operation id."""
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            turn = con.execute(
+                "SELECT handoff FROM peer_turns"
+                " WHERE grant_id = ? AND client_key = ? AND via = 'send'",
+                (grant_id, client_key),
+            ).fetchone()
+            if turn is not None:
+                return {"kind": "send", "handoff": turn["handoff"]}
+            row = con.execute(
+                "SELECT suggestion_id, state, handoff FROM suggestions"
+                " WHERE grant_id = ? AND client_key = ?",
+                (grant_id, client_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "kind": "suggest",
+            "suggestion_id": row["suggestion_id"],
+            "state": row["state"],
+            "handoff": row["handoff"],
+        }
+
     def peer_authors(self, session_key: str) -> dict[str, dict]:
         """``{operation_id: {"name", "peer_id", "grant_id", "actor", "via", "edited"}}`` for every
         turn a peer caused in a session. ``name`` is the peer's display name on THIS instance."""

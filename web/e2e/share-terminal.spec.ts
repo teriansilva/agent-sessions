@@ -221,7 +221,7 @@ test("the dialog for a terminal: the limit first on the attention edge, only Vie
   // Share: the grant is made with the TERMINAL session's key, view only.
   await dialog.getByTestId("share-peer-go").click();
   await expect(dialog.getByTestId("share-peer-done")).toHaveText(
-    `Shared with gpu-box until ${date(NOW() + 7 * DAY)}.`,
+    `Shared with gpu-box (View) until ${date(NOW() + 7 * DAY)}.`,
   );
   const post = fake.writes.find((w) => w.method === "POST" && w.path === "/grants")!;
   expect(post.body).toEqual({ session_key: TERM_KEY, peer_id: GPU, expires_in: 7 * DAY, level: "view" });

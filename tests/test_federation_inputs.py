@@ -199,6 +199,13 @@ def expire(st: store.Store, grant_id: str) -> None:
     con.close()
 
 
+def public_status(code: str) -> int:
+    """The HTTP status a receiving route answers a `ReadError` code with."""
+    from agent_sessions.routes import federation as routes
+
+    return routes._read_error(remote.ReadError(code)).status
+
+
 def bell() -> list[dict]:
     return notifications._read(notifications._notifications_path())
 
@@ -383,6 +390,9 @@ async def test_a_terminal_grant_is_view_only_and_takes_no_input(owner, submits):
         assert await owner.refused("input.withdraw", ref(made, suggestion_id="s" * 22)) == (
             "no_grant"
         )
+        # the status read of one's own message (#2061) is an API grant's verb as well
+        key = str(uuid.uuid4())
+        assert await owner.refused("input.status", ref(made, client_key=key)) == "no_grant"
 
     await every_input_verb_refuses(term)
     # A terminal row that says `send` (written behind this build's back) is still no input.
@@ -658,6 +668,7 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
         "input.suggestions",
         "input.withdraw",
         "input.send",
+        "input.status",
         "terminal.frame",  # reads only (#2056)
         # #2059: working together. None of them changes a grant either
         # (`test_federation_together.py` drives each one against the same source scan).
@@ -677,7 +688,9 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
     made_id = (await owner.call("input.suggest", msg(made)))["suggestion_id"]
     await owner.call("input.suggestions", ref(made))
     await owner.call("input.withdraw", ref(made, suggestion_id=made_id))
-    await owner.call("input.send", msg(made))
+    last = msg(made)
+    await owner.call("input.send", last)
+    await owner.call("input.status", ref(made, client_key=last["client_key"]))
     assert (owner.st.get_grant(made.grant_id), owner.st.generation()) == before
     assert [e["event"] for e in owner.st.grant_events(made.grant_id)] == ["granted"]
     assert len(owner.st.list_grants()) == 1
@@ -1373,6 +1386,7 @@ def test_every_input_verb_checks_the_grant_first_and_again_as_its_last_await():
         inputs.input_suggest: "suggest",
         inputs.input_suggestions: None,
         inputs.input_withdraw: None,
+        inputs.input_status: None,
     }
     for handler, need in needs.items():
         tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
@@ -1388,6 +1402,230 @@ def test_every_input_verb_checks_the_grant_first_and_again_as_its_last_await():
             assert ast.unparse(keywords["kind"]) == "grants.KIND_API", handler.__name__
             level = keywords["need"].value if "need" in keywords else None
             assert level == need, handler.__name__
+
+
+# ── input.status: what became of one message (#2061) ──────────────────
+@pytest.mark.anyio
+async def test_status_answers_a_known_send_a_known_suggestion_and_unknown_without_text(
+    owner, submits
+):
+    sending = owner.grant("send")
+    sent = msg(sending, actor=ACTOR)
+    submits.result = {"state": "running", "handoff": "queued"}
+    await owner.call("input.send", sent)
+    answer = await owner.call("input.status", ref(sending, client_key=sent["client_key"]))
+    assert answer == {"known": True, "kind": "send", "handoff": "queued"}
+    assert remote.check_status(answer) is answer
+
+    # a runtime that gave no receipt: known, and nothing is made up for it
+    submits.result = {"state": "running"}
+    quiet = msg(sending)
+    await owner.call("input.send", quiet)
+    answer = await owner.call("input.status", ref(sending, client_key=quiet["client_key"]))
+    assert answer == {"known": True, "kind": "send", "handoff": None}
+
+    suggesting = owner.grant("suggest")
+    proposed = msg(suggesting)
+    made = await owner.call("input.suggest", proposed)
+    args = ref(suggesting, client_key=proposed["client_key"])
+    answer = await owner.call("input.status", args)
+    assert answer == {
+        "known": True,
+        "kind": "suggest",
+        "suggestion_id": made["suggestion_id"],
+        "state": "pending",
+        "handoff": None,
+    }
+    assert remote.check_status(answer) is answer
+    submits.result = {"state": "running", "handoff": "sent"}
+    await inputs.decide_approve(owner.fed, made["suggestion_id"], approver="marcus")
+    answer = await owner.call("input.status", args)
+    assert (answer["state"], answer["handoff"]) == ("approved", "sent")
+
+    # a key nobody used
+    unknown = await owner.call("input.status", ref(sending, client_key=str(uuid.uuid4())))
+    assert unknown == {"known": False} and remote.check_status(unknown) is unknown
+    # the approved suggestion's turn is recorded under `suggestion:<id>`, which is no client key
+    with pytest.raises(ch.BadArgs):
+        verbs.PEER["input.status"].validate(
+            ref(suggesting, client_key=f"suggestion:{made['suggestion_id']}")
+        )
+    # nothing the peer wrote, no operation id, comes back from any of them
+    for g, m in ((sending, sent), (suggesting, proposed)):
+        out = json.dumps(await owner.call("input.status", ref(g, client_key=m["client_key"])))
+        row = owner.st.get_peer_turn(g.grant_id, m["client_key"])
+        assert TEXT not in out and ACTOR not in out
+        assert row is None or row["operation_id"] not in out
+    assert len(submits.delivered) == 3  # a status read delivers nothing
+
+
+@pytest.mark.anyio
+async def test_status_never_tells_about_another_grants_key_and_a_grant_that_ended_is_no_grant(
+    owner, submits
+):
+    mine = owner.grant("send")
+    sent = msg(mine)
+    await owner.call("input.send", sent)
+    key = sent["client_key"]
+    never_used = str(uuid.uuid4())
+
+    # another grant of the SAME peer: that key is unknown there, exactly as an unused one is
+    mine_too = owner.grant("send")
+    assert (
+        await owner.call("input.status", ref(mine_too, client_key=key))
+        == await owner.call("input.status", ref(mine_too, client_key=never_used))
+        == {"known": False}
+    )
+    # another peer under its own grant: unknown, the same answer for a used and an unused key
+    other = trusted(owner.st, "other")
+    theirs = owner.grant("send", peer=other)
+    for k in (key, never_used):
+        assert await owner.call("input.status", ref(theirs, client_key=k), other) == {
+            "known": False
+        }
+    # another peer naming MY grant: refused, the same for a used and an unused key
+    for k in (key, never_used):
+        assert await owner.refused("input.status", ref(mine, client_key=k), other) == "no_grant"
+    # a stale revision, then a revoked grant: no_grant, whatever the key
+    assert (
+        await owner.refused("input.status", {**ref(mine, client_key=key), "revision": 99})
+        == "no_grant"
+    )
+    grants.revoke(owner.st, mine.grant_id)
+    for k in (key, never_used):
+        assert await owner.refused("input.status", ref(mine, client_key=k)) == "no_grant"
+    expired = owner.grant("suggest")
+    proposed = msg(expired)
+    await owner.call("input.suggest", proposed)
+    expire(owner.st, expired.grant_id)
+    args = ref(expired, client_key=proposed["client_key"])
+    assert await owner.refused("input.status", args) == "no_grant"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"client_key": "nope"},
+        {"client_key": "0B9E3C1A-7F52-4C1D-9A6E-3D2F1B0A9C8D"},
+        {"client_key": "0b9e3c1a7f524c1d9a6e3d2f1b0a9c8d"},
+        {"client_key": 7},
+        {"client_key": "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d", "text": "x"},
+        {"client_key": "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d", "operation_id": "x"},
+        {"client_key": "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d", "suggestion_id": "s" * 22},
+    ],
+)
+def test_status_takes_a_grant_and_one_canonical_key_and_nothing_else(args):
+    with pytest.raises(ch.BadArgs):
+        verbs.PEER["input.status"].validate({"grant_id": "g" * 22, "revision": 1, **args})
+    good = {"grant_id": "g" * 22, "revision": 1, "client_key": str(uuid.UUID(int=5))}
+    assert verbs.PEER["input.status"].validate(dict(good)) == good
+    assert verbs.PEER["input.status"].modes == frozenset({ch.MODE_PEER})
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        {"known": False, "handoff": None},
+        {"known": True},
+        {"known": "yes", "kind": "send", "handoff": None},
+        {"known": True, "kind": "send", "handoff": "delivered"},
+        {"known": True, "kind": "send", "handoff": "sent", "text": "x"},
+        {"known": True, "kind": "send", "handoff": "sent", "operation_id": "x"},
+        {"known": True, "kind": "turn", "handoff": "sent"},
+        {"known": True, "kind": "suggest", "state": "pending", "handoff": None},
+        {
+            "known": True,
+            "kind": "suggest",
+            "suggestion_id": "s" * 22,
+            "state": "done",
+            "handoff": None,
+        },
+        {
+            "known": True,
+            "kind": "suggest",
+            "suggestion_id": "s" * 22,
+            "state": "pending",
+            "handoff": None,
+            "text": "x",
+        },
+    ],
+)
+def test_a_status_answer_of_any_other_shape_is_refused_on_the_receiving_side(wrong):
+    with pytest.raises(remote.Invalid):
+        remote.check_status(wrong)
+
+
+def test_the_status_route_is_a_read_re_resolved_once_and_only_for_an_api_grant(
+    auth_cfg, monkeypatch
+):
+    """`GET …/operations/{client_key}` (#2061) is a READ: a refusal is re-resolved once (the
+    mirror refreshed inline, the call repeated once under the refreshed revision), only a
+    canonical UUID reaches the owner, an answer of another shape is refused here, and a mirrored
+    TERMINAL grant is `no_grant` without a call (input is for API sessions only). The write half
+    of the split is `test_a_refused_receiving_write_is_sent_once_…` below."""
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    key = "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d"
+    answers = {"input.status": {"known": True, "kind": "send", "handoff": "uncertain"}}
+    refused: list[str] = []
+    base, asked, background, back_to_stale = _mirrored(c, monkeypatch, answers, refused)
+    ref4 = {"grant_id": "g" * 22, "revision": 4}
+    ref5 = {"grant_id": "g" * 22, "revision": 5}
+
+    r = c.get(f"{base}/operations/{key}")
+    assert r.status_code == 200 and r.json() == answers["input.status"]
+    assert r.headers["cache-control"] == "no-store"
+    assert asked == [("input.status", {**ref4, "client_key": key})]
+    answers["input.status"] = {"known": False}
+    assert c.get(f"{base}/operations/{key}").json() == {"known": False}
+    # only a canonical UUID is a key; nothing else reaches the owner
+    asked.clear()
+    for bad in (key.upper(), uuid.UUID(key).hex, "nope", f"suggestion:{'s' * 22}"):
+        assert c.get(f"{base}/operations/{bad}").status_code == 422, bad
+    assert c.post(f"{base}/operations/{key}", headers=hdr).status_code == 405
+    assert asked == []
+    # an answer of the wrong shape is refused here
+    answers["input.status"] = {"known": True, "kind": "send", "handoff": "sent", "text": "x"}
+    assert c.get(f"{base}/operations/{key}").status_code == 502
+    answers["input.status"] = {"known": False}
+
+    # a refusal is re-resolved once: refreshed inline, asked again under revision 5
+    assert back_to_stale()
+    asked.clear()
+    refused[:] = ["input.status"]
+    r = c.get(f"{base}/operations/{key}")
+    assert r.status_code == 200 and r.json() == {"known": False}
+    assert asked == [
+        ("input.status", {**ref4, "client_key": key}),
+        ("refresh", {}),
+        ("input.status", {**ref5, "client_key": key}),
+    ]
+    assert background == [] and refused == []
+
+    # a mirrored terminal grant: `no_grant` here, and the owner is never asked
+    fed = c.app.state.federation
+    peer_id = base.split("/")[4]
+    (row,) = fed.store.list_remote(peer_id)
+    assert fed.store.replace_remote(
+        peer_id,
+        [
+            {
+                "grant_id": row.grant_id,
+                "engine": row.engine,
+                "native_id": row.native_id,
+                "title": row.title,
+                "level": "view",
+                "expires_at": row.expires_at,
+                "revision": row.revision,
+                "kind": "terminal",
+            }
+        ],
+    )
+    asked.clear()
+    r = c.get(f"{base}/operations/{key}")
+    assert r.status_code == 404 and r.json()["code"] == "no_grant"
+    assert asked == []
 
 
 # ── withdrawal with the grant, the notification and its retraction ────
@@ -1830,7 +2068,11 @@ NEW_WRITES = [
     ("patch", f"/api/federation/grants/{'g' * 22}",
      {"level": "send", "revision": 1, "accept_risk": True}),
 ]  # fmt: skip
-NEW_READS = ["/api/federation/suggestions", f"{REMOTE}/suggestions"]
+NEW_READS = [
+    "/api/federation/suggestions",
+    f"{REMOTE}/suggestions",
+    f"{REMOTE}/operations/0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d",
+]
 
 
 def _request(c, method, url, body, headers):
@@ -2467,3 +2709,135 @@ def test_two_real_instances_suggest_approve_send_and_revoke(
     assert [t["text"] for t in snap["turns"]] == ["please run the tests", "now deploy it"]
     _wait(lambda: mirrored("send") is None)
     assert a.state()["peers"][0]["connected"]  # revoking a grant is not revoking the peer
+
+
+@pytest.mark.parametrize("lost_by", ["the channel ends", "the reply budget is spent"])
+def test_an_answer_lost_after_the_delivery_is_never_reported_as_not_sent(
+    two_instances,
+    host,
+    project,
+    monkeypatch,
+    lost_by,
+):
+    """#2061: the owner admits and delivers a message, and its answer never reaches the
+    receiver: the channel ends first, or the owner's byte budget for answers is spent by the time
+    the receipt is written. The receiving route must not say `503 peer_offline` or `429 busy`
+    ("nothing was sent"): it answers `504 peer_lost`, the status read of the SAME key says what
+    happened, and nothing is sent twice. With no channel at all the request provably never left:
+    `503`."""
+    a, b = two_instances
+    a_id, b_id = _pair_instances(a, b)
+    monkeypatch.setattr(shares, "session_state", lambda prov, native: "live")
+    monkeypatch.setattr(notices, "_session_title", lambda key: TITLE)
+    loop = a.server.servers[0].get_loop()
+
+    def on_a(coro):
+        return asyncio.run_coroutine_threadsafe(coro, loop).result(60)
+
+    key = on_a(runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    native = key.partition(":")[2]
+    monkeypatch.setattr(
+        sharing,
+        "_session_rows",
+        lambda _engine: {
+            native: SimpleNamespace(uuid=native, archived=False, first_user_message="")
+        },
+    )
+    made = a.post(
+        "/grants", {"session_key": key, "peer_id": b_id, "level": "send", "accept_risk": True}
+    )
+    assert made.status_code == 201, made.text
+    grant_id = made.json()["grant"]["grant_id"]
+    base = f"/api/federation/remote/{a_id}/{grant_id}"
+
+    def mirrored():
+        rows = b.http.get("/api/federation/remote", headers=b.read).json()["remote"]
+        return next((r for r in rows if r["level"] == "send"), None)
+
+    assert _wait(mirrored)
+
+    # The owner's submit, as it is; then its answer cannot reach the receiver.
+    real_submit = inputs._submit
+    submitted: list[str] = []
+    cut = {"armed": True}
+
+    async def submit_then_lose_the_channel(session_key, operation_id, text, **kwargs):
+        receipt = await real_submit(session_key, operation_id, text, **kwargs)
+        submitted.append(operation_id)
+        if cut["armed"]:
+            cut["armed"] = False
+            channel = a.fed.channel_for(b_id)
+            if lost_by == "the channel ends":
+                channel.close("the test cut it")
+            else:  # far below zero: the refill does not rescue it before the receipt is written
+                channel._bytes_out._tokens = -1e12
+        return receipt
+
+    monkeypatch.setattr(inputs, "_submit", submit_then_lose_the_channel)
+    message = {"client_key": str(uuid.uuid4()), "text": "deploy it exactly once"}
+    lost = b.http.post(f"{base}/turns", json=message, headers=b.write, timeout=60)
+    assert (lost.status_code, lost.json()["code"]) == (504, "peer_lost"), lost.text
+
+    # It WAS delivered: the owner has the operation and the session has the turn.
+    op = _wait(lambda: a.fed.store.get_peer_turn(grant_id, message["client_key"]))["operation_id"]
+    assert submitted == [op]
+    on_a(settle(key, op))
+    assert [t["text"] for t in on_a(runtime.snapshot(key))["turns"]] == ["deploy it exactly once"]
+    if lost_by == "the reply budget is spent":
+        # while it is spent, a READ is `busy` as it always was (it has no effect to hide)
+        spent = b.http.get(f"{base}/operations/{message['client_key']}", headers=b.read)
+        assert (spent.status_code, spent.json()["code"]) == (429, "busy")
+        budget = a.fed.channel_for(b_id)._bytes_out
+        budget._tokens = budget._cap
+
+    # The channel answers again; the ORIGINAL key's status says so, and nothing was sent again.
+    def asked():
+        r = b.http.get(f"{base}/operations/{message['client_key']}", headers=b.read)
+        return r.status_code == 200 and r.json()
+
+    status = _wait(asked)
+    assert status["known"] is True and status["kind"] == "send"
+    assert submitted == [op]
+
+    # No channel at all: the request provably never left, and only that is `503 peer_offline`.
+    monkeypatch.setattr(b.fed, "channel_for", lambda peer_id: None)
+    never = {"client_key": str(uuid.uuid4()), "text": "never leaves"}
+    for path in ("turns", "suggest"):
+        r = b.http.post(f"{base}/{path}", json=never, headers=b.write)
+        assert (r.status_code, r.json()["code"]) == (503, "peer_offline"), path
+    assert a.fed.store.get_peer_turn(grant_id, never["client_key"]) is None
+    assert submitted == [op]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("retry", [True, False], ids=["read", "write"])
+async def test_only_a_write_tells_a_lost_answer_from_a_request_that_never_left(retry):
+    """`remote._call`'s provenance (#2061). A channel that closed is `peer_offline` for a read
+    either way. For a write it is `peer_offline` only when the channel says nothing was queued;
+    a `closed` of unknown provenance (the default) is `peer_lost`. One call, never a second."""
+
+    class Channel:
+        def __init__(self, error):
+            self.error, self.calls = error, 0
+
+        async def call(self, verb, args, *, timeout):
+            self.calls += 1
+            raise self.error
+
+    async def code(error) -> str:
+        channel = Channel(error)
+        with pytest.raises(remote.ReadError) as exc:
+            await remote._call(channel, "input.send", {}, 1.0, write=not retry)
+        assert channel.calls == 1
+        return exc.value.code
+
+    assert await code(ch.CallError("closed", dispatched=False)) == "peer_offline"
+    assert await code(ch.CallError("closed")) == ("peer_offline" if retry else "peer_lost")
+    assert await code(ch.CallError("timeout")) == "timeout"
+    # an answer withheld after the owner's handler ran: a read is asked again, a write is unknown
+    assert await code(ch.CallError(ch.ANSWER_LOST)) == ("busy" if retry else "peer_lost")
+    # a refusal decided before a handler runs, or by the handler: passed on as it is
+    assert await code(ch.CallError("busy")) == "busy"
+    assert public_status("peer_lost") == 504 and public_status("peer_offline") == 503

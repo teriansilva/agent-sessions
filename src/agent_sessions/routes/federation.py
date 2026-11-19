@@ -52,6 +52,10 @@ minted here:
   expected_revision?}``
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/suggestions``
 * ``POST   /api/federation/remote/{peer_id}/{grant_id}/suggestions/{id}/withdraw``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/operations/{client_key}`` — what became
+  of one message this instance submitted (``input.status``, #2061): ``{known: false}``, a sent
+  message's ``handoff``, or a suggestion's ``state``. A read: no text goes either way. Unknown
+  is "the owner has no such key now", never "it did not arrive"
 
 Working together on a shared session (#2059). The owner's side:
 
@@ -87,16 +91,23 @@ request is stored here):
 * ``POST   /api/federation/remote/{peer_id}/{grant_id}/continue/{handle}/create`` — ``{cwd}``:
   re-reads the source with the handle's bound revision, then creates; else nothing is created
 
-No channel answers ``503 peer_offline``. A refusal by the owner to a READ is re-resolved once (the
-mirror is refreshed and the call repeated under the current revision); a grant that is still
-refused, or no longer listed, answers ``404``. A refused WRITE is never repeated: it answers
-``404`` at once and the mirror is refreshed in the background. The writes: suggest, turns,
+No channel answers ``503 peer_offline``: for a write that is a statement that nothing was sent,
+so a write whose channel ended after the request was handed to it answers ``504 peer_lost``
+instead (it may have been carried out; ask ``…/operations/{client_key}``), as a write that timed
+out answers ``504 timeout``. A read answers ``503 peer_offline`` in both cases. An answer the
+owner withheld after its handler ran (``answer_lost``: its byte budget, a size cap) is
+``504 peer_lost`` for a write as well, and ``429 busy`` for a read.
+
+A refusal by the owner to a READ is re-resolved once (the mirror is refreshed and the call
+repeated under the current revision); a grant that is still refused, or no longer listed,
+answers ``404``. A refused WRITE is never repeated: it answers ``404`` at once and the mirror
+is refreshed in the background. The writes: suggest, turns,
 withdraw, and of working together the access request, the decision answer, a note's add, edit,
 delete and read mark, and Continue here's create (pinned to its handle's revision). The reads:
-snapshot, events, history, frame, suggestions, access status, the notes thread, and Continue
-here's prepare (its handle is bound to the revision that ANSWERED). What a peer returns is
-validated (``federation/remote.py``) and passed on as data; it is never a path, a key or HTML
-here.
+snapshot, events, history, frame, suggestions, a submitted message's status, access status, the
+notes thread, and Continue here's prepare (its handle is bound to the revision that ANSWERED).
+What a peer returns is validated (``federation/remote.py``) and passed on as data; it is never a
+path, a key or HTML here.
 
 The wire (no cookie, no CSRF, no ``AUTH_MODE``):
 
@@ -184,6 +195,9 @@ _READ_STATUS = {
     "conflict": 409,
     "invalid": 422,
     "timeout": 504,
+    # A write whose answer was lost with the channel: it may have been carried out. The same
+    # class as a timeout, never the 503 that says nothing was sent.
+    remote.PEER_LOST: 504,
     "held": 409,
     "not_found": 404,
     "too_large": 413,
@@ -199,6 +213,10 @@ _READ_DETAIL = {
     "conflict": "the session's history changed — read it again",
     "invalid": "that request isn't valid for this session",
     "timeout": "the other instance did not answer in time — send it again to see the outcome",
+    remote.PEER_LOST: (
+        "the connection to the other instance ended before it answered — it may or may not"
+        " have arrived"
+    ),
     "held": "that session is part of a mission right now — you can watch, not write",
     "not_found": "no such suggestion or note",
     "too_large": "that message is too long to send to another instance",
@@ -903,6 +921,35 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 {"suggestion_id": suggestion_id},
                 check=remote.check_suggestion,
                 retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run)()
+
+    @app.get(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/operations/{{client_key}}",
+        dependencies=[Depends(logged_in)],
+    )
+    async def federation_remote_operation(
+        peer_id: str, grant_id: str, client_key: str
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            try:
+                canonical = len(client_key) == 36 and str(uuid.UUID(client_key)) == client_key
+            except ValueError:
+                canonical = False
+            if not canonical:
+                raise FederationError("invalid", "client_key must be a UUID in its canonical form")
+            # A read: a refusal is re-resolved once, as for the other receiving reads. An API
+            # grant's verb: a mirrored terminal grant is `no_grant` here, without a call.
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "input.status",
+                {"client_key": client_key},
+                check=remote.check_status,
+                kind=grants.KIND_API,
             )
 
         return await guarded(run)()

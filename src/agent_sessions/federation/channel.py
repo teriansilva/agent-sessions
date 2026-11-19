@@ -58,6 +58,13 @@ SEND_QUEUE_MAX = 2048
 # Stream reset codes (one byte on the wire).
 RESET_REFUSED = 1  # unknown verb, wrong mode, bad arguments
 RESET_BUSY = 2  # a budget said no
+#: The code of an answer that existed and could not be delivered (#2061): the handler RAN, and
+#: its answer was then withheld (the byte budget, the size cap) or refused on arrival (the
+#: caller's own size cap). It says nothing about the effect. Never ``busy`` or ``too_large``,
+#: which a caller may read as "not carried out": those are for refusals decided before a handler
+#: runs (admission, the open-info cap) or by the handler itself.
+ANSWER_LOST = "answer_lost"
+_ANSWER_LOST_BODY = b'{"ok":false,"code":"answer_lost"}'
 RESET_OVERRUN = 3  # the sender ignored the flow-control window
 
 _MUX_HEADER = 8
@@ -76,11 +83,17 @@ class HandshakeRefused(Exception):
 
 
 class CallError(Exception):
-    """A call did not produce an ``ok`` answer. ``code`` is a short stable word."""
+    """A call did not produce an ``ok`` answer. ``code`` is a short stable word.
 
-    def __init__(self, code: str) -> None:
+    ``dispatched`` is ``False`` only when the request provably never left: :meth:`Channel.call`
+    raised before it handed the mux anything to send. Everywhere else it is ``True``, the
+    default, which reads "it may have reached the other side": a caller that must not report an
+    effect as refused when it may have happened reads this, never the code alone."""
+
+    def __init__(self, code: str, *, dispatched: bool = True) -> None:
         super().__init__(code)
         self.code = code
+        self.dispatched = dispatched
 
 
 class VerbError(Exception):
@@ -117,7 +130,8 @@ class Budgets:
     streams: int = 32  # concurrent inbound calls
     calls_per_minute: int = 600
     #: Bytes this side reads from, and answers to, the peer per minute. Reading past it waits
-    #: (backpressure, bounded memory); an answer past it is refused as ``busy``.
+    #: (backpressure, bounded memory); an answer past it is withheld and
+    #: ``answer_lost`` goes out in its place (the handler ran: never ``busy``).
     bytes_per_minute: int = 64 * 1024 * 1024
     violations: int = 8  # then the channel closes
 
@@ -480,12 +494,18 @@ class Channel:
         """Call ``verb`` on the other side and return its ``result`` dict.
 
         Raises :class:`CallError` with the answer's code, ``"refused"`` when the other side reset
-        the stream, ``"timeout"``, or ``"closed"``."""
+        the stream, ``"timeout"``, ``"closed"``, or ``"answer_lost"`` (:data:`ANSWER_LOST`: the
+        verb ran and its answer did not arrive, on either side's cap or budget).
+
+        **The dispatch boundary is ``self._mux.open``**: it queues the request's frame for the
+        writer. The two errors raised before it carry ``dispatched=False`` (nothing was queued,
+        so nothing can have been sent). Every error after it leaves the default: whether the
+        queued frame reached the other side before the channel ended is not known here."""
         if self._closed.is_set():
-            raise CallError("closed")
+            raise CallError("closed", dispatched=False)
         info = json.dumps({"verb": verb, "args": args or {}}, separators=(",", ":")).encode()
         if len(info) > OPEN_INFO_MAX:
-            raise CallError("too_large")
+            raise CallError("too_large", dispatched=False)
         self.stats.calls_out += 1
         stream = self._mux.open(info)
         try:
@@ -498,8 +518,9 @@ class Channel:
                         break
                     body += chunk
                     if len(body) > ANSWER_MAX:
+                        # The other side ran the verb and answered; this side will not take it.
                         stream.reset(RESET_OVERRUN)
-                        raise CallError("too_large")
+                        raise CallError(ANSWER_LOST)
         except TimeoutError:
             stream.reset(RESET_BUSY)
             raise CallError("timeout") from None
@@ -572,12 +593,23 @@ class Channel:
             except Exception:
                 log.exception("federation verb %s failed", verb.name)
                 answer = {"ok": False, "code": "internal"}
-            body = encode_answer(answer)
+            # From here on the handler HAS RUN: whatever it did, it did. An answer that cannot
+            # go out is replaced by `answer_lost`, never by a code that reads "not carried out"
+            # (#2061: a delivered message once came back as `busy`). The replacement is one fixed
+            # 33-byte frame that is not charged to the byte budget; a peer gets at most one per
+            # admitted call, so the bypass is bounded by the call budget (600 a minute after a
+            # burst of 600: under 40 KiB in any minute). An answer that cannot even be encoded
+            # is the same case.
+            try:
+                body = encode_answer(answer)
+            except (TypeError, ValueError, RecursionError):
+                log.exception("federation verb %s answered what cannot be sent", verb.name)
+                body = _ANSWER_LOST_BODY
             if len(body) > ANSWER_MAX:
-                body = b'{"ok":false,"code":"too_large"}'
-            elif not self._bytes_out.take(len(body)):
+                body = _ANSWER_LOST_BODY
+            elif body is not _ANSWER_LOST_BODY and not self._bytes_out.take(len(body)):
                 self.stats.busy += 1
-                body = b'{"ok":false,"code":"busy"}'
+                body = _ANSWER_LOST_BODY
             await stream.write(body)
             await stream.end()
         except hf_mux.StreamReset:

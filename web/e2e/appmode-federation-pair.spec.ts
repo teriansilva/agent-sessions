@@ -112,6 +112,72 @@ test("two real instances pair through the page and list each other as connected"
     await expect(beta.getByTestId("remote-empty")).toHaveText("This share is no longer available.");
     await expect(beta.getByTestId("remote-state")).toHaveText("unavailable");
     await expect(beta.locator("[data-turn]")).toHaveCount(0);
+
+    // #2061, against the real routes. This harness cannot host an API session (an instance has
+    // no agent runtime), so suggest → approve → the labelled turn is NOT shown here: that path's
+    // evidence is `tests/test_federation_inputs.py`
+    // (`test_two_real_instances_suggest_approve_send_and_revoke`). What two real servers CAN
+    // show is asserted instead:
+    // (1) the real grants route offers the three levels, never defaults to Send, and refuses
+    //     Send without `accept_risk` BEFORE it looks at anything else (so the dialog's
+    //     acknowledgement is not the only thing between an operator and a Send grant);
+    const real = await alpha.evaluate(async (peerId) => {
+      const config = (await (await fetch("/api/config")).json()) as { csrf: string };
+      const list = await (await fetch(`/api/federation/grants?peer=${peerId}`)).json();
+      const post = async (body: Record<string, unknown>) => {
+        const r = await fetch("/api/federation/grants", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": config.csrf },
+          body: JSON.stringify(body),
+        });
+        return { status: r.status, code: ((await r.json()) as { code?: string }).code };
+      };
+      const base = { session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f", peer_id: peerId };
+      return {
+        levels: list.levels,
+        default_level: list.default_level,
+        send_default: list.default_expires_in?.send,
+        send_max: list.max_expires_in_by_level?.send,
+        unticked: await post({ ...base, level: "send", expires_in: 3600 }),
+        falsy: await post({ ...base, level: "send", expires_in: 3600, accept_risk: false }),
+        tooLong: await post({ ...base, level: "send", expires_in: 86401, accept_risk: true }),
+        after: (await (await fetch(`/api/federation/grants?peer=${peerId}`)).json()).grants.length,
+      };
+    }, betaId);
+    expect(real.levels).toEqual(["view", "suggest", "send"]);
+    expect(real.default_level).toBe("view");
+    expect(real.send_default).toBe(3600); // the dialog's 1 hour
+    expect(real.send_max).toBe(24 * 3600); // ...and its 24 hours
+    expect(real.unticked).toEqual({ status: 422, code: "risk" });
+    expect(real.falsy).toEqual({ status: 422, code: "risk" });
+    expect(real.tooLong.status).toBe(422);
+    expect(real.after).toBe(0);
+    // (2) the real status route, asked by the real pane for a request "in flight before a
+    //     reload" under a share that does not exist: the receiving server answers 404 at once
+    //     (its mirror has no such share, so the owner is not asked; the owner's own refusal of
+    //     `input.status` is pinned in `tests/test_federation_inputs.py`), and the pane of that
+    //     share says "could not check", never "did not arrive", and resubmits nothing.
+    const leftover = {
+      peer_id: alphaId,
+      grant_id: "g7Jx9aBcDeFgHiJkLmNoPq",
+      client_key: "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d",
+      kind: "send",
+      started_at: Date.now(),
+    };
+    const writes: string[] = [];
+    beta.on("request", (r) => {
+      if (r.method() !== "GET" && /\/api\/federation\/remote\//.test(r.url())) writes.push(r.url());
+    });
+    const direct = await beta.evaluate(async (url) => (await fetch(url)).status, `/api/federation/remote/${alphaId}/${leftover.grant_id}/operations/${leftover.client_key}`);
+    expect(direct).toBe(404);
+    await beta.evaluate((op) => sessionStorage.setItem("bl-remote-ops", JSON.stringify([op])), leftover);
+    await beta.reload();
+    await expect(beta.getByTestId("remote-empty")).toHaveText("This share is no longer available.");
+    await expect(beta.getByTestId("remote-reload-notice")).toHaveText(
+      "Could not check a message you were sending before the reload.",
+    );
+    await expect(beta.getByTestId("remote-pane")).not.toContainText(/not sent|did not (arrive|reach)/i);
+    expect(writes).toEqual([]);
   } catch (e) {
     console.error(`alpha:\n${pair.logs.alpha}\nbeta:\n${pair.logs.beta}`);
     throw e;

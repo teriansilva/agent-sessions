@@ -32,9 +32,62 @@ function stateLabel(state: string): string | null {
   }
 }
 
+/** The attribution of a turn a paired instance caused (#2057, #2061): the peer badge, the word
+ *  PEER where an operator's turn says OPERATOR, and whether the owner changed a suggestion before
+ *  approving it ("edited by you" in the owner's own pane, "edited" for everyone else).
+ *
+ *  THE one place this label is built: the public viewer and the remote pane get it through
+ *  `ShareTurn`, and the owner's pane (`StructuredPane`'s message header) renders this component,
+ *  so a peer's turn reads the same everywhere and never passes for the operator's. The name is a
+ *  text node: whatever a peer is called, it is never markup. Self-contained (glyph and styles
+ *  are this module's): the public viewer's bundle reaches nothing of the app. */
+export function PeerAttribution({
+  author,
+  owner = false,
+}: {
+  author: { name: string; edited?: boolean };
+  /** The owner's own pane: an edited suggestion was edited by THEM. */
+  owner?: boolean;
+}) {
+  return (
+    <span className={styles.peerWho} data-testid="peer-attribution">
+      <span className={styles.peerBadge} title={`Sent by ${author.name}, a paired instance`}>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect x="3" y="4" width="7" height="7" />
+          <rect x="14" y="13" width="7" height="7" />
+          <path d="M10 7.5h4.5V13M14 16.5H9.5V11" />
+        </svg>
+        <span className={styles.peerName}>{author.name}</span>
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>Peer</span>
+      {author.edited && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span data-testid="peer-edited">{owner ? "edited by you" : "edited"}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
 /** The label on a person's block. The operator's is the display name they chose (#1942), else
  *  "Operator" — never their login name, which a visitor never learns. */
-function who(turn: PublicTurn, operatorName: string | null | undefined): string {
+function who(
+  turn: PublicTurn,
+  operatorName: string | null | undefined,
+  owner: boolean,
+): ReactNode {
+  if (turn.author?.via === "peer") return <PeerAttribution author={turn.author} owner={owner} />;
   return turn.author?.via === "public_link"
     ? `${turn.author.name} · via public link`
     : operatorName || "Operator";
@@ -48,6 +101,7 @@ function whoAvatar(
   operatorAvatar: string | null | undefined,
   operatorName: string | null | undefined,
 ): AvatarSpec {
+  if (turn.author?.via === "peer") return { kind: "peer" };
   if (turn.author?.via === "public_link") return { kind: "who", name: turn.author.name };
   const initial = operatorName ? whoInitial(operatorName) : "O";
   return operatorAvatar
@@ -79,6 +133,8 @@ export function ShareTurn({
   operatorName,
   queueAction,
   images = true,
+  owner = false,
+  foot,
 }: {
   turn: PublicTurn;
   /** The operator's avatar version (public viewer only), else none. */
@@ -88,6 +144,10 @@ export function ShareTurn({
   queueAction?: ReactNode;
   /** `false`: an attachment is never loaded, whatever it carries; it shows as its name. */
   images?: boolean;
+  /** The reader owns the session (an edited suggestion was edited by them). */
+  owner?: boolean;
+  /** A line under the person's message (the remote pane's delivery state of its own message). */
+  foot?: ReactNode;
 }) {
   const label = stateLabel(t.state);
   const attachments = t.attachments ?? [];
@@ -97,9 +157,12 @@ export function ShareTurn({
   return (
     <section className={styles.turn} data-turn={t.turn_id}>
       {!own && (t.text || attachments.length > 0) && (
-        <div className={styles.block} data-author={t.author ? "visitor" : "operator"}>
+        <div
+          className={styles.block}
+          data-author={t.author?.via === "peer" ? "peer" : t.author ? "visitor" : "operator"}
+        >
           <Avatar spec={whoAvatar(t, operatorAvatar, operatorName)} className={styles.avatar} />
-          <p className={styles.who}>{who(t, operatorName)}</p>
+          <p className={styles.who}>{who(t, operatorName, owner)}</p>
           {t.text && <p className={styles.text}>{t.text}</p>}
           {attachments.length > 0 && (
             <div className={styles.images}>
@@ -126,6 +189,7 @@ export function ShareTurn({
               {queueAction}
             </p>
           )}
+          {foot}
         </div>
       )}
       {(t.reply || tools.length > 0 || t.state === "running" || (own && label)) && (

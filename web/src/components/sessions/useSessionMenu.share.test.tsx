@@ -19,8 +19,22 @@ vi.mock("../shares/SharePubliclyModal", () => ({
   ),
 }));
 vi.mock("../federation/SharePeerModal", () => ({
-  SharePeerModal: ({ sessionKey, kind }: { sessionKey: string; kind?: string }) => (
-    <div role="dialog" aria-label="Share with a peer" data-key={sessionKey} data-kind={kind} />
+  SharePeerModal: ({
+    sessionKey,
+    kind,
+    missionHeld,
+  }: {
+    sessionKey: string;
+    kind?: string;
+    missionHeld?: boolean;
+  }) => (
+    <div
+      role="dialog"
+      aria-label="Share with a peer"
+      data-key={sessionKey}
+      data-kind={kind}
+      data-held={String(!!missionHeld)}
+    />
   ),
 }));
 
@@ -177,6 +191,16 @@ test("Peer and Public open their dialogs from the hook, keyed to the session", a
   await userEvent.click(screen.getByRole("button", { name: "share-public" }));
   expect(screen.getByRole("dialog", { name: "Share publicly" })).toHaveAttribute("data-key", s.id);
   expect(screen.queryByRole("dialog", { name: "Share with a peer" })).toBeNull();
+});
+
+test("the Peer dialog is told when a mission holds the session, as the pane's is (#2061)", async () => {
+  const { unmount } = mount(sess("claude-api"));
+  await userEvent.click(screen.getByRole("button", { name: "share-peer" }));
+  expect(screen.getByRole("dialog", { name: "Share with a peer" })).toHaveAttribute("data-held", "false");
+  unmount();
+  mount(sess("claude-api", { mission: { id: "msn_1", title: "Ship it", state: "running" } }));
+  await userEvent.click(screen.getByRole("button", { name: "share-peer" }));
+  expect(screen.getByRole("dialog", { name: "Share with a peer" })).toHaveAttribute("data-held", "true");
 });
 
 test("a terminal session's Peer dialog is the terminal kind", async () => {

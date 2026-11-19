@@ -471,6 +471,8 @@ export function useSessionMenu(
           sessionKey={s.id}
           title={s.title || "BattleLab session"}
           agent={engineLabel(s.engine)}
+          // As the pane's own mount (#2061): a mission-held session is never offered Send.
+          missionHeld={!!s.mission}
           onClose={() => setSharing(null)}
           returnFocusTo={sharing.returnFocus}
         />

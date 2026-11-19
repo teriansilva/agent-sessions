@@ -337,6 +337,26 @@ def test_a_call_on_a_closed_channel_fails_fast():
         with pytest.raises(ch.CallError) as exc:
             await a.call("t.echo", {"text": "x"})
         assert exc.value.code == "closed"
+        # refused before anything was queued: the request provably never left (#2061)
+        assert exc.value.dispatched is False
+
+    run(go())
+
+
+def test_a_channel_that_ends_under_a_call_does_not_say_the_request_never_left():
+    """The dispatch boundary (#2061): once `call` handed the mux its frame, a channel that ends
+    is `closed` with `dispatched` true. Whether the other side got it is not known here."""
+
+    async def go():
+        a, b, _, _, tasks = await _connect()
+        call = asyncio.create_task(a.call("t.slow", timeout=5))
+        await until(lambda: b.stats.calls_in == 1)  # the other side admitted it
+        a.close("test")
+        with pytest.raises(ch.CallError) as exc:
+            await call
+        assert exc.value.code == "closed" and exc.value.dispatched is True
+        assert ch.CallError("anything").dispatched is True  # the default is the unsafe-to-assume
+        await _shutdown(a, b, tasks)
 
     run(go())
 
@@ -466,7 +486,7 @@ def test_a_large_answer_is_chunked_and_an_oversize_one_is_refused():
         assert max(len(w) for w in b_end.sent) <= ch.WIRE_MAX
         with pytest.raises(ch.CallError) as exc:
             await a.call("t.huge")
-        assert exc.value.code == "too_large"
+        assert exc.value.code == ch.ANSWER_LOST  # the handler ran: never "too_large" (#2061)
         await _shutdown(a, b, tasks)
 
     run(go())
@@ -493,7 +513,7 @@ def test_the_bucket_reports_how_long_an_overdraft_takes_to_clear():
     assert bucket.take() is False
 
 
-def test_an_answer_past_the_byte_budget_is_refused_as_busy():
+def test_an_answer_past_the_byte_budget_is_withheld_as_lost_never_as_busy():
     async def _blob(channel, args):
         return {"blob": "y" * 5000}
 
@@ -504,7 +524,71 @@ def test_an_answer_past_the_byte_budget_is_refused_as_busy():
         assert len((await a.call("t.blob"))["blob"]) == 5000
         with pytest.raises(ch.CallError) as exc:
             await a.call("t.blob")
-        assert exc.value.code == "busy" and b.stats.busy == 1
+        assert exc.value.code == ch.ANSWER_LOST and b.stats.busy == 1
+        await _shutdown(a, b, tasks)
+
+    run(go())
+
+
+def test_an_answer_suppressed_after_the_handler_ran_never_says_it_was_not_carried_out():
+    """#2061, on a real encrypted pair: a verb with an EFFECT runs, and then its answer cannot
+    go out (the byte budget is spent, the answer is over the cap, it cannot be encoded). The
+    caller must not read a code that means "refused": every one of them is `answer_lost`, in one
+    small frame. A refusal decided BEFORE a handler runs is still `busy`, with no effect."""
+    effects: list[str] = []
+
+    async def _deliver(channel, args):
+        effects.append("delivered")
+        return {"receipt": "sent"}
+
+    async def _deliver_huge(channel, args):
+        effects.append("delivered huge")
+        return {"blob": "y" * (ch.ANSWER_MAX + 1)}
+
+    async def _deliver_unsendable(channel, args):
+        effects.append("delivered unsendable")
+        return {"receipt": object()}
+
+    verbs = {
+        v.name: v
+        for v in (
+            ch.Verb("t.deliver", frozenset({ch.MODE_PEER}), _no_args, _deliver),
+            ch.Verb("t.huge", frozenset({ch.MODE_PEER}), _no_args, _deliver_huge),
+            ch.Verb("t.unsendable", frozenset({ch.MODE_PEER}), _no_args, _deliver_unsendable),
+        )
+    }
+
+    async def code(a, verb) -> str:
+        with pytest.raises(ch.CallError) as exc:
+            await a.call(verb, timeout=5)
+        assert exc.value.dispatched is True
+        return exc.value.code
+
+    async def go():
+        a, b, _, b_end, tasks = await _connect(verbs=verbs)
+        assert await a.call("t.deliver") == {"receipt": "sent"}
+        # the minute's answer bytes are spent (far below zero: the refill does not rescue it)
+        b._bytes_out._tokens = -1e12
+        before = len(b_end.sent)
+        assert await code(a, "t.deliver") == ch.ANSWER_LOST
+        assert effects == ["delivered", "delivered"]  # it RAN: "busy" would have been a lie
+        assert b.stats.busy == 1
+        # what went out instead: the one fixed frame, 33 bytes of answer, not charged
+        assert len(ch._ANSWER_LOST_BODY) == 33
+        assert sum(len(w) for w in b_end.sent[before:]) < 256
+        assert b._bytes_out._tokens <= -1e12 + 1e9
+        b._bytes_out._tokens = b._bytes_out._cap
+        assert await code(a, "t.huge") == ch.ANSWER_LOST
+        assert await code(a, "t.unsendable") == ch.ANSWER_LOST
+        assert effects[2:] == ["delivered huge", "delivered unsendable"]
+        await _shutdown(a, b, tasks)
+
+        # decided before any handler runs: `busy`, and nothing happened
+        a, b, _, _, tasks = await _connect(verbs=verbs, budgets=ch.Budgets(calls_per_minute=1))
+        await a.call("t.deliver")
+        ran = len(effects)
+        assert await code(a, "t.deliver") == "busy"
+        assert len(effects) == ran
         await _shutdown(a, b, tasks)
 
     run(go())

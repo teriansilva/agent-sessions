@@ -251,6 +251,42 @@
   text-transform: uppercase;
   color: var(--text-3);
 }
+/* A paired instance's turn (#2061): the dashed badge of an ORIGIN (never a status colour, never
+   the accent), then the word PEER. Mirrors `components/federation/Remote.module.css` `.badge`;
+   kept here because the public viewer's bundle reaches nothing of the app. */
+.peerWho {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-2);
+}
+.peerBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 5px;
+  font: 600 var(--fs-micro) / 15px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px dashed var(--text-2);
+  white-space: nowrap;
+}
+.peerBadge svg {
+  flex: none;
+}
+.peerName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.block[data-author="peer"] .who {
+  color: var(--text-2);
+}
 .block[data-author="visitor"] .who {
   color: var(--text-2);
 }

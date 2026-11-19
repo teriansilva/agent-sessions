@@ -8,6 +8,11 @@ import { api } from "../../lib/api";
 import { relTime } from "../../lib/format";
 import styles from "./NotificationBell.module.css";
 import { HQ_DISPATCHES_PATH, hqDispatchPath } from "../../lib/routes";
+import {
+  PEER_SUGGESTION_EVENT,
+  isPeerSuggestionNotice,
+  peerSuggestionTitle,
+} from "../../lib/federationInput";
 import { useEngineRoster } from "../../app/engineRoster";
 import { bellGroups } from "./notificationFeed";
 import { targetPath } from "./notificationLinks";
@@ -77,6 +82,18 @@ export function NotificationBell() {
   // actionable hands the operator a number they cannot clear by acting (#852 rule 5). Shown as its
   // own, non-decision signal — the console is degraded, and saying so beats a silent wrong count.
   const { items, unread, settled, uncertain } = useNotifications();
+  // A peer's suggestion arrived or went (#2061): the open session's pane reads its list now
+  // instead of at its next poll. The event carries nothing; the pane asks the server.
+  const peerNotices = items
+    .filter(isPeerSuggestionNotice)
+    .map((n) => n.id)
+    .join(",");
+  const seenPeerNotices = useRef(peerNotices);
+  useEffect(() => {
+    if (seenPeerNotices.current === peerNotices) return;
+    seenPeerNotices.current = peerNotices;
+    window.dispatchEvent(new Event(PEER_SUGGESTION_EVENT));
+  }, [peerNotices]);
   const [open, setOpen] = useState(false);
   const arrived = useArrivals(
     items.map((n) => n.id),
@@ -300,12 +317,18 @@ export function NotificationBell() {
               It links to them in HQ's Notifications view; each row's own Open is unchanged. */}
           {bellGroups(items).flatMap((g) => {
             const d = g.rows[0].dispatch;
-            const rows = g.rows.map((n) => (
+            const rows = g.rows.map((n) => {
+              // A paired instance suggests a message (#2061): who and for which session, from
+              // the row's two server-written fields. The suggested text is not in the row and
+              // is never shown here; the operator reads it on the session's own card.
+              const peer = isPeerSuggestionNotice(n);
+              return (
               <NotificationRow
                 key={n.id}
-                title={n.title}
-                reason={n.reason}
-                project={n.project}
+                title={peer ? peerSuggestionTitle(n) : n.title}
+                reason={peer ? "Peer suggestion" : n.reason}
+                project={peer ? undefined : n.project}
+                testId={peer ? "bell-peer-suggestion" : undefined}
                 engine={n.engine}
                 ts={n.ts}
                 unread={!n.read}
@@ -315,7 +338,8 @@ export function NotificationBell() {
                 onOpen={() => setOpen(false)}
                 onDismiss={() => void dismissOne(n.id)}
               />
-            ));
+              );
+            });
             if (!d || g.bid === null) return rows;
             return [
               ...rows,

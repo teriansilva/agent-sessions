@@ -4,8 +4,6 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../../lib/api";
 import {
-  GRANT_EXPIRY_DAYS,
-  GRANT_EXPIRY_DEFAULT,
   PEER_DISCLOSURE,
   PEER_DISCLOSURE_DETAIL,
   TERMINAL_LIMIT_DETAIL,
@@ -14,17 +12,37 @@ import {
   TERMINAL_LIMIT_WORD,
   TERMINAL_NOT_SHOWN,
   TERMINAL_VIEW_ONLY,
-  expiresInSeconds,
+  grantEnds,
   grantFor,
   grantRowState,
+  levelLabel,
   peerRowState,
   shareablePeers,
   shortDate,
   type FederationGrant,
   type FederationState,
-  type GrantExpiryDays,
   type ShareKind,
 } from "../../lib/federation";
+import {
+  GRANT_BUSY,
+  GRANT_LEVELS,
+  LEVEL_EXPIRIES,
+  LEVEL_PRESELECTED,
+  LEVEL_TILES,
+  MISSION_HELD_LINE,
+  SEND_ACK,
+  SUGGEST_LINE,
+  ackKey,
+  acknowledged,
+  canShare,
+  expiryFor,
+  isGrantBusy,
+  isHeldRefusal,
+  sendEndsText,
+  sendRiskText,
+  shareRequest,
+  type GrantLevel,
+} from "../../lib/federationInput";
 import { nowSeconds } from "../../lib/shareFormat";
 import { settingsPath } from "../../routes/settingsTabs";
 import dlg from "../HudDialog.module.css";
@@ -39,29 +57,39 @@ function message(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
 }
 
-const EXPIRY_OPTIONS = GRANT_EXPIRY_DAYS.map((d) => ({
-  value: String(d),
-  label: d === 1 ? "1 day" : `${d} days`,
-}));
+/** The one level a terminal is offered (#2060): its screen, to watch. */
+const TERMINAL_LEVELS: readonly GrantLevel[] = ["view"];
 
-/** **Share with a peer…** (#2055): give ONE paired instance a view of this API session, and see
- *  or end what is already shared. A sibling of `SharePubliclyModal`.
+/** What a refused write was, when it was the grant's fence being busy: retried by the operator. */
+type Stuck = { what: "share" } | { what: "revoke"; grant: FederationGrant };
+
+/** **Share with a peer…** (#2055, #2061): give ONE paired instance access to this API session
+ *  (view, suggest or send) and see or end what is already shared. A sibling of
+ *  `SharePubliclyModal`.
  *
- *  View is the only level this build grants; Suggest and Send are shown, disabled, so the levels
- *  are understood before they exist. What the other instance will see is stated in the dialog at
- *  all times, never behind a toggle. On a phone the body scrolls and the action row stays at the
- *  sheet's floor (`HudDialog.module.css` `.pinned`), so Share is reachable under a long list.
+ *  **View is what the dialog opens on, every time**, also for a session that already has a Send
+ *  grant: Send is never preselected. **Send cannot be shared without the acknowledgement**: the
+ *  red risk box says what it means, its checkbox is required, Share is disabled until it is
+ *  ticked, and the request carries `accept_risk: true` only then (`shareRequest`). The tick
+ *  belongs to one choice: another peer, another level or a reopened dialog starts unticked.
+ *
+ *  What the other instance will see is stated in the dialog at all times, never behind a toggle.
+ *  On a phone the body scrolls and the action row stays at the sheet's floor
+ *  (`HudDialog.module.css` `.pinned`), so Share is reachable under a long list.
  *
  *  **A terminal (`kind="terminal"`, #2060)** is shared as its screen. Its dialog says the limit
  *  of what is hidden FIRST, directly under the session line and above the peer picker, so it is
  *  on screen when the dialog or the phone sheet opens: the operator reads it before choosing
- *  anything. Access offers View alone, as the one thing a terminal can be shared for: Suggest
- *  and Send are not shown as "later", because the server refuses them for a terminal for good.
- *  The grant is made with the terminal session's key; the server stores its kind. */
+ *  anything. Access offers View alone, as the one thing a terminal can be shared for: the levels
+ *  of #2061 (Suggest, Send), the Send risk box and its acknowledgement belong to an API session
+ *  and are not shown for a terminal at all, and the request is always `view` without
+ *  `accept_risk` (the server refuses anything else for a terminal for good). The grant is made
+ *  with the terminal session's key; the server stores its kind. */
 export function SharePeerModal({
   sessionKey,
   title,
   agent,
+  missionHeld = false,
   kind = "api",
   onClose,
   returnFocusTo,
@@ -70,6 +98,8 @@ export function SharePeerModal({
   title: string;
   /** The agent's label, for the badge beside the title. */
   agent: string;
+  /** A mission holds this session: it can only be watched, so only View is offered. */
+  missionHeld?: boolean;
   /** What is shared: an API session's conversation (the default) or a terminal's screen. */
   kind?: ShareKind;
   onClose: () => void;
@@ -81,7 +111,14 @@ export function SharePeerModal({
   const [grants, setGrants] = useState<FederationGrant[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
-  const [days, setDays] = useState<GrantExpiryDays>(GRANT_EXPIRY_DEFAULT);
+  // Always View when the dialog opens: nothing here reads an existing grant's level into it.
+  const [level, setLevel] = useState<GrantLevel>(LEVEL_PRESELECTED);
+  const [seconds, setSeconds] = useState<number | null>(null);
+  // The choice (peer + level) the acknowledgement was ticked for; `null` = unticked.
+  const [ackFor, setAckFor] = useState<string | null>(null);
+  // The server said a mission holds the session (409 `held`), whatever the list said.
+  const [heldSeen, setHeldSeen] = useState(false);
+  const [stuck, setStuck] = useState<Stuck | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -139,29 +176,72 @@ export function SharePeerModal({
   const chosen = peers?.find((p) => p.peer_id === picked) ?? peers?.[0] ?? null;
   const live = grants ?? [];
   const existing = chosen ? grantFor(live, chosen.peer_id) : undefined;
-  const ends = shortDate(now + expiresInSeconds(days));
+  const held = missionHeld || heldSeen;
+  // A terminal is shared as its screen, View only for good (#2060): the levels of #2061 are an API
+  // session's. A mission-held session can only be watched. Either way, whatever was picked, the
+  // choice is View, and so the request is `view` without `accept_risk`.
+  const terminal = kind === "terminal";
+  const chosenLevel: GrantLevel = held || terminal ? "view" : level;
+  const expiry = expiryFor(chosenLevel, seconds);
+  const peerId = chosen?.peer_id ?? null;
+  const ticked = acknowledged(ackFor, peerId, chosenLevel);
+  const choice = { peerId, level: chosenLevel, seconds: expiry.seconds, ackFor, missionHeld: held, kind };
+  const shareable = canShare(choice);
+
+  // A countdown moves: while a listed grant ends within a day, the clock is re-read.
+  const counting = live.some((g) => grantEnds(g.expires_at, now).countdown);
+  useEffect(() => {
+    if (!counting) return;
+    const timer = setInterval(() => setNow(nowSeconds()), 15_000);
+    return () => clearInterval(timer);
+  }, [counting]);
+
+  /** A refused write: the fence being busy has its own state and a retry; a mission holding the
+   *  session closes the two higher levels; anything else is the server's words. Never success. */
+  const refused = (e: unknown, current: () => boolean, what: Stuck, fallback: string) => {
+    if (!current()) return;
+    const status = e instanceof ApiError ? e.status : 0;
+    const body = e instanceof ApiError ? e.record : null;
+    if (isGrantBusy(status, body)) return setStuck(what);
+    if (isHeldRefusal(status, body)) {
+      setHeldSeen(true);
+      setAckFor(null);
+      return;
+    }
+    setError(message(e, fallback));
+  };
 
   const share = async () => {
-    if (!chosen || busy) return;
+    // The request is built from the SAME state the button was enabled by; with Send unticked
+    // there is no request to make.
+    const body = shareRequest(choice);
+    if (!chosen || busy || !body) return;
     const current = ticket();
     setBusy("share");
     setError(null);
     setDone(null);
+    setStuck(null);
     try {
       const { grant } = existing
-        ? await api.changeFederationGrant(
-            existing.grant_id,
-            expiresInSeconds(days),
-            existing.revision,
-          )
+        ? await api.changeFederationGrant(existing.grant_id, {
+            ...body,
+            revision: existing.revision,
+          })
         : await api.createFederationGrant({
             session_key: sessionKey,
             peer_id: chosen.peer_id,
-            expires_in: expiresInSeconds(days),
+            ...body,
           });
-      if (current()) setDone(`Shared with ${chosen.name} until ${shortDate(grant.expires_at)}.`);
+      if (current()) {
+        const until = grantEnds(grant.expires_at, nowSeconds());
+        setDone(
+          `Shared with ${chosen.name} (${levelLabel(grant.level)}) ${until.countdown ? `· ${until.text}` : until.text}.`,
+        );
+        // One acknowledgement, one grant: renewing or sharing again asks again.
+        setAckFor(null);
+      }
     } catch (e) {
-      if (current()) setError(message(e, "Couldn’t share this session."));
+      refused(e, current, { what: "share" }, "Couldn’t share this session.");
     } finally {
       // Whatever happened, the list is the server's: a refused change may mean it moved.
       await loadGrants();
@@ -175,10 +255,11 @@ export function SharePeerModal({
     setBusy(grant.grant_id);
     setError(null);
     setDone(null);
+    setStuck(null);
     try {
       await api.revokeFederationGrant(grant.grant_id);
     } catch (e) {
-      if (current()) setError(message(e, "Couldn’t revoke that share."));
+      refused(e, current, { what: "revoke", grant }, "Couldn’t revoke that share.");
     } finally {
       await loadGrants();
       if (current()) setBusy(null);
@@ -187,7 +268,6 @@ export function SharePeerModal({
 
   const titleId = "share-peer-title";
   const none = peers !== null && peers.length === 0;
-  const terminal = kind === "terminal";
 
   return createPortal(
     <div className={dlg.backdrop} onMouseDown={onClose}>
@@ -279,8 +359,11 @@ export function SharePeerModal({
                       data-peer={p.peer_id}
                       onClick={() => {
                         setPicked(p.peer_id);
+                        // Another peer is another choice: its acknowledgement is not this one's.
+                        setAckFor(null);
                         setDone(null);
                         setError(null);
+                        setStuck(null);
                       }}
                     >
                       <span className={styles.tileBody}>
@@ -305,38 +388,43 @@ export function SharePeerModal({
                 role="radiogroup"
                 aria-labelledby="share-peer-access"
               >
-                <button type="button" role="radio" aria-checked="true" className={styles.tile}>
-                  <span className={styles.tileBody}>
-                    <span className={styles.tileName}>View</span>
-                    <span className={styles.tileDesc}>
-                      {terminal ? "Watch the screen" : "Read the conversation"}
-                    </span>
-                  </span>
-                </button>
-                {!terminal && (
-                  [
-                    ["Suggest", "Propose a message"],
-                    ["Send", "Send messages"],
-                  ] as const
-                ).map(([name, desc]) => (
-                  <button
-                    key={name}
-                    type="button"
-                    role="radio"
-                    aria-checked="false"
-                    className={styles.tile}
-                    disabled
-                  >
-                    <span className={styles.tileBody}>
-                      <span className={styles.tileName}>
-                        {name}
-                        <span className={`${styles.tagBox} ${styles.later}`}>later</span>
+                {(terminal ? TERMINAL_LEVELS : GRANT_LEVELS).map((l) => {
+                  const off = held && l !== "view";
+                  return (
+                    <button
+                      key={l}
+                      type="button"
+                      role="radio"
+                      aria-checked={chosenLevel === l}
+                      className={styles.tile}
+                      data-level={l}
+                      disabled={off}
+                      onClick={() => {
+                        if (l === chosenLevel) return;
+                        setLevel(l);
+                        // Another level is another choice: the acknowledgement starts over.
+                        setAckFor(null);
+                        setDone(null);
+                        setError(null);
+                        setStuck(null);
+                        setNow(nowSeconds());
+                      }}
+                    >
+                      <span className={styles.tileBody}>
+                        <span className={styles.tileName}>{LEVEL_TILES[l].name}</span>
+                        <span className={styles.tileDesc}>
+                          {terminal ? "Watch the screen" : LEVEL_TILES[l].desc}
+                        </span>
                       </span>
-                      <span className={styles.tileDesc}>{desc}</span>
-                    </span>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
+              {held && !terminal && (
+                <p className={styles.heldLine} data-testid="share-peer-held">
+                  {MISSION_HELD_LINE}
+                </p>
+              )}
               {terminal && (
                 <p className={styles.help} data-testid="share-peer-terminal-only">
                   {TERMINAL_VIEW_ONLY}
@@ -345,20 +433,57 @@ export function SharePeerModal({
 
               <span className={`${dlg.label} ${styles.label}`}>Expires</span>
               <Seg
-                options={EXPIRY_OPTIONS}
-                value={String(days)}
+                options={LEVEL_EXPIRIES[chosenLevel].map((o) => ({
+                  value: String(o.seconds),
+                  label: o.label,
+                }))}
+                value={String(expiry.seconds)}
                 onChange={(v) => {
-                  setDays(Number(v) as GrantExpiryDays);
+                  setSeconds(Number(v));
                   setNow(nowSeconds());
                 }}
                 label="Expires"
                 className={styles.expiry}
                 testId="share-peer-expiry"
               />
-              <p className={styles.help} data-testid="share-peer-hint">
-                Ends {ends}. You can revoke it before then. It also ends when this session is
-                archived or the peer is revoked.
-              </p>
+              {chosenLevel === "send" ? (
+                <>
+                  <p className={styles.help} data-testid="share-peer-hint">
+                    {sendEndsText(expiry.span)}
+                  </p>
+                  {/* The only red edge in the dialog, with the word: what Send means, and the
+                      acknowledgement Share waits for. */}
+                  <div
+                    className={styles.risk}
+                    role="group"
+                    aria-labelledby="share-peer-risk"
+                    data-testid="share-peer-risk"
+                  >
+                    <span className={styles.riskWord} id="share-peer-risk">
+                      <Led tone="down" />
+                      Risk
+                    </span>
+                    <p className={styles.riskText}>{sendRiskText(chosen?.name ?? "the peer")}</p>
+                    <label className={styles.ack}>
+                      <input
+                        type="checkbox"
+                        checked={ticked}
+                        required
+                        data-testid="share-peer-ack"
+                        onChange={(e) =>
+                          setAckFor(e.target.checked ? ackKey(peerId, chosenLevel) : null)
+                        }
+                      />
+                      <span>{SEND_ACK}</span>
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <p className={styles.help} data-testid="share-peer-hint">
+                  Ends {shortDate(now + expiry.seconds)}. You can revoke it before then. It also ends
+                  when this session is archived or the peer is revoked.
+                </p>
+              )}
               {chosen && chosen.connected === false && (
                 <p className={styles.help} data-testid="share-peer-offline">
                   {chosen.name} is offline. It sees the {terminal ? "screen" : "session"} when it
@@ -367,8 +492,9 @@ export function SharePeerModal({
               )}
               {existing && chosen && (
                 <p className={styles.help} data-testid="share-peer-existing">
-                  Already shared with {chosen.name} until {shortDate(existing.expires_at)}. Sharing
-                  again changes when it ends.
+                  Already shared with {chosen.name} ({levelLabel(existing.level)}),{" "}
+                  {grantEnds(existing.expires_at, now).text}. Sharing again replaces its access and
+                  when it ends.
                 </p>
               )}
             </>
@@ -380,10 +506,30 @@ export function SharePeerModal({
               <span>{PEER_DISCLOSURE_DETAIL}</span>
             </p>
           )}
+          {!none && chosenLevel === "suggest" && (
+            <p className={styles.help} data-testid="share-peer-suggest-line">
+              {SUGGEST_LINE}
+            </p>
+          )}
           {error && (
             <p className={dlg.error} role="alert" data-testid="share-peer-error">
               {error}
             </p>
+          )}
+          {stuck && (
+            // The grant's fence was busy (a delivery under it is in flight): nothing changed.
+            <div className={styles.stuck} role="alert" data-testid="share-peer-busy">
+              <span>{GRANT_BUSY}</span>
+              <button
+                type="button"
+                className={`${btn.ghost} ${btn.compact} ${styles.retry}`}
+                disabled={busy !== null || (stuck.what === "share" && !shareable)}
+                data-testid="share-peer-retry"
+                onClick={() => void (stuck.what === "share" ? share() : revoke(stuck.grant))}
+              >
+                Try again
+              </button>
+            </div>
           )}
           {done && (
             <p className={styles.done} role="status" data-testid="share-peer-done">
@@ -398,13 +544,23 @@ export function SharePeerModal({
               </h3>
               <ul className={styles.grants}>
                 {live.map((g) => {
-                  const row = grantRowState(g, "peer");
+                  const row = grantRowState(g, "peer", now);
                   return (
-                    <li key={g.grant_id} className={styles.grant} data-testid="share-peer-grant">
+                    <li
+                      key={g.grant_id}
+                      className={styles.grant}
+                      data-testid="share-peer-grant"
+                      data-level={g.level}
+                    >
                       <span className={styles.grantMain}>
                         <span className={styles.grantTitle}>{row.title}</span>
                         <span className={styles.tagBox}>{row.level}</span>
-                        <span className={styles.grantMeta}>{row.until}</span>
+                        <span
+                          className={row.countdown ? styles.grantCountdown : styles.grantMeta}
+                          data-testid="share-peer-until"
+                        >
+                          {row.until}
+                        </span>
                       </span>
                       <button
                         type="button"
@@ -430,7 +586,7 @@ export function SharePeerModal({
           <button
             type="button"
             className={dlg.go}
-            disabled={!chosen || busy !== null || grants === null}
+            disabled={!shareable || busy !== null || grants === null}
             data-testid="share-peer-go"
             onClick={() => void share()}
           >

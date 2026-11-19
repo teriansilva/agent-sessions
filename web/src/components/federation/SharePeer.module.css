@@ -159,6 +159,97 @@
   margin-top: var(--sp-1);
   color: var(--text-2);
 }
+/* A mission holds the session: why the two higher levels are closed. Neutral: nothing failed. */
+.heldLine {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+}
+/* The Send risk (#2061): the ONE red edge in the dialog, with the word "Risk". */
+.risk {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-2));
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, var(--border));
+  border-left: 3px solid var(--status-down);
+}
+.riskWord {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--danger-text);
+}
+.riskText {
+  margin: var(--sp-1) 0 0;
+}
+/* The acknowledgement: a 44 px row; the box itself is a 44 px target painting an 18 px square. */
+.ack {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 44px;
+  margin: var(--sp-1) 0 0 -13px;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.ack input {
+  appearance: none;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  border: 13px solid transparent;
+  border-radius: 0;
+  background: var(--bg-2) padding-box;
+  outline: 1.5px solid var(--text-2);
+  outline-offset: -13px;
+  cursor: pointer;
+}
+.ack input:checked {
+  background: var(--hud) padding-box;
+  outline-color: var(--hud);
+}
+.ack input:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -11px;
+}
+/* The grant's fence was busy: nothing changed, and the operator tries again. Amber with its
+ * words (it needs them), never the ok rule: it is not a result. */
+.stuck {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2));
+  border-left: 3px solid var(--status-degraded);
+}
+.stuck > span {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+.retry {
+  flex: none;
+}
+.grantCountdown {
+  font: 600 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
 /* A terminal's limit (#2060): the first thing in the body. The amber attention edge AND a word
  * (docs/design.md §3, §7): something the operator must read, not an error, so never red and
  * never colour alone. The unprotected case is the bold sentence. */
@@ -297,6 +388,10 @@
     flex: 1 1 100%;
     min-height: 44px;
   }
+  .retry {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
   /* The sheet's body ends with room above the pinned row. */
   .body {
     padding-bottom: var(--sp-3);
@@ -309,7 +404,8 @@
   .expiry > button {
     min-height: 44px;
   }
-  .revoke {
+  .revoke,
+  .retry {
     min-height: 44px;
   }
 }

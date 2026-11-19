@@ -2,6 +2,48 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { TOUCH_FLOOR } from "./touchTarget";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { MAP_PATH } from "../src/lib/routes";
+import {
+  controlsAtLeast44,
+  CSRF,
+  date,
+  DAY,
+  DISCLOSURE,
+  DISCLOSURE_DETAIL,
+  FakeShare,
+  gate,
+  GONE,
+  GPU,
+  GRANT_A,
+  GRANT_B,
+  GRANT_OFF,
+  ID2,
+  isMobile,
+  KEY,
+  LAPTOP,
+  MOVED,
+  noHorizontalOverflow,
+  NOW,
+  OFFLINE,
+  OLD,
+  openDialog,
+  openPane,
+  painted,
+  peer,
+  QUIET,
+  RENDER,
+  RENDER_TURNS,
+  setup,
+  SHARE_PEER,
+  selectScope,
+  showList,
+  showLocal,
+  showShared,
+  snapshot,
+  TITLE,
+  TITLE2,
+  turn,
+  URL_PATH,
+} from "./shareFixture";
 
 // Share an API session with a paired instance, view only (#1246 P4a, #2055), in a real browser on
 // both projects, against a small in-test model of `routes/federation.py`'s grant and remote
@@ -17,48 +59,6 @@ import { MAP_PATH } from "../src/lib/routes";
 // grant never reaches the browser as a 404 at all: `tests/test_federation_remote.py`
 // (`test_a_grant_renewed_on_the_owner_keeps_a_read_working`). This spec covers the FINAL 404.
 
-import {
-  ID2,
-  KEY,
-  URL_PATH,
-  TITLE,
-  TITLE2,
-  GPU,
-  RENDER,
-  LAPTOP,
-  OLD,
-  GRANT_A,
-  GRANT_B,
-  GRANT_OFF,
-  CSRF,
-  DISCLOSURE,
-  DISCLOSURE_DETAIL,
-  NOW,
-  DAY,
-  date,
-  peer,
-  turn,
-  snapshot,
-  QUIET,
-  MOVED,
-  OFFLINE,
-  GONE,
-  RENDER_TURNS,
-  FakeShare,
-  setup,
-  isMobile,
-  selectScope,
-  showLocal,
-  showShared,
-  showList,
-  SHARE_PEER,
-  openDialog,
-  noHorizontalOverflow,
-  controlsAtLeast44,
-  openPane,
-  gate,
-  painted,
-} from "./shareFixture";
 
 // =================================================================================================
 // The owner's side
@@ -118,7 +118,8 @@ test("share with a peer: the dialog says what leaves, and the share is listed", 
       .evaluate((el) => getComputedStyle(el).color);
   expect(await stateColour(0)).not.toBe(await stateColour(2));
 
-  // View is the level; Suggest and Send exist, disabled, tagged "later".
+  // View is the level the dialog opens on; Suggest and Send are offered and not chosen
+  // (their own flows are `peer-input.spec.ts`).
   const access = dialog.getByRole("radiogroup", { name: "Access" }).getByRole("radio");
   await expect(access.nth(0)).toHaveAttribute("aria-checked", "true");
   await expect(access.nth(0)).toContainText("View");
@@ -126,9 +127,9 @@ test("share with a peer: the dialog says what leaves, and the share is listed", 
     [1, "Suggest"],
     [2, "Send"],
   ] as const) {
-    await expect(access.nth(i)).toBeDisabled();
+    await expect(access.nth(i)).toBeEnabled();
     await expect(access.nth(i)).toContainText(name);
-    await expect(access.nth(i)).toContainText(/later/i);
+    await expect(access.nth(i)).toHaveAttribute("aria-checked", "false");
   }
   // Expiry: 1, 7, 30, 90 days; 7 unless changed.
   const expiry = dialog.getByRole("radiogroup", { name: "Expires" }).getByRole("radio");
@@ -157,7 +158,7 @@ test("share with a peer: the dialog says what leaves, and the share is listed", 
   await expect(row).toContainText(`until ${date(NOW() + 7 * DAY)}`);
   await expect(dialog.getByRole("heading", { name: "Shared with · 1" })).toBeVisible();
   await expect(dialog.getByTestId("share-peer-done")).toHaveText(
-    `Shared with render-box until ${date(NOW() + 7 * DAY)}.`,
+    `Shared with render-box (View) until ${date(NOW() + 7 * DAY)}.`,
   );
   expect(fake.writes).toEqual([
     {
@@ -177,7 +178,7 @@ test("sharing again with the same peer changes the expiry of the existing grant"
   const { dialog } = await openDialog(page);
   await expect(dialog.getByTestId("share-peer-grant")).toContainText(`until ${date(NOW() + 2 * DAY)}`);
   await expect(dialog.getByTestId("share-peer-existing")).toHaveText(
-    `Already shared with gpu-box until ${date(NOW() + 2 * DAY)}. Sharing again changes when it ends.`,
+    `Already shared with gpu-box (View), until ${date(NOW() + 2 * DAY)}. Sharing again replaces its access and when it ends.`,
   );
   await dialog.getByRole("radio", { name: "30 days" }).click();
   await dialog.getByRole("button", { name: "Share", exact: true }).click();
@@ -187,7 +188,7 @@ test("sharing again with the same peer changes the expiry of the existing grant"
     {
       method: "PATCH",
       path: `/grants/${GRANT_A}`,
-      body: { expires_in: 30 * DAY, revision: 4 },
+      body: { level: "view", expires_in: 30 * DAY, revision: 4 },
       csrf: CSRF,
     },
   ]);

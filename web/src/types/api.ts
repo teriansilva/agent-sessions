@@ -2048,7 +2048,13 @@ export interface StructuredTurn {
   attachments?: { stored: string; name?: string; mime: string }[];
   /** Who sent it through a public link (#1404 P2) — a self-chosen name, not a verified identity.
    *  Absent or null for the operator's own turns. */
-  author?: { name: string; via: "public_link" } | { name: null; via: "unknown" } | null;
+  author?:
+    | { name: string; via: "public_link" }
+    /** A paired instance caused this turn (#2057): its name on this instance, and whether the
+     *  operator edited the suggestion before approving it. */
+    | { name: string; via: "peer"; actor?: string; edited?: boolean }
+    | { name: null; via: "unknown" }
+    | null;
   /** The newest question the agent asked in this turn, with its options (#1463). */
   questions?: StructuredQuestion[];
   /** That question's id, which an answer names as its `reply_to`; present with `questions`. */

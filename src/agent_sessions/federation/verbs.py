@@ -11,8 +11,9 @@ or a session key from a peer's arguments: a shared session is addressed by its *
 (#2054), and the handlers behind those verbs live in :mod:`sharing`.
 
 Input (#2057, handlers in :mod:`inputs`): ``input.suggest``, ``input.suggestions``,
-``input.withdraw`` and ``input.send``. A peer never names an operation id (the owner mints
-them) and **no verb changes a grant**: none extends, raises or re-creates one.
+``input.withdraw``, ``input.send`` and the read ``input.status`` (#2061). A peer never names an
+operation id (the owner mints them) and **no verb changes a grant**: none extends, raises or
+re-creates one.
 
 Working together (#2059, handlers in :mod:`together` and :mod:`notes`): ``access.request`` and
 ``access.status`` (a request is a record; it changes no grant), ``decision.answer`` (the peer
@@ -201,6 +202,13 @@ def _send_args(args: dict) -> dict:
 def _suggestions_args(args: dict) -> dict:
     _only(args, "grant_id", "revision")
     return _grant_ref(args)
+
+
+def _status_args(args: dict) -> dict:
+    """``input.status``: the grant and ONE retry key. Nothing else is accepted: no text, no
+    operation id, no suggestion id, no other grant."""
+    _only(args, "grant_id", "revision", "client_key")
+    return {**_grant_ref(args), "client_key": _client_key(args)}
 
 
 def _withdraw_args(args: dict) -> dict:
@@ -455,6 +463,8 @@ PEER = _table(
     ("input.suggestions", _suggestions_args, inputs.input_suggestions),
     ("input.withdraw", _withdraw_args, inputs.input_withdraw),
     ("input.send", _send_args, inputs.input_send),
+    # What became of one of the caller's own messages (#2061): a read, no text.
+    ("input.status", _status_args, inputs.input_status),
     # Working together (#2059), answered by the OWNER. None of them changes a grant.
     ("access.request", _access_request_args, together.access_request),
     ("access.status", _access_status_args, together.access_status),

@@ -56,7 +56,12 @@ export interface PublicTurn {
   attachments?: PublicAttachment[];
   tools: PublicTool[];
   tools_truncated: boolean;
-  author?: { name: string; via: "public_link" } | null;
+  /** Who else caused this turn: a link's visitor, or a paired instance (#2057), named as the
+   *  OWNER shows that peer; `edited` when the owner changed a suggestion before approving it. */
+  author?:
+    | { name: string; via: "public_link" }
+    | { name: string; via: "peer"; actor?: string; edited?: boolean }
+    | null;
   /** Sent through THIS link — what the server checks Send now against (never the name). */
   mine?: boolean;
   /** Only from another instance (#2054): the sender cut this turn to fit its byte budget, and

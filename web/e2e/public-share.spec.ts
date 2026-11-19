@@ -735,3 +735,53 @@ test("the agent at work: the working animation with its latest step, and a backg
   await expect(visitor.getByText("IDLE", { exact: true })).toBeVisible();
   await ctx.close();
 });
+
+test("a turn a paired instance caused is labelled with that peer for a visitor, and an edited one says so (#2061)", async ({
+  page,
+  browser,
+}, testInfo) => {
+  const server = new FakeServer();
+  server.turns = [
+    server.turns[0],
+    {
+      ...server.turns[0],
+      turn_id: "peer-1",
+      text: "Keep the old batch entry point for one release.",
+      reply: "Kept as a thin wrapper.",
+      author: { name: "gpu-box", via: "peer" },
+      mine: false,
+    },
+    {
+      ...server.turns[0],
+      turn_id: "peer-2",
+      text: "Log the row number. One line.",
+      reply: "Done.",
+      author: { name: "<b>gpu</b>-box", via: "peer", edited: true },
+      mine: false,
+    },
+  ];
+  await operatorSetup(page, server, "dark");
+  const dialog = await openDialog(page);
+  await dialog.getByRole("button", { name: /Create public link/ }).click();
+  const link = await dialog.getByTestId("share-url").inputValue();
+
+  const ctx = await visitorContext(browser, testInfo, server);
+  const visitor = await ctx.newPage();
+  await visitor.goto(link);
+  const turns = visitor.getByTestId("share-transcript").locator("[data-turn]");
+  await expect(turns).toHaveCount(3);
+  // the operator's own turn is not labelled as a peer's...
+  await expect(turns.nth(0).getByTestId("peer-attribution")).toHaveCount(0);
+  // ...a peer's turn carries the peer badge and the word, never "Operator"
+  const label = turns.nth(1).getByTestId("peer-attribution");
+  await expect(label).toHaveText(/^gpu-box\s*·\s*peer$/i);
+  await expect(turns.nth(1).locator('[data-author="peer"]')).toHaveCount(1);
+  await expect(turns.nth(1).locator('[data-author="operator"]')).toHaveCount(0);
+  await expect(turns.nth(1).getByTestId("peer-edited")).toHaveCount(0);
+  // ...and an edited one says "edited" (the visitor is not the one who edited it)
+  await expect(turns.nth(2).getByTestId("peer-edited")).toHaveText(/^edited$/i);
+  await expect(turns.nth(2).getByTestId("peer-attribution")).toContainText("<b>gpu</b>-box");
+  await expect(turns.nth(2).getByTestId("peer-attribution").locator("b")).toHaveCount(0); // text, not markup
+  await noHorizontalOverflow(visitor);
+  await ctx.close();
+});

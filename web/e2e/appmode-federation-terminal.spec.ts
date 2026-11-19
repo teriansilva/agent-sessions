@@ -109,7 +109,7 @@ test("a real terminal is shared through the dialog, watched on the other instanc
     await expect(tile).toContainText("connected");
     await tile.click();
     await dialog.getByTestId("share-peer-go").click();
-    await expect(dialog.getByTestId("share-peer-done")).toContainText("Shared with beta until");
+    await expect(dialog.getByTestId("share-peer-done")).toContainText("Shared with beta (View) until");
     await expect(dialog.getByTestId("share-peer-grant")).toHaveCount(1);
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(dialog).toHaveCount(0);

@@ -291,8 +291,11 @@ export interface FederationGrantList {
   grants: FederationGrant[];
   generation: number;
   levels: string[];
+  default_level?: string;
   default_expires_in: Record<string, number>;
   max_expires_in: number;
+  max_expires_in_by_level?: Record<string, number>;
+  send_risk?: string;
 }
 
 /** One session a peer shares with this instance: everything `GET /api/federation/remote` knows
@@ -387,6 +390,23 @@ export function shortDate(epochS: unknown): string {
   }
 }
 
+const hourMinute = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+/** What a time that cannot be one reads as (#2061). */
+export const UNKNOWN_TIME = "an unknown time";
+
+/** "14:05" in the browser's time zone: the time a peer's answer carries (a suggestion's
+ *  `created_at` in "Your suggestions", #2061). With {@link shortDate}, the only places a peer's
+ *  number becomes a `Date`; the same check, and it never throws. Anything that is not a date
+ *  (`1e300`, `NaN`, a negative, a string) reads as {@link UNKNOWN_TIME}. */
+export function shortTime(epochS: unknown): string {
+  if (!isEpochS(epochS)) return UNKNOWN_TIME;
+  try {
+    return hourMinute.format(new Date(epochS * 1000));
+  } catch {
+    return UNKNOWN_TIME;
+  }
+}
+
 /** "View" for `view`; a level this build does not know is shown as the server named it. */
 export function levelLabel(level: string): string {
   return level ? level[0].toUpperCase() + level.slice(1) : "";
@@ -396,17 +416,54 @@ export interface GrantRowState {
   /** Who (in a session's dialog) or what (in a peer's list) the row is about. */
   title: string;
   level: string;
+  /** "until 22 Nov", or a countdown ("ends in 42 min") for a grant ending within a day. */
   until: string;
+  /** Whether `until` is a countdown: it is then re-read as the clock moves. */
+  countdown: boolean;
+}
+
+const HOUR = 3600;
+/** A grant ending within this long shows a countdown instead of a date (#2061). */
+export const COUNTDOWN_WITHIN_S = 86400;
+
+/** "ends in 42 min" / "ends in 3 h 5 min" / "ends in under a minute", from the SERVER's
+ *  `expires_at` and this clock. Past the end it says "ended": the server decides, this only
+ *  tells the operator what to expect. */
+export function endsIn(expiresAt: number, now: number): string {
+  const left = Math.floor(expiresAt - now);
+  if (left <= 0) return "ended";
+  if (left < 60) return "ends in under a minute";
+  if (left < HOUR) return `ends in ${Math.floor(left / 60)} min`;
+  const h = Math.floor(left / HOUR);
+  const m = Math.floor((left % HOUR) / 60);
+  return m ? `ends in ${h} h ${m} min` : `ends in ${h} h`;
+}
+
+/** When a grant ends, as a row says it: a countdown inside the last day, else the date. An
+ *  expiry that is not a date (`isEpochS`: `NaN`, `1e300`, `0`, a negative, not a number) is
+ *  neither: it reads "until an unknown date", never "ended" and never a countdown, and nothing
+ *  here throws. */
+export function grantEnds(expiresAt: unknown, now: number): { text: string; countdown: boolean } {
+  if (!isEpochS(expiresAt) || !Number.isFinite(now))
+    return { text: `until ${UNKNOWN_DATE}`, countdown: false };
+  return expiresAt - now < COUNTDOWN_WITHIN_S
+    ? { text: endsIn(expiresAt, now), countdown: true }
+    : { text: `until ${shortDate(expiresAt)}`, countdown: false };
 }
 
 /** One row of "Shared with": in a session's dialog it names the peer, in a peer's list the
  *  session. A session without a readable title is shown by its key's short tail, never blank. */
-export function grantRowState(grant: FederationGrant, by: "peer" | "session"): GrantRowState {
+export function grantRowState(
+  grant: FederationGrant,
+  by: "peer" | "session",
+  now: number = Date.now() / 1000,
+): GrantRowState {
   const title =
     by === "peer"
       ? grant.peer_name || grant.peer_id.slice(0, 8)
       : grant.title || `Session ${grant.session_key.split(":").pop()?.slice(0, 8) ?? ""}`.trim();
-  return { title, level: levelLabel(grant.level), until: `until ${shortDate(grant.expires_at)}` };
+  const ends = grantEnds(grant.expires_at, now);
+  return { title, level: levelLabel(grant.level), until: ends.text, countdown: ends.countdown };
 }
 
 /** The live grant of this session that already names `peerId`, if any: sharing again with the
@@ -438,16 +495,22 @@ export interface RemoteRowState {
   label: string;
 }
 
+/** What the mirrored level lets this instance do, in the banner's and the row's words. A level
+ *  this build does not know is shown as the server named it. */
+export function remoteAccessWords(level: string): string {
+  if (level === "view") return "view only";
+  if (level === "suggest") return "can suggest";
+  if (level === "send") return "can send";
+  return levelLabel(level).toLowerCase();
+}
+
 /** What a remote row (list or map) shows: exactly what the list read carries. */
 export function remoteRowState(r: RemoteShare): RemoteRowState {
   const title = r.title || "(untitled)";
   const peer = r.peer_name || r.peer_id.slice(0, 8);
   const screen = shareKind(r) === "terminal";
-  const access = screen
-    ? "screen only"
-    : r.level === "view"
-      ? "view only"
-      : levelLabel(r.level).toLowerCase();
+  // A terminal share is a screen to watch (view only for good); an API share says its level.
+  const access = screen ? "screen only" : remoteAccessWords(r.level);
   const offline = !r.connected;
   const until = `until ${shortDate(r.expires_at)}`;
   return {
@@ -566,15 +629,120 @@ export interface RemotePaneState {
   hasMore: boolean;
   /** Reads in a row that failed without saying anything about the grant. */
   stalls: number;
+  /** This instance's own suggestions under the grant, as the owner lists them (ids and states,
+   *  never text); `null` until the first read of this generation. */
+  suggestions: OwnSuggestion[] | null;
+  /** Messages this pane sent under this generation, oldest first, with what the owner answered. */
+  outbox: OutboxRow[];
+  /** The owner answered `held`: a mission runs that session, so nothing can be written now. */
+  held: boolean;
+  /** The mirrored revision under which the owner refused a write (`404`): this side's access
+   *  to write ended, or the mirror is behind. Offering it again waits for a newer revision. */
+  refusedRevision: number | null;
+  /** Requests that were in flight when the page was reloaded (#2061): keys only, no content. */
+  leftovers: Leftover[];
 }
 
+/** One of this instance's suggestions as `GET …/suggestions` lists it. */
+export interface OwnSuggestion {
+  suggestion_id: string;
+  client_key: string;
+  state: string;
+  handoff: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** A message sent from this pane. `text` is in memory only (`null` for one found again after a
+ *  reload, whose text was never stored). `delivery` is the owner's receipt as answered:
+ *  `sending` until an answer, then `sent`, `queued`, `not_sent`, or `unconfirmed` (the receipt
+ *  was `uncertain` or absent, or the answer never came). */
+export interface OutboxRow {
+  client_key: string;
+  text: string | null;
+  delivery: "sending" | "sent" | "queued" | "not_sent" | "unconfirmed";
+  /** Our own turns that were already in the conversation when this was sent. */
+  prior: string[];
+  /** The conversation turn this message turned out to be, once the owner shows it. */
+  turn: string | null;
+}
+
+/** What the content-free `sessionStorage` record of an in-flight request holds (#2061). */
+export interface PendingOp {
+  peer_id: string;
+  grant_id: string;
+  client_key: string;
+  kind: "send" | "suggest";
+  started_at: number;
+}
+
+/** A request the page was reloaded under, being found out about. `pending`: not asked yet (or
+ *  asked under a generation that ended). `unknown`: the owner has no such key NOW, which is not
+ *  "it did not arrive". `failed`: the status read itself failed. `final`: two minutes of
+ *  unknown; the notice stays, nothing more is asked. */
+export interface Leftover {
+  client_key: string;
+  kind: "send" | "suggest";
+  started_at: number;
+  phase: "pending" | "checking" | "unknown" | "failed" | "final";
+  /** When the owner first answered unknown (ms); the schedule and the two minutes count from it. */
+  firstUnknownAt: number | null;
+  /** When to ask again (ms), or `null`: nothing scheduled. */
+  nextAt: number | null;
+}
+
+/** What `GET …/operations/{client_key}` answers. */
+export type OperationStatus =
+  | { known: false }
+  | { known: true; kind: "send"; handoff: string | null }
+  | { known: true; kind: "suggest"; suggestion_id: string; state: string; handoff: string | null };
+
+/** After the first unknown answer the pane asks again at these offsets (ms), and whenever the
+ *  conversation changes; then it stops asking. */
+export const RECONCILE_RECHECK_MS = [5_000, 30_000] as const;
+export const RECONCILE_GIVE_UP_MS = 120_000;
+/** How often the pane reads its own suggestions while one is waiting or being delivered. */
+export const SUGGESTION_POLL_OWN_MS = 3_000;
+/** A failed status read is retried this often while the peer can be reached. */
+export const RECONCILE_RETRY_MS = 5_000;
+
 export type RemotePaneEvent =
-  | { type: "open"; target: string }
+  | { type: "open"; target: string; leftovers?: PendingOp[] }
   | { type: "snapshot"; generation: number; snapshot: RemoteSnapshot }
   | { type: "history"; generation: number; page: RemoteHistoryPage }
-  | { type: "failed"; generation: number; status: number };
+  | { type: "failed"; generation: number; status: number }
+  // Everything below is the answer to a request this pane made (#2061). Each carries the
+  // generation it was made under, exactly like a read, and is dropped under any other.
+  | { type: "suggestions"; generation: number; rows: unknown }
+  | { type: "suggested"; generation: number; client_key: string; suggestion: unknown; now: number }
+  | { type: "withdrawn"; generation: number; suggestion: unknown; now: number }
+  | { type: "sending"; generation: number; client_key: string; text: string }
+  | { type: "sent"; generation: number; client_key: string; handoff: unknown }
+  | { type: "unconfirmed"; generation: number; client_key: string }
+  | { type: "unsent"; generation: number; client_key: string }
+  | { type: "held"; generation: number; held: boolean }
+  | { type: "refused"; generation: number; revision: number | null }
+  | { type: "checking"; generation: number; client_key: string }
+  | {
+      type: "status";
+      generation: number;
+      client_key: string;
+      result: OperationStatus | "failed";
+      now: number;
+    }
+  | { type: "giveup"; generation: number; client_key: string };
 
-export function remotePaneInit(target: string): RemotePaneState {
+const freshLeftovers = (ops: readonly PendingOp[] | undefined): Leftover[] =>
+  (ops ?? []).map((op) => ({
+    client_key: op.client_key,
+    kind: op.kind,
+    started_at: op.started_at,
+    phase: "pending",
+    firstUnknownAt: null,
+    nextAt: null,
+  }));
+
+export function remotePaneInit(target: string, leftovers?: PendingOp[]): RemotePaneState {
   return {
     target,
     generation: 0,
@@ -584,6 +752,11 @@ export function remotePaneInit(target: string): RemotePaneState {
     older: [],
     hasMore: false,
     stalls: 0,
+    suggestions: null,
+    outbox: [],
+    held: false,
+    refusedRevision: null,
+    leftovers: freshLeftovers(leftovers),
   };
 }
 
@@ -592,6 +765,7 @@ function cleared(
   status: RemotePaneStatus,
   startAfterMs: number | null,
   target = state.target,
+  leftovers?: PendingOp[],
 ): RemotePaneState {
   return {
     target,
@@ -602,7 +776,252 @@ function cleared(
     older: [],
     hasMore: false,
     stalls: 0,
+    // Nothing the owner answered survives a clear: not the suggestion list, not a delivery
+    // state, not `held`. A late answer for any of them is under the old generation.
+    suggestions: null,
+    outbox: [],
+    held: false,
+    refusedRevision: null,
+    // The leftover KEYS are this browser's own and hold no content: on the same target they
+    // stay (a check in flight is asked again under the new generation); another target brings
+    // its own.
+    leftovers:
+      target === state.target
+        ? state.leftovers.map((l) =>
+            l.phase === "checking" || l.phase === "failed" ? { ...l, phase: "pending" } : l,
+          )
+        : freshLeftovers(leftovers),
   };
+}
+
+const SUGGESTION_STATES = new Set([
+  "pending",
+  "approving",
+  "approved",
+  "rejected",
+  "withdrawn",
+  "expired",
+]);
+const HANDOFFS = new Set(["sent", "queued", "not_sent", "uncertain"]);
+const finite = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/** The suggestions of an answer that can be shown: known states, string ids, each id once. */
+function listedSuggestions(raw: unknown): OwnSuggestion[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: OwnSuggestion[] = [];
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") continue;
+    const id = r.suggestion_id;
+    if (typeof id !== "string" || !GRANT_ID_RE.test(id) || seen.has(id)) continue;
+    if (typeof r.state !== "string" || !SUGGESTION_STATES.has(r.state)) continue;
+    seen.add(id);
+    out.push({
+      suggestion_id: id,
+      client_key: typeof r.client_key === "string" ? r.client_key : "",
+      state: r.state,
+      handoff: typeof r.handoff === "string" && HANDOFFS.has(r.handoff) ? r.handoff : null,
+      created_at: finite(r.created_at),
+      updated_at: finite(r.updated_at),
+    });
+  }
+  return out;
+}
+
+/** `{suggestion_id, state}` of a suggest or withdraw answer, or `null` when it is not one. */
+function suggestionRef(raw: unknown): { suggestion_id: string; state: string } | null {
+  const r = raw as { suggestion_id?: unknown; state?: unknown } | null;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.suggestion_id !== "string" || !GRANT_ID_RE.test(r.suggestion_id)) return null;
+  if (typeof r.state !== "string" || !SUGGESTION_STATES.has(r.state)) return null;
+  return { suggestion_id: r.suggestion_id, state: r.state };
+}
+
+/** A receipt as the outbox shows it. Only `sent`, `queued` and `not_sent` are what they say;
+ *  `uncertain`, no receipt and anything unexpected are all "not confirmed". */
+export function deliveryOf(handoff: unknown): OutboxRow["delivery"] {
+  return handoff === "sent" || handoff === "queued" || handoff === "not_sent"
+    ? handoff
+    : "unconfirmed";
+}
+
+const isMine = (t: RemoteTurn) => t.mine === true;
+
+/** Tie each sent message to the conversation turn it became, once the owner shows one: a turn
+ *  of OURS (`mine`) that was not there when the message was sent and carries the same text.
+ *  Display only: it moves the delivery line under the turn instead of drawing the text twice.
+ *
+ *  A `not_sent` row is tied like any other: the owner's `not_sent` is a RECORDED turn the agent
+ *  never got (the runtime answers the receipt from that turn), so the conversation shows it.
+ *  The row therefore ends under its turn whether the reply or the snapshot came first, and the
+ *  pane offers the same Send again there (same text, same `client_key`: the owner answers that
+ *  one operation, a key never makes a second turn). */
+function bound(outbox: OutboxRow[], turns: RemoteTurn[]): OutboxRow[] {
+  if (!outbox.some((r) => !r.turn && r.text !== null)) return outbox;
+  const taken = new Set(outbox.map((r) => r.turn).filter(Boolean));
+  return outbox.map((row) => {
+    if (row.turn || row.text === null) return row;
+    const hit = turns.find(
+      (t) =>
+        isMine(t) &&
+        !taken.has(t.turn_id) &&
+        !row.prior.includes(t.turn_id) &&
+        typeof t.text === "string" &&
+        t.text.trim() === row.text!.trim(),
+    );
+    if (!hit) return row;
+    taken.add(hit.turn_id);
+    return { ...row, turn: hit.turn_id };
+  });
+}
+
+/** When a leftover that just answered unknown is asked again. */
+function nextCheckAt(firstUnknownAt: number, now: number): number | null {
+  for (const offset of RECONCILE_RECHECK_MS) if (firstUnknownAt + offset > now) return firstUnknownAt + offset;
+  return null;
+}
+
+/** The pane's answers to its own requests (#2061). The caller already matched the generation. */
+function inputReduce(state: RemotePaneState, event: RemotePaneEvent): RemotePaneState {
+  const leftover = (key: string, change: (l: Leftover) => Leftover | null): Leftover[] =>
+    state.leftovers.flatMap((l) => {
+      if (l.client_key !== key) return [l];
+      const next = change(l);
+      return next ? [next] : [];
+    });
+  const row = (key: string, change: (r: OutboxRow) => OutboxRow): OutboxRow[] =>
+    state.outbox.map((r) => (r.client_key === key ? change(r) : r));
+  switch (event.type) {
+    case "suggestions":
+      return state.status === "live" ? { ...state, suggestions: listedSuggestions(event.rows) } : state;
+    case "suggested": {
+      const made = suggestionRef(event.suggestion);
+      if (!made || state.status !== "live") return state;
+      const now = event.now / 1000;
+      const rest = (state.suggestions ?? []).filter((x) => x.suggestion_id !== made.suggestion_id);
+      const before = (state.suggestions ?? []).find((x) => x.suggestion_id === made.suggestion_id);
+      return {
+        ...state,
+        held: false,
+        suggestions: [
+          {
+            suggestion_id: made.suggestion_id,
+            client_key: event.client_key,
+            state: made.state,
+            handoff: before?.handoff ?? null,
+            created_at: before?.created_at ?? now,
+            updated_at: now,
+          },
+          ...rest,
+        ],
+      };
+    }
+    case "withdrawn": {
+      const gone = suggestionRef(event.suggestion);
+      if (!gone || !state.suggestions) return state;
+      return {
+        ...state,
+        suggestions: state.suggestions.map((x) =>
+          x.suggestion_id === gone.suggestion_id
+            ? { ...x, state: gone.state, updated_at: event.now / 1000 }
+            : x,
+        ),
+      };
+    }
+    case "sending": {
+      if (state.status !== "live") return state;
+      if (state.outbox.some((r) => r.client_key === event.client_key))
+        return { ...state, outbox: row(event.client_key, (r) => ({ ...r, delivery: "sending" })) };
+      const prior = remoteTurns(state)
+        .filter(isMine)
+        .map((t) => t.turn_id);
+      return {
+        ...state,
+        outbox: [
+          ...state.outbox,
+          { client_key: event.client_key, text: event.text, delivery: "sending", prior, turn: null },
+        ],
+      };
+    }
+    case "sent":
+      return {
+        ...state,
+        held: false,
+        outbox: bound(
+          row(event.client_key, (r) => ({ ...r, delivery: deliveryOf(event.handoff) })),
+          remoteTurns(state),
+        ),
+      };
+    case "unconfirmed":
+      return { ...state, outbox: row(event.client_key, (r) => ({ ...r, delivery: "unconfirmed" })) };
+    case "unsent":
+      // A definite refusal: nothing was delivered, and the text is still in the composer.
+      return { ...state, outbox: state.outbox.filter((r) => r.client_key !== event.client_key) };
+    case "held":
+      return { ...state, held: event.held };
+    case "refused":
+      return { ...state, refusedRevision: event.revision };
+    case "checking":
+      return {
+        ...state,
+        leftovers: leftover(event.client_key, (l) =>
+          l.phase === "final" ? l : { ...l, phase: "checking", nextAt: null },
+        ),
+      };
+    case "giveup":
+      // Two minutes of unknown: still "may or may not", and nothing more is asked.
+      return {
+        ...state,
+        leftovers: leftover(event.client_key, (l) => ({ ...l, phase: "final", nextAt: null })),
+      };
+    case "status": {
+      const found = state.leftovers.find((l) => l.client_key === event.client_key);
+      if (!found || found.phase === "final") return state;
+      const { result, now } = event;
+      if (result === "failed")
+        return {
+          ...state,
+          leftovers: leftover(event.client_key, (l) => ({
+            ...l,
+            phase: "failed",
+            nextAt: now + RECONCILE_RETRY_MS,
+          })),
+        };
+      if (!result || result.known !== true) {
+        const first = found.firstUnknownAt ?? now;
+        return {
+          ...state,
+          leftovers: leftover(event.client_key, (l) => ({
+            ...l,
+            phase: "unknown",
+            firstUnknownAt: first,
+            nextAt: nextCheckAt(first, now),
+          })),
+        };
+      }
+      // Known: the notice goes. A suggestion is in the list the owner answers; a sent message
+      // is shown with its real state (its text was never stored, so there is none to show).
+      const rest = leftover(event.client_key, () => null);
+      if (result.kind !== "send" || state.outbox.some((r) => r.client_key === event.client_key))
+        return { ...state, leftovers: rest };
+      return {
+        ...state,
+        leftovers: rest,
+        outbox: [
+          ...state.outbox,
+          {
+            client_key: event.client_key,
+            text: null,
+            delivery: deliveryOf(result.handoff),
+            prior: [],
+            turn: null,
+          },
+        ],
+      };
+    }
+    default:
+      return state;
+  }
 }
 
 /** The turns of an answer that can be shown: objects with an id, each id once. The server checks
@@ -632,7 +1051,10 @@ const objects = (v: unknown): Record<string, unknown>[] =>
  *  crash. An attachment keeps its name and type and NEVER an image handle: nothing a peer sent
  *  can make this instance load a picture. */
 export function remoteTurnView(raw: RemoteTurn): PublicTurn {
-  const author = raw.author as { name?: unknown; via?: unknown } | null | undefined;
+  const author = raw.author as
+    | { name?: unknown; via?: unknown; edited?: unknown }
+    | null
+    | undefined;
   const omitted = raw.tools_omitted;
   return {
     kind: raw.kind === "agent" ? "agent" : "operator",
@@ -656,7 +1078,12 @@ export function remoteTurnView(raw: RemoteTurn): PublicTurn {
     author:
       author && author.via === "public_link" && typeof author.name === "string"
         ? { name: author.name, via: "public_link" }
-        : null,
+        : author && author.via === "peer" && typeof author.name === "string"
+          ? // A turn a peer caused (#2057): the owner's name for that peer and whether the
+            // owner edited it. Text nodes only; the peer's own `actor` label is not shown.
+            { name: author.name, via: "peer", ...(author.edited === true ? { edited: true } : {}) }
+          : null,
+    mine: raw.mine === true,
     truncated: raw.truncated === true,
   };
 }
@@ -673,8 +1100,12 @@ export function remoteFailure(status: number): "gone" | "offline" | "stall" {
  *  a slow success can never refill a pane that was cleared or now shows another session. */
 export function remotePaneReduce(state: RemotePaneState, event: RemotePaneEvent): RemotePaneState {
   if (event.type === "open")
-    return event.target === state.target ? state : cleared(state, "loading", 0, event.target);
+    return event.target === state.target
+      ? state
+      : cleared(state, "loading", 0, event.target, event.leftovers);
   if (event.generation !== state.generation) return state; // an answer from before a clear
+  if (event.type !== "failed" && event.type !== "snapshot" && event.type !== "history")
+    return inputReduce(state, event);
   if (event.type === "failed") {
     const kind = remoteFailure(event.status);
     if (kind === "gone") return cleared(state, "gone", null);
@@ -700,6 +1131,7 @@ export function remotePaneReduce(state: RemotePaneState, event: RemotePaneEvent)
       older,
       hasMore: older.length ? state.hasMore : Number(next.omitted_turns) > 0,
       stalls: 0,
+      outbox: bound(state.outbox, [...older, ...next.turns]),
     };
   }
   // history: a page of turns that end where the oldest held turn begins.
@@ -734,3 +1166,289 @@ export const REMOTE_GONE = "This share is no longer available.";
 export const remoteOfflineText = (peer: string) =>
   `${peer} is not connected. Showing nothing until it is back.`;
 export const remoteViewOnlyText = (peer: string) => `Ask ${peer}'s operator for more access.`;
+
+// ---- suggesting and sending to a shared session (#2061) ---------------------------------------
+
+export const remoteHeldText = (peer: string) =>
+  `${peer}'s session is run by a mission right now. You can watch.`;
+export const remoteAccessEndedText = (level: "suggest" | "send") =>
+  `${level === "send" ? "Send" : "Suggest"} access ended. Your text is kept here; ask for access again.`;
+export const RELOAD_UNKNOWN =
+  "A message you were sending before the reload may or may not have arrived." +
+  " Check the conversation before sending it again.";
+export const RELOAD_UNCHECKED = "Could not check a message you were sending before the reload.";
+
+export type InputLevel = "suggest" | "send";
+export const inputLevel = (level: string | null | undefined): InputLevel | null =>
+  level === "suggest" || level === "send" ? level : null;
+
+export interface ComposerState {
+  /** Which composer is drawn, if any. The owner decides on every call; this only chooses what
+   *  to offer. */
+  kind: InputLevel | null;
+  enabled: boolean;
+  placeholder: string;
+  button: string;
+  /** The line above a disabled composer saying why. */
+  note: string | null;
+}
+
+/** The remote pane's composer, from the mirrored level and what the owner last answered.
+ *
+ *  `level` is the mirrored one right now (`null` when the share is no longer listed); `offered`
+ *  is the input level this pane last offered for this share. Text typed under a level that then
+ *  ended (lowered, expired, refused) is never thrown away: the composer stays, disabled, with
+ *  the text in it. With nothing typed there is nothing to keep, and the pane is view only. */
+export function composerState(input: {
+  status: RemotePaneStatus;
+  peer: string;
+  /** The mirrored kind of the share. A terminal (#2060) is shared View only for good: it never
+   *  has a composer, whatever level a row claims and whatever was offered before. */
+  kind?: string | null;
+  level: string | null;
+  offered: InputLevel | null;
+  expired: boolean;
+  refused: boolean;
+  held: boolean;
+  hasText: boolean;
+}): ComposerState {
+  const { status, peer, held, hasText } = input;
+  const none: ComposerState = { kind: null, enabled: false, placeholder: "", button: "", note: null };
+  if (input.kind === "terminal") return none;
+  const live = input.expired ? null : inputLevel(input.level);
+  const kind = live ?? input.offered;
+  if (!kind) return none;
+  const base = {
+    kind,
+    placeholder:
+      kind === "send" ? `Message ${peer}'s agent…` : `Suggest a message to ${peer}'s operator…`,
+    button: kind === "send" ? "Send" : "Suggest",
+  };
+  // Ended: no level that writes any more (lowered to view, expired, no longer listed), the
+  // owner refused a write under this revision, or the share is gone. A level lowered from send
+  // to suggest is not "ended": it is simply the Suggest composer, with the text still in it.
+  if (!live || input.refused || status === "gone")
+    return hasText ? { ...base, enabled: false, note: remoteAccessEndedText(kind) } : none;
+  if (status === "offline") return { ...base, enabled: false, note: null };
+  if (held) return { ...base, enabled: false, note: remoteHeldText(peer) };
+  return { ...base, enabled: status === "live", note: null };
+}
+
+export interface DeliveryLine {
+  word: string;
+  tone: "ok" | "idle";
+  detail: string | null;
+  /** Only a message the owner says did NOT reach the agent can be sent again, and only as the
+   *  same message under the same key. */
+  resend: boolean;
+}
+
+/** One presentation per delivery state. "Not confirmed" is its own state: never "sent", never
+ *  "not sent", and never offered for resending. */
+export function deliveryLine(delivery: OutboxRow["delivery"]): DeliveryLine {
+  switch (delivery) {
+    case "sending":
+      return { word: "sending…", tone: "idle", detail: null, resend: false };
+    case "sent":
+      return { word: "sent", tone: "ok", detail: null, resend: false };
+    case "queued":
+      return { word: "queued", tone: "idle", detail: null, resend: false };
+    case "not_sent":
+      return { word: "not sent", tone: "idle", detail: "It did not reach the agent.", resend: true };
+    default:
+      return {
+        word: "delivery not confirmed",
+        tone: "idle",
+        detail: "It may still arrive. Do not resend blindly.",
+        resend: false,
+      };
+  }
+}
+
+export interface OwnSuggestionLine {
+  word: string;
+  tone: "ok" | "idle";
+  withdraw: boolean;
+}
+
+/** A row of "Your suggestions". Grey while it waits: it is not THIS operator's attention that
+ *  is needed. `approving` is never shown as delivered, `expired` never as rejected. */
+export function ownSuggestionLine(state: string, peer: string): OwnSuggestionLine {
+  switch (state) {
+    case "pending":
+      return { word: `waiting for ${peer}'s operator`, tone: "idle", withdraw: true };
+    case "approving":
+      return { word: "approved · being delivered", tone: "idle", withdraw: false };
+    case "approved":
+      return { word: "approved", tone: "ok", withdraw: false };
+    case "rejected":
+      return { word: "rejected", tone: "idle", withdraw: false };
+    case "expired":
+      return { word: "expired", tone: "idle", withdraw: false };
+    default:
+      return { word: "withdrawn", tone: "idle", withdraw: false };
+  }
+}
+
+/** The notices a reloaded pane shows for requests it cannot account for, each text once. */
+export function reloadNotices(leftovers: readonly Leftover[], status: RemotePaneStatus): string[] {
+  const out = new Set<string>();
+  for (const l of leftovers) {
+    // Asking again about a key that already answered unknown does not take the notice away:
+    // it stays until an answer says what became of the message.
+    if (l.phase === "unknown" || l.phase === "final" || (l.phase === "checking" && l.firstUnknownAt !== null))
+      out.add(RELOAD_UNKNOWN);
+    // A pane that cannot ask (gone for good) could not check either.
+    else if (l.phase === "failed" || status === "gone") out.add(RELOAD_UNCHECKED);
+  }
+  return [...out];
+}
+
+/** What the pane does next about its leftovers: which to ask about now, which to give up on,
+ *  and how long until something is due (ms; `null` = nothing scheduled). Pure. */
+export function reconcilePlan(
+  leftovers: readonly Leftover[],
+  now: number,
+): { check: string[]; giveUp: string[]; wakeIn: number | null } {
+  const check: string[] = [];
+  const giveUp: string[] = [];
+  let wake: number | null = null;
+  const due = (at: number) => {
+    wake = wake === null ? at : Math.min(wake, at);
+  };
+  for (const l of leftovers) {
+    if (l.phase === "pending") check.push(l.client_key);
+    else if (l.phase === "failed") {
+      if ((l.nextAt ?? 0) <= now) check.push(l.client_key);
+      else due(l.nextAt!);
+    } else if (l.phase === "unknown") {
+      const deadline = (l.firstUnknownAt ?? now) + RECONCILE_GIVE_UP_MS;
+      if (now >= deadline) giveUp.push(l.client_key);
+      else if (l.nextAt !== null && l.nextAt <= now) check.push(l.client_key);
+      else due(Math.min(deadline, l.nextAt ?? deadline));
+    }
+  }
+  return { check, giveUp, wakeIn: wake === null ? null : Math.max(0, wake - now) };
+}
+
+const OPS_KEY = "bl-remote-ops";
+const OPS_MAX = 20;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function cleanOp(raw: unknown): PendingOp | null {
+  const r = raw as Partial<PendingOp> | null;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.peer_id !== "string" || !PEER_ID_RE.test(r.peer_id)) return null;
+  if (typeof r.grant_id !== "string" || !GRANT_ID_RE.test(r.grant_id)) return null;
+  if (typeof r.client_key !== "string" || !UUID_RE.test(r.client_key)) return null;
+  if (r.kind !== "send" && r.kind !== "suggest") return null;
+  if (typeof r.started_at !== "number" || !Number.isFinite(r.started_at)) return null;
+  // Rebuilt field by field: whatever else a record carried is not kept.
+  return {
+    peer_id: r.peer_id,
+    grant_id: r.grant_id,
+    client_key: r.client_key,
+    kind: r.kind,
+    started_at: r.started_at,
+  };
+}
+
+/** The in-flight records (#2061): `{peer_id, grant_id, client_key, kind, started_at}` and
+ *  NOTHING else. No text, no title, nothing from the conversation: this module is the only
+ *  writer of the key, and it takes no other field. `sessionStorage`, so they end with the tab. */
+export const pendingOps = {
+  all(storage: Pick<Storage, "getItem"> = sessionStorage): PendingOp[] {
+    try {
+      const raw = JSON.parse(storage.getItem(OPS_KEY) ?? "[]");
+      return Array.isArray(raw) ? (raw.map(cleanOp).filter(Boolean) as PendingOp[]) : [];
+    } catch {
+      return [];
+    }
+  },
+  of(peerId: string, grantId: string, storage?: Pick<Storage, "getItem">): PendingOp[] {
+    return this.all(storage).filter((op) => op.peer_id === peerId && op.grant_id === grantId);
+  },
+  add(op: PendingOp, storage: Pick<Storage, "getItem" | "setItem"> = sessionStorage): void {
+    const clean = cleanOp(op);
+    if (!clean) return;
+    const rest = this.all(storage).filter((o) => o.client_key !== clean.client_key);
+    try {
+      storage.setItem(OPS_KEY, JSON.stringify([...rest, clean].slice(-OPS_MAX)));
+    } catch {
+      /* storage refused: the request goes on, a reload then cannot find out about it */
+    }
+  },
+  remove(clientKey: string, storage: Pick<Storage, "getItem" | "setItem"> = sessionStorage): void {
+    const all = this.all(storage);
+    const rest = all.filter((o) => o.client_key !== clientKey);
+    if (rest.length === all.length) return;
+    try {
+      storage.setItem(OPS_KEY, JSON.stringify(rest));
+    } catch {
+      /* nothing to do */
+    }
+  },
+};
+
+/** The retry key of the message in the composer: ONE UUID per composed message. A retry of the
+ *  same text after a failure reuses it (the owner then answers the first attempt's outcome);
+ *  different text is a different message and always gets a new key; so does the next message
+ *  after one was accepted (`accepted`). A key is never reused for different text. */
+export function draftKey(
+  held: { text: string; key: string } | null,
+  text: string,
+  mint: () => string,
+): { text: string; key: string } {
+  return held && held.text === text ? held : { text, key: mint() };
+}
+
+/** What a refused or failed write means, from its HTTP status AND the server's code. Only an
+ *  answer this table knows as a refusal is "nothing was accepted". Everything else (a missing
+ *  answer, a gateway error, a timeout, a lost channel, a status or code not listed here) says
+ *  nothing either way: it is never treated as non-delivery, and the in-flight record stays. */
+export type WriteFailure =
+  /** `404 no_grant`: the owner refused the write. Access to write ended (or the mirror is behind). */
+  | "refused"
+  /** `409 held`: a mission runs that session. */
+  | "held"
+  /** `503 peer_offline`: no channel when the request was made, so it never left this instance.
+   *  A channel that ended AFTER the request was handed to it is `504 peer_lost`: unconfirmed. */
+  | "offline"
+  /** Another definite refusal: nothing was accepted; the server's words say why. */
+  | "rejected"
+  /** No answer, or one that cannot say what happened (network, `502`, `504 timeout`,
+   *  `504 peer_lost`, `503` that is not `peer_offline`, `429 busy`, anything not listed).
+   *
+   *  `429 busy` is here on purpose (#2061). It is usually a refusal (five suggestions waiting, a
+   *  rate limit), but an owner on a build before `answer_lost` also answered `busy` AFTER it
+   *  delivered a message, when its byte budget for answers was spent. Two instances are updated
+   *  independently, so this browser cannot tell the two apart: the record stays, nothing says
+   *  "not sent", and the status of the same key says what happened. */
+  | "unconfirmed";
+
+/** The refusals a write route answers BEFORE or INSTEAD of an effect, by status then code.
+ *  `401` and `403` are this instance turning the request away itself (no session, CSRF, the
+ *  owner-only answer): whatever their code, nothing was passed on. */
+const REFUSED_CODES: Record<number, readonly string[]> = {
+  404: ["not_found"],
+  409: ["conflict", "not_pending"],
+  413: ["too_large"],
+  422: ["invalid", "not_possible"],
+};
+
+export function writeFailure(status: number, code: unknown): WriteFailure {
+  if (status === 404 && code === "no_grant") return "refused";
+  if (status === 409 && code === "held") return "held";
+  if (status === 503 && code === "peer_offline") return "offline";
+  if (status === 401 || status === 403) return "rejected";
+  if (typeof code === "string" && REFUSED_CODES[status]?.includes(code)) return "rejected";
+  return "unconfirmed";
+}
+
+/** Whether the in-flight record of a request goes when it settled this way: an answer arrived
+ *  and said nothing was accepted. With anything else the record stays, so a reload can still
+ *  ask about the same key (`input.status`) instead of the message being composed again. */
+export const settlesRecord = (failure: WriteFailure) => failure !== "unconfirmed";
+
+export const SUGGEST_UNCONFIRMED =
+  "Could not confirm that the suggestion arrived. Check Your suggestions before suggesting it again.";

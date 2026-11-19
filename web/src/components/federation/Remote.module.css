@@ -229,6 +229,160 @@
   }
 }
 
+/* ---- suggesting and sending to a shared session (#2061) ---- */
+/* A line of the pane's own: why the composer is off, or what a reloaded pane cannot account for.
+ * Neutral ink on the banner's ground: a fact to read, not an alarm. */
+.paneNote {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  border-top: 1px solid var(--line-strong);
+}
+.banner + .paneNote {
+  border-top: 0;
+  border-bottom: 1px solid var(--line);
+}
+.composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+}
+.composerOff {
+  background: color-mix(in srgb, var(--text-1) 4%, var(--bg-1));
+}
+.composerText {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 30vh;
+  box-sizing: border-box;
+  padding: 11px var(--sp-3);
+  resize: none;
+  field-sizing: content;
+  font: inherit;
+  font-size: var(--fs-row);
+  line-height: 1.35;
+  color: var(--text-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.composerText::placeholder {
+  color: var(--text-2);
+  opacity: 1;
+}
+.composerText:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -1px;
+}
+/* Disabled keeps its text readable: what was typed is still the operator's to copy. */
+.composerText:disabled {
+  opacity: 1;
+  color: var(--text-2);
+  -webkit-text-fill-color: var(--text-2);
+}
+.composerGo {
+  flex: none;
+  min-height: 44px;
+}
+/* How a message this instance sent fared: a word with its LED under the message. Green only for
+ * sent; queued, not sent and "not confirmed" are grey. */
+.delivery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.deliveryDetail {
+  color: var(--text-2);
+}
+.resend {
+  flex: none;
+}
+/* "Your suggestions": the states the owner lists for what this instance proposed. */
+.mine {
+  flex: none;
+  max-height: 34vh;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--line-strong);
+}
+.mineHead {
+  margin: 0 0 var(--sp-1);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.mine ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mine li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.mine li:last-child {
+  border-bottom: 0;
+}
+.mineMain {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.mineText {
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mineState {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.withdraw {
+  flex: none;
+}
+
+@media (max-width: 800px) {
+  .mine li {
+    flex-wrap: wrap;
+  }
+  .withdraw {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+  .resend {
+    min-height: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .withdraw,
+  .resend {
+    min-height: 44px;
+  }
+}
+
 /* ---- a shared terminal, as its screen (#2060) ---- */
 /* The SCREEN tag: what kind of share this is. A solid hairline beside the badge's dashed one,
  * neutral ink (a kind is not a state). */
