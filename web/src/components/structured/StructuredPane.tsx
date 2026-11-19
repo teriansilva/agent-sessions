@@ -4,7 +4,7 @@ import {
   ArrowDown,
   ArrowLeftRight,
   BookMarked,
-  Globe,
+  Crosshair,
   Link2,
   History,
   ListChecks,
@@ -37,7 +37,7 @@ import { useNavigate } from "react-router-dom";
 import { memorySentence, oomKillSentence, ownLimitHelps } from "../../lib/memoryPressure";
 import { settingsPath } from "../../routes/settingsTabs";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
-import { isNewSessionPlaceholder } from "../../app/sessionsStore";
+import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
 import { useSessionLookup } from "../../app/useSessionRow";
 import { isArchivedRefusal } from "../../lib/archived";
 import { CLOSE_ARCHIVED } from "../../lib/termCloseCodes";
@@ -74,7 +74,9 @@ import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { OpeningPanel } from "../terminal/SessionOpening";
 import { resolveApiModel } from "../../lib/apiModel";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
-import { PeerGlyph } from "../federation/PeerBadge";
+import { shareHeadAction } from "../sessions/shareAction";
+import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
+import { missionLink } from "../../lib/missionLink";
 import { SharePeerModal } from "../federation/SharePeerModal";
 import { ReplyShareModal } from "../shares/ReplyShareModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
@@ -1783,6 +1785,22 @@ export function StructuredPane({
     open: false,
     trigger: null,
   });
+  // "Adopt to mission" / "Open mission" (#948 P5, here since #2173): the header half of
+  // session-side adoption. An API session is the only kind the server admits (#1902).
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [adoptTrigger, setAdoptTrigger] = useState<HTMLElement | null>(null);
+  // The header the dialog was opened from. Adoption replaces the Adopt chip with Open mission, and
+  // a longer label can fold it into "…", so focus is resolved against the header, not one node.
+  const adoptHeadRef = useRef<HTMLElement | null>(null);
+  const resolveAdoptReturn = useCallback(() => {
+    const head = adoptHeadRef.current;
+    return (
+      head?.querySelector<HTMLElement>('[data-head-action="mission"]') ??
+      head?.querySelector<HTMLElement>("button[data-head-more]") ??
+      null
+    );
+  }, []);
+  const { remember } = useSessionsStore();
   const [permissionsOpen, setPermissionsOpen] = useState<{
     trigger: HTMLElement | null;
   } | null>(null);
@@ -3181,9 +3199,10 @@ export function StructuredPane({
 
   // The pane head (#1332): the terminal's actions, in the terminal's order, wherever they work
   // for an API session. Recap and Hand off read the session's journal (#1311's transcript fold);
-  // Adopt to mission is NOT offered here: since #1900 a mission may hold a kind whose
-  // `mission_ready` bit is on, but offering adoption from the pane is a follow-up. Repaint and
-  // text size are terminal controls.
+  // the mission action is offered here and only here (#2173): the server admits an API session
+  // into a mission and refuses every terminal one (#1902). The roster does not carry
+  // `mission_ready`, so a not-yet-ready client is still refused and the dialog shows the reason.
+  // Repaint and text size are terminal controls.
   const placeholder = isNewSessionPlaceholder(actionKey);
   const headActions: HeadAction[] = [
     ...(snap?.can_enable_bypass && !readOnly
@@ -3255,6 +3274,47 @@ export function StructuredPane({
           },
         ]
       : []),
+    // Adopt to mission / Open mission (#948 P5). POSITION: after Hand off, before To map, as the
+    // terminal head had it. Offered only when the row KNOWS the membership (`mission` absent = the
+    // store could not be read), never on an archived session and never on an unreconciled
+    // `new-<uuid>` placeholder, which the server's canonical_key refuses.
+    ...(row && row.mission !== undefined && !archived && !placeholder
+      ? [
+          row.mission
+            ? {
+                id: "mission",
+                label:
+                  row.mission.title.length > 28
+                    ? `${row.mission.title.slice(0, 27)}…`
+                    : row.mission.title,
+                aria: `Open mission ${row.mission.title}`,
+                title: `Open mission: ${row.mission.title} (${row.mission.state})`,
+                icon: <Crosshair size={13} aria-hidden="true" />,
+                active: true,
+                // #1329: the window's ⋯ menu already carries "Open mission" — menu-first.
+                menuFirst: host.suppressHead,
+                run: () => navigate(missionLink(row.mission!.id)),
+              }
+            : {
+                // The SAME id as Open mission: HeadActions keys its buttons by id, so a successful
+                // adoption relabels this button instead of unmounting the dialog's opener (#953).
+                id: "mission",
+                label: "Adopt to mission",
+                aria: "Adopt this session into a mission",
+                title: "Adopt to mission: add this session to an open mission",
+                icon: <Crosshair size={13} aria-hidden="true" />,
+                // #1329: the window's ⋯ menu already carries "Adopt to mission…" — menu-first.
+                menuFirst: host.suppressHead,
+                run: (trigger?: HTMLElement | null) => {
+                  const opener = trigger ?? (document.activeElement as HTMLElement | null);
+                  adoptHeadRef.current =
+                    opener?.closest<HTMLElement>("[data-fit-width]") ?? null;
+                  setAdoptTrigger(opener);
+                  setAdoptOpen(true);
+                },
+              },
+        ]
+      : []),
     ...(host.onToMap
       ? [
           {
@@ -3270,34 +3330,16 @@ export function StructuredPane({
       : []),
     ...(!placeholder
       ? [
-          {
-            id: "share-public",
-            label: "Share publicly…",
-            aria: "Share this session publicly",
-            title:
-              "Share publicly: a link anyone can open without a BattleLab account — view only or able to send, with an optional password and expiry",
-            icon: <Globe size={13} aria-hidden="true" />,
-            run: (trigger?: HTMLElement | null) =>
-              setSharePublic({
-                open: true,
-                trigger: trigger ?? (document.activeElement as HTMLElement | null),
-              }),
-          },
-          // Share with a peer… (#2055): directly under Share publicly…, and as distinct from it
-          // as the two are: that one is a link anyone opens, this one names a paired instance.
-          {
-            id: "share-peer",
-            label: "Share with a peer…",
-            aria: "Share this session with a paired instance",
-            title:
-              "Share with a peer: let one paired BattleLab instance read this session — view only, with an expiry",
-            icon: <PeerGlyph size={13} />,
-            run: (trigger?: HTMLElement | null) =>
-              setSharePeer({
-                open: true,
-                trigger: trigger ?? (document.activeElement as HTMLElement | null),
-              }),
-          },
+          // Share (#2173): one action, two choices — Public… (#1404 P4, a link anyone opens) and
+          // Peer… (#2055, one paired instance). A chip with its own menu on the bar; a labelled
+          // group once folded.
+          shareHeadAction({
+            subject: "api",
+            onPublic: (trigger) => setSharePublic({ open: true, trigger }),
+            onPeer: (trigger) => setSharePeer({ open: true, trigger }),
+            // #1329: in a window the ⋯ menu is Share's home, as for Recap, Hand off and mission.
+            menuFirst: host.suppressHead,
+          }),
         ]
       : []),
     // Stop is a head action while a worker runs, in the pane's own bar and in a window's chrome
@@ -3481,6 +3523,18 @@ export function StructuredPane({
           agent={engineLabel(engine)}
           onClose={() => setReplyShare(null)}
           returnFocusTo={replyShare.trigger}
+        />
+      )}
+      {adoptOpen && row && (
+        <AdoptToMissionModal
+          session={row}
+          sessionKey={actionKey}
+          onClose={() => setAdoptOpen(false)}
+          // A session the sidebar's page does not hold lives in the lookup cache instead; the list
+          // listener cannot reach that copy, so it is updated here.
+          onAdopted={(mission) => remember(actionKey, { ...row, mission })}
+          returnFocusTo={adoptTrigger}
+          resolveReturnFocus={resolveAdoptReturn}
         />
       )}
       {sharePublic.open && (

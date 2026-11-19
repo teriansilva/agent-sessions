@@ -1,7 +1,8 @@
 import { MoreHorizontal } from "lucide-react";
 import { createPortal } from "react-dom";
-import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import menu from "../files/filePanel.module.css";
+import { MenuPopover } from "../sidebar/RowMenu";
 import { foldSelection } from "./headActionsFold";
 
 export interface HeadAction {
@@ -21,6 +22,15 @@ export interface HeadAction {
    *  session-mirrored pane action sets it — the session ⋯ menu already carries it under a stable
    *  name, so the chip is the exception, not the rule. */
   menuFirst?: boolean;
+  /** A second, smaller line under the label wherever this action is a MENU ITEM, e.g. why a
+   *  disabled item is disabled (#2173). A chip has `title` for that. */
+  hint?: string;
+  /** This action is a group of choices, not one command (#2173, Share: Public / Peer). As a chip
+   *  it opens a small anchored menu of them; folded (the "…", the phone Actions menu, a window's
+   *  ⋯) it is drawn as a group label, `label`, followed by the items. No nested fly-out. `run` is
+   *  never called on an action with `menu`; each item's `run` gets a PERSISTENT trigger: the chip,
+   *  or the menu's own trigger. One level only: an item's own `menu` is ignored. */
+  menu?: HeadAction[];
   /** `trigger` is the element focus should return to when whatever this opens is closed. For an
    *  overflow item that is the persistent "…" button, NOT the menu item — the item unmounts with
    *  the menu, and a modal handed a detached node cannot restore focus at all. */
@@ -36,6 +46,10 @@ function sameSelection(a: boolean[], b: boolean[]): boolean {
 }
 
 const GAP = 6; // matches .headActions gap
+
+/** An action's choices. A function, so the field is never spelled `menu.<name>` beside the
+ *  CSS-module import of the same name (the class guard reads that as a class). */
+const choicesOf = (a: HeadAction): HeadAction[] => a.menu ?? [];
 
 /** The width `el` cannot give up (#2055): a `flex: none` member at its width, a shrinkable one at
  *  its own `min-width` (an `auto` minimum is taken as its width: folding a little early is the
@@ -151,6 +165,15 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
   });
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; right: number; maxHeight: number } | null>(null);
+  // The open CHIP menu (#2173): which action's, and the chip it hangs from. The chip is the
+  // popover's anchor, its owner (a press on it toggles, it is not an outside press) and the
+  // element every item's `run` and Esc hand focus back to.
+  const [chipMenu, setChipMenu] = useState<{ id: string; el: HTMLElement } | null>(null);
+  const chipOwnerRef = useRef<HTMLElement | null>(null);
+  const closeChipMenu = useCallback((refocus: boolean) => {
+    setChipMenu(null);
+    if (refocus) chipOwnerRef.current?.focus();
+  }, []);
 
   // A stable identity for "which actions are these". `actions` is rebuilt every render, so keying
   // anything on the array itself re-runs on every commit and re-measures against a target that is
@@ -324,6 +347,40 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
   // whatever had focus. Close during render — the documented way to adjust state to a prop
   // change — and restore focus in an effect that touches no state.
   if (open && overflow.length === 0) setOpen(false);
+  // Same for a chip menu whose chip just folded away (or whose action left the list): the popover
+  // would hang from a detached node.
+  const chipMenuAction = chipMenu
+    ? inline.find((a) => a.id === chipMenu.id && a.menu?.length)
+    : undefined;
+  if (chipMenu && !chipMenuAction) setChipMenu(null);
+
+  // One row of the folded menu. Focus goes back to the "…" trigger, which survives the menu.
+  const foldedItem = (a: HeadAction) => (
+    <button
+      key={a.id}
+      type="button"
+      role="menuitem"
+      className={menu.headMenuItem}
+      disabled={a.disabled}
+      title={a.title}
+      aria-label={a.aria}
+      data-head-menu-item={a.id}
+      onClick={() => {
+        setOpen(false);
+        a.run(moreRef.current);
+      }}
+    >
+      {a.icon}
+      {a.hint ? (
+        <span className={menu.headMenuText}>
+          {a.label}
+          <span className={menu.headMenuHint}>{a.hint}</span>
+        </span>
+      ) : (
+        a.label
+      )}
+    </button>
+  );
 
   useEffect(() => {
     if (open) return;
@@ -356,22 +413,67 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
       ref={wrapRef}
       data-fit-width={fit.sig === sig && fit.w !== undefined ? fit.w : "unmeasured"}
     >
-      {inline.map((a) => (
-        <button
-          key={a.id}
-          type="button"
-          data-head-action={a.id}
-          className={btnClassName}
-          onClick={(e) => a.run(e.currentTarget)}
-          disabled={a.disabled}
-          title={a.title}
-          aria-label={a.aria}
-          aria-pressed={a.active}
-        >
-          {a.icon}
-          <span className={labelClassName}>{a.label}</span>
-        </button>
-      ))}
+      {inline.map((a) =>
+        a.menu?.length ? (
+          // A chip that opens a menu of choices (#2173) rather than running one command.
+          <button
+            key={a.id}
+            type="button"
+            data-head-action={a.id}
+            className={btnClassName}
+            onClick={(e) => {
+              const el = e.currentTarget;
+              chipOwnerRef.current = el;
+              setChipMenu((cur) => (cur?.id === a.id ? null : { id: a.id, el }));
+            }}
+            disabled={a.disabled}
+            title={a.title}
+            aria-label={a.aria}
+            aria-haspopup="menu"
+            aria-expanded={chipMenu?.id === a.id}
+          >
+            {a.icon}
+            <span className={labelClassName}>{a.label}</span>
+          </button>
+        ) : (
+          <button
+            key={a.id}
+            type="button"
+            data-head-action={a.id}
+            className={btnClassName}
+            onClick={(e) => a.run(e.currentTarget)}
+            disabled={a.disabled}
+            title={a.title}
+            aria-label={a.aria}
+            aria-pressed={a.active}
+          >
+            {a.icon}
+            <span className={labelClassName}>{a.label}</span>
+          </button>
+        ),
+      )}
+      {/* The chip's menu is the shared `MenuPopover`: focus in, arrows, Home/End, Esc back to the
+          chip. Its ≤800px bottom-sheet form is never reached from here: at that breakpoint the
+          head is `collapsed` (pane and window alike), so no chip exists to open it and the pane's
+          menus stay anchored popovers (docs/design.md §5). */}
+      {chipMenu && chipMenuAction && (
+        <MenuPopover
+          items={choicesOf(chipMenuAction).map((m) => ({
+            key: m.id,
+            label: m.label,
+            ariaLabel: m.aria,
+            icon: m.icon,
+            disabled: m.disabled,
+            hint: m.hint,
+            data: { "data-head-menu-item": m.id },
+            onSelect: () => m.run(chipMenu.el),
+          }))}
+          anchor={{ element: chipMenu.el }}
+          label={chipMenuAction.aria}
+          onClose={closeChipMenu}
+          ownerRef={chipOwnerRef}
+        />
+      )}
       {/* The fold trigger lives HERE only in the self-hosted case. `foldInto: "external"` (#1109)
           leaves the overflow to the host's single ⋯ menu — a window must never render a second
           "…" chip beside its chrome's own. */}
@@ -387,6 +489,7 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
             title={collapsed ? "Actions for this session" : "More session actions"}
             onClick={() => setOpen((o) => !o)}
             data-testid={collapsed ? "head-actions-menu" : undefined}
+            data-head-more=""
           >
             {collapsed ? <span>Actions</span> : null}
             <MoreHorizontal size={13} aria-hidden="true" />
@@ -401,25 +504,30 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
                 aria-label={collapsed ? "Actions for this session" : "More session actions"}
                 style={{ top: pos.top, right: pos.right, maxHeight: pos.maxHeight }}
               >
-                {overflow.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    role="menuitem"
-                    className={menu.headMenuItem}
-                    disabled={a.disabled}
-                    title={a.title}
-                    aria-label={a.aria}
-                    onClick={() => {
-                      setOpen(false);
-                      // Return focus to the "…" trigger, which survives the menu closing.
-                      a.run(moreRef.current);
-                    }}
-                  >
-                    {a.icon}
-                    {a.label}
-                  </button>
-                ))}
+                {overflow.map((a, i) =>
+                  a.menu?.length ? (
+                    // A folded group (#2173): its label once, then its items as ordinary rows,
+                    // ruled off from whatever sits on either side.
+                    <Fragment key={a.id}>
+                      {i > 0 && !overflow[i - 1].menu?.length && (
+                        <div className={menu.headMenuSep} role="separator" />
+                      )}
+                      <div
+                        className={menu.headMenuGroup}
+                        aria-hidden="true"
+                        data-menu-group={a.label}
+                      >
+                        {a.label}
+                      </div>
+                      {choicesOf(a).map(foldedItem)}
+                      {i < overflow.length - 1 && (
+                        <div className={menu.headMenuSep} role="separator" />
+                      )}
+                    </Fragment>
+                  ) : (
+                    foldedItem(a)
+                  ),
+                )}
               </div>,
               document.body,
             )}

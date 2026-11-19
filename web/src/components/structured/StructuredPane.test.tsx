@@ -606,7 +606,7 @@ function renderHosted(host: Parameters<typeof StructuredPane>[0]["host"]) {
   );
 }
 
-test("the head carries the terminal's actions that work for an API session — never Adopt to mission", async () => {
+test("the head carries the terminal's actions that work for an API session, Share as ONE action (#2173)", async () => {
   const onToggleFiles = vi.fn();
   const onToMap = vi.fn();
   renderHosted({ onToggleFiles, onToMap, filesOpen: false });
@@ -621,7 +621,7 @@ test("the head carries the terminal's actions that work for an API session — n
       "Open session brief",
       "Hand off session to another engine",
       "Open this session as a window on the map",
-      "Share this session publicly",
+      "Share this session",
     ]),
   );
   // Ordered as the terminal's head is.
@@ -634,11 +634,13 @@ test("the head carries the terminal's actions that work for an API session — n
     "Open session brief",
     "Hand off session to another engine",
     "Open this session as a window on the map",
-    "Share this session publicly",
-    // #2055: directly under Share publicly…, and a different thing (a paired instance).
-    "Share this session with a paired instance",
+    // #2173: one chip; Public… and Peer… are its menu, not two more chips.
+    "Share this session",
     "Stop the worker",
   ]);
+  expect(document.querySelector('[data-head-action="share-public"]')).toBeNull();
+  expect(document.querySelector('[data-head-action="share-peer"]')).toBeNull();
+  // No row was read, so mission membership is unknown: neither Adopt nor Open mission.
   expect(screen.queryByRole("button", { name: /adopt this session/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /repaint/i })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Browse session files" }));
@@ -686,10 +688,13 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
       "Plan & tools",
       "Recap",
       "Hand off",
-      "Share publicly…",
-      "Share with a peer…",
+      // #2173: the folded Share action is a group label, then its two items.
+      "Public…",
+      "Peer…",
       "Stop",
     ]);
+    const groups = Array.from(document.querySelectorAll("[data-menu-group]"));
+    expect(groups.map((g) => g.textContent)).toEqual(["Share"]);
   } finally {
     window.matchMedia = original;
   }

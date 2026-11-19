@@ -351,11 +351,14 @@ def titles(session_keys: list[str]) -> dict[str, str]:
 
 
 def sweep(st: store.Store) -> list[store.Grant]:
-    """End what expired: grants (each under its fence) and pending suggestions. The per-call
-    check never depends on this having run."""
+    """End what expired: grants (each under its fence), pending suggestions and pending access
+    requests; and delete the notes of grants that ended more than seven days ago (#2059). The
+    per-call check never depends on this having run."""
     now = _clock()
     ended = st.expire_due(now=now)
     st.expire_suggestions(now=now)
+    st.expire_access_requests(now=now)
+    st.purge_notes(now=now)
     return ended
 
 

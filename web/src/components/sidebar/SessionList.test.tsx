@@ -819,10 +819,13 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   expect(items.map((el) => el.textContent)).toEqual([
     "Session brief",
     "Hand off…",
+    // #2173: the Share group. A terminal session lists Public with the reason it is off.
+    "Public…Not available for terminal sessions",
+    "Peer…",
     "Artifacts…",
     "Review now",
     "Exclude from AI review",
-    "Stop mission control managing this",
+    "Exclude from automation",
     "Favorite",
     "Rename",
     "Set tag…",

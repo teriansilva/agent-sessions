@@ -38,7 +38,10 @@ import rowStyles from "../sidebar/SessionList.module.css";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { AdoptToMissionModal } from "./AdoptToMissionModal";
-import { isAgent, useEngineRoster } from "../../app/engineRoster";
+import { engineLabel, isAgent, runtimeHint, useEngineRoster } from "../../app/engineRoster";
+import { SharePeerModal } from "../federation/SharePeerModal";
+import { SharePubliclyModal } from "../shares/SharePubliclyModal";
+import { shareMenuEntries, type ShareSubject } from "./shareAction";
 import { SessionActivationDialog } from "../artifacts/ActivationDialog";
 
 /** What a surface wires into the session menu. The sidebar backs these with its list's in-place
@@ -79,7 +82,7 @@ export function sessionPeers(s: Session) {
 
 export interface SessionMenu {
   items: RowMenuEntry[];
-  /** The dialogs the menu opens (brief, hand off, move, adopt). Render it wherever the surface
+  /** The dialogs the menu opens (brief, hand off, share, move, adopt). Render it wherever the surface
    *  keeps its overlays; each one portals or positions itself. */
   dialogs: ReactNode;
   /** True while one of those dialogs is open — a surface that unmounts its menu host when the
@@ -99,7 +102,7 @@ export interface SessionMenu {
  *  Items are assembled as logical groups joined by `pushGroup`, which inserts a separator only
  *  *between* non-empty groups, so an absent group (no peers, AI-review not configured) never
  *  leaves a doubled or leading rule. Group order: primary session actions (mirrored from the
- *  terminal header) → mission → handoff provenance backlinks → AI-review → row management. Busy
+ *  pane header) → Share → mission → handoff provenance backlinks → AI-review → row management. Busy
  *  items stay in place (aria-disabled) rather than being removed, so the menu doesn't reflow. */
 export function useSessionMenu(
   s: Session,
@@ -134,7 +137,18 @@ export function useSessionMenu(
   // Artifacts (#1932 P2): this session's OFF / PRIVATE / PUBLIC, as a dialog.
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [artifactsReturnFocus, setArtifactsReturnFocus] = useState<HTMLElement | null>(null);
+  // Share (#2173): the same two dialogs the pane header opens, keyed to this session.
+  const [sharing, setSharing] = useState<{
+    which: "public" | "peer";
+    returnFocus: HTMLElement | null;
+  } | null>(null);
   const navigate = useNavigate();
+  // Which pane draws this session, asked of the roster (never an engine id): `api` is a
+  // conversation, `pty` a terminal. Anything else (a chat pane, an engine the roster does not
+  // know yet) is neither shareable nor adoptable from here.
+  const runtime = runtimeHint(s.engine);
+  const shareSubject: ShareSubject | null =
+    runtime === "api" ? "api" : runtime === "pty" ? "terminal" : null;
 
   const runBusy = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -233,10 +247,30 @@ export function useSessionMenu(
   }
   pushGroup(primary);
 
+  // Share (#2173): Public… and Peer…, the pane header's two choices under the same keys. The
+  // header's gate: a live row with a real id (the server refuses an archived session and cannot
+  // canonicalize a `new-<uuid>` placeholder). Public is listed but off on a terminal session, with
+  // the reason: public links cover API sessions only (#1404). `omit` (#1329) drops what a window's
+  // pane already offers; with both gone the group, label included, is absent.
+  if (shareSubject && !s.archived && !isNewSessionPlaceholder(s.id)) {
+    const open = (which: "public" | "peer") => () =>
+      setSharing({ which, returnFocus: document.activeElement as HTMLElement | null });
+    pushGroup(
+      shareMenuEntries({
+        subject: shareSubject,
+        onPublic: open("public"),
+        onPeer: open("peer"),
+        omit,
+      }),
+    );
+  }
+
   // Mission membership (#948 P5). `mission` ABSENT means the server could not read the store, so
   // neither item is offered: "Adopt" would advertise a mutation nobody checked, and "Open" would
   // name a mission nobody read. Archived rows and an unreconciled `new-<uuid>` placeholder (which
-  // `canonical_key` refuses) are not adoptable either.
+  // `canonical_key` refuses) are not adoptable either. Adopt is offered for an API session only
+  // (#2173): the server refuses every terminal one (#1902). The roster does not carry mission
+  // readiness, so a not-yet-ready API client is still refused and the dialog shows the reason.
   if (s.mission !== undefined && !s.archived && !isNewSessionPlaceholder(s.id)) {
     const held = s.mission;
     // `omit` (#1329): the window's merged menu carries the mission action as a pane action.
@@ -250,7 +284,7 @@ export function useSessionMenu(
             icon: <Crosshair size={15} />,
             onSelect: () => navigate(missionLink(held.id)),
           }
-      : omit?.has("adopt-mission")
+      : omit?.has("adopt-mission") || runtime !== "api"
         ? null
         : {
             key: "adopt-mission",
@@ -333,8 +367,8 @@ export function useSessionMenu(
     reviewItems.push({
       key: "orchestrate",
       label: s.orchestrator_excluded
-        ? "Let mission control manage this"
-        : "Stop mission control managing this",
+        ? "Include in automation"
+        : "Exclude from automation",
       icon: s.orchestrator_excluded ? <Bot size={15} /> : <BotOff size={15} />,
       disabled: busy,
       onSelect: () =>
@@ -422,6 +456,25 @@ export function useSessionMenu(
           returnFocusTo={adoptReturnFocus}
         />
       )}
+      {sharing?.which === "public" && (
+        <SharePubliclyModal
+          sessionKey={s.id}
+          title={s.title || "BattleLab session"}
+          agent={engineLabel(s.engine)}
+          onClose={() => setSharing(null)}
+          returnFocusTo={sharing.returnFocus}
+        />
+      )}
+      {sharing?.which === "peer" && shareSubject && (
+        <SharePeerModal
+          kind={shareSubject}
+          sessionKey={s.id}
+          title={s.title || "BattleLab session"}
+          agent={engineLabel(s.engine)}
+          onClose={() => setSharing(null)}
+          returnFocusTo={sharing.returnFocus}
+        />
+      )}
       {moving && (
         <MoveToProjectModal
           session={s}
@@ -491,7 +544,13 @@ export function useSessionMenu(
     items,
     dialogs,
     dialogOpen:
-      adopting || moving || clustering || recapOpen || handoffOpen || artifactsOpen,
+      adopting ||
+      moving ||
+      clustering ||
+      recapOpen ||
+      handoffOpen ||
+      artifactsOpen ||
+      sharing !== null,
     reviewing: reviewBusy,
     busy,
     runBusy,

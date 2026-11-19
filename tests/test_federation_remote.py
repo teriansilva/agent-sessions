@@ -134,7 +134,13 @@ def test_only_the_federation_store_reads_the_mirror():
                     importing.append(rel)
     # the store holds the table; `remote.py` documents it; nothing outside `federation/` names it
     assert sorted(naming_table) == ["federation/remote.py", "federation/store.py"]
-    assert sorted(importing) == ["federation/service.py", "routes/federation.py"]
+    # (#2059: the receiving side's bell, the hint verbs and Continue here read through it too)
+    assert sorted(importing) == [
+        "federation/continue_here.py",
+        "federation/inbox.py",
+        "federation/service.py",
+        "routes/federation.py",
+    ]
 
 
 # ── validating what a peer lists ──────────────────────────────────────

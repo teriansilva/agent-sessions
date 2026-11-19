@@ -823,6 +823,21 @@
   letter-spacing: 0.06em;
   color: var(--text-1);
 }
+/* A folded group of choices (#2173, Share): its label, its rule, and an item's reason line. */
+.headMenuGroup {
+  composes: groupLabel from "../ui/menu.module.css";
+}
+.headMenuSep {
+  composes: sep from "../ui/menu.module.css";
+}
+.headMenuText {
+  composes: itemText from "../ui/menu.module.css";
+  text-align: left;
+}
+.headMenuHint {
+  composes: itemHint from "../ui/menu.module.css";
+  letter-spacing: 0;
+}
 /* ≤800px: these menus KEEP their own placement — the branch menu caps its height to the VISUAL
  * viewport, which an on-screen keyboard shrinks (#1005), and the pane's overflow is placed by its
  * tuned logic (#958). A CSS bottom sheet would override both; only their rows grow (#1531). */

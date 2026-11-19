@@ -900,8 +900,9 @@ def test_schema_2_migrates_in_place_with_a_backup_and_its_grants_are_api_grants(
     assert st.get_grant("g" * 22).kind == "api"  # the first use migrates
     assert st.get_remote("a" * 32, "r" * 22).kind == "api"
     con = sqlite3.connect(path)
-    # Through schema 3 (the kind) and on to 4 (#2057's input tables), in one migration.
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 4
+    # Through schema 3 (the kind), on to 4 (#2057's input tables) and 5 (#2059, working
+    # together), in one migration.
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 5
     # The database is the arbiter: a kind this build does not know is never stored.
     with pytest.raises(sqlite3.IntegrityError):
         con.execute("UPDATE grants SET kind = 'pty'")

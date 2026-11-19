@@ -61,7 +61,7 @@ import {
 // The owner's side
 // =================================================================================================
 
-test("the ⋯ menu offers Share with a peer… directly under Share publicly…", async ({ page }) => {
+test("Share offers Peer… directly under Public…, as a chip's menu or a folded group (#2173)", async ({ page }) => {
   await setup(page);
   await page.goto(URL_PATH);
   await expect(page.getByTestId("structured-empty")).toBeVisible();
@@ -73,16 +73,20 @@ test("the ⋯ menu offers Share with a peer… directly under Share publicly…"
   const inline = await pane.locator("[data-head-action]").evaluateAll((els) =>
     els.map((e) => e.getAttribute("aria-label")),
   );
-  let folded: (string | null)[] = [];
-  if ((await trigger.isVisible()) || (await more.isVisible())) {
-    await ((await trigger.isVisible()) ? trigger : more).click();
-    const items = page.getByRole("menuitem");
-    await expect(items.first()).toBeVisible();
-    folded = await items.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
-    await expect(page.getByRole("menuitem", { name: SHARE_PEER })).toBeVisible();
-    await expect(page.getByRole("menuitem", { name: SHARE_PEER })).toContainText("Share with a peer…");
-  }
-  const order = [...inline, ...folded];
+  // The two choices are never chips of their own: one Share action carries both.
+  expect(inline).not.toContain(SHARE_PEER);
+  expect(inline).not.toContain("Share this session publicly");
+  // On the bar the Share chip opens them; folded they sit in the "…" / Actions menu, under ONE
+  // Share label.
+  const share = pane.locator('[data-head-action="share"]');
+  const viaChip = await share.isVisible();
+  await (viaChip ? share : (await trigger.isVisible()) ? trigger : more).click();
+  const items = page.getByRole("menuitem");
+  await expect(items.first()).toBeVisible();
+  const order = await items.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  await expect(page.getByRole("menuitem", { name: SHARE_PEER })).toHaveText("Peer…");
+  if (viaChip) expect(order).toEqual(["Share this session publicly", SHARE_PEER]);
+  else await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Share"]);
   const at = order.indexOf(SHARE_PEER);
   expect(at).toBeGreaterThan(0);
   expect(order[at - 1]).toBe("Share this session publicly");

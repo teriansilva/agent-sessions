@@ -3,6 +3,7 @@ import { mockRoster } from "./roster";
 import { animationsSettled } from "./nightjarShell";
 import { TOUCH_FLOOR } from "./touchTarget";
 import { setupBench } from "./terminal/harness";
+import { SHARE_CHIP } from "./headActions";
 import { remotePath } from "../src/lib/federation";
 
 // The in-test model of `routes/federation.py`'s grant and remote routes, and the helpers around
@@ -481,7 +482,13 @@ export async function headAction(page: Page, aria: string): Promise<Locator> {
         opener = inline;
         return inline.click({ timeout: 2000 });
       }
-      opener = pane.getByRole("button", { name: "More session actions" });
+      // Public… and Peer… are the Share chip's two choices (#2173): on the bar the chip opens
+      // them; folded, they are items of the "…" under a Share label.
+      const share = pane.locator(SHARE_CHIP);
+      opener =
+        aria.startsWith("Share this ") && (await share.isVisible())
+          ? share
+          : pane.getByRole("button", { name: "More session actions" });
       await opener.click({ timeout: 2000 });
     }
     await page.getByRole("menuitem", { name: aria }).click({ timeout: 2000 });

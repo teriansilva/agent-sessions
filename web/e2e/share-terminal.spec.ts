@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { ACTIONS_MENU, clickHeadAction } from "./headActions";
+import { ACTIONS_MENU, SHARE_PUBLIC, SHARE_PUBLIC_UNAVAILABLE, clickHeadAction } from "./headActions";
 import { animationsSettled } from "./nightjarShell";
 import { TOUCH_FLOOR } from "./touchTarget";
 import { MAP_PATH } from "../src/lib/routes";
@@ -120,19 +120,25 @@ const lines = (pane: Locator) => pane.getByTestId("remote-screen-text").locator(
 // The owner's side
 // =================================================================================================
 
-test("the terminal pane's menu offers Share with a peer…, in the menu's own form", async ({ page }) => {
+test("the terminal pane's Share offers Peer…, in the menu's own form, and Public… switched off (#2173)", async ({ page }) => {
   await setupTerminal(page);
   await page.goto(TERM_URL);
   await expect(page.locator(".xterm-rows")).toBeVisible();
   if (isMobile(page)) {
-    // ≤800px: the one Actions menu, an anchored popover (docs/design.md §5), with the new item.
+    // ≤800px: the one Actions menu, an anchored popover (docs/design.md §5), with the Share
+    // group: its label once, then Public… (off, with the reason) and Peer….
     await page.getByTestId("head-actions-menu").click();
     const menu = page.getByRole("menu", { name: ACTIONS_MENU });
     await expect(menu).toBeVisible();
     const item = menu.getByRole("menuitem", { name: SHARE_TERMINAL });
-    await expect(item).toContainText("Share with a peer…");
-    // The last entry: nothing that was in the menu moved for it.
-    expect(await menu.getByRole("menuitem").last().getAttribute("aria-label")).toBe(SHARE_TERMINAL);
+    await expect(item).toHaveText("Peer…");
+    await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+    // The last entries: nothing that was in the menu moved for them.
+    const names = await menu.getByRole("menuitem").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+    expect(names.slice(-2)).toEqual([SHARE_PUBLIC, SHARE_TERMINAL]);
+    const off = menu.getByRole("menuitem", { name: SHARE_PUBLIC });
+    await expect(off).toBeDisabled();
+    await expect(off).toContainText(SHARE_PUBLIC_UNAVAILABLE);
     // A popover under its trigger, not a sheet: the terminal stays visible around it.
     const box = (await menu.boundingBox())!;
     expect(box.width).toBeLessThan(page.viewportSize()!.width);
@@ -144,12 +150,11 @@ test("the terminal pane's menu offers Share with a peer…, in the menu's own fo
   const dialog = page.getByRole("dialog", { name: "Share with a peer" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAttribute("data-kind", "terminal");
-  // A terminal has no Share publicly…, and none was added.
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
+  // A terminal has no public link (#1404): Public… is never a control of its own on the bar.
   await expect(page.getByRole("button", { name: /share this session publicly/i })).toHaveCount(0);
-  await expect(page.getByRole("menuitem", { name: /publicly/i })).toHaveCount(0);
 });
 
 test("the dialog for a terminal: the limit first on the attention edge, only View, and it shares", async ({

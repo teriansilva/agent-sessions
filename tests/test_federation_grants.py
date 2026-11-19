@@ -96,13 +96,17 @@ def test_schema_1_migrates_in_place_and_a_backup_is_taken_first(tmp_path):
     assert st.by_key(key).name == "old box"  # the first use migrates, and the peer is still there
 
     con = sqlite3.connect(st.db_path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 4
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 5
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"peers", "grants", "grant_events", "remote_shares", "meta"} <= tables
-    # Schema 3 (#2056, the grant kind) and schema 4 (#2057, input), in the same migration.
+    # Schema 3 (#2056, the grant kind), 4 (#2057, input) and 5 (#2059, working together), in
+    # the same migration.
     assert "kind" in {r[1] for r in con.execute("PRAGMA table_info(grants)")}
     assert "kind" in {r[1] for r in con.execute("PRAGMA table_info(remote_shares)")}
     assert {"suggestions", "peer_turns"} <= tables
+    assert {"access_requests", "peer_decisions", "decision_authors", "notes", "note_changes"} <= (
+        tables
+    )
     con.close()
     assert st.generation() == 0
 

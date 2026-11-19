@@ -102,6 +102,24 @@ class Pair:
 
         monkeypatch.setattr(self.a, "_dial_round", nothing)
 
+    async def quiet_receiver(self, monkeypatch) -> None:
+        """Stop beta's rounds and wait out what one already started: its own refresh of the
+        mirror is a `share.list` too, and one answered while the test's call is in flight puts
+        a second, earlier page on the wire (#2059: beta's round does more per tick)."""
+
+        async def nothing() -> None:
+            return None
+
+        monkeypatch.setattr(self.b, "_dial_round", nothing)
+        idle = 0
+        for _ in range(1000):
+            busy = self.b._refreshing or self.b._checking
+            idle = 0 if busy else idle + 1
+            if idle >= 3 * 5:  # three round ticks (DIAL_TICK_S = 0.05) with nothing in flight
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("beta never went quiet")
+
 
 @contextlib.asynccontextmanager
 async def paired(tmp_path, monkeypatch):
@@ -1072,7 +1090,8 @@ async def test_the_peers_view_equals_the_public_view_projection_field_for_field(
     live,  # noqa: F811
 ):
     """The scripted snapshot of `test_share_api` (attachments, tools, a pending request, operator
-    only fields): the peer's answer is `share_api.project` of it, except the four stated things."""
+    only fields): the peer's answer is `share_api.project` of it, except the four stated things
+    and the one bit #2059 adds under a `view` grant (`owner_present`)."""
     monkeypatch.setattr(template_secrets, "redaction_values", lambda: [SECRET])
     fake.override = _operator_snapshot()
     for i, turn in enumerate(fake.override["turns"]):
@@ -1083,7 +1102,10 @@ async def test_the_peers_view_equals_the_public_view_projection_field_for_field(
         authors = shares.store().authors(made.session_key)
         public = share_api.project(fake.override, authors, share_api.redactor(), "a-public-share")
 
-        assert set(peer_view) == set(public) | {"link", "can_send"}
+        assert set(peer_view) == set(public) | {"link", "can_send", "owner_present"}
+        # 5. (#2059) one bit about the operator's own pane; a `view` grant is offered no choices
+        assert peer_view["owner_present"] is False
+        assert all("choices" not in q for q in peer_view["pending_requests"])
         # 1. the link id is the grant's
         assert peer_view["link"] == share_api.link_id(made.grant_id)
         assert peer_view["link"] != share_api.link_id("a-public-share")
@@ -1155,7 +1177,7 @@ async def test_a_real_sessions_peer_view_equals_its_public_view_link(
         events = await p.call("session.events", ref(made, after=0))
 
         projection = set(share_api.project({}, {}, share_api._Redactor([]), "x"))
-        assert set(peer_view) == projection | {"link", "can_send"}
+        assert set(peer_view) == projection | {"link", "can_send", "owner_present"}
         assert projection <= set(public)
         for field in projection:
             assert peer_view[field] == public[field], field
@@ -1440,6 +1462,7 @@ async def test_a_grant_that_ends_while_the_list_is_built_is_not_listed(
     async with paired(tmp_path, monkeypatch) as p:
         p.pause_owner_rounds(monkeypatch)
         kept, gone = await p.grant(), await p.grant()
+        await p.quiet_receiver(monkeypatch)
         titles = {kept.session_key: "kept title", gone.session_key: "the title that must not leave"}
         _rows_for(monkeypatch, titles)
         rows = sharing._session_rows

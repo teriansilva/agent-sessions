@@ -67,10 +67,15 @@ test("≤800px: one Actions trigger, every action inside it with its label", asy
     /repaint/i,
     /smaller terminal text/i,
     /bigger terminal text/i,
-    /adopt this session into a mission/i,
+    // #2173: Share's two choices, under one Share label.
+    /share this session publicly/i,
+    /share this terminal's screen with a paired instance/i,
   ]) {
     await expect(menu.getByRole("menuitem", { name })).toBeVisible();
   }
+  await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+  // A terminal session cannot be adopted (the server refuses it), so the head does not offer it.
+  await expect(menu.getByRole("menuitem", { name: /adopt/i })).toHaveCount(0);
   // Labels travel with the actions — the menu is not an icon grid.
   await expect(menu.getByRole("menuitem", { name: /open session brief/i })).toContainText("Recap");
 
@@ -154,81 +159,6 @@ test(">800px: the chips stay on the bar and there is no Actions trigger", async 
   await expect(head.getByRole("button", { name: "Actions for this session" })).toHaveCount(0);
 });
 
-test("≤800px: adopting from the Actions menu returns focus to the Actions trigger", async ({ page }, testInfo) => {
-  // The desktop header test (#953) pins focus on the relabelled chip. On a phone the opener is the
-  // menu's own trigger, which survives both the menu closing and the Adopt → Open mission flip.
-  test.skip(testInfo.project.name !== "mobile", "phone-width contract");
-  const MISSION = "msn_" + "a".repeat(32);
-  let held: { id: string; title: string; state: string } | null = null;
-  await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
-    r.fulfill({
-      json: {
-        sessions: [
-          {
-            id: `${ENGINE}:${UUID}`,
-            engine: ENGINE,
-            uuid: UUID,
-            short_uuid: "ffffffff",
-            cwd: "/home/u/proj",
-            project: { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
-            last_mtime: 1_700_000_000,
-            first_user_message: "",
-            title: TITLE,
-            sticky: false,
-            archived: false,
-            mission: held,
-          },
-        ],
-        next_offset: null,
-        total: 1,
-        facets: { projects: [], engines: [ENGINE], missions: [], no_mission: held ? 0 : 1 },
-      },
-    }),
-  );
-  await page.route(/\/api\/missions(\?.*)?$/, (r) =>
-    r.fulfill({
-      json: {
-        missions: [
-          {
-            id: MISSION,
-            title: "Harden the upload retry path",
-            project_id: null,
-            cwd: "/repo",
-            state: "running",
-            created_at: 1_700_000_000,
-            updated_at: 1_700_000_000,
-            closed_at: null,
-            archived_at: null,
-            outcome: null,
-            session_keys: [],
-          },
-        ],
-        total: 1,
-        limit: 50,
-        offset: 0,
-        facets: { projects: [], states: [] },
-        store_error: null,
-        snapshot: "s",
-      },
-    }),
-  );
-  await page.route(/\/api\/missions\/msn_[0-9a-f]{32}\/adopt$/, (r) => {
-    held = { id: MISSION, title: "Harden the upload retry path", state: "running" };
-    return r.fulfill({ json: { id: MISSION } });
-  });
-
-  await page.goto(`/s/${ENGINE}/${UUID}`);
-  const trigger = page.locator('[class*="panelHead"]').getByRole("button", { name: "Actions for this session" });
-  await trigger.click();
-  await page.getByRole("menuitem", { name: /adopt this session into a mission/i }).click();
-  const dialog = page.getByRole("dialog", { name: "Adopt to mission" });
-  await dialog.getByTestId("adopt-option").first().click();
-  await dialog.getByTestId("adopt-confirm").click();
-  await expect(dialog).toBeHidden();
-  await expect(trigger).toBeFocused();
-
-  await trigger.click();
-  await expect(
-    page.getByRole("menuitem", { name: "Open mission Harden the upload retry path" }),
-  ).toBeVisible();
-});
+// "≤800px: adopting from the Actions menu returns focus to the Actions trigger" moved to
+// `mission-adopt.spec.ts` (#2173): adoption is offered on an API session only, and this file's
+// session is a terminal one.

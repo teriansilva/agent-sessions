@@ -53,10 +53,23 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .. import net_vetting
+from .. import structured_runtime as runtime
 from ..homefree import peerpipe
 from . import channel as ch
 from . import endpoints as ep
-from . import grants, identity, inputs, notices, remote, store, terminal, verbs
+from . import (
+    grants,
+    identity,
+    inbox,
+    inputs,
+    notices,
+    presence,
+    remote,
+    store,
+    terminal,
+    together,
+    verbs,
+)
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +100,11 @@ DIAL_OPEN_TIMEOUT_S = 10.0
 LOCK_FILE = "owner.lock"
 
 PAIRING_STATES = ("dialing", "confirm", "done", "denied", "failed", "expired")
+#: Checks of a shared session's bell row (after the owner's hint) in flight at once; a hint
+#: past it is dropped. A hint is only ever "read sooner".
+HINT_CHECKS_MAX = 64
+#: `send` grants whose session the round looks at for pending requests, per round.
+DECISION_WATCH_MAX = 32
 UNPROVEN = (
     "the other instance did not answer the confirmation. If it lists this instance as paired, "
     "revoke it there and pair again"
@@ -464,6 +482,15 @@ class Federation:
         self._refreshing: set[str] = set()
         self._refresh_again: set[str] = set()
         self._refreshed_at: dict[str, float] = {}
+        # Working together (#2059). Which peers have a shared session open: in memory only.
+        self.watching = presence.Watching()
+        #: Checks of a remote session's bell row in flight, and those asked for again meanwhile.
+        self._checking: set[tuple[str, str, str]] = set()
+        self._check_again: set[tuple[str, str, str]] = set()
+        #: Per `send` grant, the pending requests its peer was last hinted about.
+        self._decision_marks: dict[str, frozenset] = {}
+        #: Revoked peers whose receiver-side bell rows this process already retracted.
+        self._retracted: set[str] = set()
 
     # ── addresses and dialing ─────────────────────────────────────────
     def reachable(self) -> list[dict]:
@@ -982,6 +1009,10 @@ class Federation:
         except store.StoreError as exc:
             raise FederationError("not_found", str(exc), status=exc.status) from exc
         self.background(asyncio.to_thread(notices.retract, self.store))
+        # Its rows on THIS instance's bell (sessions it shared with us) go at once (#2059):
+        # before this request is answered, not on a later round.
+        await asyncio.to_thread(notices.retract_peer, peer_id)
+        self._retracted.add(peer_id)
         channel = self._channels.pop(peer_id, None)
         if channel is not None and not channel.closed:
             with contextlib.suppress(ch.CallError):
@@ -1205,6 +1236,18 @@ class Federation:
         self._backoff.pop(peer_id, None)
         # The channel is up: ask what this peer shares with this instance.
         self.refresh_remote(peer_id)
+        self._retracted.discard(peer_id)
+        # Hints it may have missed while it was away (#2059): its `send` grants are compared
+        # again on the next round, and threads holding a note it has not read are named now.
+        self._decision_marks.clear()
+        try:
+            unread = await asyncio.to_thread(
+                self.store.note_grants_unread, store.principal_of(peer_id)
+            )
+        except (store.StoreError, OSError):
+            unread = {}
+        for grant_id in unread:
+            self.hint(peer_id, "note.changed", grant_id)
 
     def peer_left(self, peer_id: str) -> None:
         """The peer told us, over its authenticated channel, that it no longer trusts this
@@ -1228,6 +1271,92 @@ class Federation:
                 await channel.call("share.changed", timeout=5)
 
         self._spawn(hint())
+
+    async def owner_decided(self, session_key: str, turn_id: str, request_id: str) -> None:
+        """This instance's operator answered a pending request through their own route: record
+        who settled it, from the session's journal (``together.owner_decided``). Never raises."""
+        await together.owner_decided(self.store, session_key, turn_id, request_id)
+
+    def hint(self, peer_id: str, verb: str, grant_id: str) -> None:
+        """Tell ``peer_id`` that something about one grant changed (``note.changed``,
+        ``decision.changed``). A grant id and nothing else, best effort: the peer reads this
+        instance before it believes anything, and a hint that is lost costs only time."""
+        channel = self.channel_for(peer_id)
+        if channel is None or self._stopped:
+            return
+
+        async def send() -> None:
+            with contextlib.suppress(ch.CallError):
+                await channel.call(verb, {"grant_id": grant_id}, timeout=5)
+
+        self._spawn(send())
+
+    def peer_hint(self, peer_id: str, grant_id: str, kind: str) -> None:
+        """A peer hinted that a session it shares changed (this instance is the RECEIVER): ask
+        it, in the background, and let the bell follow the answer (``inbox.check``). One check
+        per grant and kind at a time; a hint during one runs another when it ends."""
+        if self._stopped or kind not in inbox.HINTS:
+            return
+        key = (peer_id, grant_id, kind)
+        if key in self._checking:
+            self._check_again.add(key)
+            return
+        if len(self._checking) >= HINT_CHECKS_MAX:
+            return
+        self._checking.add(key)
+        self._spawn(self._check(key))
+
+    async def _check(self, key: tuple[str, str, str]) -> None:
+        try:
+            while True:
+                self._check_again.discard(key)
+                await inbox.check(self, *key)
+                if key not in self._check_again:
+                    return
+                # A peer's hints cannot make this side read it faster than this.
+                await asyncio.sleep(inbox.CHECK_MIN_GAP_S)
+        finally:
+            self._checking.discard(key)
+            self._check_again.discard(key)
+
+    def refreshed_remote(self, peer_id: str, before: list, entries: list[dict]) -> None:
+        """A COMPLETE refresh replaced a peer's rows: the bell follows, in the background, and
+        a grant that is newly at `send` is asked about its pending requests."""
+        self.background(asyncio.to_thread(inbox.refreshed, self, peer_id, before, entries))
+        for grant_id in inbox.newly_answerable(before, entries):
+            self.peer_hint(peer_id, grant_id, inbox.DECISION)
+
+    def refused_remote(self, peer_id: str, grant_id: str) -> None:
+        """The owner refused a read of one grant: its rows on this instance's bell go."""
+        self.background(asyncio.to_thread(inbox.refused, peer_id, grant_id))
+
+    async def _decision_hints(self) -> None:
+        """Tell each connected peer with a `send` grant when the pending requests of that
+        session changed (#2059). A hint with a grant id; the peer reads to learn what. A
+        mission-held session is not the peer's to answer and is not hinted about."""
+        live = await asyncio.to_thread(self.store.list_grants)
+        watched: set[str] = set()
+        for grant in live:
+            if len(watched) >= DECISION_WATCH_MAX:
+                break
+            # An API grant at `send` (a terminal grant is view only and answers nothing).
+            if grant.kind != store.KIND_API or not store.level_includes(grant.level, "send"):
+                continue
+            if self.channel_for(grant.peer_id) is None:
+                continue
+            watched.add(grant.grant_id)
+            try:
+                if await asyncio.to_thread(grants.mission_held, grant.session_key):
+                    marks: frozenset = frozenset()
+                else:
+                    marks = together.pending_marks(await runtime.snapshot(grant.session_key))
+            except (runtime.StructuredError, grants.GrantError):
+                continue  # unreadable says nothing
+            if self._decision_marks.get(grant.grant_id, frozenset()) != marks:
+                self._decision_marks[grant.grant_id] = marks
+                self.hint(grant.peer_id, "decision.changed", grant.grant_id)
+        for grant_id in [g for g in self._decision_marks if g not in watched]:
+            del self._decision_marks[grant_id]
 
     def refresh_remote(self, peer_id: str) -> None:
         """Refresh the mirror of what ``peer_id`` shares with this instance, in the background.
@@ -1263,6 +1392,14 @@ class Federation:
             # Approvals whose grant ended are withdrawn, and the bell rows of suggestions that
             # are no longer pending go (also for a change another process wrote).
             await inputs.settle_ended(self)
+            # Peer decisions a crash or a lost answer left without an outcome get the one the
+            # journal holds (never a second call), and peers that may answer are told when a
+            # session's pending requests changed (#2059).
+            await together.settle_open(self)
+            try:
+                await self._decision_hints()
+            except Exception:
+                log.exception("federation: hinting pending decisions failed")
             generation = await asyncio.to_thread(self.store.generation)
             if generation != self._generation:
                 # Something changed since the last round, written by this process, another one
@@ -1327,6 +1464,11 @@ class Federation:
         for pid, channel in list(self._channels.items()):
             if pid not in trusted:
                 channel.close("revoked")
+        # …and so do its rows on this instance's bell (#2059), once per revoke.
+        for peer in peers:
+            if not peer.trusted and peer.peer_id not in self._retracted:
+                await asyncio.to_thread(notices.retract_peer, peer.peer_id)
+                self._retracted.add(peer.peer_id)
         await self._shares_round()
         for peer in peers:
             pid = peer.peer_id

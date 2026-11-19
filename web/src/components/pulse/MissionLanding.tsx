@@ -111,8 +111,8 @@ export function MissionLanding({
           </button>
         </div>
         <p className={styles.landingNote}>
-          Already have a session running? Open it and use <b>Adopt to mission</b> in its header
-          or its ⋯ menu.
+          Already have an API session running? Use <b>Adopt to mission</b> in its header or its
+          ⋯ menu.
         </p>
         {showNeeds ? (
           <section

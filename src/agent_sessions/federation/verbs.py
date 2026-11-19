@@ -13,18 +13,26 @@ or a session key from a peer's arguments: a shared session is addressed by its *
 Input (#2057, handlers in :mod:`inputs`): ``input.suggest``, ``input.suggestions``,
 ``input.withdraw`` and ``input.send``. A peer never names an operation id (the owner mints
 them) and **no verb changes a grant**: none extends, raises or re-creates one.
+
+Working together (#2059, handlers in :mod:`together` and :mod:`notes`): ``access.request`` and
+``access.status`` (a request is a record; it changes no grant), ``decision.answer`` (the peer
+names the request id it saw and a decision KIND, never a turn, a decision id, a payload or an
+option's text), and the five ``note.*`` verbs. ``note.changed`` and ``decision.changed`` are
+the OWNER's hints to the receiver: a grant id and nothing else, and the receiver reads the
+owner before it believes anything.
 """
 
 from __future__ import annotations
 
 import asyncio
 import math
+import re
 import uuid
 
-from .. import chat_store
+from .. import chat_store, native_questions
 from . import channel as ch
 from . import endpoints as ep
-from . import frames, grants, inputs, sharing, store, terminal
+from . import frames, grants, inbox, inputs, notes, offers, sharing, store, terminal, together
 
 APP_PROTOCOL = 1
 
@@ -203,6 +211,148 @@ def _withdraw_args(args: dict) -> dict:
     return {**_grant_ref(args), "suggestion_id": suggestion_id}
 
 
+def _access_request_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "level", "note")
+    level = args.get("level")
+    # A level above the lowest: asking for `view` is asking for nothing.
+    if not isinstance(level, str) or level not in grants.LEVELS[1:]:
+        raise ch.BadArgs("level")
+    note = args.get("note")
+    if note is None or note == "":
+        note = ""
+    elif not notes.valid_text(note) or len(note) > store.ACCESS_NOTE_MAX:
+        raise ch.BadArgs("note")
+    return {**_grant_ref(args), "level": level, "note": note}
+
+
+def _access_status_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision")
+    return _grant_ref(args)
+
+
+#: A request id as a runtime mints one: short, printable, one line. It is only ever COMPARED
+#: with the ids of the live snapshot's pending requests; it is never a key, a path or a query.
+REQUEST_ID_MAX = 128
+_REQUEST_ID_RE = re.compile(r"\A[\x21-\x7e]{1,128}\Z")
+#: A decision kind's shape. Which kinds exist, and what each does, is the runtime's.
+_CHOICE_RE = re.compile(r"\A[a-z][a-z_]{0,31}\Z")
+
+
+def _options(args: dict) -> list[list[int]] | None:
+    """For a question: the picked option INDEXES, one list per question. Never a label."""
+    raw = args.get("options")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not 1 <= len(raw) <= native_questions.CLAUDE_MAX_QUESTIONS:
+        raise ch.BadArgs("options")
+    out = []
+    for picked in raw:
+        if not isinstance(picked, list) or not 1 <= len(picked) <= native_questions.MAX_OPTIONS:
+            raise ch.BadArgs("options")
+        if any(type(i) is not int or not 0 <= i < native_questions.MAX_OPTIONS for i in picked):
+            raise ch.BadArgs("options")
+        if len(set(picked)) != len(picked):
+            raise ch.BadArgs("options")
+        out.append(sorted(picked))
+    return out
+
+
+def _decision_args(args: dict) -> dict:
+    _only(
+        args,
+        "grant_id",
+        "revision",
+        "request_id",
+        "offer",
+        "choice",
+        "options",
+        "client_key",
+        "actor",
+    )
+    request_id, choice = args.get("request_id"), args.get("choice")
+    # The offer the peer was shown for this request (`offers.token`): required, by shape here.
+    if not offers.valid_token(args.get("offer")):
+        raise ch.BadArgs("offer")
+    if not isinstance(request_id, str) or _REQUEST_ID_RE.fullmatch(request_id) is None:
+        raise ch.BadArgs("request_id")
+    if not isinstance(choice, str) or _CHOICE_RE.fullmatch(choice) is None:
+        raise ch.BadArgs("choice")
+    return {
+        **_grant_ref(args),
+        "request_id": request_id,
+        "offer": args["offer"],
+        "choice": choice,
+        "options": _options(args),
+        "client_key": _client_key(args),
+        "actor": _actor(args),
+    }
+
+
+def _note_text(args: dict) -> str:
+    text = args.get("text")
+    if not notes.valid_text(text):
+        raise ch.BadArgs("text")
+    return text
+
+
+def _note_id(args: dict) -> str:
+    note_id = args.get("note_id")
+    if not grants.valid_grant_id(note_id):  # the same shape: `store.new_grant_id`
+        raise ch.BadArgs("note_id")
+    return note_id
+
+
+def _note_list_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "after_seq", "limit", "cursor")
+    cursor = args.get("cursor")
+    if cursor is not None and not grants.valid_grant_id(cursor):
+        raise ch.BadArgs("cursor")
+    return {
+        **_grant_ref(args),
+        "after_seq": _int(args, "after_seq", default=0, low=0, high=grants.REVISION_MAX),
+        "limit": _int(args, "limit", default=notes.PAGE_MAX, low=0, high=notes.PAGE_MAX),
+        "cursor": cursor,
+    }
+
+
+def _note_add_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "client_key", "text", "actor")
+    return {
+        **_grant_ref(args),
+        "client_key": _client_key(args),
+        "text": _note_text(args),
+        "actor": _actor(args),
+    }
+
+
+def _note_edit_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "note_id", "text")
+    return {**_grant_ref(args), "note_id": _note_id(args), "text": _note_text(args)}
+
+
+def _note_delete_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "note_id")
+    return {**_grant_ref(args), "note_id": _note_id(args)}
+
+
+def _note_read_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision", "seq")
+    if "seq" not in args:
+        raise ch.BadArgs("seq")
+    return {
+        **_grant_ref(args),
+        "seq": _int(args, "seq", default=0, low=0, high=grants.REVISION_MAX),
+    }
+
+
+def _hint_args(args: dict) -> dict:
+    """A hint names a grant and carries nothing else: no revision, no count, no content."""
+    _only(args, "grant_id")
+    if not grants.valid_grant_id(args.get("grant_id")):
+        raise ch.BadArgs("grant")
+    return {"grant_id": args["grant_id"]}
+
+
 # ── pair mode ─────────────────────────────────────────────────────────
 async def _pair_hello(channel: ch.Channel, args: dict) -> dict:
     fed, pairing = channel.context
@@ -260,6 +410,21 @@ async def _peer_bye(channel: ch.Channel, args: dict) -> dict:
     return {}
 
 
+async def _note_changed(channel: ch.Channel, args: dict) -> dict:
+    """The owner's hint that a thread changed (this instance is the RECEIVER). It carries no
+    data and is not believed: this side reads the owner, in the background."""
+    fed, peer_id = channel.context
+    fed.peer_hint(peer_id, args["grant_id"], inbox.NOTE)
+    return {}
+
+
+async def _decision_changed(channel: ch.Channel, args: dict) -> dict:
+    """The owner's hint that a session's pending requests changed. As above."""
+    fed, peer_id = channel.context
+    fed.peer_hint(peer_id, args["grant_id"], inbox.DECISION)
+    return {}
+
+
 def _table(mode: str, *entries: tuple) -> dict[str, ch.Verb]:
     return {
         name: ch.Verb(name, frozenset({mode}), validate, handle)
@@ -290,6 +455,18 @@ PEER = _table(
     ("input.suggestions", _suggestions_args, inputs.input_suggestions),
     ("input.withdraw", _withdraw_args, inputs.input_withdraw),
     ("input.send", _send_args, inputs.input_send),
+    # Working together (#2059), answered by the OWNER. None of them changes a grant.
+    ("access.request", _access_request_args, together.access_request),
+    ("access.status", _access_status_args, together.access_status),
+    ("decision.answer", _decision_args, together.decision_answer),
+    ("note.list", _note_list_args, notes.note_list),
+    ("note.add", _note_add_args, notes.note_add),
+    ("note.edit", _note_edit_args, notes.note_edit),
+    ("note.delete", _note_delete_args, notes.note_delete),
+    ("note.read", _note_read_args, notes.note_mark_read),
+    # The owner's hints to the RECEIVER: a grant id, no data.
+    ("note.changed", _hint_args, _note_changed),
+    ("decision.changed", _hint_args, _decision_changed),
     # A terminal session's current screen as a redacted text frame, view only (#2056). Answered
     # by the OWNER; it reads, and nothing on this channel types into or resizes a terminal.
     ("terminal.frame", _frame_args, terminal.terminal_frame),

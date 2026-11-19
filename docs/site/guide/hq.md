@@ -251,7 +251,7 @@ with the sidebar open.
   what will happen, and nothing happens until you tap the card's button.
   - **Sessions:** archive, unarchive and close (an API session's worker stops; a terminal
     session closes by archiving). Also rename, tag, colour, favourite, move to a project,
-    **Review now**, exclude from or include in AI review and mission control, and archive every
+    **Review now**, exclude from or include in AI review and automation, and archive every
     session idle for more than some days.
   - **Projects:** create, rename, colour, archive and unarchive (with their sessions), delete
     (its sessions are kept), make it the default for new sessions, add or release a folder,

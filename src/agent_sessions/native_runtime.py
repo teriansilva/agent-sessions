@@ -4296,11 +4296,19 @@ async def decide(
     grant: str | None = None,
     answers: list | None = None,
     execution_admission=None,
+    expected_digest: str | None = None,
 ) -> dict:
+    """``expected_digest`` (#2059): the caller names the exact request it means by its payload
+    digest. Request ids repeat per turn and per connection, so a caller that looked the
+    request up earlier (a paired instance's answer) is refused when the request pending under
+    that id and turn is another one. Checked before anything is claimed; the digest sent to
+    the worker is the same one, and the worker compares it with the request it holds."""
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
+    if expected_digest is not None and not (isinstance(expected_digest, str) and expected_digest):
+        raise NativeError(422, "expected_digest must be a payload digest")
     if decision not in {"approve", "reject", "cancel", "always", "answer"}:
         raise NativeError(422, "decision must be approve, always, answer, reject or cancel")
     if (decision == "always") != (grant is not None):
@@ -4333,6 +4341,8 @@ async def decide(
             params.get("answers"),
         ) != (request_id, decision, turn_id, user, grant, answers):
             raise NativeError(409, "decision id already used for a different decision")
+        if expected_digest is not None and params.get("payload_digest") != expected_digest:
+            raise NativeError(409, "decision id already used for a different decision")
         return {
             "turn_id": turn_id,
             "request_id": request_id,
@@ -4351,6 +4361,9 @@ async def decide(
         None,
     )
     if approval is None:
+        raise NativeError(409, "that approval is no longer pending")
+    if expected_digest is not None and approval["payload_digest"] != expected_digest:
+        # Same id, same turn, another request (#2059): the one the caller meant is gone.
         raise NativeError(409, "that approval is no longer pending")
     if approval.get("background_task") is not None and decision not in {"approve", "reject"}:
         # One-shot (#1725), refused HERE as well as by the worker, whatever a client sends: no
@@ -4393,6 +4406,10 @@ async def decide(
         and _approval_turn(e["event"]["data"]) == turn_id
         and e["worker_id"] == live
     )
+    if expected_digest is not None and event["payload_digest"] != expected_digest:
+        # What is sent below (and what the worker compares with the request it holds) is this
+        # event's digest: it must be the one the caller named.
+        raise NativeError(409, "that approval is no longer pending")
     params = {
         "turn_id": turn_id,
         "request_id": request_id,
@@ -4418,6 +4435,41 @@ async def decide(
     if receipt["handoff"] == "not_sent":
         raise NativeError(409, "that approval is no longer pending; the decision was not sent")
     return {"turn_id": turn_id, "request_id": request_id, "decision": decision, **receipt}
+
+
+async def decision_record(
+    engine_id: str, session_id: str, turn_id: str, request_id: str
+) -> list[dict]:
+    """The decisions the journal holds for one request, oldest first: who settled it (#2059).
+
+    A READ of the journal's own fold; it sends nothing and decides nothing. Each entry is
+    ``{"decision_id", "decision", "actor", "digest", "handoff"}`` as the decision was claimed
+    and handed off: ``handoff == "sent"`` is the one the agent received. Native request ids
+    repeat per turn and per connection, so ``digest`` (the exact request's payload digest) is
+    part of what a caller matches on. An operation a rollover left behind is not listed: the
+    caller then knows nothing, which is not the same as nobody having decided."""
+    prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
+    journal = await asyncio.to_thread(_journal, prov, session_id)
+    found = []
+    for op in journal.operations.values():
+        if op.request["action"] != "decide":
+            continue
+        params = op.request["params"]
+        if (params["turn_id"], params["request_id"]) != (turn_id, request_id):
+            continue
+        found.append(
+            (
+                op.claimed_revision,
+                {
+                    "decision_id": op.operation_id,
+                    "decision": params["decision"],
+                    "actor": params.get("actor"),
+                    "digest": params.get("payload_digest") or "",
+                    "handoff": "sent" if op.ever_sent else op.handoff,
+                },
+            )
+        )
+    return [entry for _position, entry in sorted(found, key=lambda item: item[0])]
 
 
 async def interrupt(

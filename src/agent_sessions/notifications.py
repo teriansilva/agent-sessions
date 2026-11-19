@@ -1098,6 +1098,23 @@ def dismiss_for_action(action_id: str, path: Path | None = None) -> int:
         return n
 
 
+def actions_with_prefix(prefix: str, path: Path | None = None) -> list[str]:
+    """The ``action_id`` of every row on the bell whose id starts with ``prefix``. For a producer
+    that keeps no list of its own rows (#2059): it asks which rows exist, then decides which of
+    them are still true. Ids only, never a row's text. STRICT: an unreadable store raises, it
+    does not read as "no rows"."""
+    if not prefix:
+        return []
+    rows = _read_strict(path or _notifications_path())
+    return sorted(
+        {
+            str(r.get("action_id"))
+            for r in rows
+            if not r.get("retired") and str(r.get("action_id") or "").startswith(prefix)
+        }
+    )
+
+
 # --- needs-you episodes (#1086 Phase 4) --------------------------------------------------
 
 #: What a needs-you row says, keyed by the SERVER-derived kind (`needs_you.KINDS`). Never a
@@ -1122,8 +1139,18 @@ KIND_REASON = {
 #: ``peer_suggestion`` (#2057): a paired instance proposed a message for a session and it waits
 #: for the operator. Its row and its push carry the peer's display name on this instance, the
 #: session's title and the link; NEVER the proposed text (``federation/notices.py``).
+#:
+#: The rest are #2059 (working together on a shared session). Each row and push carries the
+#: peer's display name on this instance, the session's title and a link; NEVER a note's text, a
+#: question's text, a tool payload or anything else another party wrote.
 EVENT_REASON = {
     "peer_suggestion": "A paired instance suggests a message",
+    "peer_shared": "A paired instance shared a session with you",
+    "peer_share_changed": "A paired instance changed what it shares with you",
+    "peer_share_ended": "A paired instance stopped sharing a session",
+    "peer_access_request": "A paired instance asks for more access",
+    "peer_decision": "A shared session waits for a decision you may give",
+    "peer_note": "A new note on a shared session",
 }
 
 
@@ -1544,10 +1571,20 @@ _AUTOMATION_ACTION_RE = re.compile(r"^automation:([a-z0-9]{1,64}):")
 AUTOMATION_PATH = "/mission/automations/"
 
 
+#: A row about a session ANOTHER instance shares with this one (#2059) names no local session:
+#: its action id carries the peer id and the grant id (both server-validated shapes), and its
+#: link is the remote pane. When the share has ended that pane shows its unavailable state.
+_REMOTE_ACTION_RE = re.compile(r"^peer-remote-[a-z]{1,16}:([a-z2-7]{32}):([A-Za-z0-9_-]{16,64})$")
+REMOTE_PATH = "/remote/"
+
+
 def _link(notification: dict, base_url: str = "") -> str:
     m = _AUTOMATION_ACTION_RE.match(str(notification.get("action_id") or ""))
     if m and not notification.get("session_id"):
         return f"{base_url}{AUTOMATION_PATH}{m.group(1)}"
+    m = _REMOTE_ACTION_RE.match(str(notification.get("action_id") or ""))
+    if m and not notification.get("session_id"):
+        return f"{base_url}{REMOTE_PATH}{m.group(1)}/{m.group(2)}"
     uuid = notification.get("session_id", "")
     engine = notification.get("engine", "")
     return f"{base_url}/s/{engine}/{uuid.split(':', 1)[-1]}" if uuid else f"{base_url}/mission"

@@ -100,14 +100,14 @@ bypass off" for every launch.
 
 ## Adopting a session you already started
 
-Work started from the sidebar is not orphaned. Adopt it from the session itself: the **⋯** menu on
-its sidebar row, or the session pane's header, offers to adopt the session into a mission. A session
+Work started from the sidebar is not orphaned. Adopt it from the session itself: on an API session,
+the **⋯** menu on its sidebar row and the session pane's header offer **Adopt to mission**. A session
 a mission holds carries that mission's tag in the sidebar, and **Filter by mission** narrows the
 session list to one mission's sessions.
 
 Only a session of an agent that can run a mission can be adopted (see
-[Which agents can run a mission](#which-agents-can-run-a-mission)). Adopting a terminal session is
-refused with the API client to use instead.
+[Which agents can run a mission](#which-agents-can-run-a-mission)). A terminal session cannot be
+adopted, so it is not offered there; the server refuses one with the API client to use instead.
 
 A session belongs to at most one mission at a time. Adopting one another mission already holds
 comes back with a refusal that **names the holder**, so you are told where it went rather than just

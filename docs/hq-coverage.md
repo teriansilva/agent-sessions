@@ -195,6 +195,11 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | What a peer suggests for a session (#2057): the list with its text; approve one (also with edited text) | GET /api/federation/suggestions, POST /api/federation/suggestions/{suggestion_id}/approve | **never** (approve is a tap that approves another party's proposal; the list returns unapproved text another party wrote, so it is in no model-facing read tool, generic ones included) |
 | What a peer suggests for a session (#2057): reject one | POST /api/federation/suggestions/{suggestion_id}/reject | P6 W (it narrows; the card names the peer and the session, never the suggested text) |
 | Writing to a session a peer shares with this instance (#2057): suggest a message, send one, read the states of one's own suggestions, withdraw one | POST /api/federation/remote/{peer_id}/{grant_id}/suggest, …/turns, GET …/suggestions, POST …/suggestions/{suggestion_id}/withdraw | **never** for suggest and send (a model must not send to another instance's agent); the states read and the withdraw are P6 R/W (ids and states, no text; withdrawing narrows) |
+| Working together, the owner's side (#2059): what peers ask for, with their note (list); the notes of a share (read, add, edit, delete, mark read) | GET /api/federation/access-requests, GET /api/federation/grants/{grant_id}/notes, POST …/notes, PATCH and DELETE …/notes/{note_id}, POST …/notes/read | **never** (a request's note and a share's notes are text another operator wrote, and a note is a message between two people: no note is ever model input, so none is in any model-facing read tool, generic ones included, and no model writes one. **Granting on request is not a route at all**: it is the grant change above, which is already `never`) |
+| Working together, the owner's side (#2059): decline an access request; hide a note from the peer | POST /api/federation/access-requests/{request_id}/decline, POST /api/federation/grants/{grant_id}/notes/{note_id}/hide | P6 W (both narrow; the card names the peer and the session, never the request's note or the note's text) |
+| Working together, the receiving side (#2059): ask the owner for more access; answer a pending question or tool permission of a shared session; read and write the notes of a share | POST /api/federation/remote/{peer_id}/{grant_id}/access, POST …/decisions, GET and POST …/notes, PATCH and DELETE …/notes/{note_id}, POST …/notes/read | **never** (a model must not answer a decision on another instance's agent, ask another operator for authority, or read or write a note) |
+| Working together, the receiving side (#2059): whether an access request was answered | GET /api/federation/remote/{peer_id}/{grant_id}/access | P6 R (a level and a state; presence, `watching` and `owner_present`, rides on the grants list and the snapshot read above) |
+| Continue here (#2059): start a new LOCAL session briefed from a session a peer shares (prepare, preview, create) | POST /api/federation/remote/{peer_id}/{grant_id}/continue, GET …/continue/{handle}, POST …/continue/{handle}/create | P7 W (as the handoff: it starts an agent, and the seed is shown verbatim on the card; the seed frames the shared record as data) |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
 #### Library
@@ -764,6 +769,25 @@ POST   /api/federation/remote/{peer_id}/{grant_id}/suggest                      
 POST   /api/federation/remote/{peer_id}/{grant_id}/turns                          never  # a model must not send to another instance's agent
 GET    /api/federation/remote/{peer_id}/{grant_id}/suggestions                    P6  # read: one's own suggestions' ids and states, no text
 POST   /api/federation/remote/{peer_id}/{grant_id}/suggestions/{suggestion_id}/withdraw  P6  # narrows: takes a suggestion back
+GET    /api/federation/access-requests                                            never  # a peer's own words: its note on a request (#2059)
+POST   /api/federation/access-requests/{request_id}/decline                       P6  # narrows: declines a request for more access
+GET    /api/federation/grants/{grant_id}/notes                                    never  # notes are between two operators, never model input
+POST   /api/federation/grants/{grant_id}/notes                                    never  # a note is a person's message to a person
+POST   /api/federation/grants/{grant_id}/notes/read                               never  # part of reading the notes
+PATCH  /api/federation/grants/{grant_id}/notes/{note_id}                          never  # a note is a person's message to a person
+DELETE /api/federation/grants/{grant_id}/notes/{note_id}                          never  # a note is a person's message to a person
+POST   /api/federation/grants/{grant_id}/notes/{note_id}/hide                     P6  # narrows: hides a note from the peer
+POST   /api/federation/remote/{peer_id}/{grant_id}/access                         never  # asks another operator for authority
+GET    /api/federation/remote/{peer_id}/{grant_id}/access                         P6  # read: a level and a request's state
+POST   /api/federation/remote/{peer_id}/{grant_id}/decisions                      never  # a model must not answer for another instance's agent
+GET    /api/federation/remote/{peer_id}/{grant_id}/notes                          never  # notes are never model input
+POST   /api/federation/remote/{peer_id}/{grant_id}/notes                          never  # a note is a person's message to a person
+POST   /api/federation/remote/{peer_id}/{grant_id}/notes/read                     never  # part of reading the notes
+PATCH  /api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}                never  # a note is a person's message to a person
+DELETE /api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}                never  # a note is a person's message to a person
+POST   /api/federation/remote/{peer_id}/{grant_id}/continue                       P7  # Continue here: prepare a brief (#2059)
+GET    /api/federation/remote/{peer_id}/{grant_id}/continue/{handle}              P7  # Continue here: the prepared brief again
+POST   /api/federation/remote/{peer_id}/{grant_id}/continue/{handle}/create       P7  # Continue here: starts a new local session
 WS     /ws/fed                                                                    n/a  # another instance's channel; Noise-authenticated, never a browser's
 WS     /ws/agent-accounts/{engine}/{account}/signin                                never  # interactive vendor login (#1820)
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)

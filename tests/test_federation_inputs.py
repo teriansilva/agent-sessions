@@ -250,9 +250,10 @@ def _old_store(directory, version: int) -> bytes:
 
 
 @pytest.mark.parametrize("version", [2, 3])
-def test_an_older_store_migrates_in_place_to_4_and_a_backup_is_taken_first(tmp_path, version):
-    """Schema 3 is #2056's (the grant kind); this build's input tables are schema 4. A store at
-    either earlier version takes the steps it lacks, in place, after a complete copy."""
+def test_an_older_store_migrates_in_place_and_a_backup_is_taken_first(tmp_path, version):
+    """Schema 3 is #2056's (the grant kind); the input tables are schema 4 (and #2059's are 5,
+    in the same migration). A store at either earlier version takes the steps it lacks, in
+    place, after a complete copy."""
     directory = tmp_path / "fed"
     key = _old_store(directory, version)
     path = directory / store.DB_FILE
@@ -264,7 +265,8 @@ def test_an_older_store_migrates_in_place_to_4_and_a_backup_is_taken_first(tmp_p
         assert kept["t"].kind == "terminal" and kept["t"].level == "view"
     assert st.by_key(key).name == "old box"
     con = sqlite3.connect(path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 4
+    # (schema 5, #2059, in the same step: `test_federation_together.py` pins 2, 3, 4 → 5)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION == 5
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"suggestions", "peer_turns", "grants", "peers"} <= tables
     assert "kind" in {r[1] for r in con.execute("PRAGMA table_info(grants)")}
@@ -657,6 +659,18 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
         "input.withdraw",
         "input.send",
         "terminal.frame",  # reads only (#2056)
+        # #2059: working together. None of them changes a grant either
+        # (`test_federation_together.py` drives each one against the same source scan).
+        "access.request",
+        "access.status",
+        "decision.answer",
+        "note.list",
+        "note.add",
+        "note.edit",
+        "note.delete",
+        "note.read",
+        "note.changed",
+        "decision.changed",
     }
     made = owner.grant("send")
     before = (owner.st.get_grant(made.grant_id), owner.st.generation())
@@ -676,6 +690,7 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
         if _rel(path) not in ("federation/store.py", "federation/grants.py"):
             assert not names & writers, _rel(path)
     modules = ("inputs", "sharing", "verbs", "remote", "channel", "notices", "fence", "terminal")
+    modules += ("together", "notes", "offers", "inbox", "presence", "continue_here")
     for module in modules:
         tree = ast.parse((SRC / "federation" / f"{module}.py").read_text())
         for node in ast.walk(tree):

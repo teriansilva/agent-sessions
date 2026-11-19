@@ -79,7 +79,17 @@ async function pressAt(page: Page, touch: boolean, x: number, y: number) {
 async function headActionNames(page: Page, head: ReturnType<Page["locator"]>): Promise<string[]> {
   const name = (els: Element[]) =>
     els.map((e) => (e.getAttribute("aria-label") || e.textContent || "").trim()).filter(Boolean);
-  const names = await head.locator("[data-head-action]").evaluateAll(name);
+  // A chip that opens a menu of choices (#2173, Share) counts as its choices: folded, it is a
+  // label and those same items, so a chip and a fold name the same actions.
+  const names = await head.locator('[data-head-action]:not([aria-haspopup="menu"])').evaluateAll(name);
+  for (const group of await head.locator('[data-head-action][aria-haspopup="menu"]').all()) {
+    await group.click();
+    const menu = page.getByRole("menu", { name: (await group.getAttribute("aria-label"))! });
+    await expect(menu).toBeVisible();
+    names.push(...(await menu.getByRole("menuitem").evaluateAll(name)));
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+  }
   const fold = head.getByRole("button", { name: /^(More session actions|Actions for this session)$/ });
   if (await fold.count()) {
     const label = (await fold.getAttribute("aria-label"))!;

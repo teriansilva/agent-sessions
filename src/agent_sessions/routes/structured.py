@@ -114,6 +114,24 @@ def _peer_authors(app: FastAPI, session_key: str) -> dict:
     return {} if federation is None else federation.store.peer_authors(session_key)
 
 
+def _decisions(app: FastAPI, session_key: str) -> list[dict]:
+    """Who settled this session's newest requests (#2059): the operator, or a paired instance.
+    An app built without federation has none."""
+    federation = getattr(app.state, "federation", None)
+    if federation is None:
+        return []
+    return share_api.decision_views(federation.store.decision_authors(session_key))
+
+
+async def _settled(app: FastAPI, session_key: str, turn_id: str, request_id: str) -> None:
+    """The operator's decision was accepted: record who settled the request, for the paired
+    instances that can see it (#2059). The federation service reads the session's own journal
+    for it and never raises: attribution is a record, not a gate."""
+    federation = getattr(app.state, "federation", None)
+    if federation is not None:
+        await federation.owner_decided(session_key, turn_id, request_id)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.get("/api/structured/clients/{engine}")
     async def structured_client(engine: str, _user: str = Depends(logged_in)) -> JSONResponse:
@@ -220,6 +238,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except Exception:  # the share store must never take the operator's own view down…
             log.warning("structured view: visitor attribution unavailable", exc_info=True)
             authors = None  # …but then every turn is UNKNOWN, never labelled the operator's
+        if "pending_requests" in view:  # a snapshot, not a history page
+            try:
+                decisions = await asyncio.to_thread(_decisions, app, session_key)
+            except Exception:  # unreadable is not "nobody": the field is left out
+                log.warning("structured view: decision attribution unavailable", exc_info=True)
+                decisions = []
+            if decisions:
+                view["decisions"] = decisions
         return share_api.overlay_authors(view, authors)
 
     @app.get("/api/structured/sessions/{key}")
@@ -349,21 +375,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             )
         if "answers" in body and not isinstance(body["answers"], list):
             raise HTTPException(status_code=422, detail="answers must be a list")
-        return JSONResponse(
-            await _run(
-                structured_runtime.decide(
-                    key,
-                    turn_id=body["turn_id"],
-                    request_id=body["request_id"],
-                    decision_id=body["decision_id"],
-                    decision=body["decision"],
-                    user=_user,
-                    expected_revision=_revision(body.get("expected_revision")),
-                    grant=body.get("grant"),
-                    answers=body.get("answers"),
-                )
+        out = await _run(
+            structured_runtime.decide(
+                key,
+                turn_id=body["turn_id"],
+                request_id=body["request_id"],
+                decision_id=body["decision_id"],
+                decision=body["decision"],
+                user=_user,
+                expected_revision=_revision(body.get("expected_revision")),
+                grant=body.get("grant"),
+                answers=body.get("answers"),
             )
         )
+        await _settled(app, out.get("session_key") or key, body["turn_id"], body["request_id"])
+        return JSONResponse(out)
 
     @app.post("/api/structured/sessions/{key}/send-now")
     async def structured_send_now(

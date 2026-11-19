@@ -31,7 +31,7 @@ import unicodedata
 from .. import chat_store, engines, scrollback
 from ..plugins import kinds
 from . import channel as ch
-from . import frames, grants, identity, sharing, store
+from . import frames, grants, identity, offers, sharing, store
 
 log = logging.getLogger(__name__)
 
@@ -287,7 +287,14 @@ async def refresh(fed, peer_id: str) -> bool:
                     entries = await _collect(channel)
                 except _Torn:
                     continue  # the owner's list moved between pages: read it again
-                return await asyncio.to_thread(fed.store.replace_remote, peer_id, entries)
+                before = await asyncio.to_thread(fed.store.list_remote, peer_id)
+                replaced = await asyncio.to_thread(fed.store.replace_remote, peer_id, entries)
+                if replaced:
+                    # A COMPLETE refresh, and only one: what is new is announced, and the bell
+                    # rows of a grant the list no longer has are retracted (#2059). Every
+                    # failure path below returns without reaching this.
+                    fed.refreshed_remote(peer_id, before, entries)
+                return replaced
             log.info("federation: a peer's list kept changing; the mirror is unchanged")
             return False
     except Invalid as exc:
@@ -375,12 +382,63 @@ def _turns(value: object) -> None:
             raise Invalid("turn id")
 
 
+CHOICE_RE = re.compile(r"\A[a-z][a-z_]{0,31}\Z")
+CHOICES_MAX = 8
+DECISIONS_MAX = 64
+AUTHOR_VIAS = frozenset({"owner", "peer"})
+NAME_RAW_MAX = 4 * store.NAME_MAX
+
+
+def _choices(request: dict) -> None:
+    """What the owner says this instance may answer of a request: decision KINDS by shape. The
+    owner decides again on the call; this only keeps the list a list of short words."""
+    choices = request.get("choices")
+    if choices is None:
+        return
+    if not isinstance(choices, list) or len(choices) > CHOICES_MAX:
+        raise Invalid("choices")
+    if not all(isinstance(c, str) and CHOICE_RE.fullmatch(c) for c in choices):
+        raise Invalid("choices")
+
+
+def _offer(request: dict) -> None:
+    """The owner's name for the exact request it offers choices for (``offers.token``): sent
+    back unchanged with ``decision.answer``. By shape only; it means nothing here."""
+    offer = request.get("offer")
+    if offer is not None and not offers.valid_token(offer):
+        raise Invalid("offer")
+
+
+def _author(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or value.get("via") not in AUTHOR_VIAS:
+        raise Invalid("author")
+    name = value.get("name")
+    if name is not None and (not isinstance(name, str) or len(name) > NAME_RAW_MAX):
+        raise Invalid("author name")
+
+
+def _decisions(value: object) -> None:
+    if value is None:
+        return
+    for entry in _dicts(value, DECISIONS_MAX, "decisions"):
+        _author(entry.get("author"))
+        if not isinstance(entry.get("answer"), str) or not CHOICE_RE.fullmatch(entry["answer"]):
+            raise Invalid("decision")
+
+
 def check_snapshot(doc: dict) -> dict:
     """A ``session.snapshot`` answer fit to hand to the viewer, or :class:`Invalid`."""
     _bounded(doc)
     _link(doc)
     _turns(doc.get("turns"))
-    _dicts(doc.get("pending_requests"), REQUESTS_MAX, "pending_requests")
+    for request in _dicts(doc.get("pending_requests"), REQUESTS_MAX, "pending_requests"):
+        _choices(request)
+        _offer(request)
+    _decisions(doc.get("decisions"))
+    if type(doc.get("owner_present", False)) is not bool:
+        raise Invalid("owner_present")
     if doc.get("can_send") is not False:
         raise Invalid("a view grant never sends")  # whatever the peer claims
     if type(doc.get("omitted_turns")) is not int or doc["omitted_turns"] < 0:
@@ -473,6 +531,119 @@ def check_sent(doc: dict) -> dict:
     return doc
 
 
+ACCESS_STATES = frozenset(store.ACCESS_STATES)
+DECISION_OUTCOMES = frozenset({"accepted", "settled", "uncertain"})
+NOTE_KEYS = frozenset(
+    {"note_id", "author", "mine", "actor", "text", "created_at", "edited_at", "deleted"}
+)
+NOTES_PAGE_MAX = 100
+
+
+def _level(value: object) -> None:
+    if not isinstance(value, str) or not LEVEL_SHAPE_RE.fullmatch(value):
+        raise Invalid("level")
+
+
+def check_access(doc: dict) -> dict:
+    """An ``access.request`` answer: an id, the level asked for and a state."""
+    if set(doc) != {"request_id", "level", "state"}:
+        raise Invalid("access request")
+    if not grants.valid_grant_id(doc["request_id"]) or doc["state"] not in ACCESS_STATES:
+        raise Invalid("access request")
+    _level(doc["level"])
+    return doc
+
+
+def check_access_status(doc: dict) -> dict:
+    """An ``access.status`` answer: the grant's level and this instance's newest request."""
+    if set(doc) != {"level", "request"}:
+        raise Invalid("access status")
+    _level(doc["level"])
+    request = doc["request"]
+    if request is None:
+        return doc
+    keys = {"request_id", "level", "state", "created_at", "updated_at", "expires_at"}
+    if not isinstance(request, dict) or set(request) != keys:
+        raise Invalid("access status")
+    if not grants.valid_grant_id(request["request_id"]) or request["state"] not in ACCESS_STATES:
+        raise Invalid("access status")
+    _level(request["level"])
+    for key in ("created_at", "updated_at", "expires_at"):
+        _number(request[key])
+    return doc
+
+
+def check_decision(doc: dict) -> dict:
+    """A ``decision.answer`` answer: what became of it and who settled the request."""
+    if set(doc) != {"outcome", "author"} or doc["outcome"] not in DECISION_OUTCOMES:
+        raise Invalid("decision answer")
+    _author(doc["author"])
+    return doc
+
+
+def _note(note: object) -> None:
+    """One note as the owner tells it. Its text is plain text of bounded length; it is handed
+    to the operator's pane as data and is never stored, parsed or passed anywhere else."""
+    if not isinstance(note, dict) or set(note) != NOTE_KEYS:
+        raise Invalid("note")
+    if not grants.valid_grant_id(note["note_id"]) or note["author"] not in AUTHOR_VIAS:
+        raise Invalid("note")
+    if type(note["mine"]) is not bool or type(note["deleted"]) is not bool:
+        raise Invalid("note")
+    if not isinstance(note["text"], str) or len(note["text"]) > store.NOTE_TEXT_MAX:
+        raise Invalid("note text")
+    if not isinstance(note["actor"], str) or len(note["actor"]) > NAME_RAW_MAX:
+        raise Invalid("note actor")
+    _number(note["created_at"])
+    if note["edited_at"] is not None:
+        _number(note["edited_at"])
+
+
+def check_notes(doc: dict) -> dict:
+    """A ``note.list`` answer: the changes after a number, or the thread again."""
+    if set(doc) != {"reset", "seq", "changes", "more", "next", "unread"}:
+        raise Invalid("notes page")
+    if type(doc["reset"]) is not bool or type(doc["more"]) is not bool:
+        raise Invalid("notes page")
+    _cursor(doc["seq"], optional=False)
+    _cursor(doc["unread"], optional=False)
+    if doc["next"] is not None and not grants.valid_grant_id(doc["next"]):
+        raise Invalid("notes cursor")
+    for entry in _dicts(doc["changes"], NOTES_PAGE_MAX, "changes"):
+        _cursor(entry.get("seq"), optional=False)
+        if not grants.valid_grant_id(entry.get("note_id")):
+            raise Invalid("note id")
+        if set(entry) == {"seq", "note_id", "removed"}:
+            if entry["removed"] is not True:
+                raise Invalid("note change")
+        elif set(entry) == {"seq", "note_id", "note"}:
+            _note(entry["note"])
+            if entry["note"]["note_id"] != entry["note_id"]:
+                raise Invalid("note change")
+        else:
+            raise Invalid("note change")
+    return doc
+
+
+def check_note(doc: dict) -> dict:
+    """A ``note.add`` / ``note.edit`` / ``note.delete`` answer: the note, and for an add its
+    change number."""
+    if set(doc) - {"note", "seq"} or "note" not in doc:
+        raise Invalid("note answer")
+    _note(doc["note"])
+    if "seq" in doc:
+        _cursor(doc["seq"], optional=False)
+    return doc
+
+
+def check_unread(doc: dict) -> dict:
+    """A ``note.read`` answer: how many of the other side's notes are still unread."""
+    if set(doc) != {"unread"}:
+        raise Invalid("unread")
+    _cursor(doc["unread"], optional=False)
+    return doc
+
+
 def check_frame(doc: dict, have: str | None = None) -> dict:
     """A ``terminal.frame`` answer fit to hand to the viewer, or :class:`Invalid`. Exactly one of
     three shapes: ``{settling: true}``; ``{fingerprint, unchanged: true}``, and then only for the
@@ -561,6 +732,7 @@ async def read(
     timeout: float = ch.CALL_TIMEOUT_S,
     kind: str = grants.KIND_API,
     retry: bool = True,
+    revision: int | None = None,
 ) -> dict:
     """Call ``verb`` for a mirrored grant on its owner's live channel and return the validated
     answer. ``kind`` is what the verb reads: a mirrored grant of the other kind is ``no_grant``
@@ -575,13 +747,54 @@ async def read(
     call is made ONCE more with the revision the refreshed list carries. Only a second refusal,
     or a grant the refreshed list no longer has, is ``no_grant``. A refresh that fails is
     ``peer_offline`` / ``unavailable`` (503): nothing is answered from the mirror or from an
-    earlier answer.
+    earlier answer. A FINAL refusal retracts this instance's bell rows about the grant (#2059);
+    a refusal that was re-resolved retracts nothing.
 
     **A refused WRITE is never repeated** (``retry=False``: ``input.suggest``, ``input.send``,
-    ``input.withdraw``). The refusal is returned as it is (``no_grant``); the mirror is refreshed
-    in the background so the next call uses the current revision. Sending a message a second time
-    is the operator's decision, never this function's: a repeated send could deliver it under a
-    grant the owner's operator just changed."""
+    ``input.withdraw``; and of working together (#2059) ``access.request``, ``decision.answer``,
+    ``note.add`` / ``note.edit`` / ``note.delete`` / ``note.read``, and Continue here's create).
+    The refusal is returned as it is (``no_grant``); the mirror is refreshed in the background so
+    the next call uses the current revision, and that refresh, not the refusal, decides the bell.
+    Sending a message a second time is the operator's decision, never this function's: a
+    repeated send could deliver it under a grant the owner's operator just changed.
+
+    ``revision`` pins the call to a revision the caller was BOUND to earlier (#2059, Continue
+    here) and not to whatever the mirror holds now: when the grant moved since, the owner
+    refuses, which is the point. A pinned call is therefore never re-resolved (that would be a
+    call under another revision): it must say ``retry=False``."""
+    answer, _ = await read_bound(
+        fed,
+        peer_id,
+        grant_id,
+        verb,
+        extra,
+        check=check,
+        timeout=timeout,
+        kind=kind,
+        retry=retry,
+        revision=revision,
+    )
+    return answer
+
+
+async def read_bound(
+    fed,
+    peer_id: str,
+    grant_id: str,
+    verb: str,
+    extra: dict,
+    *,
+    check,
+    timeout: float = ch.CALL_TIMEOUT_S,
+    kind: str = grants.KIND_API,
+    retry: bool = True,
+    revision: int | None = None,
+) -> tuple[dict, int]:
+    """:func:`read`, and the revision the owner ANSWERED under: after a re-resolved refusal that
+    is the refreshed one, not the one the first call carried. What a caller binds to (Continue
+    here's handle) is this revision and no other."""
+    if revision is not None and retry:
+        raise ValueError("a call pinned to a revision is never re-resolved: pass retry=False")
     row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
     peer = await asyncio.to_thread(fed.store.get, peer_id)
     if row is None or peer is None or not peer.trusted or row.kind != kind:
@@ -589,9 +802,8 @@ async def read(
     channel = fed.channel_for(peer_id)
     if channel is None:
         raise ReadError("peer_offline")
-    answer = await _call(
-        channel, verb, {"grant_id": grant_id, "revision": row.revision, **extra}, timeout
-    )
+    used = row.revision if revision is None else revision
+    answer = await _call(channel, verb, {"grant_id": grant_id, "revision": used, **extra}, timeout)
     if answer is None:
         if not retry:
             fed.refresh_remote(peer_id)
@@ -604,13 +816,17 @@ async def read(
         channel = fed.channel_for(peer_id)
         if channel is None:
             raise ReadError("peer_offline")
+        used = row.revision
         answer = await _call(
-            channel, verb, {"grant_id": grant_id, "revision": row.revision, **extra}, timeout
+            channel, verb, {"grant_id": grant_id, "revision": used, **extra}, timeout
         )
         if answer is None:
+            # Refused under the revision the owner itself just listed: final. Whatever this
+            # instance's bell says about that grant is no longer true (#2059).
+            fed.refused_remote(peer_id, grant_id)
             raise ReadError(sharing.NO_GRANT)
     try:
-        return check(answer)
+        return check(answer), used
     except Invalid as exc:
         log.warning("federation: a peer's %s answer was refused (%s)", verb, exc)
         raise ReadError("bad_answer") from None

@@ -14,7 +14,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 
-const ENGINE = "claude";
+// An API session: adoption is offered on one only (#2173).
+const ENGINE = "claude-api";
 const UUID = "aaaaaaaa-1111-2222-3333-444444444444";
 const TITLE = "Fix the auth token refresh-rotation race";
 
@@ -66,7 +67,7 @@ async function setup(page: Page): Promise<void> {
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );
-  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
+  await mockRoster(page, { only: ["claude", "claude-api"] }); // the manifest-generated roster (#853 P4)
 
   await page.goto(NEW_SESSION_PATH);
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.

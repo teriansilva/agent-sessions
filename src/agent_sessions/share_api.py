@@ -83,6 +83,35 @@ def overlay_authors(snapshot: dict, authors: dict[str, dict] | None) -> dict:
     return snapshot
 
 
+#: Settled requests a view lists at most (the newest).
+DECISIONS_SHOWN = 8
+
+
+def decision_views(rows: list[dict], *, viewer: str | None = None) -> list[dict]:
+    """Who settled the session's newest requests, as EVERY view shows it (#2059): the operator's
+    pane, a public link and a peer all read the same stored author, so all report the same
+    single effect. ``rows`` is ``federation.store.Store.decision_authors``. An entry names the
+    request, the KIND of the answer (``once``, ``decline``, ``answer``, …; never a payload, an
+    option's label or a question's text) and its author: the owner, or a paired instance by
+    the display name THIS instance shows it under (a name, never an id, and no actor label).
+    ``mine`` is true for the peer reading its own answer."""
+    out = []
+    for row in rows[-DECISIONS_SHOWN:]:
+        owner = row["author"] == "owner"
+        out.append(
+            {
+                "request_id": row["request_id"],
+                "turn_id": row["turn_id"],
+                "answer": row["kind"],
+                "author": {"via": "owner", "name": None}
+                if owner
+                else {"via": "peer", "name": row.get("name") or ""},
+                "mine": viewer is not None and row["author"] == viewer,
+            }
+        )
+    return out
+
+
 def link_id(share_id: str) -> str:
     """The OPAQUE identity of a link, as its own visitor may hold it (#1444 review): a keyed
     fingerprint of the share id, never the id itself. The viewer stamps every snapshot and event

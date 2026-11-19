@@ -1,5 +1,9 @@
 /** Adoption lives on the session (#948 P5): the sidebar row's ⋯ menu and the pane header.
  *
+ * It is offered on an API session only (#2173): the server admits a mission-ready API client and
+ * refuses every terminal session (#1902), so a terminal offers Open mission when held and nothing
+ * otherwise. The session here is an API one; the terminal case has its own tests at the end.
+ *
  * The mocks are STATEFUL — a successful adopt makes later `GET /api/sessions` reads carry the
  * mission — so a poll that happens to land mid-test agrees with the flip rather than reverting it.
  * The flip itself is asserted well inside the 15s poll interval, which is what proves it came from
@@ -10,8 +14,10 @@ import { missionRow } from "./mission-console";
 import { MISSION_PATH } from "../src/lib/missionLink";
 import { setupBench } from "./terminal/harness";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { mockRoster } from "./roster";
 
-const ENGINE = "claude";
+const ENGINE = "codex-api";
+const TERMINAL = "claude";
 const UUID = "bbbbbbbb-1111-2222-3333-444444444444";
 const KEY = `${ENGINE}:${UUID}`;
 const TITLE = "Fix the flaky upload retry";
@@ -38,11 +44,48 @@ function row(mission: Held) {
   };
 }
 
+/** What the API pane reads to draw an idle conversation, and the roster that names its client. */
+async function apiPane(page: Page) {
+  await page.route(
+    new RegExp(`/api/structured/sessions/${ENGINE}(?::|%3A)${UUID}(/[a-z]+)?(\\?.*)?$`),
+    (r) =>
+      /\/events(\?|$)/.test(r.request().url())
+        ? r.fulfill({ json: { session_key: KEY, revision: 4, next_cursor: 4, events: [] } })
+        : r.fulfill({
+            json: {
+              session_key: KEY,
+              revision: 4,
+              event_cursor: 4,
+              cwd: "/home/u/proj",
+              state: "idle",
+              active_turn: null,
+              model_requested: null,
+              model_effective: "gpt-5-codex",
+              turns: [],
+              omitted_turns: 0,
+              pending_requests: [],
+              native: { native_id: "n1", worker: null, background_active: false },
+              read_only: null,
+            },
+          }),
+  );
+  await mockRoster(page, {
+    overrides: {
+      [ENGINE]: {
+        present: true,
+        supports_new: true,
+        api: { kind: "codex-app-server", source: "codex", unavailable_reason: null, can_bypass: true },
+      },
+    },
+  });
+}
+
 async function setup(
   page: Page,
   opts: { initial?: Held; adopt?: { status: number; json: unknown } } = {},
 ) {
   await setupBench(page, { sessions: [{ engine: ENGINE, uuid: UUID, title: TITLE }] });
+  await apiPane(page);
   let current: Held = opts.initial ?? null;
   const sessionUrls: string[] = [];
   await page.route(/\/api\/sessions(\?.*)?$/, (r) => {
@@ -190,6 +233,27 @@ test("adopt from the pane header; the header then names the mission", async ({ p
   await expect(
     page.getByRole("button", { name: "Open mission Harden the upload retry path" }),
   ).toBeFocused();
+});
+
+test("≤800px: adopting from the Actions menu returns focus to the Actions trigger", async ({ page }, testInfo) => {
+  // The desktop header test (#953) pins focus on the relabelled chip. On a phone the opener is the
+  // menu's own trigger, which survives both the menu closing and the Adopt → Open mission flip.
+  test.skip(testInfo.project.name !== "mobile", "phone-width contract");
+  await setup(page);
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  const trigger = page.locator('[class*="panelHead"]').getByRole("button", { name: "Actions for this session" });
+  await trigger.click();
+  await page.getByRole("menuitem", { name: /adopt this session into a mission/i }).click();
+  const dialog = page.getByRole("dialog", { name: "Adopt to mission" });
+  await dialog.getByTestId("adopt-option").filter({ hasText: "Harden the upload retry path" }).click();
+  await dialog.getByTestId("adopt-confirm").click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(
+    page.getByRole("menuitem", { name: "Open mission Harden the upload retry path" }),
+  ).toBeVisible();
 });
 
 test("unknown membership offers neither adopt nor open", async ({ page }, testInfo) => {
@@ -393,4 +457,59 @@ test("a FAILED refresh after adoption does not re-arm the old cursor — Load mo
   await expect(list.getByText("Session 00", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
   expect(offsets).not.toContain(20);
+});
+
+// =================================================================================================
+// A terminal session (#2173): the server refuses its adoption every time, so it is not offered
+// =================================================================================================
+
+async function setupTerminalSession(page: Page, mission: Held) {
+  await setupBench(page, { sessions: [{ engine: TERMINAL, uuid: UUID, title: TITLE }] });
+  await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        sessions: [{ ...row(mission), id: `${TERMINAL}:${UUID}`, engine: TERMINAL }],
+        next_offset: null,
+        total: 1,
+        facets: { projects: [], engines: [TERMINAL], missions: [], no_mission: mission ? 0 : 1 },
+      },
+    }),
+  );
+}
+
+test("a terminal session is not offered adoption: not in its row menu, not in its header", async ({ page }) => {
+  await setupTerminalSession(page, null);
+  await page.goto(`/s/${TERMINAL}/${UUID}`);
+  await expect(page.locator(".xterm-rows")).toBeVisible();
+  // The header: every action, wherever the head put it (chips, or the ≤800px Actions menu).
+  const head = page.locator('[class*="panelHead"]');
+  const actions = head.getByTestId("head-actions-menu");
+  await expect(actions.or(head.locator('[data-head-action="recap"]')).first()).toBeVisible();
+  await expect(head.locator('[data-head-action="mission"]')).toHaveCount(0);
+  if (await actions.isVisible()) {
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "Open session brief" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /adopt/i })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+  }
+  await expect(page.getByRole("button", { name: /adopt this session/i })).toHaveCount(0);
+
+  await openRowMenu(page);
+  // The menu is the full one (membership is known), minus the entry that could only be refused.
+  await expect(page.getByRole("menuitem", { name: "Open session brief" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /adopt/i })).toHaveCount(0);
+});
+
+test("a terminal session a mission holds still offers Open mission", async ({ page }, testInfo) => {
+  await setupTerminalSession(page, { id: RUNNING, title: "Harden the upload retry path", state: "running" });
+  await page.goto(`/s/${TERMINAL}/${UUID}`);
+  await expect(page.locator(".xterm-rows")).toBeVisible();
+  if (testInfo.project.name === "desktop") {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(
+      page.locator('[class*="panelHead"]').getByRole("button", { name: "Open mission Harden the upload retry path" }),
+    ).toBeVisible();
+  }
+  await openRowMenu(page);
+  await expect(page.getByRole("menuitem", { name: "Open mission Harden the upload retry path" })).toBeVisible();
 });

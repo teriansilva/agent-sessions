@@ -71,7 +71,9 @@ def test_registry_covers_every_system_prompt():
     # #2137 P2 hq_conversation_compact (the background summary of a long conversation, guarded).
     # #2152 retired mission_plan (HQ plans every mission); #2179 removed pulse_session_line with
     # the session scan.
-    assert len(prompts.REGISTRY) == 49
+    # #2059 handoff_remote_brief (Continue here: a record another instance shares is DATA;
+    # unguarded, with that rule locked onto it).
+    assert len(prompts.REGISTRY) == 50
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -142,6 +144,7 @@ EXPECTED_DEFAULT_SHA = {
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",
     "handoff_brief": "6229dae66d00c62f",
+    "handoff_remote_brief": "b2128068c2cc395f",  # #2059: a shared record is data
     "auto_sort": "e7dcb9cc74f397aa",
     "session_clusters": "bd2b2428631c010a",  # #1997: group a project's sessions by topic
     "template_suggest": "5242b5733770c518",

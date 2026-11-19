@@ -886,16 +886,17 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
     const led = (await pane.locator("[data-panel-head] [data-head-led]").boundingBox())!;
     expect(t.x).toBeGreaterThanOrEqual(led.x + led.width);
     await pane.getByTestId("head-actions-menu").click();
-    // #2055: Share with a peer… sits directly under Share publicly….
+    // #2173: Share is one group, its label once, then Public… and Peer….
     await expect(page.getByRole("menuitem")).toHaveText([
       "Files",
       "Plan & tools",
       "Recap",
       "Hand off",
-      "Share publicly…",
-      "Share with a peer…",
+      "Public…",
+      "Peer…",
       "Stop",
     ]);
+    await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Share"]);
     await page.keyboard.press("Escape");
   } else {
     const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>

@@ -249,6 +249,67 @@ test.describe("desktop", () => {
     await expect(menu).toBeHidden();
   });
 
+  test("a window's ⋯ names Share ONCE, and a choice opened from it outlives the menu (#2173)", async ({
+    page,
+  }) => {
+    // The window's merged menu is built from two sources that can both carry Share: the session
+    // group (`useSessionMenu`) and the pane's folded head action (`paneMenuItems`). One label,
+    // one Public, one Peer — whichever side carries them.
+    await mockApp(page);
+    // The peer dialog reads these two; an instance with nobody paired yet.
+    await page.route(/\/api\/federation(\?.*)?$/, (r) =>
+      r.fulfill({
+        json: {
+          owner: true,
+          self: { peer_id: "k3wq7n2bxd5mr4tzh6pac2vyj7uef3so", name: "studio", reachable_by: ["direct"] },
+          peers: [],
+          invites: [],
+          pairings: [],
+        },
+      }),
+    );
+    await page.route(/\/api\/federation\/grants(\?.*)?$/, (r) =>
+      r.fulfill({
+        json: {
+          grants: [],
+          generation: 1,
+          levels: ["view"],
+          default_expires_in: { view: 7 * 86400 },
+          max_expires_in: 90 * 86400,
+        },
+      }),
+    );
+    await openWindow(page);
+    const w = win(page, 1);
+    const trigger = w.locator("[data-window-menu]");
+    await trigger.click();
+    const menu = page.locator("[role='menu'][aria-label='Session actions']").last();
+    await expect(menu).toBeVisible();
+    await expect(menu.locator("[data-menu-group='Share']")).toHaveCount(1);
+    const pub = menu.getByRole("menuitem", { name: "Share this session publicly" });
+    const peer = menu.getByRole("menuitem", {
+      name: "Share this terminal's screen with a paired instance",
+    });
+    await expect(pub).toHaveCount(1);
+    await expect(peer).toHaveCount(1);
+    // A terminal session: Public is listed, off, with its reason, and opens nothing.
+    await expect(pub).toBeDisabled();
+    await expect(pub).toContainText("Not available for terminal sessions");
+    await pub.click({ force: true });
+    await expect(page.getByTestId("share-publicly")).toHaveCount(0);
+    await expect(menu).toBeVisible();
+
+    // Peer: the dialog opens, the menu goes, the dialog stays...
+    await peer.click();
+    const dialog = page.getByTestId("share-peer");
+    await expect(dialog).toBeVisible();
+    await expect(menu).toBeHidden();
+    // ...and closing it returns focus to the window's ⋯, which still exists.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toBeFocused();
+  });
+
   test("a session-mirrored action is named ONCE — a chip or the ⋯ menu, never both (#1329)", async ({
     page,
   }) => {
@@ -338,8 +399,9 @@ test.describe("desktop", () => {
     await btn.click();
     const menu = page.locator("[role='menu'][aria-label='Pane actions']");
     await expect(menu).toBeVisible();
-    // No session group at all: the row-dependent actions are the ones that withdrew.
-    expect(await menu.locator("[data-menu-group]").count()).toBe(0);
+    // No session group at all: the row-dependent actions are the ones that withdrew. (The pane's
+    // own Share choices keep their label, #2173; that is a pane action's group, not the session's.)
+    expect(await menu.locator("[data-menu-group='Session'], [data-menu-group='Pane']").count()).toBe(0);
     // Whatever the fold parked (at this width the text-size pair) is what the menu carries —
     // a pane action, never a session one.
     await expect(

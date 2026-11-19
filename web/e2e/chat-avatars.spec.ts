@@ -355,7 +355,8 @@ test("the API head gives way: actions fold before they cover a fact or the conne
     expect(geo.chipRight, `${width}px: the count is cut by its run`).toBeLessThanOrEqual(geo.runRight + 0.5);
     expect(geo.runRight, `${width}px: the run reaches under the actions`).toBeLessThanOrEqual(geo.actionsLeft + 0.5);
     expect(geo.whole).toBe(true);
-    const peerChip = head.getByRole("button", { name: "Share this session with a paired instance" });
+    // Peer… is a choice of the one Share chip now (#2173): the chip on the bar, or folded.
+    const peerChip = head.locator('[data-head-action="share"]');
     const more = head.getByRole("button", { name: "More session actions" });
     if (!(await peerChip.isVisible())) {
       folded.push(width);
@@ -366,10 +367,10 @@ test("the API head gives way: actions fold before they cover a fact or the conne
       await page.keyboard.press("Escape");
     }
   }
-  // Not vacuous: with room (a 1100 px bar) every chip is on the bar, and at 1280 px (a 940 px
-  // bar, where the facts used to run under the count) Share with a peer… is in the "…".
+  // Not vacuous: with room (a 1100 px bar) every chip is on the bar, and at 1080 px Share is in
+  // the "…". (Until #2173 Share was two chips and the fold began at 1280 px; one chip fits there.)
   expect(folded).not.toContain(1440);
-  expect(folded).toContain(1280);
+  expect(folded).toContain(1080);
 });
 
 test("Settings › Profile: a chosen image is cropped square, scaled, uploaded, and shown", async ({ page }) => {

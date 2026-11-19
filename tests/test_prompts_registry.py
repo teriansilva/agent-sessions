@@ -36,6 +36,7 @@ EXPECTED_SITES = {
     ("template_suggest.py", "template_suggest"),
     ("template_suggest.py", "template_write"),
     ("handoff.py", "handoff_brief"),
+    ("handoff.py", "handoff_remote_brief"),  # #2059: a brief from a session a peer shares
     ("orchestrator.py", "orchestrator_pass"),
     ("orchestrator_chat.py", "chat_route"),
     ("orchestrator_chat.py", "chat_instruct"),

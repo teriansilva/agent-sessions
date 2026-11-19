@@ -94,6 +94,39 @@ async def test_create_replay_and_turn_replay_use_one_real_agent_operation(endpoi
 
 
 @pytest.mark.anyio
+async def test_a_client_that_binds_no_payload_digest_refuses_an_expected_one(
+    endpoint, tmp_path, monkeypatch
+):
+    """`expected_digest` (#2059) names the exact request a caller means. A runtime that keeps
+    no digest cannot honor it: it refuses, and never drops it and decides anyway."""
+    chat_api.configure()
+    created = await runtime.create_session(
+        chat_api.ENGINE, str(tmp_path), operation_id=str(uuid.uuid4())
+    )
+    reached: list = []
+
+    async def decide(*args, **kwargs):
+        reached.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(chat_runtime, "decide", decide)
+    args = dict(
+        turn_id=str(uuid.uuid4()),
+        request_id="proposal-1",
+        decision_id=str(uuid.uuid4()),
+        decision="approve",
+        user="operator",
+    )
+    with pytest.raises(runtime.StructuredError) as error:
+        await runtime.decide(created["session_key"], **args, expected_digest="d" * 64)
+    assert error.value.status == 422 and reached == []
+    # without one, the call reaches the chat runtime exactly as before: no new argument
+    await runtime.decide(created["session_key"], **args)
+    ((_positional, kwargs),) = reached
+    assert "expected_digest" not in kwargs
+
+
+@pytest.mark.anyio
 async def test_reused_operation_with_changed_context_or_payload_cannot_send(endpoint, tmp_path):
     chat_api.configure()
     operation_id = str(uuid.uuid4())

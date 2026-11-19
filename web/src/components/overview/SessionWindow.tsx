@@ -70,6 +70,8 @@ const PANE_TO_SESSION_KEYS: Record<string, string[]> = {
   recap: ["brief"],
   handoff: ["handoff"],
   mission: ["adopt-mission", "open-mission"],
+  // #2173: the pane's one Share action carries both choices, as a chip menu or a folded group.
+  share: ["share-public", "share-peer"],
 };
 
 
@@ -286,20 +288,33 @@ export const SessionWindow = memo(function SessionWindow({
    *  a menu item unmounts with its menu. The merged menu DROPS the session group's twins of
    *  these actions instead (#1329), so a pane action is named once — as a chip when it fits,
    *  else here. */
-  const paneMenuItems = useCallback(
-    (opener: HTMLElement | null): RowMenuEntry[] =>
-      paneOverflowRef.current.map((a) => ({
-        key: a.id,
-        label: a.label,
-        ariaLabel: a.aria,
-        icon: a.icon,
-        disabled: a.disabled,
-        // A pressed pane toggle (Files, Plan & tools) says so in the menu too (#1726).
-        hint: a.active ? "Shown" : undefined,
-        onSelect: () => a.run(opener),
-      })),
-    [],
-  );
+  const paneMenuItems = useCallback((opener: HTMLElement | null): RowMenuEntry[] => {
+    const entry = (a: HeadAction): RowMenuEntry => ({
+      key: a.id,
+      label: a.label,
+      ariaLabel: a.aria,
+      icon: a.icon,
+      disabled: a.disabled,
+      // A pressed pane toggle (Files, Plan & tools) says so in the menu too (#1726); an item
+      // that is off says why (#2173).
+      hint: a.active ? "Shown" : a.hint,
+      onSelect: () => a.run(opener),
+    });
+    const folded = paneOverflowRef.current;
+    const out: RowMenuEntry[] = [];
+    folded.forEach((a, i) => {
+      if (!a.menu?.length) {
+        out.push(entry(a));
+        return;
+      }
+      // A folded group of choices (#2173, Share): its label once, then its items, ruled off
+      // from the pane actions on either side. No nested fly-out.
+      if (out.length > 0 && out[out.length - 1] !== "separator") out.push("separator");
+      out.push({ group: a.label }, ...a.menu.map(entry));
+      if (i < folded.length - 1) out.push("separator");
+    });
+    return out;
+  }, []);
 
   const openMergedMenu = useCallback(
     (anchor: MenuAnchor) => {

@@ -32,6 +32,12 @@ Images are not served to a peer in this phase: an attachment carries its name an
 
 A **terminal** session is read by one more verb, ``terminal.frame``, in :mod:`terminal`. The
 session verbs here refuse a terminal grant as ``no_grant``, and that verb refuses an API grant.
+
+**Working together (#2059).** A read that passed the per-call check marks its grant as watched
+(``presence.Watching``, in memory, 30 s). A snapshot answer also carries ``owner_present`` (one
+bit: this instance's operator has the session's pane open), ``decisions`` (who settled the
+newest requests, when any are recorded), and, under a ``send`` grant on a session no mission
+holds, what the peer may answer of each pending request (``offers.offer``).
 """
 
 from __future__ import annotations
@@ -42,7 +48,7 @@ import logging
 from .. import chat_store, engines, metadata, prefs, share_api, shares, template_secrets
 from .. import structured_runtime as runtime
 from . import channel as ch
-from . import grants, store
+from . import grants, offers, presence, store
 
 log = logging.getLogger(__name__)
 
@@ -478,22 +484,57 @@ async def share_list(channel: ch.Channel, args: dict) -> dict:
 
 
 # ── session.snapshot ──────────────────────────────────────────────────
+def _answerable(grant: store.Grant) -> bool:
+    """Whether this grant's peer may answer the session's pending requests right now: level
+    ``send``, and no mission holds the session. A membership that cannot be read offers
+    nothing. Blocking."""
+    if not store.level_includes(grant.level, "send"):
+        return False
+    try:
+        return not grants.mission_held(grant.session_key)
+    except grants.GrantError:
+        return False
+
+
+async def _decided(fed, session_key: str) -> list[dict]:
+    """Who settled the session's newest requests (#2059). Unreadable is not "nobody"."""
+    try:
+        return await asyncio.to_thread(fed.store.decision_authors, session_key)
+    except Exception:  # noqa: BLE001 — attribution that cannot be read is not guessed
+        log.warning("federation: decision attribution could not be read; nothing was sent")
+        raise ch.VerbError(UNAVAILABLE) from None
+
+
 async def session_snapshot(channel: ch.Channel, args: dict) -> dict:
     fed, peer_id = channel.context
     grant = await _authorize(fed, peer_id, args, kind=grants.KIND_API)
+    # The peer has this session open (#2059): in memory, under this grant, for 30 seconds.
+    fed.watching.touch(grant.grant_id)
     try:
         snap = await runtime.snapshot(grant.session_key)
     except runtime.StructuredError as exc:
         raise _runtime_refusal(exc) from None
     authors = await _authors(fed, grant.session_key)
+    decided = await _decided(fed, grant.session_key)
 
     def build() -> dict:
         # The SAME projection and redactor a public `view` link gets. The grant id stands where
         # that path uses the share id.
-        view = share_api.project(snap, authors, share_api.redactor(), grant.grant_id)
+        redact = share_api.redactor()
+        view = share_api.project(snap, authors, redact, grant.grant_id)
         view["link"] = share_api.link_id(grant.grant_id)
         view["can_send"] = False
         _strip_images(view)
+        if _answerable(grant):
+            # What a `send` peer may answer of each pending request: one-time kinds, a
+            # question's options by index (through the same redactor), and the offer token
+            # that names the exact request.
+            offers.offer(view, snap, redact, grant.grant_id, grant.session_key)
+        # One bit: the operator has this session's pane open. Not a count, not a device.
+        view["owner_present"] = presence.owner_present(grant.session_key)
+        decisions = share_api.decision_views(decided, viewer=grant.principal)
+        if decisions:
+            view["decisions"] = decisions
         return fit_snapshot(view)
 
     answer = await _projected(build)
@@ -566,6 +607,7 @@ async def _held_events(fed, peer_id: str, grant: store.Grant, args: dict) -> dic
 async def session_events(channel: ch.Channel, args: dict) -> dict:
     fed, peer_id = channel.context
     grant = await _authorize(fed, peer_id, args, kind=grants.KIND_API)
+    fed.watching.touch(grant.grant_id)  # the peer's pane is open (#2059); in memory only
     try:
         link = await asyncio.to_thread(share_api.link_id, grant.grant_id)
     except template_secrets.SecretKeyUnavailable:

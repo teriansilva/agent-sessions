@@ -51,6 +51,11 @@ def test_only_the_operators_decision_route_settles_a_tool_request():
         "structured_runtime.py",  # the facade: delegates to the adapters
         "native_worker.py",  # the worker forwarding an admitted decision to the CLI
         "routes/ask.py",  # HQ proposals: the operator's decision on a staged card
+        # A PEER OPERATOR's answer under a `send` grant this instance's operator made (#2059):
+        # one-time kinds only, never a widening one, never on a session a mission holds, and
+        # authorized per call against the grant's revision. A person on a paired instance
+        # decides, not BattleLab; `tests/test_federation_together.py` pins each refusal.
+        "federation/together.py",
     }
     found = {}
     for path in SRC.rglob("*.py"):

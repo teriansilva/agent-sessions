@@ -11,12 +11,20 @@ import { expect, type Locator, type Page } from "@playwright/test";
  *     spec sets a narrow viewport.
  *   - **wider, the action fits** — an inline chip in the pane header.
  *   - **wider, the action folded (#783)** — an item in the "More session actions" overflow menu.
+ *   - **a choice of a chip with a menu (#2173, Share → Public… / Peer…)** — an item of the small
+ *     menu that chip opens when it is on the bar; folded, an ordinary item of the menus above.
  *
  *  Every placement keeps the action's accessible name, so callers pass the same name they would
  *  have used for the chip. */
 
 export const ACTIONS_MENU = "Actions for this session";
 export const MORE_MENU = "More session actions";
+/** A head chip that opens a menu of choices instead of running one command (#2173, Share). */
+export const GROUP_CHIP = '[data-head-action][aria-haspopup="menu"]';
+/** The Share chip, and the reason its Public… choice is off on a terminal session. */
+export const SHARE_CHIP = '[data-head-action="share"]';
+export const SHARE_PUBLIC = "Share this session publicly";
+export const SHARE_PUBLIC_UNAVAILABLE = "Not available for terminal sessions";
 /** The Files toggle's accessible name. Scoped to the header/menu here, so it cannot collide with
  *  the file panel's own "Files" tab. */
 export const FILES_ACTION = "Browse session files";
@@ -66,8 +74,16 @@ async function resolve(
   }
   const chip = head.getByRole("button", { name });
   const more = head.getByRole("button", { name: MORE_MENU });
-  await expect(chip.or(more).first()).toBeVisible({ timeout: opts.timeout });
+  const groups = head.locator(GROUP_CHIP);
+  await expect(chip.or(more).or(groups).first()).toBeVisible({ timeout: opts.timeout });
   if (await chip.isVisible()) return { control: chip, returnsFocusTo: chip };
+  // A choice of a chip that opens a menu (#2173): look in each such chip's menu.
+  for (const group of await groups.all()) {
+    if ((await group.getAttribute("aria-expanded")) !== "true") await group.click();
+    const item = page.getByRole("menu").getByRole("menuitem", { name });
+    if (await item.count()) return { control: item, returnsFocusTo: group };
+    await page.keyboard.press("Escape");
+  }
   const menu = page.getByRole("menu", { name: MORE_MENU });
   if (!(await menu.isVisible())) await more.click();
   await expect(menu).toBeVisible();

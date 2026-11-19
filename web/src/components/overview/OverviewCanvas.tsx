@@ -1028,7 +1028,7 @@ function OverviewCanvasInner({
             onToggleOrchestratorExcluded: (id: string, excluded: boolean) =>
               mutate(
                 () => api.setOrchestratorExcluded(id, excluded),
-                "Couldn’t update the mission control setting.",
+                "Couldn’t update the automation setting.",
               ),
           }
         : {}),

@@ -277,6 +277,17 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         peers = {} if federation is None else federation.store.peer_authors(session_key)
         return share_api.with_peer_authors(store.authors(session_key), peers)
 
+    def _decisions(session_key: str) -> list[dict]:
+        """Who settled the session's newest requests: kinds and names, never a payload. A store
+        that cannot be read lists none (the view itself still answers)."""
+        federation = getattr(app.state, "federation", None)
+        if federation is None:
+            return []
+        try:
+            return share_api.decision_views(federation.store.decision_authors(session_key))
+        except Exception:  # noqa: BLE001 — attribution is an extra, never the view's gate
+            return []
+
     @app.get("/api/public/session")
     async def public_session(
         visitor=Depends(_view),  # noqa: B008 — a closure-local dependency
@@ -300,6 +311,10 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
             raise HTTPException(
                 status_code=503, detail="this session can't be shown right now — try again"
             ) from None
+        # Who settled the newest requests (#2059): every viewer reads the same stored author.
+        decisions = await asyncio.to_thread(_decisions, share.session_key)
+        if decisions:
+            view["decisions"] = decisions
         mission_held = await asyncio.to_thread(missions.session_mission, share.session_key)
         view["can_send"] = share.mode == "send" and not view["read_only"] and mission_held is None
         view["mission_held"] = mission_held is not None

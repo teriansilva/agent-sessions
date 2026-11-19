@@ -42,6 +42,12 @@
 // moved from button[6] to button[7] and every existing element computes exactly the recorded styles
 // at its shifted path (checked by mapping each old path); the mobile cases (one Actions menu,
 // closed) and the chat pane are byte-identical.
+// An eleventh time for #2173: the desktop structured head's two share chips (Share publicly…,
+// Share with a peer…) became ONE Share chip that opens a menu — per desktop structured case eight
+// elements removed (the second chip's button, svg, shapes and label, and the first one's globe
+// paths) and four added (the Share icon's circles and lines at button[5]); no recorded element
+// changed its styles, Stop moved back from button[7] to button[6], and the mobile cases (one
+// Actions menu, closed) and the chat pane are byte-identical.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

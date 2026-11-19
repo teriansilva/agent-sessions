@@ -53,12 +53,50 @@ minted here:
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/suggestions``
 * ``POST   /api/federation/remote/{peer_id}/{grant_id}/suggestions/{id}/withdraw``
 
+Working together on a shared session (#2059). The owner's side:
+
+* ``GET    /api/federation/grants`` entries carry ``watching`` (the peer read the session within
+  the last 30 s; in memory, a bit, nothing more)
+* ``GET    /api/federation/access-requests?session=<key>`` — what peers ask for, with their note
+* ``POST   /api/federation/access-requests/{id}/decline`` — there is NO approve route: granting
+  is the grant change above (``PATCH …/grants/{grant_id}``, ``accept_risk`` for ``send``)
+* ``GET    /api/federation/grants/{grant_id}/notes`` — the thread (also for 7 days after the
+  grant ended; no verb reads it then)
+* ``POST   /api/federation/grants/{grant_id}/notes`` — ``{client_key, text, actor?}``
+* ``PATCH  /api/federation/grants/{grant_id}/notes/{note_id}`` — ``{text}``: one's own note
+* ``DELETE /api/federation/grants/{grant_id}/notes/{note_id}`` — one's own note; a tombstone stays
+* ``POST   /api/federation/grants/{grant_id}/notes/{note_id}/hide`` — any note: gone for the peer
+* ``POST   /api/federation/grants/{grant_id}/notes/read`` — ``{seq}``
+
+The receiving side (each call is a verb on the owner's live channel; nothing of a note or a
+request is stored here):
+
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/access`` — ``{level, note?}``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/access``
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/decisions`` — ``{request_id, offer, choice,
+  options?, client_key, actor?}``: answer one pending request; ``offer`` is the snapshot's
+  ``offer`` of that request, sent back unchanged; ``choice`` is a decision KIND
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/notes?after=&limit=&cursor=``
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/notes`` — ``{client_key, text, actor?}``
+* ``PATCH  /api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}`` — ``{text}``
+* ``DELETE /api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}``
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/notes/read`` — ``{seq}``
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/continue`` — ``{target_engine, mode}``:
+  prepare a brief for a NEW LOCAL session; returns ``{handle, preview, meta}``
+* ``GET    /api/federation/remote/{peer_id}/{grant_id}/continue/{handle}`` — the preview again
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/continue/{handle}/create`` — ``{cwd}``:
+  re-reads the source with the handle's bound revision, then creates; else nothing is created
+
 No channel answers ``503 peer_offline``. A refusal by the owner to a READ is re-resolved once (the
 mirror is refreshed and the call repeated under the current revision); a grant that is still
-refused, or no longer listed, answers ``404``. A refused WRITE (suggest, turns, withdraw) is
-never repeated: it answers ``404`` at once and the mirror is refreshed in the background. What a
-peer returns is validated (``federation/remote.py``) and passed on as data; it is never a path, a
-key or HTML here.
+refused, or no longer listed, answers ``404``. A refused WRITE is never repeated: it answers
+``404`` at once and the mirror is refreshed in the background. The writes: suggest, turns,
+withdraw, and of working together the access request, the decision answer, a note's add, edit,
+delete and read mark, and Continue here's create (pinned to its handle's revision). The reads:
+snapshot, events, history, frame, suggestions, access status, the notes thread, and Continue
+here's prepare (its handle is bound to the revision that ANSWERED). What a peer returns is
+validated (``federation/remote.py``) and passed on as data; it is never a path, a key or HTML
+here.
 
 The wire (no cookie, no CSRF, no ``AUTH_MODE``):
 
@@ -85,7 +123,21 @@ from starlette.websockets import WebSocketDisconnect
 
 from .. import chat_store
 from ..federation import channel as ch
-from ..federation import frames, grants, identity, inputs, notices, remote, sharing, store
+from ..federation import (
+    continue_here,
+    frames,
+    grants,
+    identity,
+    inbox,
+    inputs,
+    notes,
+    notices,
+    offers,
+    remote,
+    sharing,
+    store,
+    together,
+)
 from ..federation.service import Federation, FederationError
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -135,6 +187,9 @@ _READ_STATUS = {
     "held": 409,
     "not_found": 404,
     "too_large": 413,
+    "owner_only": 403,
+    "not_pending": 409,
+    "not_possible": 422,
 }
 _READ_DETAIL = {
     sharing.NO_GRANT: "this session is not shared with this instance",
@@ -145,8 +200,11 @@ _READ_DETAIL = {
     "invalid": "that request isn't valid for this session",
     "timeout": "the other instance did not answer in time — send it again to see the outcome",
     "held": "that session is part of a mission right now — you can watch, not write",
-    "not_found": "no such suggestion",
+    "not_found": "no such suggestion or note",
     "too_large": "that message is too long to send to another instance",
+    "owner_only": "only the operator of that instance can give that answer",
+    "not_pending": "that request is no longer waiting for an answer",
+    "not_possible": "that isn't possible for this kind of share",
 }
 
 
@@ -187,6 +245,57 @@ def _message(body: dict, *allowed: str) -> dict:
             raise FederationError("invalid", "actor must be a short label")
         out["actor"] = actor
     return out
+
+
+def _client_key(body: dict) -> str:
+    """The browser's retry key, passed on exactly as it was sent; never minted here."""
+    client_key = body.get("client_key")
+    try:
+        canonical = isinstance(client_key, str) and str(uuid.UUID(client_key)) == client_key
+    except ValueError:
+        canonical = False
+    if not canonical:
+        raise FederationError("invalid", "client_key must be a UUID in its canonical form")
+    return client_key  # type: ignore[return-value]
+
+
+def _actor(body: dict, out: dict) -> None:
+    actor = body.get("actor")
+    if actor is not None:
+        if not isinstance(actor, str) or len(actor) > 4 * store.NAME_MAX:
+            raise FederationError("invalid", "actor must be a short label")
+        out["actor"] = actor
+
+
+def _only(body: dict, *allowed: str) -> None:
+    if set(body) - set(allowed):
+        raise FederationError("invalid", "unknown field")
+
+
+def _note_text(body: dict) -> str:
+    text = body.get("text")
+    if not notes.valid_text(text):
+        raise FederationError(
+            "invalid", f"a note is 1 to {notes.TEXT_MAX} characters of plain text"
+        )
+    return text  # type: ignore[return-value]
+
+
+def _note_id(note_id: str) -> str:
+    if not grants.valid_grant_id(note_id):
+        raise FederationError("not_found", "no such note", status=404)
+    return note_id
+
+
+def _owner_actor(body: dict) -> str:
+    """The operator's optional display label on their own note, cleaned like a peer name."""
+    raw = body.get("actor")
+    if raw is None or raw == "":
+        return ""
+    try:
+        return store.clean_name(raw)
+    except store.Invalid:
+        raise FederationError("invalid", "actor must be a short label") from None
 
 
 def _query_int(raw: str | None, name: str, *, default: int, low: int, high: int) -> int:
@@ -255,6 +364,8 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 return _json(payload, exc.status)
             except remote.ReadError as exc:
                 return _error(_read_error(exc))
+            except continue_here.ContinueError as exc:
+                return _json({"detail": exc.detail, "code": exc.code}, exc.status)
             except store.StoreError as exc:
                 return _json({"detail": str(exc), "code": "store"}, exc.status)
 
@@ -326,14 +437,22 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
     # ── grants: what this instance shares with a peer (#2054) ─────────
     def _grant_view(grant: store.Grant, peers: dict[str, store.Peer]) -> dict:
         peer = peers.get(grant.peer_id)
-        return {**grants.public(grant), "peer_name": peer.name if peer else ""}
+        return {
+            **grants.public(grant),
+            "peer_name": peer.name if peer else "",
+            # The peer read this session within the last 30 s (#2059). In memory; one bit.
+            "watching": grant.state == "live" and federation.watching.watching(grant.grant_id),
+        }
 
     async def _changed(grant: store.Grant) -> dict:
         """After a grant change: tell the peer (a hint, best effort; on the event loop, where
         the channel lives), then answer the operator."""
         federation.notify_share_changed(grant.peer_id)
+        if grant.state != "live":
+            federation.watching.forget(grant.grant_id)  # presence is only under a live grant
         # A grant that ended or was lowered withdrew its pending suggestions in the same
-        # transaction: their bell rows go now.
+        # transaction, a grant that ended also its access request, and a raise may have granted
+        # one: their bell rows go now.
         federation.background(asyncio.to_thread(notices.retract, federation.store))
 
         def answer() -> dict:
@@ -476,6 +595,123 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
 
         return await guarded(run)()
 
+    # ── access requests: a peer asks, the operator's GRANT CHANGE answers (#2059) ──
+    @app.get(f"{PREFIX}/access-requests", dependencies=[Depends(logged_in)])
+    async def federation_access_requests(session: str = "") -> JSONResponse:
+        async def run() -> dict:
+            rows = await asyncio.to_thread(
+                together.access_listing, federation.store, session or None
+            )
+            return {"access_requests": rows}
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/access-requests/{{request_id}}/decline",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_access_decline(request_id: str) -> JSONResponse:
+        async def run() -> dict:
+            # Declining narrows. There is deliberately no approve route: a request never
+            # changes a grant, the operator's own grant change does.
+            def decline() -> dict:
+                gone = together.decline_access(federation.store, request_id)
+                peers = {p.peer_id: p for p in federation.store.list_peers()}
+                return {"access_request": together.access_view(gone, peers)}
+
+            return await asyncio.to_thread(decline)
+
+        return await guarded(run)()
+
+    # ── notes: the operator's side of a grant's thread (#2059) ────────
+    async def _note_answer(grant_id: str, note: store.Note) -> dict:
+        """After the operator changed a thread: hint its peer (a grant id, no data; on the
+        event loop, where the channel lives), then answer the operator."""
+        grant = await asyncio.to_thread(federation.store.get_grant, grant_id)
+        if grant is not None and grant.state == "live":
+            federation.hint(grant.peer_id, "note.changed", grant.grant_id)
+        return {"note": notes.owner_note(note)}
+
+    @app.get(f"{PREFIX}/grants/{{grant_id}}/notes", dependencies=[Depends(logged_in)])
+    async def federation_notes(grant_id: str) -> JSONResponse:
+        async def run() -> dict:
+            return await asyncio.to_thread(notes.owner_thread, federation.store, grant_id)
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/grants/{{grant_id}}/notes",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_note_add(grant_id: str, request: Request) -> JSONResponse:
+        async def run() -> dict:
+            body = await _body(request)
+            _only(body, "client_key", "text", "actor")
+            note = await asyncio.to_thread(
+                lambda: notes.owner_add(
+                    federation.store,
+                    grant_id,
+                    client_key=_client_key(body),
+                    text=body.get("text"),
+                    actor=_owner_actor(body),
+                )
+            )
+            return await _note_answer(grant_id, note)
+
+        return await guarded(run, 201)()
+
+    @app.post(
+        f"{PREFIX}/grants/{{grant_id}}/notes/read",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_notes_read(grant_id: str, request: Request) -> JSONResponse:
+        async def run() -> dict:
+            body = await _body(request)
+            _only(body, "seq")
+            unread = await asyncio.to_thread(
+                notes.owner_read, federation.store, grant_id, body.get("seq")
+            )
+            return {"unread": unread}
+
+        return await guarded(run)()
+
+    @app.patch(
+        f"{PREFIX}/grants/{{grant_id}}/notes/{{note_id}}",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_note_edit(grant_id: str, note_id: str, request: Request) -> JSONResponse:
+        async def run() -> dict:
+            body = await _body(request)
+            _only(body, "text")
+            note = await asyncio.to_thread(
+                lambda: notes.owner_edit(federation.store, grant_id, note_id, text=body.get("text"))
+            )
+            return await _note_answer(grant_id, note)
+
+        return await guarded(run)()
+
+    @app.delete(
+        f"{PREFIX}/grants/{{grant_id}}/notes/{{note_id}}",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_note_delete(grant_id: str, note_id: str) -> JSONResponse:
+        async def run() -> dict:
+            note = await asyncio.to_thread(notes.owner_delete, federation.store, grant_id, note_id)
+            return await _note_answer(grant_id, note)
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/grants/{{grant_id}}/notes/{{note_id}}/hide",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_note_hide(grant_id: str, note_id: str) -> JSONResponse:
+        async def run() -> dict:
+            note = await asyncio.to_thread(notes.owner_hide, federation.store, grant_id, note_id)
+            return await _note_answer(grant_id, note)
+
+        return await guarded(run)()
+
     # ── remote: what peers share with this instance (#2054) ───────────
     @app.get(f"{PREFIX}/remote", dependencies=[Depends(logged_in)])
     async def federation_remote() -> JSONResponse:
@@ -490,9 +726,12 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
     async def federation_remote_snapshot(peer_id: str, grant_id: str) -> JSONResponse:
         async def run() -> dict:
             _remote_ids(peer_id, grant_id)
-            return await remote.read(
+            view = await remote.read(
                 federation, peer_id, grant_id, "session.snapshot", {}, check=remote.check_snapshot
             )
+            # The operator opened the shared session: its "shared with you" row is read (#2059).
+            federation.background(asyncio.to_thread(inbox.opened, peer_id, grant_id))
+            return view
 
         return await guarded(run)()
 
@@ -667,6 +906,275 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
             )
 
         return await guarded(run)()
+
+    # ── remote: working together on a session a peer shares (#2059) ───
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/access",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_access_request(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "level", "note")
+            level, note = body.get("level"), body.get("note")
+            if not isinstance(level, str) or level not in grants.LEVELS[1:]:
+                raise FederationError("invalid", "level must be suggest or send")
+            extra: dict = {"level": level}
+            if note not in (None, ""):
+                if not notes.valid_text(note) or len(note) > store.ACCESS_NOTE_MAX:
+                    raise FederationError(
+                        "invalid",
+                        f"note is at most {store.ACCESS_NOTE_MAX} characters of plain text",
+                    )
+                extra["note"] = note
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "access.request",
+                extra,
+                check=remote.check_access,
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run, 201)()
+
+    @app.get(f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/access", dependencies=[Depends(logged_in)])
+    async def federation_remote_access_status(peer_id: str, grant_id: str) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "access.status",
+                {},
+                check=remote.check_access_status,
+                # A read: a refusal is re-resolved once, as for the other receiving reads.
+            )
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/decisions",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_decision(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "request_id", "offer", "choice", "options", "client_key", "actor")
+            # Shapes only: the owner validates again, resolves the request and decides.
+            extra: dict = {"client_key": _client_key(body)}
+            # The `offer` the snapshot showed for this request, unchanged: it is what binds
+            # the answer to that exact request on the owner.
+            if not offers.valid_token(body.get("offer")):
+                raise FederationError("invalid", "offer is required")
+            extra["offer"] = body["offer"]
+            for name in ("request_id", "choice"):
+                if not isinstance(body.get(name), str) or not body[name]:
+                    raise FederationError("invalid", f"{name} is required")
+                extra[name] = body[name]
+            if body.get("options") is not None:
+                extra["options"] = body["options"]
+            _actor(body, extra)
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "decision.answer",
+                extra,
+                check=remote.check_decision,
+                # Past the owner's handler timeout: its own `timeout` answer arrives first.
+                timeout=remote.INPUT_CALL_TIMEOUT_S,
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run)()
+
+    @app.get(f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/notes", dependencies=[Depends(logged_in)])
+    async def federation_remote_notes(
+        peer_id: str,
+        grant_id: str,
+        after: str | None = None,
+        limit: str | None = None,
+        cursor: str | None = None,
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            extra: dict = {
+                "after_seq": _query_int(after, "after", default=0, low=0, high=grants.REVISION_MAX),
+                "limit": _query_int(
+                    limit, "limit", default=notes.PAGE_MAX, low=0, high=notes.PAGE_MAX
+                ),
+            }
+            if cursor is not None:
+                extra["cursor"] = _note_id(cursor)
+            # Passed on to the operator's pane as data and kept nowhere on this instance.
+            return await remote.read(
+                federation, peer_id, grant_id, "note.list", extra, check=remote.check_notes
+            )
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/notes",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_note_add(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "client_key", "text", "actor")
+            extra: dict = {"client_key": _client_key(body), "text": _note_text(body)}
+            _actor(body, extra)
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "note.add",
+                extra,
+                check=remote.check_note,
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run, 201)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/notes/read",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_notes_read(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "seq")
+            seq = body.get("seq")
+            if type(seq) is not int or not 0 <= seq <= grants.REVISION_MAX:
+                raise FederationError("invalid", "seq must be a change number")
+            answer = await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "note.read",
+                {"seq": seq},
+                check=remote.check_unread,
+                # It moves the owner's read mark: a write, never repeated.
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+            # Read: this instance's bell row for the thread goes when nothing is left unread.
+            federation.background(
+                asyncio.to_thread(inbox.notes_read, peer_id, grant_id, answer["unread"])
+            )
+            return answer
+
+        return await guarded(run)()
+
+    @app.patch(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/notes/{{note_id}}",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_note_edit(
+        peer_id: str, grant_id: str, note_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "text")
+            extra = {"note_id": _note_id(note_id), "text": _note_text(body)}
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "note.edit",
+                extra,
+                check=remote.check_note,
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run)()
+
+    @app.delete(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/notes/{{note_id}}",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_note_delete(
+        peer_id: str, grant_id: str, note_id: str
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "note.delete",
+                {"note_id": _note_id(note_id)},
+                check=remote.check_note,
+                retry=False,  # a refused write is answered as it is, never repeated
+            )
+
+        return await guarded(run)()
+
+    # ── remote: Continue here, a NEW LOCAL session from what was shared (#2059) ──
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/continue",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_continue_prepare(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "target_engine", "mode")
+            return await continue_here.prepare(
+                federation,
+                peer_id,
+                grant_id,
+                target_engine=body.get("target_engine"),
+                mode=body.get("mode", "quick"),
+            )
+
+        return await guarded(run)()
+
+    @app.get(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/continue/{{handle}}",
+        dependencies=[Depends(logged_in)],
+    )
+    async def federation_continue_preview(peer_id: str, grant_id: str, handle: str) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            return continue_here.preview(handle, peer_id, grant_id)
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/continue/{{handle}}/create",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_continue_create(
+        peer_id: str, grant_id: str, handle: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "cwd")
+            # THE admission point: the source is read again, with the handle's bound revision,
+            # before anything is created (`continue_here.create`).
+            return await continue_here.create(
+                federation, handle, peer_id, grant_id, cwd=body.get("cwd")
+            )
+
+        return await guarded(run, 201)()
 
     @app.websocket(WS_PATH)
     async def ws_fed(ws: WebSocket) -> None:

@@ -1712,6 +1712,53 @@ async def test_a_complete_approval_is_decided_once_by_its_operator_then_stale(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_an_expected_digest_binds_a_decision_to_the_exact_request(host, project, source):
+    """#2059: request ids repeat per turn and per connection, so a caller that looked a request
+    up earlier names its payload digest. Another digest is refused before anything is claimed;
+    the matching one decides; a replay of the decision id is held to the same digest."""
+    key = (await runtime.create_session(ENGINES[source], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="APPROVE")
+    snap = await pending(key)
+    request = snap["pending_requests"][0]
+    args = dict(turn_id=turn, request_id=request["request_id"], decision="approve", user="alice")
+    other = "0" * 64
+    assert other != request["payload_digest"]
+    for wrong in (other, ""):
+        refused = ident()
+        with pytest.raises(runtime.StructuredError) as error:
+            await runtime.decide(key, decision_id=refused, expected_digest=wrong, **args)
+        assert error.value.status == (409 if wrong else 422)
+    after = await runtime.snapshot(key)
+    assert after["revision"] == snap["revision"]  # nothing was claimed, nothing journaled
+    assert [q["payload_digest"] for q in after["pending_requests"]] == [request["payload_digest"]]
+    records = await runtime.decision_record(key, turn_id=turn, request_id=request["request_id"])
+    assert records == []
+    decision = ident()
+    out = await runtime.decide(
+        key, decision_id=decision, expected_digest=request["payload_digest"], **args
+    )
+    assert out["handoff"] == "sent"
+    # the replay observes under the same digest, and is refused under another
+    again = await runtime.decide(
+        key, decision_id=decision, expected_digest=request["payload_digest"], **args
+    )
+    assert again["handoff"] == "sent"
+    with pytest.raises(runtime.StructuredError) as replayed:
+        await runtime.decide(key, decision_id=decision, expected_digest=other, **args)
+    assert replayed.value.status == 409
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == ("approved:accept" if source == "codex" else "approved:allow")
+    records = await runtime.decision_record(key, turn_id=turn, request_id=request["request_id"])
+    assert [(r["decision_id"], r["digest"]) for r in records] == [
+        (decision, request["payload_digest"])
+    ]
+
+
+@pytest.mark.anyio
 async def test_a_file_change_presents_its_patch_but_can_only_be_declined(host, project):
     """Hermes on #1278: nothing binds the applied patch to the shown one, so no approve."""
     key = await _codex(project)

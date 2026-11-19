@@ -22,6 +22,14 @@
   for the operator) and ``peer_turns`` (the operation id and the author of every turn a peer
   caused). A suggestion's text is read by ``federation/`` and its routes and by nothing else. A
   grant that ends withdraws its pending suggestions in the same transaction.
+* **Working together** (schema 5, #2059): ``access_requests`` (a peer asks for a higher level;
+  only a record, it never changes a grant), ``peer_decisions`` (the identity of a decision a peer
+  gave, written BEFORE the runtime is called), ``decision_authors`` (who settled a request) and
+  ``notes`` with ``note_changes`` (plain-text notes between the two operators, with a per-grant
+  monotonic change number). A note's text is read by ``federation/`` and its routes and by
+  nothing else: it never reaches an agent or a model (``docs/invariants/federation-notes.md``).
+  A grant that ends ends its pending access request in the same transaction, and no note read
+  or write that a peer can cause succeeds for a grant that is not live.
 * **Every write that ends or changes a grant holds that grant's fence** (``fence.py``) around its
   transaction, taken before ``BEGIN``; one that cannot get it commits nothing and raises
   :class:`Busy`. The methods here take the fences themselves, so no caller can commit around a
@@ -47,7 +55,7 @@ from pathlib import Path
 
 from . import fence, identity
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
 DB_FILE = "federation.db"
 PEERS_MAX = 64
@@ -76,6 +84,26 @@ SUGGESTION_TTL_S = 24 * 3600
 PEER_TURN_VIAS = ("send", "suggestion")
 #: How often a fenced write re-reads which fences it needs before it gives up as busy.
 FENCE_ROUNDS = 3
+ACCESS_STATES = ("pending", "granted", "declined", "expired", "withdrawn")
+#: A pending access request nobody answered expires after this, or with its grant.
+ACCESS_TTL_S = 24 * 3600
+#: Access requests one grant may make in 24 hours (a decline is not an invitation to ask again
+#: at once); the next is refused.
+ACCESS_PER_DAY_MAX = 5
+ACCESS_NOTE_MAX = 280
+AUTHOR_OWNER = "owner"
+NOTE_TEXT_MAX = 2000
+#: Notes one grant's thread holds; past it the oldest are dropped (a change of its own).
+NOTES_PER_GRANT_MAX = 500
+#: Notes one author may add to one thread in an hour.
+NOTES_PER_AUTHOR_HOUR = 30
+#: Change rows kept per grant. A reader whose cursor is older gets the whole thread again.
+NOTE_CHANGES_KEPT = 2000
+NOTE_CHANGES = ("add", "edit", "hide", "delete", "evict")
+#: After a grant ended its notes stay readable by THIS instance's operator for this long (by
+#: the operator's routes, by no verb), then the sweep deletes them.
+NOTES_GRACE_S = 7 * 86400
+DECISION_OUTCOMES = ("accepted", "settled", "not_pending")
 
 _SCHEMA_V1 = (
     """
@@ -212,6 +240,108 @@ _SCHEMA_V4 = (
     "CREATE INDEX peer_turns_by_session ON peer_turns (session_key)",
 )
 
+# Schema 5 (#2059): working together on a shared session.
+_SCHEMA_V5 = (
+    # A peer asks for a higher level. ONLY a record: nothing here changes a grant. ``notified``
+    # says a bell row may exist for it (as for a suggestion).
+    """
+    CREATE TABLE access_requests (
+        request_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        principal TEXT NOT NULL,
+        level TEXT NOT NULL,
+        note TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN
+            ('pending', 'granted', 'declined', 'expired', 'withdrawn')),
+        end_reason TEXT,
+        notified INTEGER NOT NULL DEFAULT 1,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        expires_at REAL NOT NULL
+    )
+    """,
+    # At most one pending request per grant: the database is the arbiter.
+    "CREATE UNIQUE INDEX access_requests_one_pending ON access_requests (grant_id)"
+    " WHERE state = 'pending'",
+    "CREATE INDEX access_requests_by_session ON access_requests (session_key, created_at)",
+    # The identity of a decision a peer gave, written BEFORE the runtime is called.
+    # ``decision_id`` is minted with the row and never changes: a retry with the same
+    # ``client_key`` replays exactly this decision. ``choice`` is the canonical JSON of what the
+    # peer chose (a kind and option indexes; never a payload). ``digest`` names the exact request
+    # the runtime presented. ``outcome`` is NULL until it is known.
+    """
+    CREATE TABLE peer_decisions (
+        decision_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        client_key TEXT NOT NULL,
+        principal TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        choice TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        outcome TEXT CHECK (outcome IS NULL OR outcome IN
+            ('accepted', 'settled', 'not_pending')),
+        outcome_at REAL,
+        created_at REAL NOT NULL,
+        UNIQUE (grant_id, client_key)
+    )
+    """,
+    "CREATE INDEX peer_decisions_by_request ON peer_decisions (session_key, turn_id, request_id)",
+    # Who settled a request: ``owner``, or ``peer:<id>`` with its actor label. One row per
+    # request, written once; the first write stays.
+    """
+    CREATE TABLE decision_authors (
+        session_key TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        author TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        decision_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        at REAL NOT NULL,
+        PRIMARY KEY (session_key, turn_id, request_id, digest)
+    )
+    """,
+    "CREATE INDEX decision_authors_by_session ON decision_authors (session_key, at)",
+    # Notes between the two operators of a grant. ``author`` is ``owner`` or ``peer:<id>``.
+    # ``seen`` says the OTHER side read it. A deleted note keeps its row with an empty text (a
+    # tombstone); ``hidden`` is the owner's, and removes the note from every read by the peer.
+    """
+    CREATE TABLE notes (
+        note_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        client_key TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        edited_at REAL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        hidden INTEGER NOT NULL DEFAULT 0,
+        seen INTEGER NOT NULL DEFAULT 0,
+        position INTEGER NOT NULL,
+        UNIQUE (grant_id, author, client_key),
+        UNIQUE (grant_id, position)
+    )
+    """,
+    # One row per change to a thread. ``seq`` is per grant and only ever grows.
+    """
+    CREATE TABLE note_changes (
+        grant_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        note_id TEXT NOT NULL,
+        change TEXT NOT NULL CHECK (change IN ('add', 'edit', 'hide', 'delete', 'evict')),
+        at REAL NOT NULL,
+        PRIMARY KEY (grant_id, seq)
+    )
+    """,
+)
+
 
 class StoreError(RuntimeError):
     def __init__(self, message: str, status: int = 500) -> None:
@@ -277,6 +407,13 @@ class StateConflict(Conflict):
     def __init__(self, state: str) -> None:
         super().__init__(f"this suggestion is already {state}")
         self.state = state
+
+
+class RateLimited(StoreError):
+    """A bound on how often something may be added was reached."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=429)
 
 
 class _Refence(Exception):
@@ -356,6 +493,69 @@ class Suggestion:
 
 
 @dataclass(frozen=True)
+class AccessRequest:
+    """A peer's request for a higher level on one grant. A record: it changes nothing."""
+
+    request_id: str
+    grant_id: str
+    session_key: str
+    principal: str
+    level: str
+    note: str
+    state: str
+    end_reason: str | None
+    notified: bool
+    created_at: float
+    updated_at: float
+    expires_at: float
+
+    @property
+    def peer_id(self) -> str:
+        return self.principal[len(PRINCIPAL_PEER) :]
+
+
+@dataclass(frozen=True)
+class PeerDecision:
+    """The stored identity of one decision a peer gave (``peer_decisions``)."""
+
+    decision_id: str
+    grant_id: str
+    session_key: str
+    client_key: str
+    principal: str
+    actor: str
+    turn_id: str
+    request_id: str
+    digest: str
+    choice: str
+    kind: str
+    outcome: str | None
+    outcome_at: float | None
+    created_at: float
+
+    @property
+    def peer_id(self) -> str:
+        return self.principal[len(PRINCIPAL_PEER) :]
+
+
+@dataclass(frozen=True)
+class Note:
+    """One note of a grant's thread. ``text`` is read by ``federation/`` and its routes only."""
+
+    note_id: str
+    grant_id: str
+    author: str
+    actor: str
+    text: str
+    created_at: float
+    edited_at: float | None
+    deleted: bool
+    hidden: bool
+    seen: bool
+    position: int
+
+
+@dataclass(frozen=True)
 class RemoteShare:
     """One row of the mirror: a session a peer says it shares with this instance."""
 
@@ -383,6 +583,58 @@ def new_grant_id() -> str:
 def level_includes(level: object, need: str) -> bool:
     """Whether a grant at ``level`` serves a request that needs ``need``."""
     return LEVEL_RANK.get(level, -1) >= LEVEL_RANK[need]  # type: ignore[arg-type]
+
+
+def _access(row: sqlite3.Row) -> AccessRequest:
+    return AccessRequest(
+        request_id=row["request_id"],
+        grant_id=row["grant_id"],
+        session_key=row["session_key"],
+        principal=row["principal"],
+        level=row["level"],
+        note=row["note"],
+        state=row["state"],
+        end_reason=row["end_reason"],
+        notified=bool(row["notified"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        expires_at=row["expires_at"],
+    )
+
+
+def _decision(row: sqlite3.Row) -> PeerDecision:
+    return PeerDecision(
+        decision_id=row["decision_id"],
+        grant_id=row["grant_id"],
+        session_key=row["session_key"],
+        client_key=row["client_key"],
+        principal=row["principal"],
+        actor=row["actor"],
+        turn_id=row["turn_id"],
+        request_id=row["request_id"],
+        digest=row["digest"],
+        choice=row["choice"],
+        kind=row["kind"],
+        outcome=row["outcome"],
+        outcome_at=row["outcome_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _note_row(row: sqlite3.Row) -> Note:
+    return Note(
+        note_id=row["note_id"],
+        grant_id=row["grant_id"],
+        author=row["author"],
+        actor=row["actor"],
+        text=row["text"],
+        created_at=row["created_at"],
+        edited_at=row["edited_at"],
+        deleted=bool(row["deleted"]),
+        hidden=bool(row["hidden"]),
+        seen=bool(row["seen"]),
+        position=row["position"],
+    )
 
 
 def _suggestion(row: sqlite3.Row) -> Suggestion:
@@ -551,6 +803,7 @@ class Store:
                         (2, _SCHEMA_V2),
                         (3, _SCHEMA_V3),
                         (4, _SCHEMA_V4),
+                        (5, _SCHEMA_V5),
                     ):
                         if v < step:
                             for stmt in statements:
@@ -850,9 +1103,21 @@ class Store:
             # is withdrawn with it. (An ``approving`` row is settled by its replay, which
             # re-checks the grant inside the fence and withdraws: ``inputs.resume_approving``.)
             self._withdraw_pending(con, row["grant_id"], reason, now)
+            # Also the same transaction (#2059): a pending access request ends with its grant.
+            # Notes need no write here: every read or write a peer can cause re-reads the grant
+            # inside its own transaction (`_serving`), so an ended grant serves none.
+            self._end_access(con, row["grant_id"], f"grant_{reason}", now)
         if rows:
             self._bump(con)
         return [_grant(r) for r in rows]
+
+    @staticmethod
+    def _end_access(con: sqlite3.Connection, grant_id: str, reason: str, now: float) -> None:
+        con.execute(
+            "UPDATE access_requests SET state = 'expired', end_reason = ?, updated_at = ?"
+            " WHERE grant_id = ? AND state = 'pending'",
+            (reason, now, grant_id),
+        )
 
     @staticmethod
     def _withdraw_pending(con: sqlite3.Connection, grant_id: str, reason: str, now: float) -> None:
@@ -984,6 +1249,21 @@ class Store:
             )
             if not level_includes(new_level, "suggest"):
                 self._withdraw_pending(con, grant_id, "lowered", now)
+            # A pending access request is GRANTED by this change when the grant now has the
+            # level it asked for (#2059). The request never changed anything by itself: this
+            # is the operator's own grant change, recorded on the request.
+            asked = con.execute(
+                "SELECT request_id, level FROM access_requests"
+                " WHERE grant_id = ? AND state = 'pending'",
+                (grant_id,),
+            ).fetchone()
+            if asked is not None and asked["level"] in LEVEL_RANK:
+                if level_includes(new_level, asked["level"]):
+                    con.execute(
+                        "UPDATE access_requests SET state = 'granted', updated_at = ?"
+                        " WHERE request_id = ? AND state = 'pending'",
+                        (now, asked["request_id"]),
+                    )
             self._event(con, grant_id, "changed", "operator", now)
             self._bump(con)
             return con.execute("SELECT * FROM grants WHERE grant_id = ?", (grant_id,)).fetchone()
@@ -1251,6 +1531,17 @@ class Store:
                 "SELECT * FROM suggestions WHERE suggestion_id = ?", (suggestion_id,)
             ).fetchone()
         return _suggestion(row) if row else None
+
+    def suggestion_state(self, suggestion_id: str) -> str | None:
+        """One suggestion's state and nothing else of it (no text): what the bell is judged
+        on."""
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT state FROM suggestions WHERE suggestion_id = ?", (suggestion_id,)
+            ).fetchone()
+        return row["state"] if row else None
 
     def list_suggestions(
         self, *, session_key: str | None = None, limit: int = 100
@@ -1555,6 +1846,744 @@ class Store:
             }
             for r in rows
         }
+
+    # ── access requests (#2059) ───────────────────────────────────────
+    def add_access_request(
+        self,
+        *,
+        grant_id: str,
+        peer_id: str,
+        revision: int,
+        level: str,
+        note: str,
+        now: float | None = None,
+    ) -> tuple[AccessRequest, bool]:
+        """Record that a peer asks for ``level`` on its grant. ``(request, fresh)``.
+
+        ONE ``BEGIN IMMEDIATE`` transaction: the grant is re-read (live, this peer's, the
+        revision it holds, the peer trusted), a request whose time ran out is expired, and a
+        request that is still pending is returned as it is (``fresh`` false: a second request
+        replaces nothing). The level must be above the grant's current one (:class:`Invalid`).
+        At most :data:`ACCESS_PER_DAY_MAX` requests per grant in 24 hours
+        (:class:`RateLimited`). **It writes no grant column**: only the operator's grant
+        change does, and that change is what marks a request ``granted``."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            grant = self._serving(con, grant_id, peer_id, "view", now, revision)
+            con.execute(
+                "UPDATE access_requests SET state = 'expired', end_reason = 'expired',"
+                " updated_at = ? WHERE grant_id = ? AND state = 'pending' AND expires_at <= ?",
+                (now, grant_id, now),
+            )
+            row = con.execute(
+                "SELECT * FROM access_requests WHERE grant_id = ? AND state = 'pending'",
+                (grant_id,),
+            ).fetchone()
+            if row is not None:
+                return _access(row), False
+            if LEVEL_RANK.get(level, -1) <= LEVEL_RANK.get(grant["level"], len(LEVEL_RANK)):
+                raise Invalid("that level is not above the grant's current one")
+            recent = con.execute(
+                "SELECT COUNT(*) FROM access_requests WHERE grant_id = ? AND created_at > ?",
+                (grant_id, now - ACCESS_TTL_S),
+            ).fetchone()[0]
+            if recent >= ACCESS_PER_DAY_MAX:
+                raise RateLimited("too many access requests under this grant today")
+            request_id = new_grant_id()
+            con.execute(
+                "INSERT INTO access_requests (request_id, grant_id, session_key, principal,"
+                " level, note, state, created_at, updated_at, expires_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    request_id,
+                    grant_id,
+                    grant["session_key"],
+                    grant["principal"],
+                    level,
+                    note,
+                    now,
+                    now,
+                    min(now + ACCESS_TTL_S, grant["expires_at"]),
+                ),
+            )
+            row = con.execute(
+                "SELECT * FROM access_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+        return _access(row), True
+
+    def get_access_request(self, request_id: str) -> AccessRequest | None:
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM access_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+        return _access(row) if row else None
+
+    def list_access_requests(
+        self, *, session_key: str | None = None, limit: int = 100
+    ) -> list[AccessRequest]:
+        """Access requests with the peer's note, newest first: what the OPERATOR's screen
+        shows."""
+        if not self.db_path.exists():
+            return []  # never used: reading creates nothing
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM access_requests WHERE (? IS NULL OR session_key = ?)"
+                " ORDER BY created_at DESC, request_id LIMIT ?",
+                (session_key, session_key, limit),
+            ).fetchall()
+        return [_access(r) for r in rows]
+
+    def access_status(self, grant_id: str, *, now: float | None = None) -> dict | None:
+        """What the PEER reads of its newest request under one grant: id, level, state and
+        times. A pending one whose time ran out reads ``expired`` whether or not the sweep ran."""
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        now = time.time() if now is None else now
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT request_id, level, state, created_at, updated_at, expires_at"
+                " FROM access_requests WHERE grant_id = ?"
+                " ORDER BY created_at DESC, request_id LIMIT 1",
+                (grant_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        if out["state"] == "pending" and out["expires_at"] <= now:
+            out["state"] = "expired"
+        return out
+
+    def decline_access_request(self, request_id: str, *, now: float | None = None) -> AccessRequest:
+        """The operator declines: ``pending → declined``. Compare-and-set; a request that
+        already ended raises :class:`StateConflict` naming how."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            cur = con.execute(
+                "UPDATE access_requests SET state = 'declined', end_reason = 'declined',"
+                " updated_at = ? WHERE request_id = ? AND state = 'pending' AND expires_at > ?",
+                (now, request_id, now),
+            )
+            row = con.execute(
+                "SELECT * FROM access_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound("unknown access request")
+            if cur.rowcount == 0:
+                raise StateConflict("expired" if row["state"] == "pending" else row["state"])
+        return _access(row)
+
+    def expire_access_requests(self, *, now: float | None = None) -> int:
+        """Pending access requests nobody answered in time become ``expired``."""
+        if not self.db_path.exists():
+            return 0  # never used: reading creates nothing
+        now = time.time() if now is None else now
+        with self._connect() as con:
+            due = con.execute(
+                "SELECT 1 FROM access_requests WHERE state = 'pending' AND expires_at <= ?"
+                " LIMIT 1",
+                (now,),
+            ).fetchone()
+        if due is None:
+            return 0  # the common round: no write lock taken
+        with self._write() as con:
+            return con.execute(
+                "UPDATE access_requests SET state = 'expired', end_reason = 'expired',"
+                " updated_at = ? WHERE state = 'pending' AND expires_at <= ?",
+                (now, now),
+            ).rowcount
+
+    def unretracted_access(self) -> list[str]:
+        """Access requests that are no longer pending and may still have a bell row."""
+        if not self.db_path.exists():
+            return []  # never used: reading creates nothing
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT request_id FROM access_requests WHERE notified = 1 AND state != 'pending'"
+            ).fetchall()
+        return [r["request_id"] for r in rows]
+
+    def mark_access_retracted(self, request_ids: list[str]) -> None:
+        with self._write() as con:
+            con.executemany(
+                "UPDATE access_requests SET notified = 0 WHERE request_id = ?"
+                " AND state != 'pending'",
+                [(r,) for r in request_ids],
+            )
+
+    # ── decisions a peer gives (#2059) ────────────────────────────────
+    def record_peer_decision(
+        self,
+        *,
+        grant_id: str,
+        session_key: str,
+        peer_id: str,
+        client_key: str,
+        actor: str,
+        turn_id: str,
+        request_id: str,
+        digest: str,
+        choice: str,
+        kind: str,
+        now: float | None = None,
+    ) -> tuple[PeerDecision, bool]:
+        """The identity of a decision a peer gives, persisted BEFORE the runtime is called.
+        ``(row, fresh)``. ONE transaction that re-reads the grant (live, this peer's, at least
+        ``send``, the peer trusted). The same ``client_key`` on the same grant returns the row
+        that is already there, unchanged: the ``decision_id`` is minted once and a retry never
+        gets another. Whether a retry names the same request and choice is the caller's check."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._serving(con, grant_id, peer_id, "send", now)
+            row = con.execute(
+                "SELECT * FROM peer_decisions WHERE grant_id = ? AND client_key = ?",
+                (grant_id, client_key),
+            ).fetchone()
+            if row is not None:
+                return _decision(row), False
+            decision_id = str(uuid.uuid4())
+            con.execute(
+                "INSERT INTO peer_decisions (decision_id, grant_id, session_key, client_key,"
+                " principal, actor, turn_id, request_id, digest, choice, kind, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision_id,
+                    grant_id,
+                    session_key,
+                    client_key,
+                    principal_of(peer_id),
+                    actor,
+                    turn_id,
+                    request_id,
+                    digest,
+                    choice,
+                    kind,
+                    now,
+                ),
+            )
+            row = con.execute(
+                "SELECT * FROM peer_decisions WHERE decision_id = ?", (decision_id,)
+            ).fetchone()
+        return _decision(row), True
+
+    def get_peer_decision(self, grant_id: str, client_key: str) -> PeerDecision | None:
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM peer_decisions WHERE grant_id = ? AND client_key = ?",
+                (grant_id, client_key),
+            ).fetchone()
+        return _decision(row) if row else None
+
+    def peer_decision(self, decision_id: str) -> PeerDecision | None:
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM peer_decisions WHERE decision_id = ?", (decision_id,)
+            ).fetchone()
+        return _decision(row) if row else None
+
+    def open_peer_decisions(self, *, limit: int = 50) -> list[PeerDecision]:
+        """Decisions whose outcome was never recorded (a crash, a lost answer), oldest first."""
+        if not self.db_path.exists():
+            return []  # never used: reading creates nothing
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM peer_decisions WHERE outcome IS NULL ORDER BY created_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_decision(r) for r in rows]
+
+    def note_peer_decision(
+        self, decision_id: str, outcome: str, *, now: float | None = None
+    ) -> bool:
+        """What became of a peer's decision. True when this is the FIRST outcome recorded for
+        it (a replay's is not, and never overwrites the first)."""
+        if outcome not in DECISION_OUTCOMES:
+            raise Invalid("unknown outcome")
+        now = time.time() if now is None else now
+        with self._write() as con:
+            return bool(
+                con.execute(
+                    "UPDATE peer_decisions SET outcome = ?, outcome_at = ?"
+                    " WHERE decision_id = ? AND outcome IS NULL",
+                    (outcome, now, decision_id),
+                ).rowcount
+            )
+
+    def record_decision_author(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        request_id: str,
+        digest: str,
+        author: str,
+        actor: str,
+        decision_id: str,
+        kind: str,
+        now: float | None = None,
+    ) -> dict:
+        """WHO settled one request, written once: the first write stays, and what is returned
+        is always the STORED row, so every caller reports the same author whatever it meant to
+        write."""
+        now = time.time() if now is None else now
+        key = (session_key, turn_id, request_id, digest)
+        with self._write() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO decision_authors (session_key, turn_id, request_id,"
+                " digest, author, actor, decision_id, kind, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*key, author, actor, decision_id, kind, now),
+            )
+            row = con.execute(
+                "SELECT * FROM decision_authors WHERE session_key = ? AND turn_id = ?"
+                " AND request_id = ? AND digest = ?",
+                key,
+            ).fetchone()
+        return dict(row)
+
+    def decision_author(
+        self, session_key: str, turn_id: str, request_id: str, digest: str
+    ) -> dict | None:
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM decision_authors WHERE session_key = ? AND turn_id = ?"
+                " AND request_id = ? AND digest = ?",
+                (session_key, turn_id, request_id, digest),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def decision_author_in_turn(
+        self, session_key: str, turn_id: str, request_id: str
+    ) -> dict | None:
+        """The newest stored author of a request of ONE turn, for a caller that does not know
+        its digest. Never by request id alone: native request ids repeat from turn to turn."""
+        if not self.db_path.exists():
+            return None  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM decision_authors WHERE session_key = ? AND turn_id = ?"
+                " AND request_id = ? ORDER BY at DESC, rowid DESC LIMIT 1",
+                (session_key, turn_id, request_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def decision_authors(self, session_key: str, *, limit: int = 20) -> list[dict]:
+        """The newest settled requests of a session with who settled each, oldest first:
+        ``{"request_id", "turn_id", "kind", "author", "actor", "decision_id", "name", "at"}``.
+        ``name`` is the
+        peer's display name on THIS instance (empty for the owner)."""
+        if not self.db_path.exists():
+            return []  # never used: nobody ever decided through here
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT d.request_id, d.turn_id, d.kind, d.author, d.actor, d.decision_id, d.at,"
+                " p.name AS name"
+                " FROM decision_authors d"
+                " LEFT JOIN peers p ON 'peer:' || p.peer_id = d.author"
+                " WHERE d.session_key = ? ORDER BY d.at DESC, d.rowid DESC LIMIT ?",
+                (session_key, limit),
+            ).fetchall()
+        return [{**dict(r), "name": r["name"] or ""} for r in reversed(rows)]
+
+    def session_shared_ever(self, session_key: str) -> bool:
+        """Whether this store ever held a grant for the session (in any state)."""
+        if not self.db_path.exists():
+            return False  # never used: reading creates nothing
+        with self._connect() as con:
+            return (
+                con.execute(
+                    "SELECT 1 FROM grants WHERE session_key = ? LIMIT 1", (session_key,)
+                ).fetchone()
+                is not None
+            )
+
+    # ── notes between the two operators (#2059) ───────────────────────
+    @staticmethod
+    def _live_grant(con: sqlite3.Connection, grant_id: str, now: float) -> sqlite3.Row:
+        """The grant row while it is live: what an OWNER-side note write needs. Notes are for
+        API grants only: a terminal grant (#2056) has no thread, from either side."""
+        row = con.execute("SELECT * FROM grants WHERE grant_id = ?", (grant_id,)).fetchone()
+        if row is None:
+            raise NotFound("unknown grant")
+        if row["kind"] != KIND_API:
+            raise Invalid(f"a {row['kind']} grant has no notes")
+        if row["state"] != "live" or row["expires_at"] <= now:
+            raise NotGranted("grant ended")
+        return row
+
+    def _reach(
+        self, con: sqlite3.Connection, grant_id: str, peer: tuple[str, int] | None, now: float
+    ) -> sqlite3.Row:
+        """The live grant a note call is made under, inside the caller's transaction. ``peer``
+        is ``(peer_id, revision)`` for a call a PEER causes: the grant must then serve that
+        peer with that revision right now. ``None`` is this instance's own operator."""
+        if peer is None:
+            return self._live_grant(con, grant_id, now)
+        return self._serving(con, grant_id, peer[0], "view", now, peer[1])
+
+    @staticmethod
+    def _note_change(
+        con: sqlite3.Connection, grant_id: str, note_id: str, change: str, now: float
+    ) -> int:
+        """The next number of the grant's change counter, with its row. The counter never goes
+        back: the newest rows are the ones kept, so ``MAX(seq)`` is always the last one given."""
+        seq = (
+            con.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM note_changes WHERE grant_id = ?", (grant_id,)
+            ).fetchone()[0]
+            + 1
+        )
+        con.execute(
+            "INSERT INTO note_changes (grant_id, seq, note_id, change, at) VALUES (?, ?, ?, ?, ?)",
+            (grant_id, seq, note_id, change, now),
+        )
+        con.execute(
+            "DELETE FROM note_changes WHERE grant_id = ? AND seq <= ?",
+            (grant_id, seq - NOTE_CHANGES_KEPT),
+        )
+        return seq
+
+    def add_note(
+        self,
+        *,
+        grant_id: str,
+        author: str,
+        actor: str,
+        client_key: str,
+        text: str,
+        peer: tuple[str, int] | None = None,
+        now: float | None = None,
+    ) -> tuple[Note, bool]:
+        """Add a note to a grant's thread. ``(note, fresh)``. ONE transaction: the grant is
+        re-read (:meth:`_reach`), the retry key is looked up (the same ``client_key`` from the
+        same author returns the note that is already there; for the PEER a note the owner hid
+        is :class:`NotFound`, as it is to its edit and delete), the author's hourly bound is
+        counted (:class:`RateLimited`), the note and its change are written, and the oldest
+        notes past :data:`NOTES_PER_GRANT_MAX` are dropped, each with a change of its own."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._reach(con, grant_id, peer, now)
+            row = con.execute(
+                "SELECT * FROM notes WHERE grant_id = ? AND author = ? AND client_key = ?",
+                (grant_id, author, client_key),
+            ).fetchone()
+            if row is not None:
+                if peer is not None and row["hidden"]:
+                    # A note the owner hid is gone from every later read by the peer, a
+                    # repeat of its own add included: the one answer of `_own_note`, never
+                    # the row and its text. Nothing is written and nothing un-hides.
+                    raise NotFound("unknown note")
+                return _note_row(row), False
+            recent = con.execute(
+                "SELECT COUNT(*) FROM notes WHERE grant_id = ? AND author = ? AND created_at > ?",
+                (grant_id, author, now - 3600),
+            ).fetchone()[0]
+            if recent >= NOTES_PER_AUTHOR_HOUR:
+                raise RateLimited("too many notes in the last hour")
+            note_id = new_grant_id()
+            seq = self._note_change(con, grant_id, note_id, "add", now)
+            con.execute(
+                "INSERT INTO notes (note_id, grant_id, author, actor, client_key, text,"
+                " created_at, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (note_id, grant_id, author, actor, client_key, text, now, seq),
+            )
+            over = (
+                con.execute(
+                    "SELECT COUNT(*) FROM notes WHERE grant_id = ?", (grant_id,)
+                ).fetchone()[0]
+                - NOTES_PER_GRANT_MAX
+            )
+            if over > 0:
+                oldest = con.execute(
+                    "SELECT note_id FROM notes WHERE grant_id = ? ORDER BY position LIMIT ?",
+                    (grant_id, over),
+                ).fetchall()
+                for gone in oldest:
+                    con.execute("DELETE FROM notes WHERE note_id = ?", (gone["note_id"],))
+                    self._note_change(con, grant_id, gone["note_id"], "evict", now)
+            row = con.execute("SELECT * FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+        return _note_row(row), True
+
+    @staticmethod
+    def _own_note(
+        con: sqlite3.Connection, grant_id: str, note_id: str, author: str, *, peer: bool
+    ) -> sqlite3.Row:
+        """A note of this grant written by ``author``. Anything else (another grant's, the
+        other side's, one the owner hid from the peer) is unknown: one answer."""
+        row = con.execute(
+            "SELECT * FROM notes WHERE note_id = ? AND grant_id = ?", (note_id, grant_id)
+        ).fetchone()
+        if row is None or row["author"] != author or (peer and row["hidden"]):
+            raise NotFound("unknown note")
+        return row
+
+    def edit_note(
+        self,
+        *,
+        grant_id: str,
+        note_id: str,
+        author: str,
+        text: str,
+        peer: tuple[str, int] | None = None,
+        now: float | None = None,
+    ) -> Note:
+        """The author changes their OWN note's text. A deleted note is not edited
+        (:class:`Conflict`)."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._reach(con, grant_id, peer, now)
+            row = self._own_note(con, grant_id, note_id, author, peer=peer is not None)
+            if row["deleted"]:
+                raise Conflict("that note was deleted")
+            if row["text"] != text:
+                con.execute(
+                    "UPDATE notes SET text = ?, edited_at = ? WHERE note_id = ?",
+                    (text, now, note_id),
+                )
+                self._note_change(con, grant_id, note_id, "edit", now)
+            row = con.execute("SELECT * FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+        return _note_row(row)
+
+    def tombstone_note(
+        self,
+        *,
+        grant_id: str,
+        note_id: str,
+        author: str,
+        peer: tuple[str, int] | None = None,
+        now: float | None = None,
+    ) -> Note:
+        """The author deletes their OWN note. The row stays as a tombstone with no text."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._reach(con, grant_id, peer, now)
+            row = self._own_note(con, grant_id, note_id, author, peer=peer is not None)
+            if not row["deleted"]:
+                con.execute(
+                    "UPDATE notes SET deleted = 1, text = '', edited_at = ? WHERE note_id = ?",
+                    (now, note_id),
+                )
+                self._note_change(con, grant_id, note_id, "delete", now)
+            row = con.execute("SELECT * FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+        return _note_row(row)
+
+    def hide_note(self, *, grant_id: str, note_id: str, now: float | None = None) -> Note:
+        """THE OWNER hides any note of the thread: gone from every later read by the peer. It
+        narrows, so it needs no live grant; hiding again changes nothing."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            row = con.execute(
+                "SELECT * FROM notes WHERE note_id = ? AND grant_id = ?", (note_id, grant_id)
+            ).fetchone()
+            if row is None:
+                raise NotFound("unknown note")
+            if not row["hidden"]:
+                con.execute("UPDATE notes SET hidden = 1 WHERE note_id = ?", (note_id,))
+                self._note_change(con, grant_id, note_id, "hide", now)
+            row = con.execute("SELECT * FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+        return _note_row(row)
+
+    def mark_notes_seen(
+        self,
+        *,
+        grant_id: str,
+        reader: str,
+        upto: int,
+        peer: tuple[str, int] | None = None,
+        now: float | None = None,
+    ) -> int:
+        """``reader`` (``owner`` or ``peer:<id>``) has read the other side's notes up to the
+        change number ``upto``. Not a change to the thread. Returns how many became seen."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._reach(con, grant_id, peer, now)
+            return con.execute(
+                "UPDATE notes SET seen = 1 WHERE grant_id = ? AND author != ? AND seen = 0"
+                " AND position <= ?",
+                (grant_id, reader, upto),
+            ).rowcount
+
+    @staticmethod
+    def _unread(con: sqlite3.Connection, grant_id: str, reader: str) -> int:
+        return con.execute(
+            "SELECT COUNT(*) FROM notes WHERE grant_id = ? AND author != ? AND seen = 0"
+            " AND deleted = 0 AND hidden = 0",
+            (grant_id, reader),
+        ).fetchone()[0]
+
+    def unread_notes(self, grant_id: str, reader: str) -> int:
+        """Notes of the OTHER side that ``reader`` has not read and could still read."""
+        if not self.db_path.exists():
+            return 0  # never used: reading creates nothing
+        with self._connect() as con:
+            return self._unread(con, grant_id, reader)
+
+    def note_page(
+        self,
+        *,
+        grant_id: str,
+        after_seq: int,
+        limit: int,
+        reader: str,
+        cursor: str | None = None,
+        peer: tuple[str, int] | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """What changed in a thread after the change number ``after_seq``, in ONE read
+        transaction that also re-reads the grant (:meth:`_reach`).
+
+        ``{"reset", "seq", "newest", "entries", "more", "unread"}``. ``entries`` is a list of
+        ``(seq, note_id, Note | None)``: the note as it is NOW, or ``None`` when its row is
+        gone (evicted). A reader that only ever asks "what changed since" therefore receives an
+        edit, a hide and a tombstone of an old note, and an eviction.
+
+        ``reset`` is true when the changes after ``after_seq`` are no longer all retained (or
+        the cursor is from a future this thread never had), and when ``cursor`` continues such
+        a listing: ``entries`` are then the CURRENT notes in thread order after the note
+        ``cursor``, each with its own position as ``seq``, and the caller replaces what it has.
+        A ``cursor`` that no longer names a note starts the listing again."""
+        now = time.time() if now is None else now
+        with self._read() as con:
+            self._reach(con, grant_id, peer, now)
+            bounds = con.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS newest, MIN(seq) AS floor FROM note_changes"
+                " WHERE grant_id = ?",
+                (grant_id,),
+            ).fetchone()
+            newest, floor = bounds["newest"], bounds["floor"]
+            unread = self._unread(con, grant_id, reader)
+            start = None
+            if cursor is not None:
+                at = con.execute(
+                    "SELECT position FROM notes WHERE note_id = ? AND grant_id = ?",
+                    (cursor, grant_id),
+                ).fetchone()
+                start = at["position"] if at is not None else 0
+            lost = after_seq > newest or (floor is not None and after_seq + 1 < floor)
+            if start is not None or lost:
+                rows = con.execute(
+                    "SELECT * FROM notes WHERE grant_id = ? AND position > ?"
+                    " ORDER BY position LIMIT ?",
+                    (grant_id, start or 0, limit + 1),
+                ).fetchall()
+                page = rows[:limit]
+                first_page = start is None or start == 0
+                return {
+                    "reset": True,
+                    # The first page fixes the number the caller continues from; a later page
+                    # hands the caller's own number back.
+                    "seq": newest if first_page or after_seq > newest else after_seq,
+                    "newest": newest,
+                    "entries": [(r["position"], r["note_id"], _note_row(r)) for r in page],
+                    "more": len(rows) > limit,
+                    "unread": unread,
+                }
+            changes = con.execute(
+                "SELECT seq, note_id FROM note_changes WHERE grant_id = ? AND seq > ?"
+                " ORDER BY seq LIMIT ?",
+                (grant_id, after_seq, limit),
+            ).fetchall()
+            last: dict[str, int] = {}
+            for change in changes:
+                last[change["note_id"]] = change["seq"]  # the newest change of each note wins
+            entries = []
+            for note_id, seq in sorted(last.items(), key=lambda item: item[1]):
+                row = con.execute("SELECT * FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+                entries.append((seq, note_id, _note_row(row) if row is not None else None))
+            covered = changes[-1]["seq"] if changes else max(after_seq, 0)
+            return {
+                "reset": False,
+                "seq": covered if changes else newest,
+                "newest": newest,
+                "entries": entries,
+                "more": bool(changes) and covered < newest,
+                "unread": unread,
+            }
+
+    def owner_notes(
+        self, grant_id: str, *, now: float | None = None
+    ) -> tuple[Grant, list[Note], int]:
+        """``(grant, notes, newest change number)``: the whole thread for THIS instance's
+        operator, hidden notes included. Readable
+        while the grant is live and for :data:`NOTES_GRACE_S` after it ended; no verb calls
+        this."""
+        now = time.time() if now is None else now
+        if not self.db_path.exists():
+            raise NotFound("unknown grant")
+        with self._read() as con:
+            grant = con.execute("SELECT * FROM grants WHERE grant_id = ?", (grant_id,)).fetchone()
+            if grant is None:
+                raise NotFound("unknown grant")
+            ended = grant["ended_at"]
+            if ended is None and grant["expires_at"] <= now:
+                ended = grant["expires_at"]  # expired and not swept yet
+            if ended is not None and ended + NOTES_GRACE_S <= now:
+                raise NotFound("this share's notes were deleted")
+            rows = con.execute(
+                "SELECT * FROM notes WHERE grant_id = ? ORDER BY position", (grant_id,)
+            ).fetchall()
+            newest = con.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM note_changes WHERE grant_id = ?", (grant_id,)
+            ).fetchone()[0]
+        return _grant(grant), [_note_row(r) for r in rows], int(newest)
+
+    def note_grants_unread(
+        self, reader: str = AUTHOR_OWNER, *, now: float | None = None
+    ) -> dict[str, int]:
+        """``{grant_id: notes of the other side that ``reader`` has not read}`` over the LIVE
+        grants: for the owner (every grant), what its bell row for a thread is decided on; for
+        ``peer:<id>`` (that peer's grants), which threads it is hinted about."""
+        if not self.db_path.exists():
+            return {}  # never used: reading creates nothing
+        now = time.time() if now is None else now
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT n.grant_id AS grant_id, COUNT(*) AS unread FROM notes n"
+                " JOIN grants g ON g.grant_id = n.grant_id"
+                " WHERE g.state = 'live' AND g.expires_at > ? AND n.author != ?"
+                " AND (? = 'owner' OR g.principal = ?)"
+                " AND n.seen = 0 AND n.deleted = 0 AND n.hidden = 0 GROUP BY n.grant_id",
+                (now, reader, reader, reader),
+            ).fetchall()
+        return {r["grant_id"]: int(r["unread"]) for r in rows}
+
+    def purge_notes(self, *, now: float | None = None) -> int:
+        """The sweep: delete the notes (and their changes) of grants that ended more than
+        :data:`NOTES_GRACE_S` ago. Returns how many notes went."""
+        if not self.db_path.exists():
+            return 0  # never used: reading creates nothing
+        now = time.time() if now is None else now
+        ended = (
+            "SELECT grant_id FROM grants WHERE state != 'live' AND ended_at IS NOT NULL"
+            " AND ended_at <= ?"
+        )
+        with self._connect() as con:
+            due = con.execute(
+                f"SELECT 1 FROM notes WHERE grant_id IN ({ended}) LIMIT 1",  # noqa: S608 — fixed
+                (now - NOTES_GRACE_S,),
+            ).fetchone()
+            stale = con.execute(
+                f"SELECT 1 FROM note_changes WHERE grant_id IN ({ended}) LIMIT 1",  # noqa: S608
+                (now - NOTES_GRACE_S,),
+            ).fetchone()
+        if due is None and stale is None:
+            return 0  # the common round: no write lock taken
+        with self._write() as con:
+            gone = con.execute(
+                f"DELETE FROM notes WHERE grant_id IN ({ended})",  # noqa: S608 — fixed fragment
+                (now - NOTES_GRACE_S,),
+            ).rowcount
+            con.execute(
+                f"DELETE FROM note_changes WHERE grant_id IN ({ended})",  # noqa: S608
+                (now - NOTES_GRACE_S,),
+            )
+        return gone
 
     # ── the mirror (receiving side) ───────────────────────────────────
     def replace_remote(self, peer_id: str, rows: list[dict], *, now: float | None = None) -> bool:

@@ -46,11 +46,7 @@ import { useConfig } from "../../app/config";
 import { useSessionLookup } from "../../app/useSessionRow";
 import { reloadRoster } from "../../app/reloadRoster";
 import { useCompactHead, useIsMobile } from "../../lib/useIsMobile";
-import {
-  isNewSessionPlaceholder,
-  useSessionsStore,
-} from "../../app/sessionsStore";
-import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
+import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { CLOSE_ARCHIVED, CLOSE_NOT_FOUND, CLOSE_SESSION_LIMIT } from "../../lib/termCloseCodes";
 import { ArchivedStrip } from "../session/ArchivedStrip";
 import { useArchivedSession } from "../session/useArchivedSession";
@@ -75,7 +71,7 @@ import { xtermThemeFor } from "../../theme/termSchemes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle, type TemplateDraft } from "./Compose";
 import { draftSessionKey } from "../../lib/draftSessionKey";
-import { PeerGlyph } from "../federation/PeerBadge";
+import { shareHeadAction } from "../sessions/shareAction";
 import { SharePeerModal } from "../federation/SharePeerModal";
 import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
@@ -219,7 +215,7 @@ export function Terminal({
   onGrid?: (cols: number, rows: number) => void;
   /** Suppress this pane's own `panelHead` (#1109) — a map window's chrome bar carries the
    *  header instead, so a window never shows two stacked bars. The full-screen pane NEVER sets
-   *  it. The modals the head actions open (recap, hand off, adopt) stay mounted here: their
+   *  it. The modals the head actions open (recap, hand off, share) stay mounted here: their
    *  triggers simply render wherever `headActionsSlot` points. */
   suppressHead?: boolean;
   /** With `suppressHead`: the DOM node the action chips portal into — a slot the window's
@@ -303,22 +299,7 @@ export function Terminal({
   // The in-pane head's compact form also covers touch tablets (#1589); a map window's chrome keeps
   // its own single external menu and the phone line (`isMobile`).
   const compactHead = useCompactHead();
-  // "Adopt to mission" / "Open mission" (#948 P5) — the header half of session-side adoption.
-  const [adoptOpen, setAdoptOpen] = useState(false);
-  const [adoptTrigger, setAdoptTrigger] = useState<HTMLElement | null>(null);
-  // The header the dialog was opened from. Adoption replaces the Adopt chip with Open mission, and
-  // a longer label can fold it into "…", so focus is resolved against the header, not one node.
-  const adoptHeadRef = useRef<HTMLElement | null>(null);
-  const resolveAdoptReturn = useCallback(() => {
-    const head = adoptHeadRef.current;
-    return (
-      head?.querySelector<HTMLElement>('[data-head-action="mission"]') ??
-      head?.querySelector<HTMLElement>('button[aria-haspopup="menu"]') ??
-      null
-    );
-  }, []);
   const navigate = useNavigate();
-  const { remember } = useSessionsStore();
   // The row for THIS session (#232, re-sourced in #867) — project, title, update time, review
   // fields. It comes from the sidebar's loaded page when that has it and from a per-session
   // lookup when it doesn't, so a deep-linked / archived / list-hidden session names itself
@@ -2105,50 +2086,27 @@ export function Terminal({
           },
         ]
       : []),
-    // Adopt to mission / Open mission (#948 P5). POSITION: after Hand off, before To map — the head
-    // folds from the END (#783), so Hand off stays on the bar. Offered only when the row KNOWS the
-    // membership (`mission` absent = the store could not be read), never on an archived session and
-    // never on an unreconciled `new-<uuid>` placeholder, which the server's canonical_key refuses.
-    // It acts on `actionKey` — the id the URL settled on — never the frozen transport identity.
-    ...(row &&
-    row.mission !== undefined &&
-    !row.archived &&
-    !isNewSessionPlaceholder(actionKey)
+    // Open mission (#948 P5), when a mission holds this session. POSITION: after Hand off, before
+    // To map — the head folds from the END (#783), so Hand off stays on the bar. Offered only when
+    // the row KNOWS the membership (`mission` absent = the store could not be read) and never on an
+    // archived session. There is no "Adopt to mission" here (#2173): the server admits only an API
+    // session (#1902), so on a terminal it was a button that always ended in a refusal.
+    ...(row && row.mission && !row.archived && !isNewSessionPlaceholder(actionKey)
       ? [
-          row.mission
-            ? {
-                id: "mission",
-                label:
-                  row.mission.title.length > 28
-                    ? `${row.mission.title.slice(0, 27)}…`
-                    : row.mission.title,
-                aria: `Open mission ${row.mission.title}`,
-                title: `Open mission: ${row.mission.title} (${row.mission.state})`,
-                icon: <Crosshair size={13} aria-hidden="true" />,
-                active: true,
-                // #1329: the window's ⋯ menu already carries "Open mission" — menu-first.
-                menuFirst: suppressHead,
-                run: () => navigate(missionLink(row.mission!.id)),
-              }
-            : {
-                // The SAME id as Open mission: HeadActions keys its buttons by id, so a successful
-                // adoption relabels this button instead of unmounting the dialog's opener (#953).
-                id: "mission",
-                label: "Adopt to mission",
-                aria: "Adopt this session into a mission",
-                title: "Adopt to mission: add this session to an open mission",
-                icon: <Crosshair size={13} aria-hidden="true" />,
-                // #1329: the window's ⋯ menu already carries "Adopt to mission…" — menu-first.
-                menuFirst: suppressHead,
-                run: (trigger?: HTMLElement | null) => {
-                  const opener =
-                    trigger ?? (document.activeElement as HTMLElement | null);
-                  adoptHeadRef.current =
-                    opener?.closest<HTMLElement>("[data-fit-width]") ?? null;
-                  setAdoptTrigger(opener);
-                  setAdoptOpen(true);
-                },
-              },
+          {
+            id: "mission",
+            label:
+              row.mission.title.length > 28
+                ? `${row.mission.title.slice(0, 27)}…`
+                : row.mission.title,
+            aria: `Open mission ${row.mission.title}`,
+            title: `Open mission: ${row.mission.title} (${row.mission.state})`,
+            icon: <Crosshair size={13} aria-hidden="true" />,
+            active: true,
+            // #1329: the window's ⋯ menu already carries "Open mission" — menu-first.
+            menuFirst: suppressHead,
+            run: () => navigate(missionLink(row.mission!.id)),
+          },
         ]
       : []),
     // "To map" (#936) — the inverse of a window's ⤢, and the only way back into window mode
@@ -2212,31 +2170,25 @@ export function Terminal({
             run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
           },
         ]),
-    // Share with a peer… (#2060): let one paired instance watch this terminal's screen, as text.
+    // Share (#2173): one action, two choices. Peer… (#2060) lets one paired instance watch this
+    // terminal's screen, as text; Public… is listed but off, with its reason, because public links
+    // cover API sessions only (#1404).
     //
-    // A MENU ITEM, by design: `menuFirst` makes the overflow menu its home, so it gives way before
-    // any chip does (a middle fold leaves no hole, #1329) and it is the very last entry, so on a
-    // bar with room it surfaces after the zoom pair and never pushes Hand off or the zoom pair
-    // into the fold (the #783 / #744 contract above). At ≤800px it is one more item of the one
-    // Actions menu, which stays an anchored popover (docs/design.md §5). Offered under the same
-    // conditions as the mission entry: a known, live row with a real id (the server refuses an
-    // archived session and cannot canonicalize a `new-<uuid>` placeholder).
+    // THE VERY LAST ENTRY, and not `menuFirst` on the pane's own bar: it is a chip when the bar has
+    // room and, the head folding from the END (#783), the first thing to give way when it has not —
+    // so it never pushes Hand off or the zoom pair into the fold (the #783 / #744 contract above).
+    // In a window it is menu-first like every session-mirrored action (#1329): the session ⋯ menu
+    // names the same two entries. At ≤800px it is a labelled group in the one Actions menu, which
+    // stays an anchored popover (docs/design.md §5). Offered under the same conditions as the
+    // mission entry: a known, live row with a real id (the server refuses an archived session and
+    // cannot canonicalize a `new-<uuid>` placeholder).
     ...(row && !row.archived && !isNewSessionPlaceholder(actionKey)
       ? [
-          {
-            id: "share-peer",
-            label: "Share with a peer…",
-            aria: "Share this terminal's screen with a paired instance",
-            title:
-              "Share with a peer: let one paired BattleLab instance watch this terminal's screen as text. View only, with an expiry",
-            icon: <PeerGlyph size={13} />,
-            menuFirst: true,
-            run: (trigger?: HTMLElement | null) =>
-              setSharePeer({
-                open: true,
-                trigger: trigger ?? (document.activeElement as HTMLElement | null),
-              }),
-          },
+          shareHeadAction({
+            subject: "terminal",
+            menuFirst: suppressHead,
+            onPeer: (trigger) => setSharePeer({ open: true, trigger }),
+          }),
         ]
       : []),
   ];
@@ -2286,18 +2238,6 @@ export function Terminal({
           />,
           headActionsSlot,
         )}
-      {adoptOpen && row && (
-        <AdoptToMissionModal
-          session={row}
-          sessionKey={actionKey}
-          onClose={() => setAdoptOpen(false)}
-          // A session the sidebar's page does not hold lives in the lookup cache instead; the list
-          // listener cannot reach that copy, so it is updated here.
-          onAdopted={(mission) => remember(actionKey, { ...row, mission })}
-          returnFocusTo={adoptTrigger}
-          resolveReturnFocus={resolveAdoptReturn}
-        />
-      )}
       {recapOpen && (
         <SessionRecapModal
           sessionId={actionKey}

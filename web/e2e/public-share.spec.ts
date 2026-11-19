@@ -341,7 +341,11 @@ async function headAction(page: Page, aria: string) {
     } else {
       const inline = pane.locator("[data-head-action]").and(pane.getByRole("button", { name: aria }));
       if (await inline.isVisible()) return inline.click({ timeout: 2000 });
-      await pane.getByRole("button", { name: "More session actions" }).click({ timeout: 2000 });
+      // Public… is a choice of the Share chip (#2173): on the bar the chip opens it; folded, it
+      // is an item of the "…" under a Share label.
+      const share = pane.locator('[data-head-action="share"]');
+      if (aria.startsWith("Share this ") && (await share.isVisible())) await share.click({ timeout: 2000 });
+      else await pane.getByRole("button", { name: "More session actions" }).click({ timeout: 2000 });
     }
     await page.getByRole("menuitem", { name: aria }).click({ timeout: 2000 });
   }).toPass({ timeout: 15_000 });

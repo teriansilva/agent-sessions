@@ -891,6 +891,37 @@ async def submit_turn(
 _DECLINES = frozenset({"reject", "cancel"})
 
 
+#: What each decision does beyond settling its one request (#2059). THE classification of a
+#: decision kind; a caller that must tell a one-time answer from one that widens what the agent
+#: may do asks :func:`decision_effect` and keeps no list of kinds of its own.
+#:
+#: * ``once``: allows this one request and nothing else;
+#: * ``decline``: refuses this one request;
+#: * ``answer``: answers an agent's question (#1463), from the options it offered;
+#: * ``stop``: refuses the request AND interrupts the turn;
+#: * ``standing``: allows the request and ALSO writes a standing grant into the agent's own
+#:   settings (#1339), so later requests it covers are never asked. It WIDENS.
+DECISION_EFFECTS = MappingProxyType(
+    {
+        "approve": "once",
+        "reject": "decline",
+        "answer": "answer",
+        "cancel": "stop",
+        "always": "standing",
+    }
+)
+#: The effects that widen what an agent may do without asking.
+WIDENING_EFFECTS = frozenset({"standing"})
+
+
+def decision_effect(decision: object) -> str:
+    """The effect of a decision kind (:data:`DECISION_EFFECTS`). A kind this build does not
+    name is classified ``standing``: what is not known to be a one-time answer is treated as
+    widening, so a kind added later is closed to every caller that excludes widening until it
+    is classified here."""
+    return DECISION_EFFECTS.get(decision, "standing") if isinstance(decision, str) else "standing"
+
+
 async def _admit_gate(session_key: str) -> None:
     """THE GATE BOUNDARY (#1951 §2(b)): before the operator's settlement lets a step session's
     tool request take effect, a session started under an approval re-checks it through the one
@@ -967,12 +998,20 @@ async def decide(
     grant: str | None = None,
     answers: list | None = None,
     execution_admission: ExecutionGuard | None = None,
+    expected_digest: str | None = None,
 ) -> dict:
+    """``expected_digest`` (#2059): the payload digest of the exact request the caller means.
+    Native request ids repeat, so a caller that resolved the request earlier names its bytes
+    and the runtime refuses (409) a pending request of the same id and turn whose payload is
+    another. A client whose runtime binds no digest cannot honor it and refuses (422), never
+    drops it."""
     engine, native = _key(session_key)
     adapter = _adapter(engine, "decide")
     await _refuse_archived(engine, native)
     if answers is not None and not isinstance(adapter, _NativeAdapter):
         raise StructuredError(422, "this client's requests take no answer")
+    if expected_digest is not None and not isinstance(adapter, _NativeAdapter):
+        raise StructuredError(422, "this client's requests carry no payload digest")
     if decision not in _DECLINES:
         await _admit_gate(f"{engine}:{native}")
     result = await adapter.decide(
@@ -988,9 +1027,21 @@ async def decide(
         **({"grant": grant} if grant is not None else {}),
         # An agent question's answer (#1463) only ever travels with an `answer` decision.
         **({"answers": answers} if answers is not None else {}),
+        **({"expected_digest": expected_digest} if expected_digest is not None else {}),
         execution_admission=execution_admission,
     )
     return {"session_key": f"{engine}:{native}", "decision_id": decision_id, **result}
+
+
+async def decision_record(session_key: str, *, turn_id: str, request_id: str) -> list[dict]:
+    """The decisions the session's journal holds for one request (#2059): a read, used to learn
+    who settled a request when the caller's own record of it is missing. A client whose
+    runtime keeps no such record is refused (422), never answered with an empty list."""
+    engine, native = _key(session_key)
+    adapter = _adapter(engine, "decide")
+    if not isinstance(adapter, _NativeAdapter):
+        raise StructuredError(422, "this client keeps no decision record")
+    return await _native(native_runtime.decision_record, engine, native, turn_id, request_id)
 
 
 async def events(session_key: str, *, after: int, limit: int = 100) -> dict:

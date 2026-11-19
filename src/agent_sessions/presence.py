@@ -87,6 +87,12 @@ class Presence:
         with self._lock:
             return len(self._current(session_key))
 
+    def has(self, session_key: str, viewer: str) -> bool:
+        """Whether ``viewer`` read this session within ``TTL_S``. One bit about one viewer of
+        one session: what a paired instance is told about the operator (#2059)."""
+        with self._lock:
+            return viewer in self._current(session_key)
+
     def view(self, session_key: str) -> dict:
         """The operator's view: the count, and each connected visitor's name (or None)."""
         with self._lock:

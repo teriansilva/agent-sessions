@@ -506,10 +506,19 @@ export const SWEEP = [
   // New session has no folder picker of its own any more (#1458); Settings → Projects opens it.
   { id: "popup:folder-picker", path: "/settings/projects", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
   { id: "popup:permissions", path: SAPI, mock: { bypassOffer: true }, ...head("Enable Skip permissions for this session"), expect: "dialog" },
-  { id: "popup:share-publicly", path: SAPI, ...head("Share this session publicly"), expectCss: "[data-testid='share-publicly']" },
+  // Share (#2173): the head's Share chip opens a two-item menu, Public… and Peer…; on a phone both
+  // are items of the Actions menu, under a Share label.
+  {
+    id: "popup:share-publicly",
+    path: SAPI,
+    open: [{ css: "[data-head-action='share']" }, { role: "menuitem", name: "Share this session publicly" }],
+    openPhone: head("Share this session publicly").openPhone,
+    expectCss: "[data-testid='share-publicly']",
+  },
   // Share this reply (#1956): the icon on a finished reply's header, then its dialog.
   { id: "popup:reply-share", path: SAPI, open: [{ testId: "reply-share-button" }], expectCss: "[data-testid='reply-share']" },
-  { id: "popup:adopt", path: S6, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
+  // Adoption is offered on an API session only (#2173): the server refuses every terminal one.
+  { id: "popup:adopt", path: SAPI, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
   {
     // #1819: the limit dialog, full. The list scrolls and the plates stay in reach.
     id: "popup:session-limit",
