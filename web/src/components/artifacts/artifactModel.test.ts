@@ -13,6 +13,7 @@ import {
   kindLabel,
   PREVIEW_SANDBOX,
   publicLinksOff,
+  sharesViaRelay,
   restartChange,
   restartLine,
   revLabel,
@@ -94,6 +95,15 @@ describe("public links", () => {
     expect(publicLinksOff("none")).toBe(true);
     expect(publicLinksOff("single-user")).toBe(false);
     expect(publicLinksOff(undefined)).toBe(false);
+  });
+  test("a Home Free box shares through the relay instead (#2190)", () => {
+    expect(publicLinksOff("none", true)).toBe(false);
+    expect(sharesViaRelay("none", true)).toBe(true);
+    expect(sharesViaRelay("none", false)).toBe(false);
+    expect(sharesViaRelay("none", undefined)).toBe(false);
+    // With a login the box serves its own link; the relay flag means nothing there.
+    expect(sharesViaRelay("single-user", true)).toBe(false);
+    expect(publicLinksOff("single-user", true)).toBe(false);
   });
   test("the server's 409 public_off is recognised, other refusals are not", () => {
     expect(

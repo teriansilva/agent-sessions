@@ -131,6 +131,45 @@ test("the server's 409 public_off hands over to the off dialog with its reason",
   );
 });
 
+test("on a Home Free box the dialog says a copy leaves the box for the relay (#2190)", () => {
+  const { unmount } = render(
+    <MemoryRouter>
+      <SharePubliclyDialog
+        artifact={A}
+        files={1}
+        bytes={10}
+        viaRelay
+        onCancel={() => {}}
+        onShared={() => {}}
+        onPublicOff={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("artifact-share-relay")).toHaveTextContent(
+    /A copy leaves this box\..*hosted on the BattleLab relay/,
+  );
+  expect(
+    screen.getByText("https://•••••••••••.artifacts.battlelabos.com/"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/served from this BattleLab/)).toBeNull();
+  unmount();
+  // Without the relay, the box's own wording and link shape.
+  render(
+    <MemoryRouter>
+      <SharePubliclyDialog
+        artifact={A}
+        files={1}
+        bytes={10}
+        onCancel={() => {}}
+        onShared={() => {}}
+        onPublicOff={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.queryByTestId("artifact-share-relay")).toBeNull();
+  expect(screen.getByText(/served from this BattleLab/)).toBeInTheDocument();
+});
+
 function activation(
   mode: ArtifactActivation["mode"],
   effective: "off" | "private" | "public",

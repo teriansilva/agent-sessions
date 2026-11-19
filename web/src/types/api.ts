@@ -1803,6 +1803,9 @@ export interface AppConfig {
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
    * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
   auth_mode?: "single-user" | "none" | string;
+  /** Home Free (#2190): no login on this box, yet a public artifact link can be a copy hosted on
+   *  the BattleLab relay (a Home Free agent is set up here). Absent on older servers. */
+  artifact_relay?: boolean;
   /** The operator's LOGIN NAME (#1058) — what the corner tile shows. Never a credential: the
    *  password hash, the secret key and the 2FA secret are not serialised anywhere in this payload.
    *  `null` under `auth_mode: "none"`, where there is no operator to name; absent on older

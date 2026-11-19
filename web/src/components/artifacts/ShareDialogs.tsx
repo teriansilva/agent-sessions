@@ -3,9 +3,12 @@
  *  - **Share publicly** is the shared ConfirmDialog (focus on Cancel). It says in plain words what a
  *    public link means, and its confirm stays off until "I checked the files" is ticked
  *    (decision 5). The link is minted by the server on confirm; nothing here guesses it.
- *  - **Public links are off** (`AUTH_MODE=none`): the server serves no public routes, so the dialog
- *    says why, keeps the private link one tap away and points at Security settings. It opens either
- *    from the config's `auth_mode` before any request, or from the server's 409 `public_off`. */
+ *  - **On a Home Free box** (`AUTH_MODE=none` with a Home Free agent, #2190) the box serves no public
+ *    routes, so a public link is a COPY hosted on the BattleLab relay at its own address. The dialog
+ *    says so plainly: the copy leaves this box.
+ *  - **Public links are off** (`AUTH_MODE=none`, no relay): the dialog says why, keeps the private
+ *    link one tap away and points at Security settings. It opens either from the config before any
+ *    request, or from the server's 409 `public_off` (with the relay's reason when it refused). */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Ban, Copy, ShieldCheck, TriangleAlert } from "lucide-react";
@@ -33,10 +36,13 @@ export function SharePubliclyDialog({
   onShared,
   onPublicOff,
   returnFocusTo,
+  viaRelay = false,
 }: {
   artifact: Artifact | ArtifactDetail;
   files: number;
   bytes: number;
+  /** A Home Free box (#2190): the public link is a copy hosted on the BattleLab relay. */
+  viaRelay?: boolean;
   onCancel: () => void;
   onShared: (updated: Artifact) => void;
   /** The server said public links are off here (409 `public_off`), with its reason. */
@@ -94,13 +100,24 @@ export function SharePubliclyDialog({
               publishes.
             </span>
           </li>
-          <li>
-            <span className={styles.sq} aria-hidden="true" />
-            <span>
-              It is served from this BattleLab, so it works while this box is
-              reachable at its public address.
-            </span>
-          </li>
+          {viaRelay ? (
+            <li data-testid="artifact-share-relay">
+              <span className={styles.sq} aria-hidden="true" />
+              <span>
+                <b>A copy leaves this box.</b> It is hosted on the BattleLab
+                relay at its own address, and stays online while this box keeps
+                connecting to the relay (up to 30 days after it last did).
+              </span>
+            </li>
+          ) : (
+            <li>
+              <span className={styles.sq} aria-hidden="true" />
+              <span>
+                It is served from this BattleLab, so it works while this box is
+                reachable at its public address.
+              </span>
+            </li>
+          )}
           <li>
             <span className={styles.sq} aria-hidden="true" />
             <span>
@@ -113,7 +130,9 @@ export function SharePubliclyDialog({
       <div className={styles.target}>
         <span className={styles.lbl}>Public link</span>
         <span className={styles.mono}>
-          {absoluteLink("/artifacts/p/•••••••••••/", origin)}
+          {viaRelay
+            ? "https://•••••••••••.artifacts.battlelabos.com/"
+            : absoluteLink("/artifacts/p/•••••••••••/", origin)}
         </span>
         <span className={styles.note}>
           A new random link is made when you confirm. Your private link stays as

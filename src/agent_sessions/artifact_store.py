@@ -369,6 +369,7 @@ def _con() -> Iterator[sqlite3.Connection]:
         if _ready_for != str(path):
             with _write_lock:
                 con.executescript(DDL)
+                _add_relay_columns(con)
                 con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             _ready_for = str(path)
         yield con
@@ -376,6 +377,22 @@ def _con() -> Iterator[sqlite3.Connection]:
         raise ArtifactsUnavailable(str(e)) from None
     finally:
         con.close()
+
+
+def _add_relay_columns(con: sqlite3.Connection) -> None:
+    """The relay-hosted public copy of a Home Free box's shared artifact (#2190): its relay id and
+    URL. Added in place to a store that predates them."""
+    have = {r[1] for r in con.execute("PRAGMA table_info(artifacts)")}
+    for col, kind in (
+        ("relay_public_id", "TEXT"),
+        ("relay_url", "TEXT"),
+        ("relay_rev", "INTEGER"),
+        # A first upload to the relay may be in flight or may have landed unacknowledged: set
+        # BEFORE the upload, cleared only on a definite outcome (#2190).
+        ("relay_pending", "INTEGER"),
+    ):
+        if col not in have:
+            con.execute(f"ALTER TABLE artifacts ADD COLUMN {col} {kind}")
 
 
 def _absent() -> bool:
@@ -1024,9 +1041,28 @@ def view(row: dict) -> dict:
             "project_id": row["project_id"],
             "mission_id": row["mission_id"],
         },
-        "visibility": "public" if row.get("public_id") else "private",
+        # A relay copy that may exist (an unacknowledged first upload) is never called private.
+        "visibility": (
+            "public"
+            if row.get("public_id") or row.get("relay_public_id") or row.get("relay_pending")
+            else "private"
+        ),
         "url": operator_url(row["id"]),
-        "public_url": public_url(row["public_id"]) if row.get("public_id") else None,
+        "public_url": (
+            row["relay_url"]
+            if row.get("relay_public_id")
+            else public_url(row["public_id"])
+            if row.get("public_id")
+            else None
+        ),
+        # Where the public copy lives: this box, or the BattleLab relay (Home Free, #2190).
+        "hosted_on": "relay"
+        if row.get("relay_public_id") or row.get("relay_pending")
+        else "box"
+        if row.get("public_id")
+        else None,
+        # True while a first relay upload's outcome is unknown: revoke (or share again) settles it.
+        "relay_uncertain": bool(row.get("relay_pending")) and not row.get("relay_public_id"),
         "public_since": row.get("public_since"),
     }
     return out
@@ -1096,7 +1132,13 @@ def list_artifacts(
     if visibility:
         if visibility not in VISIBILITIES:
             raise ValueError("bad visibility")
-        where.append("a.public_id IS NOT NULL" if visibility == "public" else "a.public_id IS NULL")
+        # Public on the box OR as a relay-hosted copy (#2190); private is neither.
+        where.append(
+            "(a.public_id IS NOT NULL OR a.relay_public_id IS NOT NULL OR a.relay_pending = 1)"
+            if visibility == "public"
+            else "(a.public_id IS NULL AND a.relay_public_id IS NULL"
+            " AND COALESCE(a.relay_pending, 0) = 0)"
+        )
     if q:
         needle = f"%{q.strip().lower()[:200]}%"
         where.append("(lower(a.title) LIKE ? OR lower(a.why) LIKE ? OR lower(a.cwd) LIKE ?)")
@@ -1249,6 +1291,70 @@ def revoke(aid: str) -> dict:
     return view(dict(row))
 
 
+def relay_parts(aid: str) -> dict:
+    """What a relay copy of the artifact is made of (#2190): its kind, the latest revision's
+    manifest, the box's own blob path for each sha256, and the relay id it already has (or None).
+    Raises `ArtifactRefused` for an unknown artifact."""
+    validate_id(aid)
+    with _con() as con:
+        row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+        if row is None:
+            raise ArtifactRefused("unknown_artifact", status=404)
+        rev = con.execute(
+            "SELECT manifest FROM artifact_revisions WHERE artifact_id=? AND n=?",
+            (aid, row["latest"]),
+        ).fetchone()
+    if rev is None:
+        raise ArtifactRefused("unknown_artifact", status=404)
+    manifest = json.loads(rev["manifest"])
+    return {
+        "kind": row["kind"],
+        "manifest": manifest,
+        "blobs": {m["sha256"]: str(_blob_path(m["sha256"])) for m in manifest.values()},
+        "relay_public_id": row["relay_public_id"],
+        # The revision the relay copy holds; behind `latest` after a refresh that failed.
+        "relay_rev": row["relay_rev"],
+        "relay_pending": bool(row["relay_pending"]),
+        "latest": row["latest"],
+    }
+
+
+def mark_relay_pending(aid: str, pending: bool) -> None:
+    """Record (before a first upload) or clear (on a definite outcome) that a relay copy of this
+    artifact may exist without the box knowing its id (#2190). Durable: survives a restart."""
+    validate_id(aid)
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE artifacts SET relay_pending=? WHERE id=?", (1 if pending else None, aid)
+        )
+        if cur.rowcount == 0:
+            raise ArtifactRefused("unknown_artifact", status=404)
+
+
+def set_relay(
+    aid: str, relay_public_id: str | None, relay_url: str | None, relay_rev: int | None = None
+) -> dict:
+    """Record (or, with None, clear) the artifact's relay-hosted copy; the artifact as the API
+    sees it. Set only after the relay confirmed the upload, cleared only after it confirmed the
+    delete."""
+    validate_id(aid)
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE artifacts SET relay_public_id=?, relay_url=?, relay_rev=?, relay_pending=NULL,"
+            " public_since=CASE WHEN ? IS NULL THEN public_since ELSE COALESCE(public_since, ?) END"
+            " WHERE id=?",
+            (relay_public_id, relay_url, relay_rev, relay_public_id, time.time(), aid),
+        )
+        if cur.rowcount == 0:
+            raise ArtifactRefused("unknown_artifact", status=404)
+        if relay_public_id is None:
+            con.execute(
+                "UPDATE artifacts SET public_since=NULL WHERE id=? AND public_id IS NULL", (aid,)
+            )
+        row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+    return view(dict(row))
+
+
 def by_public_id(public_id: str) -> str | None:
     """The artifact a live public link names, re-read on every request; None when there is none,
     it was revoked, or public links are off."""
@@ -1295,6 +1401,7 @@ def usage() -> dict:
             count = con.execute("SELECT count(*) FROM artifacts").fetchone()[0]
             public = con.execute(
                 "SELECT count(*) FROM artifacts WHERE public_id IS NOT NULL"
+                " OR relay_public_id IS NOT NULL OR relay_pending = 1"
             ).fetchone()[0]
     return {
         "artifacts": count,

@@ -39,7 +39,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import artifact_store
+from .. import artifact_relay, artifact_store
 from ..auth import AuthConfig, session_uid
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -177,6 +177,17 @@ def _fail(e: Exception) -> JSONResponse:
     return JSONResponse({"detail": str(e)}, status_code=422, headers=_NO_STORE)
 
 
+def _relay_refused(e: artifact_relay.RelayRefused, *, status: int) -> JSONResponse:
+    """The relay could not host or remove a public copy (#2190): ``public_off`` on a share (the
+    UI's existing path), ``relay_failed`` otherwise; the reason in the operator's words."""
+    detail = "public_off" if status == 409 else "relay_failed"
+    return JSONResponse(
+        {"detail": detail, "code": e.code, "reason": e.reason},
+        status_code=status,
+        headers=_NO_STORE,
+    )
+
+
 async def _json_body(request: Request) -> dict | None:
     try:
         body = await request.json()
@@ -299,8 +310,12 @@ def register(
     async def artifact_delete(
         aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
+        # A relay-hosted public copy (#2190) goes first, under the artifact's relay lock; if the
+        # relay can't confirm, the artifact stays, so a public copy is never left orphaned.
         try:
-            gone = await asyncio.to_thread(artifact_store.delete, aid)
+            gone = await artifact_relay.delete_artifact(aid)
+        except artifact_relay.RelayRefused as e:
+            return _relay_refused(e, status=502)
         except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable) as e:
             return _fail(e)
         if not gone:
@@ -315,7 +330,16 @@ def register(
     async def artifact_share(
         aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
-        """Mint (or return) the artifact's public link. 409 with the reason in ``none`` mode."""
+        """Mint (or return) the artifact's public link. In ``none`` mode (Home Free) the public copy
+        is hosted on the BattleLab relay instead (#2190); 409 with the reason when it can't be."""
+        if not artifact_store.PUBLIC_AVAILABLE:
+            try:
+                out = await artifact_relay.share(aid)
+            except artifact_relay.RelayRefused as e:
+                return _relay_refused(e, status=409)
+            except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable) as e:
+                return _fail(e)
+            return JSONResponse(out, headers=_NO_STORE)
         try:
             out = await asyncio.to_thread(artifact_store.share, aid)
         except artifact_store.ArtifactRefused as e:
@@ -334,6 +358,13 @@ def register(
     async def artifact_revoke(
         aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
+        try:
+            # The relay copy first (#2190): kept, with the reason, if the relay can't confirm.
+            await artifact_relay.revoke(aid)
+        except artifact_relay.RelayRefused as e:
+            return _relay_refused(e, status=502)
+        except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable) as e:
+            return _fail(e)
         try:
             out = await asyncio.to_thread(artifact_store.revoke, aid)
         except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable) as e:

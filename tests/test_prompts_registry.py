@@ -128,6 +128,9 @@ HTTP_MODULES = frozenset(
         "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
         "signin_callback",  # #2106 a loopback sign-in's callback, to the sign-in's own listener
         "mcp_launch",  # #2163 the project MCP relay, to the URL the operator registered
+        # #2190 the Home Free agent uploads a SHARED artifact's blobs to its own relay's upload
+        # path (never a prompt, never a credential beyond the relay's one-time token in the URL)
+        "artifactlink",
     }
 )
 
@@ -174,6 +177,7 @@ POST_SITES = {
     # happened to list is an inventory that can be widened by accident.
     ("review", "list_models"): 1,
     ("webpush", "send"): 1,  # Web Push delivery to the browser's push service — no prompts
+    ("artifactlink", "put"): 1,  # #2190 one PUT per blob the relay asked for, to its own path
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
     # #1530: the same proxy's `/api/files/raw` branch — one STREAMED request to the same local
     # app, read as it arrives so a file over MAX_RAW_RESPONSE is refused before it is held. Same

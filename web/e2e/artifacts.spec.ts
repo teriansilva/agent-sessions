@@ -252,11 +252,15 @@ async function mockArtifacts(
   return st;
 }
 
-async function mockBase(page: Page, authMode = "single-user") {
+async function mockBase(
+  page: Page,
+  authMode = "single-user",
+  extra: Record<string, unknown> = {},
+) {
   await commonMocks(page);
   await mockRoster(page);
   await page.route("**/api/config", (r) =>
-    r.fulfill({ json: { ...CONFIG, auth_mode: authMode } }),
+    r.fulfill({ json: { ...CONFIG, auth_mode: authMode, ...extra } }),
   );
   await page.route(/\/api\/projects($|\?)/, (r) =>
     r.fulfill({
@@ -458,6 +462,61 @@ test("without a login, Share publicly explains why public links are off — and 
   expect(st.calls.some((c) => c.method === "POST")).toBe(false);
   await page.keyboard.press("Escape");
   await expect(off).toBeHidden();
+});
+
+test("on a Home Free box the share dialog says a copy leaves the box for the relay (#2190)", async ({
+  page,
+}) => {
+  await mockBase(page, "none", { artifact_relay: true });
+  const st = await mockArtifacts(page);
+  await page.goto(artifactPath(SITE_ID));
+  // Not "off": a Home Free box shares through the relay.
+  await expect(page.getByTestId("artifact-sharing")).not.toContainText(
+    "Public links are off on this box.",
+  );
+  await page.getByTestId("artifact-share").click();
+  const dialog = page.getByTestId("artifact-share-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId("artifact-share-relay")).toContainText(
+    "A copy leaves this box.",
+  );
+  await expect(dialog).toContainText(".artifacts.battlelabos.com/");
+  await page.getByTestId("artifact-share-checked").check();
+  await page.getByTestId("artifact-share-confirm").click();
+  await expect(dialog).toBeHidden();
+  expect(
+    st.calls.filter((c) => c.method === "POST" && c.path.endsWith("/share")),
+  ).toHaveLength(1);
+});
+
+test("an unconfirmed relay copy is never shown as private, and can be revoked (#2190)", async ({
+  page,
+}) => {
+  await mockBase(page, "none", { artifact_relay: true });
+  const st = await mockArtifacts(page);
+  const site = st.items.find((i) => i.id === SITE_ID)!;
+  Object.assign(site, {
+    visibility: "public",
+    public_url: null,
+    relay_uncertain: true,
+  });
+  await page.goto(artifactPath(SITE_ID));
+  const sharing = page.getByTestId("artifact-sharing");
+  await expect(sharing).toContainText("Public copy unconfirmed");
+  await expect(sharing).not.toContainText("Private");
+  await expect(page.getByTestId("artifact-relay-uncertain")).toContainText(
+    "may be on the BattleLab relay",
+  );
+  await page.getByTestId("artifact-revoke").click();
+  await page.getByTestId("artifact-revoke-confirm").click();
+  await expect
+    .poll(
+      () =>
+        st.calls.filter(
+          (c) => c.method === "DELETE" && c.path.endsWith("/share"),
+        ).length,
+    )
+    .toBe(1);
 });
 
 test("the server's 409 public_off turns the share dialog into the off state", async ({

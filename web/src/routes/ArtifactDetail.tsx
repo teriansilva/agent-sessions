@@ -51,6 +51,7 @@ import {
   formatSize,
   PREVIEW_SANDBOX,
   publicLinksOff,
+  sharesViaRelay,
   revLabel,
 } from "../components/artifacts/artifactModel";
 import styles from "../components/artifacts/artifacts.module.css";
@@ -143,7 +144,8 @@ export default function ArtifactDetail() {
   const shown = pinned ?? null;
   const previewPath = hostedArtifactPath(a.id, shown ?? undefined);
   const previewLink = absoluteLink(previewPath, origin);
-  const offHere = publicLinksOff(config?.auth_mode);
+  const offHere = publicLinksOff(config?.auth_mode, config?.artifact_relay);
+  const viaRelay = sharesViaRelay(config?.auth_mode, config?.artifact_relay);
   const sessionPath = sessionPathFromKey(a.origin.session_key);
   const sessionTitle = names.session(a.origin.session_key);
   const projectName = names.project(a.origin.project_id);
@@ -361,7 +363,9 @@ export default function ArtifactDetail() {
             >
               <h2 className={styles.secHead}>
                 Sharing
-                {a.visibility === "public" ? (
+                {a.relay_uncertain ? (
+                  <span>Public copy unconfirmed</span>
+                ) : a.visibility === "public" ? (
                   <span className={styles.live}>
                     <Led tone="up" />
                     Public link live
@@ -370,7 +374,26 @@ export default function ArtifactDetail() {
                   <span>Private</span>
                 )}
               </h2>
-              {a.visibility === "public" && a.public_url ? (
+              {a.relay_uncertain ? (
+                <div data-testid="artifact-relay-uncertain">
+                  <p className={styles.note}>
+                    A public copy may be on the BattleLab relay: its upload did
+                    not confirm. Share again to settle it, or revoke to make
+                    sure it is gone.
+                  </p>
+                  <button
+                    type="button"
+                    className={styles.dangerBtn}
+                    onClick={(e) =>
+                      setDialog({ kind: "revoke", returnTo: e.currentTarget })
+                    }
+                    data-testid="artifact-revoke"
+                  >
+                    <Ban size={14} aria-hidden="true" />
+                    Revoke public copy
+                  </button>
+                </div>
+              ) : a.visibility === "public" && a.public_url ? (
                 <>
                   <div className={styles.linkRow}>
                     <span
@@ -598,6 +621,7 @@ export default function ArtifactDetail() {
       {dialog?.kind === "share" && (
         <SharePubliclyDialog
           artifact={a}
+          viaRelay={viaRelay}
           files={files}
           bytes={bytes}
           returnFocusTo={dialog.returnTo}

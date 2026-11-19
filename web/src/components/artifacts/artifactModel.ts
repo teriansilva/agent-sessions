@@ -138,9 +138,21 @@ export function isPublicOff(e: unknown): boolean {
   );
 }
 
-/** Public links exist only with a login; `auth_mode` undefined (config not read yet) claims nothing. */
-export function publicLinksOff(authMode: string | undefined): boolean {
-  return authMode === "none";
+/** Public links exist only with a login, or, without one, as a copy hosted on the BattleLab relay
+ *  (a Home Free box, #2190). `auth_mode` undefined (config not read yet) claims nothing. */
+export function publicLinksOff(
+  authMode: string | undefined,
+  relay?: boolean,
+): boolean {
+  return authMode === "none" && !relay;
+}
+
+/** Whether a public link here is a copy hosted on the BattleLab relay (#2190). */
+export function sharesViaRelay(
+  authMode: string | undefined,
+  relay?: boolean,
+): boolean {
+  return authMode === "none" && relay === true;
 }
 
 /** An absolute link to show and copy: the server's own (absolute when it knows its origin), else

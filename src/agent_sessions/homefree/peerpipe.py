@@ -58,6 +58,9 @@ NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{2,30}[a-z0-9]\Z")
 #: Domain separation for a peer call, exactly as the relay verifies it (battlelab-cloud#94).
 PEER_CONTEXT = b"bl-relay peer v1"
 REQUEST_MAX = 1024
+#: An ``artifact_put`` request carries a manifest (#2190): its own, larger bound, still checked
+#: before a byte is allocated. Every other op is held to REQUEST_MAX after parsing.
+ARTIFACT_REQUEST_MAX = 256 * 1024
 #: One pipe frame. The federation channel caps its own frames far below this; the pipe only
 #: needs a bound of its own, and it does not interpret what it carries.
 FRAME_MAX = 64 * 1024
@@ -129,6 +132,7 @@ class PeerPipe:
         identity_path: str | os.PathLike[str],
         app_host: str,
         app_port: int | None,
+        artifacts=None,
     ) -> None:
         self._relay_url = relay_url
         self._name = console_name
@@ -140,6 +144,9 @@ class PeerPipe:
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.StreamWriter] = set()
         self._legs: set = set()  # every open relay leg, inbound and outbound
+        # Hosting a shared artifact on the relay (#2190): an ArtifactLink on the agent's control
+        # connection, or None (no artifact ops).
+        self._artifacts = artifacts
 
     # ── being called ──────────────────────────────────────────────────
     async def handle_peer_start(self, start: dict) -> None:
@@ -240,14 +247,20 @@ class PeerPipe:
             if _peer_uid(writer) != os.getuid():
                 return  # another user reached the socket: not a word
             try:
-                raw = await asyncio.wait_for(read_frame(reader, REQUEST_MAX), REQUEST_TIMEOUT_S)
+                raw = await asyncio.wait_for(
+                    read_frame(reader, ARTIFACT_REQUEST_MAX), REQUEST_TIMEOUT_S
+                )
                 request = json.loads(raw) if raw else None
             except (ValueError, TimeoutError):
                 return
             if not isinstance(request, dict):
                 return
             op = request.get("op")
-            if op == "info" and set(request) == {"op"}:
+            if not str(op).startswith("artifact_") and len(raw) > REQUEST_MAX:
+                return  # only an artifact request may be larger than REQUEST_MAX
+            if op in ("artifact_put", "artifact_delete"):
+                self._answer(writer, await self._artifact(request))
+            elif op == "info" and set(request) == {"op"}:
                 self._answer(writer, {"ok": True, "relay_url": self._relay_url, "name": self._name})
             elif op == "call" and set(request) == {"op", "target"}:
                 await self._call(reader, writer, request["target"])
@@ -262,6 +275,35 @@ class PeerPipe:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def _artifact(self, request: dict) -> dict:
+        """Host or revoke a shared artifact on the relay, for the app (#2190)."""
+        from .artifactlink import LinkError
+
+        if self._artifacts is None:
+            return {"ok": False, "code": "no_relay"}
+        op = request["op"]
+        try:
+            if op == "artifact_put" and set(request) == {
+                "op",
+                "public_id",
+                "ref",
+                "kind",
+                "manifest",
+                "blobs",
+            }:
+                return await self._artifacts.put(
+                    request["public_id"],
+                    request["kind"],
+                    request["manifest"],
+                    request["blobs"],
+                    request["ref"],
+                )
+            if op == "artifact_delete" and set(request) == {"op", "public_id", "ref"}:
+                return await self._artifacts.delete(request["public_id"], request["ref"])
+        except LinkError as exc:
+            return {"ok": False, "code": exc.code}
+        return {"ok": False, "code": "bad_request"}
 
     @staticmethod
     def _answer(writer: asyncio.StreamWriter, doc: dict) -> None:

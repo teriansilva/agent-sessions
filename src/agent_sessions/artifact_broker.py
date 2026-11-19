@@ -23,6 +23,7 @@ is a copy the operator opens.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import hashlib
@@ -351,6 +352,37 @@ def handle(token: object, op: object, args: object = None) -> dict:
         return {"ok": False, "error": "store_unavailable"}
 
 
+async def _relay_followup(req: dict, reply: dict) -> dict:
+    """Home Free (#2190): the relay hosts what this box can't.
+
+    * ``share`` refused ``public_off``: ``handle`` raises that only AFTER the capability's mode and
+      the artifact's ownership passed, so the same artifact goes to the relay instead.
+    * A ``publish`` of a revision of an artifact that already has a relay copy: the copy is
+      replaced (same link), in the background.
+    Nothing else ever reaches the relay."""
+    from . import artifact_relay
+
+    args = req.get("args") if isinstance(req.get("args"), dict) else {}
+    if req.get("op") == "share" and reply == {"ok": False, "error": "public_off"}:
+        try:
+            out = await artifact_relay.share(artifact_store.validate_id(args.get("artifact_id")))
+        except artifact_relay.RelayRefused as e:
+            return {"ok": False, "error": "public_off", "reason": e.reason}
+        except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable):
+            return reply
+        return {"ok": True, "artifact": _agent_view(out)}
+    if req.get("op") == "publish" and reply.get("ok") and isinstance(reply.get("artifact"), dict):
+        aid = reply["artifact"].get("id")
+        if isinstance(aid, str):
+            task = asyncio.create_task(artifact_relay.republish(aid))
+            _BACKGROUND.add(task)
+            task.add_done_callback(_BACKGROUND.discard)
+    return reply
+
+
+_BACKGROUND: set = set()
+
+
 def _shelve(a: dict, origin: artifact_store.Origin) -> None:
     """A mission's session published a NEW artifact (#1932 P4): put it on that mission's shelf as
     a delivered `link` item (#1740's existing kind), so the shelf stays complete without a second
@@ -410,6 +442,7 @@ async def _client(reader, writer) -> None:
                 reply = await asyncio.to_thread(
                     handle, req.get("token"), req.get("op"), req.get("args")
                 )
+                reply = await _relay_followup(req, reply)
         with contextlib.suppress(ConnectionError):
             writer.write(json.dumps(reply).encode() + b"\n")
             await writer.drain()

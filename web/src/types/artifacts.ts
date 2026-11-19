@@ -29,6 +29,9 @@ export interface Artifact {
   url: string;
   /** Only while the artifact is shared. */
   public_url: string | null;
+  /** Home Free (#2190): a first upload to the relay did not confirm, so a public copy may exist
+   *  without its link being known here. Revoke (or share again) settles it. */
+  relay_uncertain?: boolean;
   public_since: number | null;
   files: number;
   bytes: number;

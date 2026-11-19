@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from .. import (
     aitasks,
     analytics,
+    artifact_relay,
     engines,
     handoff,
     mission_directions,
@@ -732,6 +733,9 @@ def register(
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there
                 # is no login (#13 / #32 Phase 3).
                 "auth_mode": cfg.auth_mode,
+                # Home Free (#2190): no login here, but a public artifact link can be a copy
+                # hosted on the BattleLab relay. Lets the share dialog say so before any request.
+                "artifact_relay": artifact_relay.available(),
                 # The operator's LOGIN NAME, for the corner tile (#1058). Not a credential — it is
                 # the name they type at the login form, and this route is already `logged_in`. The
                 # password hash, the secret key and the TOTP secret are not in this payload and are
