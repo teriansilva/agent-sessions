@@ -13,7 +13,7 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import mcp_check, mcp_registry, projects
+from .. import mcp_check, mcp_install, mcp_jobs, mcp_registry, projects
 from .templates import _err, _expected, _json, _json_object
 from .upload import NO_STORE
 
@@ -159,6 +159,66 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             except mcp_registry.RegistryError as e:
                 return _error(e)
         return _json(row)
+
+    def _started(op: mcp_jobs.Operation) -> JSONResponse:
+        return JSONResponse(op.view(), status_code=202, headers=NO_STORE)
+
+    @app.post("/api/mcp/servers/{sid}/review")
+    async def review_server(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """Start resolving a package server's exact version into a lock (an operation; poll
+        `GET /api/mcp/operations/{request_id}`). Installs nothing; the result is what would run."""
+        payload = await _json_object(request)
+        if set(payload) != {"request_id"}:
+            raise _err(422, "send a request_id (a UUID)")
+        try:
+            rec = await asyncio.to_thread(mcp_registry.get, sid)
+            if rec["source"]["kind"] not in ("npm", "pypi"):
+                raise mcp_registry.RegistryError("only a package server is reviewed")
+            op = mcp_jobs.start(
+                sid, "review", payload["request_id"], lambda: mcp_install.review(rec)
+            )
+        except mcp_registry.RegistryError as e:
+            return _error(e)
+        return _started(op)
+
+    @app.post("/api/mcp/servers/{sid}/install")
+    async def install_server(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """Start installing exactly the reviewed lock ``review_id`` (an operation; poll
+        `GET /api/mcp/operations/{request_id}`); its result is the server's summary."""
+        payload = await _json_object(request)
+        if set(payload) != {"request_id", "review_id"}:
+            raise _err(422, "send the review_id of a review and a request_id (a UUID)")
+        review_id = payload["review_id"]
+
+        def run() -> dict:
+            installed = mcp_install.install(mcp_registry.get(sid), review_id)
+            return _summary(mcp_registry.set_installed(sid, installed))
+
+        try:
+            await asyncio.to_thread(mcp_registry.get, sid)
+            op = mcp_jobs.start(sid, "install", payload["request_id"], run)
+        except mcp_registry.RegistryError as e:
+            return _error(e)
+        return _started(op)
+
+    @app.get("/api/mcp/operations/{op_id}")
+    async def mcp_operation(op_id: str, _user: str = Depends(logged_in)):
+        """A review or install operation: ``running``, then ``done`` with its result or
+        ``failed`` with the reason in words."""
+        try:
+            return _json(mcp_jobs.get(op_id).view())
+        except mcp_registry.RegistryError as e:
+            return _error(e)
 
     @app.delete("/api/mcp/servers/{sid}", status_code=204)
     async def delete_server(

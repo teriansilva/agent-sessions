@@ -210,7 +210,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Secrets: create / replace (value typed on the card), delete | POST/PATCH/DELETE /api/variables (kind secret) | P3 W (secret_input) |
 | Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off; the projects a secret is bound to; its access log | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`); PUT /api/variables/{vid}/projects; GET /api/variables/{vid}/access-log | #1786 W (P4a: `list_secrets`, `secret.create` with the value typed on the card, `secret.access_on` / `access_off`, never voice- or auto-confirmed; P4b: `secret.store_attachment`, the custody-transfer move of a Secret-shared chat attachment) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
-| Project MCP servers (#2163): list, add, edit, remove; enable per project; check; review and install a package | GET/POST/PATCH/DELETE /api/mcp/servers*, PUT …/projects, POST …/check | #2163 R/W (P2 of #2163: `list_mcp_servers`, `mcp.create`, `mcp.check`, `mcp.enable` cards; credentials through `secret.create`, never voice- or auto-confirmed) |
+| Project MCP servers (#2163): list, add, edit, remove; enable per project; check; review and install a package | GET/POST/PATCH/DELETE /api/mcp/servers*, PUT …/projects, POST …/check, GET /api/mcp/operations/{op} | #2163 R/W (P2 of #2163: `list_mcp_servers`, `mcp.create`, `mcp.check`, `mcp.enable` cards; credentials through `secret.create`, never voice- or auto-confirmed) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: bounded on-demand notebook discovery, indexed search and current note read | shared Memory service | **have** (#2036: current-turn refs; no startup preload) |
 | HQ memory: explicit remember and confirmable correction / forget | common admission; existing cards | **have** (#2036; HQ scope only, no operational authority) |
@@ -433,6 +433,9 @@ GET    /api/mcp/servers/{sid}                                                   
 PATCH  /api/mcp/servers/{sid}                                                     #2163
 POST   /api/mcp/servers/{sid}/check                                               #2163
 PUT    /api/mcp/servers/{sid}/projects                                            #2163
+POST   /api/mcp/servers/{sid}/review                                              #2163
+POST   /api/mcp/servers/{sid}/install                                             #2163
+GET    /api/mcp/operations/{op_id}                                                #2163
 GET    /api/maintenance/compact                                                   P6
 POST   /api/maintenance/compact                                                   P6
 GET    /api/maintenance/prune                                                     P6

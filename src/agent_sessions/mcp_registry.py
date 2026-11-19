@@ -404,6 +404,7 @@ def update(sid: str, payload: object, expected: float) -> dict:
     unknown = set(payload) - {
         "name",
         "label",
+        "source",
         "args",
         "settings",
         "project_settings",
@@ -427,6 +428,13 @@ def update(sid: str, payload: object, expected: float) -> dict:
             new["name"] = _check_name(payload["name"], doc["servers"], sid)
         if "label" in payload:
             new["label"] = _text(payload["label"], "the label", cap=80)
+        if "source" in payload:
+            source = _source(payload["source"])
+            if _transport(source) != rec["transport"]:
+                raise RegistryError(
+                    "a server keeps its kind: remote stays remote, a package stays a package"
+                )
+            new["source"] = source
         if "args" in payload:
             new["args"] = _args(payload["args"], rec["transport"])
         if "settings" in payload:
@@ -463,13 +471,16 @@ def delete(sid: str, expected: float) -> None:
         _write(doc)
 
 
-def set_installed(sid: str, rev: int, installed: dict) -> dict:
-    """Record a completed install (P1b) for revision ``rev``; a later edit wins."""
-    with fence():
+def set_installed(sid: str, installed: dict) -> dict:
+    """Record a completed install (P1b). It belongs to a SOURCE, not a revision: editing a
+    setting keeps the install; a changed source makes it not installed (`mcp_install.command`)."""
+    from . import secrets_broker
+
+    with secrets_broker.access_fence(), fence():
         doc = read()
         rec = _find(doc, sid)
-        if rec["rev"] != rev:
-            raise Conflict("the server changed while it was being installed")
+        if rec["source"] != installed.get("source"):
+            raise Conflict("the server's source changed while it was being installed")
         rec["installed"] = installed
         rec["updated_at"] = _bump(rec["updated_at"])
         _write(doc)
@@ -545,6 +556,12 @@ def resolve(
         records = _variables_records()
     plain_over = rec["project_settings"].get(scope, {}) if scope != SHARED else {}
     parts: list = [rec["rev"], rec["source"], rec["args"]]
+    if rec["transport"] == "stdio":
+        # The installed artifact is part of what a check vouches for: a new install of the same
+        # version can resolve a different closure, so it needs its own passing check. The same
+        # review installed again (a retry) keeps the identity, and so the check.
+        inst = rec.get("installed") or {}
+        parts.append(["installed", inst.get("review_id"), inst.get("lock_digest")])
     env: dict[str, str] = {}
     headers: dict[str, str] = {}
     missing: list[str] = []

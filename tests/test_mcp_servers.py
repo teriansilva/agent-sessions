@@ -271,13 +271,6 @@ def test_an_env_setting_may_not_steer_the_interpreter(env, stdio_sources):
             )
 
 
-def test_package_sources_are_refused_until_p1b(env):
-    with pytest.raises(mcp_registry.RegistryError, match="not available yet"):
-        mcp_registry.create(
-            {"name": "x1", "source": {"kind": "npm", "package": "p", "version": "1.0.0"}}
-        )
-
-
 # ---- resolution --------------------------------------------------------------------------------
 
 
@@ -800,3 +793,199 @@ def test_the_routes_are_authenticated_guarded_and_never_return_a_value(env, http
     assert broken.status_code == 200 and broken.json()["outcome"] == "failed"
     history = client.get(f"/api/mcp/servers/{sid}").json()["checks"]
     assert history[0]["outcome"] == "failed"
+
+
+# ---- a real package (network; opt-in, never in CI) ----------------------------------------------
+
+
+@pytest.mark.skipif(
+    os.environ.get("AGENT_SESSIONS_TEST_MCP_NETWORK") != "1",
+    reason="installs a real npm package (set AGENT_SESSIONS_TEST_MCP_NETWORK=1)",
+)
+def test_a_real_npm_server_reviews_installs_and_checks(env, monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_HOME", str(env["tmp"] / "home"))
+    rec = mcp_registry.create(
+        {
+            "name": "everything",
+            "source": {
+                "kind": "npm",
+                "package": "@modelcontextprotocol/server-everything",
+                "version": "2.3.1",
+            },
+            "args": ["stdio"],
+        }
+    )
+    facts = mcp_install.review(rec)
+    assert facts["integrity"].startswith("sha512-") and facts["dependencies"] > 0
+    installed = mcp_install.install(rec, facts["review_id"])
+    mcp_registry.set_installed(rec["id"], installed)
+    row = asyncio.run(mcp_check.run_check(rec["id"], mcp_registry.SHARED))
+    assert row["outcome"] == "passed", row["steps"]
+    assert len(row["tools"]) > 3
+
+
+def test_review_and_install_are_polled_operations_never_a_long_request(
+    env, stdio_sources, auth_cfg, monkeypatch
+):
+    """A review or an install takes minutes; a proxy or the Home Free relay does not keep one
+    request open that long. Both answer 202 with an operation the client polls; the client's
+    request_id makes a repeated POST the same operation, never a second run."""
+    import threading
+    import time
+    import uuid
+
+    from fastapi.testclient import TestClient
+
+    from agent_sessions import mcp_jobs
+    from agent_sessions.main import create_app
+
+    mcp_jobs._reset_for_tests()
+    gate = threading.Event()
+    calls = {"review": 0, "install": 0}
+
+    def review(rec):
+        calls["review"] += 1
+        assert gate.wait(10)
+        return {"review_id": "0123456789abcdef", "integrity": "sha512-AAAA"}
+
+    def install(rec, review_id):
+        calls["install"] += 1
+        if review_id != "0123456789abcdef":
+            raise mcp_install.InstallError("no such review")
+        return {"source": rec["source"], "command": sys.executable, "args": [], "entrypoint": "x"}
+
+    monkeypatch.setattr(mcp_install, "review", review)
+    monkeypatch.setattr(mcp_install, "install", install)
+    rec = _stdio()
+    sid = rec["id"]
+    with TestClient(create_app(auth_cfg), base_url="https://testserver") as client:
+        assert client.get(f"/api/mcp/operations/{uuid.uuid4()}").status_code == 401
+        client.post(
+            "/login",
+            data={"username": "marcus", "password": "hunter2"},
+            headers={"Origin": auth_cfg.origin},
+            follow_redirects=False,
+        )
+        csrf = client.get("/api/config").json()["csrf"]
+        h = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+
+        def poll(op_id):
+            deadline = time.monotonic() + 10
+            while True:
+                op = client.get(f"/api/mcp/operations/{op_id}").json()
+                if op["state"] != "running":
+                    return op
+                assert time.monotonic() < deadline, op
+                time.sleep(0.05)
+
+        url = f"/api/mcp/servers/{sid}"
+        assert client.post(f"{url}/review", json={}, headers=h).status_code == 422
+        assert (
+            client.post(f"{url}/review", json={"request_id": "nope"}, headers=h).status_code == 422
+        )
+        rid = str(uuid.uuid4())
+        first = client.post(f"{url}/review", json={"request_id": rid}, headers=h)
+        assert first.status_code == 202 and first.json()["state"] == "running"
+        again = client.post(f"{url}/review", json={"request_id": rid}, headers=h)
+        assert again.status_code == 202 and again.json()["id"] == rid
+        busy = client.post(f"{url}/review", json={"request_id": str(uuid.uuid4())}, headers=h)
+        assert busy.status_code == 409
+        gate.set()
+        done = poll(rid)
+        assert done["state"] == "done" and done["result"]["review_id"] == "0123456789abcdef"
+        assert calls["review"] == 1  # the repeated POST did not run it twice
+        # The same id for another kind of operation is refused, never silently reused.
+        reused = client.post(
+            f"{url}/install", json={"request_id": rid, "review_id": "x"}, headers=h
+        )
+        assert reused.status_code == 409
+
+        bad = str(uuid.uuid4())
+        client.post(f"{url}/install", json={"request_id": bad, "review_id": "f" * 16}, headers=h)
+        failed = poll(bad)
+        assert failed["state"] == "failed" and failed["error"] == "no such review"
+
+        ok = str(uuid.uuid4())
+        started = client.post(
+            f"{url}/install", json={"request_id": ok, "review_id": "0123456789abcdef"}, headers=h
+        )
+        assert started.status_code == 202
+        installed = poll(ok)
+        assert (
+            installed["state"] == "done" and installed["result"]["installed"]["entrypoint"] == "x"
+        )
+        assert mcp_registry.get(sid)["installed"]["entrypoint"] == "x"
+        assert client.get(f"/api/mcp/operations/{uuid.uuid4()}").status_code == 404
+        # A remote server has nothing to review.
+        remote = _remote("http://127.0.0.1:9/mcp", credential=False)
+        refused = client.post(
+            f"/api/mcp/servers/{remote['id']}/review",
+            json={"request_id": str(uuid.uuid4())},
+            headers=h,
+        )
+        assert refused.status_code == 422
+
+
+def _installed(rec, review_id):
+    return {
+        "source": rec["source"],
+        "review_id": review_id,
+        "lock_digest": "sha256:" + review_id * 4,
+        "dir": f"/nonexistent/{review_id}",
+        "command": sys.executable,
+        "args": [],
+        "entrypoint": "fixture",
+    }
+
+
+def test_a_new_install_needs_its_own_passing_check(env, stdio_sources):
+    """Hermes on #2183: a replacement install inherited the previous install's passing check, so
+    delivery handed out B's command on A's check. The installed artifact is part of the digest."""
+    _library_secret()
+    _bind_shared(env["beta"])
+    rec = _stdio()
+    sid = rec["id"]
+    mcp_registry.set_installed(sid, _installed(rec, "a" * 16))
+    assert _check(sid, env["beta"])["outcome"] == "passed"
+    _enable(sid, [env["beta"]])
+    capability, token = _launch("claude:b1")
+    assert [s["id"] for s in mcp_registry.launch_specs(env["beta"], capability)] == [sid]
+    assert secrets_broker.handle(token, "mcp", sid)["ok"] is True
+    # The same review installed again (a retry) keeps the check.
+    mcp_registry.set_installed(sid, _installed(rec, "a" * 16))
+    assert secrets_broker.handle(token, "mcp", sid)["ok"] is True
+    # Another install of the same version: nothing is delivered until it passes a check.
+    mcp_registry.set_installed(sid, _installed(rec, "b" * 16))
+    status = mcp_registry.status(mcp_registry.get(sid), [env["beta"]])["projects"][0]
+    assert status["check"] == "stale" and not status["delivered"]
+    assert mcp_registry.launch_specs(env["beta"], capability) == []
+    assert secrets_broker.handle(token, "mcp", sid) == {"ok": False, "error": "check_required"}
+    assert _check(sid, env["beta"])["outcome"] == "passed"
+    assert secrets_broker.handle(token, "mcp", sid)["ok"] is True
+
+
+def test_an_install_landing_during_a_check_supersedes_it(env, stdio_sources, monkeypatch):
+    _library_secret()
+    _bind_shared(env["beta"])
+    rec = _stdio()
+    sid = rec["id"]
+    mcp_registry.set_installed(sid, _installed(rec, "a" * 16))
+    real = mcp_check._converse
+
+    async def converse(*a, **kw):
+        names = await real(*a, **kw)
+        mcp_registry.set_installed(sid, _installed(rec, "b" * 16))
+        return names
+
+    monkeypatch.setattr(mcp_check, "_converse", converse)
+    assert _check(sid, env["beta"])["outcome"] == "superseded"
+    with pytest.raises(mcp_registry.RegistryError, match="run a check"):
+        _enable(sid, [env["beta"]])
+    # A check capability minted for install A is refused once B is installed.
+    a_digest = mcp_registry.resolve(
+        {**mcp_registry.get(sid), "installed": _installed(rec, "a" * 16)}, mcp_registry.SHARED
+    ).digest
+    cap_id, cap_env = secrets_broker.mint_check(sid, rec["rev"], mcp_registry.SHARED, a_digest)
+    token = open(cap_env[secrets_broker.ENV_TOKEN_FILE]).read()
+    assert secrets_broker.handle(token, "mcp", sid) == {"ok": False, "error": "server_changed"}
+    secrets_broker.end_check(cap_id)
