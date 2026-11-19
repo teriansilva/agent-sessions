@@ -121,10 +121,27 @@ REFUSALS = frozenset(
         # its set was revoked (its reservation settled, an archive, the boot sweep).
         "not_granted",
         "grant_revoked",
+        # #2163: a project MCP server's settings (op ``mcp``).
+        "server_unknown",
+        "server_disabled",
+        "server_changed",
+        "not_enabled",
+        "not_installed",
+        "check_required",
+        "credentials_missing",
     }
 )
 _CAPABILITY_LABEL = "secrets-capability"
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}")
+#: A project MCP server's id (op ``mcp``, #2163), and the copy name its settings live under in a
+#: launch directory: a leading dot, so it can never be a secret's name (`_NAME_RE`).
+_SERVER_ID_RE = re.compile(r"[0-9a-f]{16}")
+MCP_COPY_PREFIX = ".mcp-"
+MCP_COPY_FILE = "settings.json"
+#: A check-only capability's kind (#2163): minted by the check runner in THIS process, live only
+#: while that check runs (`_live_checks`), revoked when it ends.
+CHECK_KIND = "mcp_check"
+_live_checks: set[str] = set()
 
 
 class Refused(Exception):
@@ -232,9 +249,14 @@ def _connect() -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     # #1951 slice B: the grant set a capability was minted under. Added in place (the store has
     # no version of its own); an older build reads the table without it.
-    if "grant_set" not in {r[1] for r in conn.execute("PRAGMA table_info(caps)")}:
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(caps)")}
+    if "grant_set" not in columns:
         with contextlib.suppress(sqlite3.OperationalError):  # a peer added it first
             conn.execute("ALTER TABLE caps ADD COLUMN grant_set TEXT")
+    # #2163: what a check-only capability may fetch: {"server", "rev", "scope"}.
+    if "mcp_check" not in columns:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE caps ADD COLUMN mcp_check TEXT")
     return conn
 
 
@@ -468,6 +490,8 @@ def _liveness_impl(conn: sqlite3.Connection, cap: sqlite3.Row) -> str:
     its earlier capabilities outright (`launch_env`)."""
     if cap["kind"] == "api":
         return _api_liveness(cap["worker_id"])
+    if cap["kind"] == CHECK_KIND:
+        return ALIVE if cap["id"] in _live_checks else DEAD
     from . import ptybridge
 
     engine, _, native = cap["phys_key"].partition(":")
@@ -801,9 +825,11 @@ def handle(token: object, op: object, name: object = None) -> dict:
     try:
         if not isinstance(token, str) or not token or len(token) > 256:
             raise Refused("unknown_capability")
-        if op not in ("list", "path"):
+        if op not in ("list", "path", "mcp"):
             raise Refused("bad_request")
         if op == "path" and (not isinstance(name, str) or not _NAME_RE.fullmatch(name)):
+            raise Refused("bad_request")
+        if op == "mcp" and (not isinstance(name, str) or not _SERVER_ID_RE.fullmatch(name)):
             raise Refused("bad_request")
         try:
             conn = _connect()
@@ -844,6 +870,8 @@ def _handle(conn: sqlite3.Connection, token: str, op: str, name: str | None) -> 
         ).fetchone()
         if cap is None:
             raise Refused("unknown_capability")  # revoked while we probed
+        if cap["kind"] == CHECK_KIND:
+            return _handle_check(conn, cap, op, name)
         now_pid = _project_for(cap["session_key"], cap["cwd"])
         if now_pid is None:
             raise Refused("no_project")
@@ -856,6 +884,11 @@ def _handle(conn: sqlite3.Connection, token: str, op: str, name: str | None) -> 
         if granted is _REVOKED:
             _revoke(conn, cap)
             raise Refused("grant_revoked")
+        if op == "mcp":
+            # A project MCP server is its own grant (the operator enabled it for this project);
+            # a grant set narrows secrets only, but a REVOKED set (above) ends everything.
+            assert name is not None
+            return _grant_mcp(conn, cap, name, cap["project_id"], check=None)
         if granted is not None:
             offered, refused = _narrow(offered, refused, granted)
         if op == "list":
@@ -1050,6 +1083,158 @@ def _settle(conn: sqlite3.Connection, seq: int, outcome: str, reason: str) -> No
         log.warning("secrets broker: a failed grant could not be settled")
 
 
+# ---- project MCP servers (#2163) -------------------------------------------------------------
+
+
+def _handle_check(conn: sqlite3.Connection, cap: sqlite3.Row, op: str, name: str | None) -> dict:
+    """A check-only capability: op ``mcp`` for exactly the server, revision, scope AND resolved-set
+    digest it was minted for. It skips two predicates — *enabled for the project* and *a passing
+    check exists* — and keeps token, liveness (above), its scope (a project that must still exist)
+    and credential resolution. The digest binding means a check never receives a credential it did
+    not start with, so its withholding inventory covers everything it was delivered."""
+    from . import mcp_registry, projects
+
+    if op != "mcp" or name is None:
+        raise Refused("bad_request")
+    try:
+        spec = json.loads(cap["mcp_check"] or "")
+    except ValueError:
+        raise Refused("unknown_capability") from None
+    if not isinstance(spec, dict) or spec.get("server") != name:
+        raise Refused("not_offered")
+    scope = spec.get("scope")
+    if scope != mcp_registry.SHARED and scope not in projects.load():
+        raise Refused("no_project")
+    rev, digest = spec.get("rev"), spec.get("digest")
+    if not isinstance(rev, int) or not isinstance(digest, str) or not digest:
+        raise Refused("unknown_capability")
+    return _grant_mcp(conn, cap, name, scope, check=(rev, digest))
+
+
+def _grant_mcp(
+    conn: sqlite3.Connection, cap: sqlite3.Row, sid: str, scope: str, *, check: tuple | None
+) -> dict:
+    """Publish one launch's resolved settings for server ``sid`` as a private copy, audited like a
+    secret grant. Runs inside ``access_fence``; the registry decides (`mcp_registry.deliver`)."""
+    from . import mcp_registry
+
+    copy = MCP_COPY_PREFIX + sid
+    try:
+        delivery = mcp_registry.deliver(sid, scope, check=check)
+    except Refused as r:
+        try:
+            _audit(conn, cap, var_id=f"mcp:{sid}", name=copy, outcome="refused", reason=r.code)
+        except sqlite3.Error:
+            log.warning("secrets broker: a refusal (%s) could not be logged", r.code)
+        raise
+    try:
+        seq = _audit(
+            conn,
+            cap,
+            var_id=f"mcp:{sid}",
+            name=copy,
+            outcome="pending",
+            marker=delivery.digest,
+            path=str(_launch_dir(cap["id"]) / copy / MCP_COPY_FILE),
+        )
+    except sqlite3.Error:
+        raise Refused("audit_unavailable") from None
+    try:
+        path = _publish_copy(cap["id"], copy, MCP_COPY_FILE, delivery.payload)
+    except Refused as r:
+        _settle(conn, seq, "failed", r.code)
+        raise
+    except OSError:
+        _settle(conn, seq, "failed", "storage_unavailable")
+        raise Refused("storage_unavailable") from None
+    try:
+        with _txn(conn):
+            conn.execute("UPDATE audit SET outcome = 'materialized' WHERE seq = ?", (seq,))
+            conn.execute(
+                "INSERT OR REPLACE INTO copies(cap_id, name, var_id, marker, path)"
+                " VALUES(?,?,?,?,?)",
+                (cap["id"], copy, f"mcp:{sid}", delivery.digest, str(path)),
+            )
+    except sqlite3.Error:
+        _destroy_copy(cap["id"], copy)
+        raise Refused("audit_unavailable") from None
+    return {"ok": True, "path": str(path)}
+
+
+def mint_check(server: str, rev: int, scope: str, digest: str) -> tuple[str, dict[str, str]] | None:
+    """A check-only capability for ``(server, rev, scope, digest)`` — ``digest`` is the resolved
+    set the check started with (`mcp_registry.resolve`); delivery refuses any other set. Returns
+    ``(cap id, env)`` with the same
+    PATH-only env a launch gets, or None when nothing could be materialized (no RAM-backed
+    storage, the broker not serving). Live only until `end_check`."""
+    if not _server_running:
+        return None
+    cap_id = secrets.token_hex(8)
+    launch_dir = _prepare_launch_dir(cap_id)
+    if launch_dir is None:
+        return None
+    token = secrets.token_urlsafe(32)
+    key = f"mcp-check:{cap_id}"
+    conn = _connect()
+    try:
+        with _txn(conn):
+            conn.execute(
+                "INSERT INTO caps(id, digest, session_key, phys_key, engine, project_id, kind,"
+                " cwd, created_at, mcp_check) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    cap_id,
+                    template_secrets.keyed_digest(_CAPABILITY_LABEL, token),
+                    key,
+                    key,
+                    "mcp-check",
+                    scope,
+                    CHECK_KIND,
+                    "",
+                    time.time(),
+                    json.dumps({"server": server, "rev": rev, "scope": scope, "digest": digest}),
+                ),
+            )
+        try:
+            token_file = _write_token(launch_dir, token)
+        except BaseException:
+            with _txn(conn):
+                conn.execute("DELETE FROM caps WHERE id = ?", (cap_id,))
+            raise
+    except BaseException:
+        _remove_launch(cap_id)
+        raise
+    finally:
+        conn.close()
+    _live_checks.add(cap_id)
+    return cap_id, {ENV_SOCKET: str(socket_path()), ENV_TOKEN_FILE: str(token_file)}
+
+
+def end_check(cap_id: str) -> None:
+    """The check ended: its capability and every copy it fetched go now."""
+    _live_checks.discard(cap_id)
+    try:
+        with access_fence():
+            conn = _connect()
+            try:
+                cap = conn.execute(
+                    "SELECT * FROM caps WHERE id = ? AND revoked_at IS NULL", (cap_id,)
+                ).fetchone()
+                if cap is not None:
+                    _revoke(conn, cap)
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001 — the reconcile pass revokes a dead check anyway
+        log.warning("secrets broker: ending a check failed", exc_info=True)
+
+
+def project_for(session_key: str, cwd: str) -> str | None:
+    """The project a session resolves to now (public for the launch seams, #2163)."""
+    try:
+        return _project_for(session_key, cwd)
+    except Exception:  # noqa: BLE001 — no project: no project servers
+        return None
+
+
 # ---- revocation ------------------------------------------------------------------------------
 
 
@@ -1192,6 +1377,20 @@ def _reconcile_cap(
     except Exception:  # noqa: BLE001 — unknowable: treat as moved
         same_project = False
     for copy in copies:
+        if copy["name"].startswith(MCP_COPY_PREFIX):
+            if cap["kind"] == CHECK_KIND:
+                continue  # a check's copies live exactly as long as the check (`end_check`)
+            from . import mcp_registry
+
+            sid = copy["name"][len(MCP_COPY_PREFIX) :]
+            if same_project and mcp_registry.still_current(sid, cap["project_id"], copy["marker"]):
+                continue
+            _destroy_copy(cap["id"], copy["name"])
+            with _txn(conn):
+                conn.execute(
+                    "DELETE FROM copies WHERE cap_id = ? AND name = ?", (cap["id"], copy["name"])
+                )
+            continue
         rec = offered.get(copy["name"])
         if same_project and rec is not None and _still_current(rec, copy["marker"]):
             continue

@@ -87,6 +87,7 @@ from . import (
     engines,
     handoff,
     launch_binding,
+    mcp_registry,
     model_choice,
     opencode_admission,
     ptybridge,
@@ -1169,6 +1170,10 @@ async def dispatch(
                                     hq_env=hq_env,
                                     shelf_env=shelf_env,
                                     artifacts_env=artifacts_env,
+                                    # Project MCP servers (#2163), as the terminal LAUNCH has.
+                                    project_servers=mcp_registry.launch_servers(
+                                        secrets_broker.project_for(key, cwd), capability
+                                    ),
                                 )
                             except agent_tools.SkillsRefused as e:
                                 # Never launched without the skills it was started for.

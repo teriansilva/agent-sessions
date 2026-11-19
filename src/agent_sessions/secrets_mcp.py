@@ -51,6 +51,14 @@ MEANING = {
     # #1951: a session started from a specialist gets only what its grant set issued.
     "not_granted": "that secret was not granted to this session; ask the operator",
     "grant_revoked": "this session's access was revoked; start the session again for new access",
+    # #2163: a project MCP server's settings (the launcher's op `mcp`).
+    "server_unknown": "that MCP server was removed from the Library",
+    "server_disabled": "that MCP server is disabled in the Library",
+    "server_changed": "that MCP server changed while it was being checked; check it again",
+    "not_enabled": "that MCP server is not enabled for this project",
+    "not_installed": "that MCP server is not installed; ask the operator to install it",
+    "check_required": "that MCP server needs a passing check for this project's settings",
+    "credentials_missing": "this project has no credentials for that MCP server",
 }
 INSTRUCTIONS = (
     "BattleLab secrets: credentials, keys, certificates and secret files the operator gave this "

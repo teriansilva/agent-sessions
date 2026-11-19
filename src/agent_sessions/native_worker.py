@@ -442,6 +442,8 @@ def tool_servers(config: dict) -> list:
         shelf_tool = agent_tools.shelf_server(shelf_environment(config))
         if shelf_tool is not None:
             out.append(shelf_tool)
+        # Project MCP servers (#2163), over the same capability as the secrets tool.
+        out += project_mcp_servers(config, secrets_environment(config))
     bundle = config.get("skills_bundle")
     if bundle is None:
         return out
@@ -452,6 +454,36 @@ def tool_servers(config: dict) -> list:
     except ValueError:
         raise WorkerError("invalid skill bundle") from None
     return [*out, skills]
+
+
+def project_mcp_servers(config: dict, secrets_env: dict[str, str]) -> list:
+    """The project MCP servers this generation was given (#2163): ``[{id, name, tools}]``, each
+    checked here before it becomes a launcher entry. A malformed list refuses the spawn."""
+    from . import mcp_registry
+
+    value = config.get("mcp_servers", [])
+    if not isinstance(value, list) or len(value) > mcp_registry.SERVERS_MAX:
+        raise WorkerError("invalid MCP server list")
+    out = []
+    for spec in value:
+        if (
+            not isinstance(spec, dict)
+            or set(spec) != {"id", "name", "tools"}
+            or not isinstance(spec["id"], str)
+            or not mcp_registry.ID_RE.fullmatch(spec["id"])
+            or not isinstance(spec["name"], str)
+            or not mcp_registry.NAME_RE.fullmatch(spec["name"])
+            or spec["name"].startswith(mcp_registry.RESERVED_PREFIX)
+            or not isinstance(spec["tools"], list)
+            or not all(
+                isinstance(t, str) and mcp_registry.TOOL_NAME_RE.fullmatch(t) for t in spec["tools"]
+            )
+        ):
+            raise WorkerError("invalid MCP server list")
+        server = agent_tools.project_server(spec["id"], spec["name"], secrets_env, spec["tools"])
+        if server is not None:
+            out.append(server)
+    return out
 
 
 def battlelab_session(config: dict) -> str:

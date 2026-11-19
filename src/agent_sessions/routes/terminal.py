@@ -55,6 +55,7 @@ from .. import (
     handoff,
     hq_report_broker,
     launchtiming,
+    mcp_registry,
     memory,
     metadata,
     missions,
@@ -1144,6 +1145,11 @@ def register(
                         hq_env=hq_env,
                         shelf_env=shelf_env,
                         artifacts_env=artifacts_env,
+                        # Project MCP servers (#2163): enabled for this session's project now,
+                        # each reaching its settings through this launch's capability.
+                        project_servers=mcp_registry.launch_servers(
+                            secrets_broker.project_for(transcript_key, cwd), capability
+                        ),
                     )
                     # …and the report capability's id in the agent's OWN environment, which its
                     # dtach master inherits: a bind reads it back from the kernel to prove the

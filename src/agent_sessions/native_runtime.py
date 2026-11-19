@@ -46,6 +46,7 @@ from . import (
     artifact_broker,
     chat_store,
     launchtiming,
+    mcp_registry,
     model_choice,
     native_attachments,
     native_containment,
@@ -722,6 +723,12 @@ def _launch_generation(
         kind="api",
         worker_id=worker.worker_id,
         grant_set=grant["set_id"] if grant is not None else None,
+    )
+    # Project MCP servers (#2163), per GENERATION: id, name and checked tool names only; the
+    # worker turns each into the launcher entry over this generation's capability.
+    config["mcp_servers"] = mcp_registry.launch_specs(
+        secrets_broker.project_for(record["session_key"], record["request"]["cwd"]),
+        config["secrets_env"],
     )
     # The artifacts capability (#1932), per GENERATION like memory: a toggle reaches the next
     # generation, never a live one. Only where the adapter's protocol carries an MCP server.

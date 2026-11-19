@@ -938,6 +938,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     variables_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Project MCP servers (#2163): the Library's registry, per-project enablement and checks.
+    from .routes import mcp as mcp_routes
+
+    mcp_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # HQ connectors (#1750): add, configure, test, enable and remove — never a token in a reply.
     from .routes import connectors as connectors_routes
 

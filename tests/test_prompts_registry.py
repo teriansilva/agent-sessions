@@ -127,6 +127,7 @@ HTTP_MODULES = frozenset(
         "connector_http",  # #1750 HQ connectors: the one connector transport
         "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
         "signin_callback",  # #2106 a loopback sign-in's callback, to the sign-in's own listener
+        "mcp_launch",  # #2163 the project MCP relay, to the URL the operator registered
     }
 )
 
@@ -140,6 +141,11 @@ HTTP_MODULES = frozenset(
 # extensible at all.
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
+    # #2163 the project MCP relay (a separate process an agent CLI starts): each JSON-RPC message
+    # streamed to the server URL the operator registered, https only, no redirects, no prompts of
+    # BattleLab's; and the one DELETE that ends its MCP session.
+    ("mcp_launch", "_post"): 1,
+    ("mcp_launch", "_end_session"): 1,
     ("memory_embeddings", "_request"): 1,  # pinned vetted origin, bounded non-chat vectors
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     # #1259 fixed public GitHub feed, anonymous bounded GET (public `read_asset` since #2082 P3:

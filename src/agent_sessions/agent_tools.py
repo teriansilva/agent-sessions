@@ -101,6 +101,10 @@ class Server:
     env: Mapping[str, str]
     #: Its key in every CLI's MCP table.
     name: str = SERVER_NAME
+    #: A project MCP server's tool names (#2163): the snapshot of the check its delivery relies
+    #: on. Copilot is given exactly these (never ``*``); None for BattleLab's own servers, whose
+    #: names are pinned in `_COPILOT_SERVER_TOOLS`.
+    tools: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +291,38 @@ def artifacts_server(artifacts_env: Mapping[str, str] | None) -> Server | None:
     )
 
 
+MCP_LAUNCH_MODULE = "agent_sessions.mcp_launch"
+#: The launcher's one env addition beyond the capability paths: which server it starts.
+MCP_SERVER_ENV = "BATTLELAB_MCP_SERVER"
+
+
+def project_server(
+    server_id: str, name: str, secrets_env: Mapping[str, str] | None, tools: Sequence[str]
+) -> Server | None:
+    """A project MCP server (#2163) for one launch: BattleLab's launcher with the server id and the
+    launch's secrets capability PATHS — never a setting value (this rides argv). The launcher
+    asks the broker for the resolved settings when the CLI starts it. None without a capability."""
+    from . import secrets_broker
+
+    if not secrets_env or not set(secrets_broker.ENV_KEYS) <= set(secrets_env):
+        return None
+    exe = _interpreter("MCP server")
+    if exe is None:
+        return None
+    env = {
+        secrets_broker.ENV_SOCKET: secrets_env[secrets_broker.ENV_SOCKET],
+        secrets_broker.ENV_TOKEN_FILE: secrets_env[secrets_broker.ENV_TOKEN_FILE],
+        MCP_SERVER_ENV: server_id,
+    }
+    return Server(
+        command=exe,
+        args=("-I", "-m", MCP_LAUNCH_MODULE, server_id),
+        env=_with_base_env(env),
+        name=name,
+        tools=tuple(tools),
+    )
+
+
 def claude_add_dirs(secrets_env: Mapping[str, str] | None) -> tuple[str, ...]:
     """``("--add-dir", <this launch's copy directory>)`` or nothing (#1786 smoke): claude only
     runs a command on files inside its working directories, so a guarded session could not pass
@@ -457,7 +493,15 @@ def copilot_mcp_config(servers: Server | Sequence[Server]) -> str:
     A server without a named list raises — the grant stays exactly as wide as intended."""
     entries = {}
     for s in _all(servers):
-        tools = _COPILOT_SERVER_TOOLS.get(s.name)
+        if s.tools is not None:
+            # A project MCP server (#2163): its checked snapshot. None to name → not carried
+            # (logged), never a wildcard and never a reason to fail the launch.
+            if not s.tools:
+                log.warning("copilot: MCP server %s has no checked tool list; skipped", s.name)
+                continue
+            tools = list(s.tools)
+        else:
+            tools = _COPILOT_SERVER_TOOLS.get(s.name)
         if tools is None:
             raise ValueError(f"copilot MCP config: no named tool list for server {s.name!r}")
         entries[s.name] = {
@@ -499,6 +543,7 @@ def terminal_launch(
     hq_env: Mapping[str, str] | None = None,
     shelf_env: Mapping[str, str] | None = None,
     artifacts_env: Mapping[str, str] | None = None,
+    project_servers: Sequence[Server] = (),
 ) -> McpLaunch:
     """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
@@ -526,6 +571,9 @@ def terminal_launch(
         )
         if x is not None
     ]
+    # Project MCP servers (#2163, `mcp_registry.launch_servers`), after BattleLab's own: their
+    # names can never be BattleLab's (`battlelab_` is reserved), so no entry replaces another.
+    servers += [s for s in project_servers if s.name not in {x.name for x in servers}]
     if kind is None or not servers:
         return NONE
     if kind == CLAUDE_FLAG:
