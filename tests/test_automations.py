@@ -974,11 +974,8 @@ def mission_env(monkeypatch, tmp_path):
         return None  # the real producers make model calls
 
     monkeypatch.setattr(mroutes, "_produce_for_new_mission", no_producers)
-    monkeypatch.setattr(
-        missions,
-        "get_plan",
-        lambda mid, **kw: {"plan_id": "plan-1", "project_id": "p1", "engine": "claude"},
-    )
+    # NO stubbed plan (#2152): a new mission never holds a one-agent plan any more, and a stub that
+    # handed one back is what hid that dispatch automations piled up drafts on every run.
     dispatched: list[tuple] = []
 
     async def fake_dispatch_approved(mid, body, *, registry, bypass_ceiling=None, **kw):
@@ -1004,32 +1001,64 @@ def _mission_config(autonomy: str) -> dict:
     }
 
 
-def test_a_propose_mission_is_planned_and_never_dispatched(mission_env):
+def _legacy_dispatch(autonomy: str = "dispatch") -> str:
+    """A `start_mission` automation saved and approved with a dispatch autonomy BEFORE #2152 (the
+    save check that refuses it now is lifted for the save, as it did not exist then): stored as the
+    operator saved it, enabled, with its consent current."""
+    real = automation_runner.check_save
+    automation_runner.check_save = lambda config: None
+    try:
+        return _made(_mission_config(autonomy))
+    finally:
+        automation_runner.check_save = real
+
+
+def test_a_propose_mission_creates_a_draft_for_hq_and_never_dispatches(mission_env):
     aid = _made(_mission_config("propose"))
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert res["run"]["outcome"] == "ok" and "waiting for you" in res["run"]["reason"]
+    assert res["run"]["outcome"] == "ok"
+    assert res["run"]["reason"] == automation_runner.HQ_PLANS_RUN
     assert mission_env == []
     mid = res["run"]["mission_id"]
     assert missions.get_mission(mid)["title"] == "nightly audit"
     assert store.origins()[f"mission:{mid}"]["automation_id"] == aid
 
 
-def test_a_dispatch_mission_goes_through_the_dispatch_route_and_concludes_with_the_mission(
-    mission_env, monkeypatch, spawned
+@pytest.mark.parametrize("autonomy", ["dispatch", "dispatch_auto_choose"])
+def test_a_stored_dispatch_automation_is_refused_before_any_draft(mission_env, autonomy):
+    """#2152: nothing can plan a draft unattended, so a dispatch automation would leave one draft
+    behind on EVERY run. Its runs are refused first: no mission, no producer, no dispatch. The
+    stored config is left exactly as the operator saved it."""
+    aid = _legacy_dispatch(autonomy)
+    before = len(missions.safe_list_missions()["missions"])
+    for _ in range(3):
+        run = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))["run"]
+        assert run["outcome"] == "refused"
+        assert run["reason"] == automation_runner.HQ_PLANS_DISPATCH
+        assert run.get("mission_id") in (None, "")
+    assert len(missions.safe_list_missions()["missions"]) == before, "no draft pile-up"
+    assert mission_env == []
+    assert store.get(aid)["config"]["action"]["autonomy"] == autonomy, "never rewritten"
+
+
+@pytest.mark.parametrize("autonomy", ["dispatch", "dispatch_auto_choose"])
+def test_a_new_or_edited_mission_automation_cannot_choose_a_dispatch_autonomy(
+    mission_env, autonomy
 ):
-    aid = _made(_mission_config("dispatch"))
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    run = res["run"]
-    assert run["outcome"] == "started" and run["result_class"] == "pending"
-    [(mid, body, ceiling)] = mission_env
-    assert body["plan_id"] == "plan-1" and body["expect_objectives"]
-    assert ceiling is False  # automated missions never bypass
-    # Brief delivery is not success: only the mission's own conclusion is.
-    monkeypatch.setattr(missions, "get_mission", lambda m, **kw: {"state": "done"})
-    sched = automation_loop.Scheduler()
-    asyncio.run(sched.tick())
-    sched.release()
-    assert store.get_run(run["id"])["outcome"] == "ok"
+    with pytest.raises(model.AutomationError) as e:
+        _create(_mission_config(autonomy))
+    assert str(e.value) == automation_runner.HQ_PLANS_DISPATCH
+    aid = _made(_mission_config("propose"))
+    row = store.get(aid)
+    action = dict(row["config"]["action"], autonomy=autonomy)
+    with pytest.raises(model.AutomationError) as e:
+        routes._patch(aid, {"revision": row["revision"], "action": action})
+    assert str(e.value) == automation_runner.HQ_PLANS_DISPATCH
+    # …and a stored one cannot be switched back on in that mode either (enable re-validates).
+    legacy = _legacy_dispatch(autonomy)
+    routes._simple(legacy, "disable")
+    with pytest.raises(model.AutomationError):
+        _enable(legacy)
 
 
 def test_at_the_session_limit_a_mission_run_is_refused_before_any_mission_or_planner_call(
@@ -1048,7 +1077,7 @@ def test_at_the_session_limit_a_mission_run_is_refused_before_any_mission_or_pla
 
     monkeypatch.setattr(mroutes, "_produce_for_new_mission", producers)
     before = len(missions.list_missions()["missions"]) if hasattr(missions, "list_missions") else 0
-    aid = _made(_mission_config("dispatch"))
+    aid = _made(_mission_config("propose"))
     run = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))["run"]
     assert run["outcome"] == "refused"
     assert "Session limit reached: 1 of 1 running" in run["reason"]
@@ -1057,18 +1086,6 @@ def test_at_the_session_limit_a_mission_run_is_refused_before_any_mission_or_pla
     assert mission_env == []
     if hasattr(missions, "list_missions"):
         assert len(missions.list_missions()["missions"]) == before
-
-
-def test_higher_mission_autonomy_is_a_widening(mission_env):
-    aid = _made(_mission_config("propose"))
-    row = store.get(aid)
-    action = dict(row["config"]["action"], autonomy="dispatch")
-    with pytest.raises(model.AutomationError) as e:
-        routes._patch(aid, {"revision": row["revision"], "action": action})
-    assert "higher mission autonomy" in e.value.extra["widened"]
-
-
-# ---- routes -------------------------------------------------------------------------------------
 
 
 def _client(cfg):
@@ -1199,38 +1216,6 @@ def test_a_repointed_project_is_refused_and_needs_reapproval(real_project):
     assert missions.safe_list_missions()["missions"] == []  # nothing was created at b
 
 
-def test_a_project_repointed_while_planning_is_refused_before_dispatch(mission_env, monkeypatch):
-    from agent_sessions.routes import missions as mroutes
-
-    aid = _made(_mission_config("dispatch"))
-
-    async def repoint(mid):
-        monkeypatch.setattr(mroutes, "_resolve_cwd", lambda pid, **kw: ("p1", "/elsewhere"))
-
-    monkeypatch.setattr(mroutes, "_produce_for_new_mission", repoint)
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert res["run"]["outcome"] == "refused" and "folder changed" in res["run"]["reason"]
-    assert mission_env == []  # never reached the dispatch route
-
-
-def test_dispatch_is_given_the_pinned_folder(mission_env, tmp_path):
-    aid = _made(_mission_config("dispatch"))
-    asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    [(_mid, body, _ceiling)] = mission_env
-    assert body["expect_cwd"] == str(tmp_path)
-
-
-def test_the_mission_scope_boundary_is_checked_at_run_time(mission_env, tmp_path):
-    aid = _made(_mission_config("dispatch"))
-    prefs.set_folder_exclusions([str(tmp_path)])
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert (
-        res["run"]["outcome"] == "refused"
-        and "outside your project folders" in res["run"]["reason"]
-    )
-    assert missions.safe_list_missions()["missions"] == []
-
-
 # ---- review round 1: automated missions never bypass (tripwire through the REAL route) ----------
 
 
@@ -1283,23 +1268,12 @@ def real_dispatch(real_project, monkeypatch):
     return {"seen": seen, "md": mission_dispatch, "hooks": hooks, "cwds": cwds}
 
 
-@pytest.mark.parametrize("path_decides_bypass", [False, True])
-def test_an_automated_mission_never_launches_with_bypass(
-    real_dispatch, real_project, path_decides_bypass
-):
-    """The real stored grant reaches dispatch; automation consent still forces bypass off."""
-    prefs.set_agent_defaults({"bypass": path_decides_bypass})
-    aid = _made(_real_mission_config(real_project["id"], "dispatch"))
-    asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert real_dispatch["seen"] == [False]
-
-
 def test_the_manual_route_reaches_the_same_launcher_and_never_bypasses_either(
     real_dispatch, real_project
 ):
-    """Control for the test above: the manual route, with no ceiling and the grant on, DOES reach
-    the launcher (so the test above is not passing because nothing is wired), and since #1902 it
-    launches without bypass too: a mission's API session never skips permissions (#1613 D8)."""
+    """The manual (legacy plan) route, with no ceiling and the grant on, DOES reach the launcher,
+    and since #1902 it launches without bypass: a mission's API session never skips permissions
+    (#1613 D8)."""
     from agent_sessions.routes import missions as mroutes
 
     prefs.set_agent_defaults({"bypass": True})
@@ -1863,22 +1837,6 @@ def test_a_bookkeeping_failure_after_a_session_launch_is_still_ok(session_env, m
     assert store.get(aid)["consecutive_failures"] == 0
 
 
-def test_a_bookkeeping_failure_after_a_mission_dispatch_is_still_started(mission_env, monkeypatch):
-    aid = _made(_mission_config("dispatch"))
-    real = store.link
-
-    def fails(run_id, *, session_key=None, **kw):
-        if session_key:
-            raise sqlite3.OperationalError("database is locked")
-        return real(run_id, session_key=session_key, **kw)
-
-    monkeypatch.setattr(store, "link", fails)
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    run = store.get_run(res["run"]["id"])
-    assert run["outcome"] == "started" and "recording details failed" in run["reason"]
-    assert store.get(aid)["consecutive_failures"] == 0
-
-
 def test_a_failed_finish_after_delivery_never_becomes_a_failure(live_target, monkeypatch):
     aid = _made(_send_config())
     real = store.finish_run
@@ -2065,81 +2023,6 @@ def test_the_finish_retry_backs_off_on_its_schedule(live_target, monkeypatch):
 
 
 # ---- review round 3: the effect lock (authority and effect in one critical section) ----------
-
-
-def test_a_disable_during_planning_never_dispatches(mission_env, monkeypatch):
-    """The independent reviewer's repro: disable inside `_produce_for_new_mission`."""
-    from agent_sessions.routes import missions as mroutes
-
-    aid = _made(_mission_config("dispatch"))
-    acks = []
-
-    async def disable_while_planning(mid):
-        acks.append(routes._simple(aid, "disable"))
-
-    monkeypatch.setattr(mroutes, "_produce_for_new_mission", disable_while_planning)
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert res["run"]["outcome"] == "stopped"
-    assert mission_env == []  # dispatch_approved never called
-    # The disable could not take the lock (the run was mid-effect), so it said so.
-    assert acks[0]["in_flight"] is True and acks[0]["in_flight_detail"]
-
-
-def test_narrowing_autonomy_during_planning_never_dispatches(mission_env, monkeypatch):
-    from agent_sessions.routes import missions as mroutes
-
-    aid = _made(_mission_config("dispatch"))
-
-    async def narrow(mid):
-        row = store.get(aid)
-        action = dict(row["config"]["action"], autonomy="propose")
-        routes._patch(aid, {"revision": row["revision"], "action": action})
-
-    monkeypatch.setattr(mroutes, "_produce_for_new_mission", narrow)
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert res["run"]["outcome"] == "stopped" and mission_env == []
-
-
-def test_a_disable_inside_the_mission_dispatch_fence_stops_the_spawn(real_dispatch, real_project):
-    aid = _made(_real_mission_config(real_project["id"], "dispatch"))
-    real_dispatch["hooks"]["in_fence"] = lambda: store.mutate(aid, lambda r: {"enabled": 0})
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert real_dispatch["seen"] == []  # nothing spawned
-    assert res["run"]["outcome"] in ("stopped", "refused")
-
-
-def test_an_automated_mission_launches_in_the_pinned_real_folder(real_dispatch, tmp_path):
-    from agent_sessions import projects
-
-    a = tmp_path / "ra"
-    a.mkdir()
-    link = tmp_path / "rlink"
-    link.symlink_to(a)
-    proj = projects.create("linked", folders=[str(link)], default_folder=str(link))
-    aid = _made(_real_mission_config(proj.id, "dispatch"))
-    asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert real_dispatch["cwds"] == [os.path.realpath(a)]  # never the symlink string
-
-
-def test_a_symlink_swap_inside_the_dispatch_fence_is_refused(real_dispatch, tmp_path):
-    from agent_sessions import projects
-
-    a, b = tmp_path / "sa", tmp_path / "sb"
-    a.mkdir()
-    b.mkdir()
-    link = tmp_path / "slink"
-    link.symlink_to(a)
-    proj = projects.create("swapped", folders=[str(link)], default_folder=str(link))
-    aid = _made(_real_mission_config(proj.id, "dispatch"))
-
-    def swap():
-        link.unlink()
-        link.symlink_to(b)
-
-    real_dispatch["hooks"]["in_fence"] = swap
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert real_dispatch["seen"] == []
-    assert res["run"]["outcome"] == "refused"
 
 
 def test_a_disable_racing_the_send_never_acknowledges_a_later_write(live_target, monkeypatch):
@@ -2634,49 +2517,6 @@ def test_a_flag_observed_before_an_unrelated_edit_waits_for_the_next_check():
 # ---- review round 4 ----------------------------------------------------------------------------
 
 
-def test_auto_choose_is_never_granted_after_a_disable_that_won_the_lock(mission_env, monkeypatch):
-    """The reviewer's repro: a real disable runs right after the runner releases the lock. The
-    grant, if any, must come BEFORE that acknowledgement — never after it."""
-    aid = _made(_mission_config("dispatch_auto_choose"))
-    events: list[str] = []
-    monkeypatch.setattr(
-        missions, "set_auto_choose", lambda mid, on, **kw: events.append(f"grant:{on}") or {}
-    )
-    real_runner = effect_lock.runner
-
-    @contextlib.asynccontextmanager
-    async def runner_then_disable(a, timeout=None):
-        async with real_runner(a, timeout) as held:
-            yield held
-        ack = routes._simple(aid, "disable")  # the lock is free now: a clean ack
-        events.append(f"ack:in_flight={ack['in_flight']}")
-
-    monkeypatch.setattr(effect_lock, "runner", runner_then_disable)
-    asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    ack = events.index("ack:in_flight=False")
-    assert "grant:True" not in events[ack:]
-
-
-def test_auto_choose_is_skipped_when_authority_is_gone_before_it(mission_env, monkeypatch):
-    aid = _made(_mission_config("dispatch_auto_choose"))
-    granted = []
-    monkeypatch.setattr(missions, "set_auto_choose", lambda mid, on, **kw: granted.append(on) or {})
-    from agent_sessions.routes import missions as mroutes
-
-    fake = mroutes.dispatch_approved
-
-    async def dispatch_then_disable(*a, **kw):
-        out = await fake(*a, **kw)
-        store.mutate(aid, lambda r: {"enabled": 0})
-        return out
-
-    monkeypatch.setattr(mroutes, "dispatch_approved", dispatch_then_disable)
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert granted == []
-    steps = store.get_run(res["run"]["id"])["steps"]
-    assert any(s["step"] == "auto_choose_skipped" and "not granted" in s["detail"] for s in steps)
-
-
 def test_a_busy_effect_lock_is_skipped_not_a_failure(live_target):
     aid = _made(_send_config(policy={"concurrency": "allow", "max_concurrent": 2}))
     fd = effect_lock.acquire(aid, 0)
@@ -2740,7 +2580,7 @@ def test_every_authority_writer_takes_the_effect_lock(writer):
 
 
 def test_a_disable_before_the_run_starts_creates_no_mission(mission_env):
-    aid = _made(_mission_config("dispatch"))
+    aid = _made(_mission_config("propose"))
     run = _manual_run(aid)
     routes._simple(aid, "disable")
     res = asyncio.run(automation_runner.execute(run, registry=None))
@@ -2760,21 +2600,6 @@ def test_a_directory_replaced_inside_the_session_fence_is_refused(session_env):
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
     assert session_env["calls"] == [] and res["run"]["outcome"] == "refused"
     assert "changed while the launch" in res["run"]["reason"]
-
-
-def test_a_directory_replaced_inside_the_mission_fence_is_refused(real_dispatch, real_project):
-    from pathlib import Path
-
-    aid = _made(_real_mission_config(real_project["id"], "dispatch"))
-    a = Path(real_project["a"])
-
-    def replace():
-        a.rename(a.with_name("a-gone"))
-        a.mkdir()
-
-    real_dispatch["hooks"]["in_fence"] = replace
-    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert real_dispatch["seen"] == [] and res["run"]["outcome"] == "refused"
 
 
 def test_a_pause_during_a_run_now_stops_it_by_the_revision_bump(live_target):

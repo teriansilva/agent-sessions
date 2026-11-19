@@ -595,7 +595,8 @@ test("New is a menu — session, mission, project — that opens on screen and g
   const vw = page.viewportSize()!.width;
   for (const [item, url] of [
     ["New session", new RegExp(`${NEW_SESSION_PATH}$`)],
-    ["New mission", /\/mission$/],
+    // HQ plans every mission (#2152): New mission opens HQ on a fresh conversation.
+    ["New mission", /\/hq$/],
     ["New project", /\/projects\/new$/],
   ] as const) {
     await page.goto("/dashboard");

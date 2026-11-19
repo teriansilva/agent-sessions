@@ -1111,11 +1111,42 @@
   padding: var(--sp-3) var(--sp-4);
   margin-bottom: var(--sp-3);
 }
-/* Could not plan: an active failure, so the alert edge (red is reserved for that, §7). */
-.planCard[data-plan-state="unplanned"] {
-  --nj-edge: color-mix(in srgb, var(--status-down) 55%, transparent);
-  --nj-face: color-mix(in srgb, var(--status-down) 5%, var(--bg-1));
-  border-top-color: var(--status-down);
+/* A legacy one-agent plan's tag (#2152): a neutral label, never a status colour. */
+.planChip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The legacy plan's saved instructions: read-only, folded to their first line. */
+.planSaved summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: var(--fs-row);
+  overflow-wrap: anywhere;
+}
+.planSaved summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.planSavedText {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* Planning: the Acquiring scan bar under the lead line. */
 .planAcquire {

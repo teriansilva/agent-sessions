@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Bot } from "lucide-react";
 import { relTime } from "../../lib/format";
 import type { MissionListRow } from "../../types/api";
 import { Loader } from "../hud/Loader";
@@ -12,9 +12,9 @@ const PREVIEW = 3;
 /** The Missions section's front door (#948 P3): what the workspace shows when no mission is
  *  selected — which is what entering the section now means.
  *
- *  The composer is the centrepiece and is passed in rather than owned here: the console keeps it
- *  mounted in one place so a half-typed brief survives the list arriving, a filter change, or the
- *  operator glancing at the rail (#930's draft-survival rule).
+ *  **There is no New-mission form here any more (#2152).** HQ plans every mission, so **New
+ *  mission** opens HQ's page on a fresh conversation, where HQ asks for the goal and the project and
+ *  proposes the draft. Nothing is created until the operator confirms HQ's card.
  *
  *  **NEEDS YOU is a PREVIEW of the rail, not a global attention surface.** Its rows are the rail's
  *  own loaded rows — the same retained filters, Active | Archived scope and page — so it shows
@@ -35,7 +35,7 @@ const PREVIEW = 3;
  *  says the missions could not be read. Clear filters stays offered in every filtered state.
  */
 export function MissionLanding({
-  composer,
+  onNewMission,
   missions,
   filtered,
   partial,
@@ -45,7 +45,8 @@ export function MissionLanding({
   onClearFilters,
   projectNames,
 }: {
-  composer: ReactNode;
+  /** Opens HQ on a fresh conversation (#2152). */
+  onNewMission: () => void;
   /** The rail's loaded rows. Only those whose ledger says `needs_you` are previewed. */
   missions: MissionListRow[];
   /** A search / project / state filter, or the Archived scope, is narrowing the rail. */
@@ -92,12 +93,23 @@ export function MissionLanding({
           tabIndex={-1}
           data-testid="mission-landing-heading"
         >
-          What should this mission achieve?
+          Missions
         </h2>
         <p className={styles.landingSub}>
-          HQ plans the work, dispatches an agent and drives it to a pull request.
+          HQ plans every mission with you: it asks for the goal and the project, then proposes the
+          draft. Pick a mission from the list to open it.
         </p>
-        {composer}
+        <div>
+          <button
+            type="button"
+            className={action.primary}
+            onClick={onNewMission}
+            data-testid="landing-new-mission"
+          >
+            <Bot size={16} aria-hidden="true" />
+            New mission
+          </button>
+        </div>
         <p className={styles.landingNote}>
           Already have a session running? Open it and use <b>Adopt to mission</b> in its header
           or its ⋯ menu.

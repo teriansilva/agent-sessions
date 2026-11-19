@@ -29,7 +29,7 @@ import { AskPanelContext } from "../components/ask/askPanel";
 import { api } from "../lib/api";
 import {
   DASHBOARD_PATH,
-  MISSION_PATH,
+  HQ_PATH,
   NEW_PROJECT_PATH,
   SESSIONS_PATH,
 } from "../lib/routes";
@@ -122,7 +122,7 @@ test("New is a menu: a session, a mission, a project (#1294)", async () => {
       .map((i) => [i.textContent?.trim(), i.getAttribute("href")]),
   ).toEqual([
     ["New session", SESSIONS_PATH],
-    ["New mission", MISSION_PATH],
+    ["New mission", HQ_PATH], // #2152: HQ plans every mission
     ["New project", NEW_PROJECT_PATH],
   ]);
 });

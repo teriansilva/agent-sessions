@@ -268,11 +268,10 @@ Both open a new template with the text and images filled in; add a name and save
 not started yet has no id to keep your draft under, so the composer says so instead of leaving and
 losing it.
 
-## Using one in a mission brief
+## Using one for a mission
 
-On the new-mission page, **TEMPLATE** opens the same picker with one difference: a mission has no
-session to send into yet, so it offers **Insert into mission brief** only. The template is appended
-to the brief, and nothing is sent until you press START. See [Mission control](/guide/missions).
+Missions are planned in HQ (see [Mission control](/guide/missions)), so a template for a mission
+goes into HQ's composer like any other message.
 
 ## Storage and limits
 

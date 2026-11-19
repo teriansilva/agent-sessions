@@ -176,126 +176,27 @@ async function box(el: Locator) {
 // The start screen
 // ---------------------------------------------------------------------------------------------------
 
-test("the start screen is ONE composer box: the brief on top, one footer row inside it, no Cancel (#967)", async ({
+// RETIRED BY #2152 (no New-mission form): "the start screen is ONE composer box: the brief on
+// top, one footer row inside it, no Cancel (#967)" measured that form's box, footer and wrap. What
+// the start screen is now:
+test("the start screen is the landing: New mission is its one primary, at the touch floor, with no form (#2152)", async ({
   page,
 }, info) => {
-  const mobile = info.project.name === "mobile";
   await stubMissions(page);
   await page.goto("/mission");
-  await expect(page.getByTestId("mission-landing")).toBeVisible();
-
-  const form = page.getByTestId("new-mission-form");
-  const input = page.getByTestId("new-mission-instruction");
-  const foot = page.getByTestId("composer-foot");
-  const project = page.getByTestId("new-mission-project");
-  const template = page.getByTestId("new-mission-template");
-  const start = page.getByTestId("new-mission-start");
-
-  // CANCEL is gone (#967), and so is the NEW MISSION | ASK strip it was replaced by: Ask is its
-  // own page since #1058, so the landing has one mode and the footer is [project][Template] …
-  // [Ctrl + Enter][Start mission].
+  const landing = page.getByTestId("mission-landing");
+  await expect(landing).toBeVisible();
+  const button = page.getByTestId("landing-new-mission");
+  await expect(button).toHaveText("New mission");
+  expect((await box(button)).height, "44px floor").toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  // One primary, and nothing to type into or cancel.
+  await expect(landing.locator("textarea, select")).toHaveCount(0);
   await expect(page.getByTestId("new-mission-cancel")).toHaveCount(0);
-  await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
-  await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
-
-  // The box: a 1px --line-strong edge on --bg-1, exactly as the tokens resolve here.
-  const want = await page.evaluate(() => {
-    const probe = document.createElement("div");
-    probe.style.cssText =
-      "border:1px solid var(--line-strong);background:var(--bg-1);position:absolute;visibility:hidden";
-    document.body.append(probe);
-    const s = getComputedStyle(probe);
-    const out = { border: s.borderTopColor, bg: s.backgroundColor };
-    probe.remove();
-    return out;
-  });
-  const formLook = await form.evaluate((el) => {
-    const s = getComputedStyle(el);
-    return {
-      border: s.borderTopColor,
-      width: s.borderTopWidth,
-      style: s.borderTopStyle,
-      bg: s.backgroundColor,
-    };
-  });
-  expect(formLook).toEqual({ border: want.border, width: "1px", style: "solid", bg: want.bg });
-
-  // The footer is INSIDE the box and BELOW the brief.
-  const fb = await box(form);
-  const ib = await box(input);
-  const ft = await box(foot);
-  expect(ft.y).toBeGreaterThanOrEqual(ib.y + ib.height - 1);
-  expect(ft.x).toBeGreaterThanOrEqual(fb.x - 0.5);
-  expect(ft.x + ft.width).toBeLessThanOrEqual(fb.x + fb.width + 0.5);
-  expect(ft.y + ft.height).toBeLessThanOrEqual(fb.y + fb.height + 0.5);
-
-  // Every footer control lives in the footer, in the issue's order, at the 44px floor.
-  const controls = [project, template, start];
-  for (const c of controls) {
-    expect(await c.evaluate((el) => !!el.closest('[data-testid="composer-foot"]'))).toBe(true);
-    const b = await box(c);
-    expect(b.height, "44px floor").toBeGreaterThanOrEqual(TOUCH_FLOOR);
-  }
-  const order = await page.evaluate(() =>
-    ["new-mission-project", "new-mission-template", "new-mission-start"].map(
-      (id) => {
-        const all = [...document.querySelectorAll("[data-testid]")];
-        return all.findIndex((n) => n.getAttribute("data-testid") === id);
-      },
-    ),
-  );
-  expect([...order].sort((a, b) => a - b)).toEqual(order);
-
-  // The picker's hint is its accessible description and its empty-state label, not a line of its own.
-  await expect(project).toHaveAccessibleDescription(/pick the project this mission works in/i);
-  await expect(project.locator("option").first()).toHaveText(/choose a project/i);
-
-  const hint = page.getByTestId("new-mission-hint");
-  if (!mobile) {
-    // ONE ROW on a desktop: every control on the same vertical centre, left to right.
-    const centre = (b: { y: number; height: number }) => b.y + b.height / 2;
-    const boxes = [];
-    for (const c of controls) boxes.push(await box(c));
-    for (const b of boxes) expect(Math.abs(centre(b) - centre(boxes[0]))).toBeLessThan(1.5);
-    for (let i = 1; i < boxes.length; i++) expect(boxes[i].x).toBeGreaterThan(boxes[i - 1].x);
-    await expect(hint).toBeVisible();
-    await expect(hint).toHaveText(/ctrl \+ enter/i);
-    const hb = await box(hint);
-    // Between the last ghost control and Start, as before — the indices moved with the mode strip.
-    expect(hb.x).toBeGreaterThan(boxes[1].x + boxes[1].width);
-    expect(hb.x + hb.width).toBeLessThanOrEqual(boxes[2].x);
-  } else {
-    // A PHONE wraps to [project] / [Template][Start mission, full width].
-    const [p, t, s] = await Promise.all(controls.map((c) => box(c)));
-    const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
-    expect(Math.abs(mid(t) - mid(s))).toBeLessThan(1.5);
-    expect(t.y).toBeGreaterThanOrEqual(p.y + p.height - 0.5);
-    // Start takes the rest of its row: its right edge is the footer's content edge, as the project's is.
-    expect(Math.abs(s.x + s.width - (p.x + p.width))).toBeLessThan(1.5);
-    expect(s.width).toBeGreaterThan(t.width);
-    await expect(hint).toBeHidden();
-  }
-
-  // The count and the error stay UNDER the box.
-  await input.fill("x".repeat(7300));
-  const count = page.getByTestId("new-mission-count");
-  await expect(count).toBeVisible();
-  const cb = await box(count);
-  const fb2 = await box(form);
-  expect(cb.y).toBeGreaterThanOrEqual(fb2.y + fb2.height - 0.5);
-
-  // ASK IS THE SAME BOX — in the right-hand sidebar now (#1294; `/ask` opens it). The #967 contract is that the two surfaces
-  // draw ONE composer, so it is asserted there rather than dropped: the shortcut hint and Send ride
-  // inside the ask box exactly as the project picker and Start ride inside this one.
-  await page.goto("/ask");
-  const ask = page.getByTestId("ask-form");
-  await expect(ask).toBeVisible();
-  const askBox = await box(ask);
-  for (const id of ["composer-input", "composer-send"]) {
-    const b = await box(page.getByTestId(id));
-    expect(b.y).toBeGreaterThanOrEqual(askBox.y - 0.5);
-    expect(b.y + b.height).toBeLessThanOrEqual(askBox.y + askBox.height + 0.5);
-  }
+  // Inside the page, and below the heading that explains it.
+  const hb = await box(page.getByTestId("mission-landing-heading"));
+  const bb = await box(button);
+  expect(bb.y).toBeGreaterThan(hb.y);
+  expect(bb.x + bb.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.screenshot({ path: `test-results/p1-start-screen-${info.project.name}.png` });
 });
 
@@ -303,8 +204,10 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
 // The header
 // ---------------------------------------------------------------------------------------------------
 
-const PRIMARY: Record<string, string> = {
-  draft: "mission-begin",
+/** The row's one action, by state. A draft with no plan and no session has NONE (#2152): Begin is
+ *  a legacy plan's or an attached session's, and the plan card offers Plan with HQ instead. */
+const PRIMARY: Record<string, string | null> = {
+  draft: null,
   planned: "mission-begin",
   running: "mission-done",
   failed: "mission-reopen",
@@ -325,7 +228,7 @@ for (const name of Object.keys(STATES)) {
       const title = page.getByRole("button", { name: "Show full mission title" });
       const chip = page.getByTestId("mission-state-chip");
       const dot = chip.getByTestId("mission-state-dot");
-      const primary = page.getByTestId(PRIMARY[name]);
+      const primaryId = PRIMARY[name];
       const more = page.getByTestId("mission-overflow");
 
       // THE CHIP: a 6px status dot beside a mono label.
@@ -337,27 +240,25 @@ for (const name of Object.keys(STATES)) {
       // AT MOST ONE ACTION BUTTON beside ⋯, and no sentence in the row: the reason lives in the plan card.
       const buttons = actions.locator("button:visible");
       const ids = await buttons.evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
-      expect(ids.filter((id) => id !== "mission-overflow"), `buttons at ${width}`).toEqual([PRIMARY[name]]);
+      expect(ids.filter((id) => id !== "mission-overflow"), `buttons at ${width}`).toEqual(
+        primaryId ? [primaryId] : [],
+      );
       await expect(actions.locator('p:visible, [role="status"]:visible')).toHaveCount(0);
 
       // ONE ROW, vertically centred: the title, the chip, the primary and ⋯ share a centre line,
       // and the 44px controls share the title button's top and bottom edges.
       const tb = await box(title);
       const cb = await box(chip);
-      const pb = await box(primary);
+      const pb = primaryId ? await box(page.getByTestId(primaryId)) : null;
       const mb = await box(more);
       const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
-      for (const [label, b] of [
-        ["chip", cb],
-        ["primary", pb],
-        ["⋯", mb],
-      ] as const) {
+      const controls = pb
+        ? ([["primary", pb], ["⋯", mb]] as const)
+        : ([["⋯", mb]] as const);
+      for (const [label, b] of [["chip", cb], ...controls] as const) {
         expect(Math.abs(mid(b) - mid(tb)), `${label} centre at ${width}`).toBeLessThan(1.5);
       }
-      for (const [label, b] of [
-        ["primary", pb],
-        ["⋯", mb],
-      ] as const) {
+      for (const [label, b] of controls) {
         expect(Math.abs(b.y - tb.y), `${label} top at ${width}`).toBeLessThan(1.5);
         expect(Math.abs(b.y + b.height - (tb.y + tb.height)), `${label} bottom at ${width}`).toBeLessThan(1.5);
       }
@@ -365,28 +266,29 @@ for (const name of Object.keys(STATES)) {
       expect(cb.y + cb.height).toBeLessThanOrEqual(tb.y + tb.height);
       // …left to right, and on screen.
       expect(tb.x + tb.width).toBeLessThanOrEqual(cb.x + 0.5);
-      expect(cb.x + cb.width).toBeLessThanOrEqual(pb.x + 0.5);
-      expect(pb.x + pb.width).toBeLessThanOrEqual(mb.x + 0.5);
+      if (pb) {
+        expect(cb.x + cb.width).toBeLessThanOrEqual(pb.x + 0.5);
+        expect(pb.x + pb.width).toBeLessThanOrEqual(mb.x + 0.5);
+      } else {
+        expect(cb.x + cb.width).toBeLessThanOrEqual(mb.x + 0.5);
+      }
       expect(mb.x + mb.width).toBeLessThanOrEqual(width);
       expect([Math.round(mb.width), Math.round(mb.height)], `⋯ at ${width}`).toEqual([44, 44]);
     }
 
     if (name === "draft") {
-      // A disabled Begin is described by the reason, and the reason is in the PLAN CARD.
-      const begin = page.getByTestId("mission-begin");
-      await expect(begin).toBeDisabled();
-      const describedBy = await begin.getAttribute("aria-describedby");
-      expect(describedBy).toBeTruthy();
-      const reason = page.locator(`[id="${describedBy}"]`);
-      // #967 P2b: the reason is the plan card's own state line, not a pointer at ⋯.
-      await expect(reason).toContainText(/no plan yet/i);
-      expect(await reason.evaluate((el) => !!el.closest('[data-testid="mission-plan-card"]'))).toBe(true);
+      // No Begin, and nothing in the row explains its absence: the PLAN CARD says the mission has
+      // no plan (#2152).
+      await expect(page.getByTestId("mission-begin")).toHaveCount(0);
+      const lead = page.getByTestId("mission-plan-lead");
+      await expect(lead).toHaveText("This mission has no plan");
+      expect(await lead.evaluate((el) => !!el.closest('[data-testid="mission-plan-card"]'))).toBe(true);
     }
-    if (name === "draft" || name === "planned") {
-      // The plan button did not disappear: it is "Plan again", behind ⋯, with its testid.
+    if (name === "planned") {
+      // A legacy plan keeps Review plan behind ⋯; Plan again is gone with the planner (#2152).
       await page.getByTestId("mission-overflow").click();
-      await expect(page.getByTestId("mission-replan")).toHaveText("Plan again");
-      await expect(page.getByTestId("mission-replan")).toBeEnabled();
+      await expect(page.getByTestId("mission-review-plan")).toHaveText("Review plan");
+      await expect(page.getByTestId("mission-replan")).toHaveCount(0);
     }
   });
 }
@@ -421,10 +323,11 @@ test("the header ⋯ is a context menu — RowMenu's rows, not a stack of border
     });
 
   // A row, not a button: no edge of its own, the 44px floor, an icon beside the label.
-  const again = await row("mission-replan");
-  expect(again.border).toEqual(["0px", "0px", "0px", "0px"]);
-  expect(again.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
-  expect(again.icon).toBe(true);
+  // (Plan again was the row measured here until #2152 retired it; Review plan is the plan group's.)
+  const review = await row("mission-review-plan");
+  expect(review.border).toEqual(["0px", "0px", "0px", "0px"]);
+  expect(review.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  expect(review.icon).toBe(true);
   // A destructive row says so in danger TEXT, never with a red border.
   const abandon = await row("mission-abandon");
   expect(abandon.border).toEqual(["0px", "0px", "0px", "0px"]);
@@ -435,7 +338,7 @@ test("the header ⋯ is a context menu — RowMenu's rows, not a stack of border
     await page.evaluate(() => {
       const menu = document.querySelector('[data-testid="mission-overflow-menu"]')!;
       const sep = menu.querySelector('[role="separator"]');
-      const a = menu.querySelector('[data-testid="mission-replan"]')!;
+      const a = menu.querySelector('[data-testid="mission-review-plan"]')!;
       const b = menu.querySelector('[data-testid="mission-abandon"]')!;
       return (
         sep !== null &&
@@ -600,12 +503,8 @@ test("header, landing and plan-card buttons compute the Hand off dialog's .go / 
   await stubMissions(page, ["planned", "running"]);
   await page.goto("/mission");
 
-  // THE LANDING: Start mission is the CTA, Template the ghost.
-  await page.getByTestId("new-mission-instruction").fill("Fix the upload retry");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await expect(page.getByTestId("new-mission-start")).toBeEnabled();
-  expect.soft(await buttonLook(page.getByTestId("new-mission-start")), "landing Start mission").toEqual(ref.go);
-  expect.soft(await buttonLook(page.getByTestId("new-mission-template")), "landing Template").toEqual(ref.cancel);
+  // THE LANDING: New mission is the CTA (#2152: the form and its Template ghost are gone).
+  expect.soft(await buttonLook(page.getByTestId("landing-new-mission")), "landing New mission").toEqual(ref.go);
 
   // THE HEADER of a planned mission: Begin is the CTA; ⋯ is a ghost icon button.
   await selectMission(page, TITLES.planned);

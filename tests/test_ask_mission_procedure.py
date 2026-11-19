@@ -133,6 +133,9 @@ def _note_mid(body: dict) -> str:
 
 @pytest.fixture
 def hq(setup, ai, auth_cfg, monkeypatch):
+    # No boot maintenance (#2152 review): its objective recovery calls the model too, and would
+    # race these tests' scripted replies whenever the app starts slowly.
+    monkeypatch.setenv("AGENT_SESSIONS_MISSION_MAINTENANCE", "0")
     folder, _ = setup
     missions.reset_schema_cache_for_test()
     monkeypatch.setattr(team, "snapshot", lambda: context())
@@ -336,28 +339,6 @@ def test_a_procedure_index_from_no_listing_or_a_stale_one_is_refused(hq, monkeyp
     assert _cards(hq, cid) == []
 
 
-def test_a_project_without_a_deployment_drafts_with_no_procedure_and_says_so(hq, monkeypatch):
-    projects.create("Bare", folders=[str(hq.folder)], default_folder=str(hq.folder))
-    _model(
-        monkeypatch,
-        calls(("list_projects", {})),
-        call("propose_mission", {"project_index": 0, "instruction": "Do it"}, cid="a"),
-        answer("Confirm the card."),
-        answer("The draft has no procedure, so there is no team to plan."),
-    )
-    cid = hq.new()
-    assert hq.ask(cid, "plan it").status_code == 200
-    (card,) = _cards(hq, cid)
-    assert "no deployed playbook" in card["text"]
-    assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
-    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 2 and _settled(c))
-    done = conv["turns"][0]["proposals"][0]
-    (m,) = missions.safe_list_missions()["missions"]
-    assert done["state"] == "done" and done["mission"] == {"id": m["id"]}
-    assert "no procedure" in done["summary"]
-    assert _revision(m["id"]) is None
-
-
 def test_a_playbook_redeployed_before_the_tap_makes_the_card_stale(hq, monkeypatch):
     pid = _deploy(hq.folder, {"application": FLOW})
     _model(monkeypatch, *_first_turn(procedure_index=0))
@@ -448,7 +429,7 @@ def test_a_continuation_reads_and_proposes_but_never_sends_or_remembers(hq, monk
 
 def test_a_continuation_turn_runs_only_for_a_card_that_asks_for_one():
     follow = [o.id for o in ask_operations.CATALOG.values() if o.follow_up]
-    assert follow == ["mission.create"]
+    assert follow == ["mission.create", "mission.create_local", "mission.plan"]  # #2152
     assert "card" in ask_store.VIAS
 
 

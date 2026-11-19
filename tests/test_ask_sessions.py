@@ -37,7 +37,7 @@ from agent_sessions import (
     ask_store,
     automation_runner,
     headless_dispatch,
-    mission_plan,
+    mission_targets,
     prefs,
     session_input,
     template_secrets,
@@ -57,8 +57,8 @@ from test_ask_orchestrator import (  # noqa: F401 — fixtures are used by name
 BRIEF = "Rebase the api branch onto main and run the test suite."
 #: The real resolvers, kept before any fixture patches them: a race on the REAL project store's
 #: flock needs the real reads.
-REAL_RESOLVE = mission_plan.resolve_chosen_project
-REAL_OPTIONS = mission_plan.project_options
+REAL_RESOLVE = mission_targets.resolve_chosen_project
+REAL_OPTIONS = mission_targets.project_options
 
 
 def _ok(out):
@@ -126,8 +126,8 @@ def world(monkeypatch, tmp_path):
                 return dict(p), ""
         return None, "the chosen project no longer exists"
 
-    monkeypatch.setattr(mission_plan, "project_options", lambda: state["projects"])
-    monkeypatch.setattr(mission_plan, "resolve_chosen_project", resolve)
+    monkeypatch.setattr(mission_targets, "project_options", lambda: state["projects"])
+    monkeypatch.setattr(mission_targets, "resolve_chosen_project", resolve)
     monkeypatch.setattr(ask_orchestrator, "_agent_rows", lambda: state["agents"])
     monkeypatch.setattr(automation_runner, "engine_state", lambda e: state["engine"])
 
@@ -852,8 +852,8 @@ def test_a_secret_registered_just_after_the_check_waits_for_the_spawn(live, ai, 
 def _real_project(monkeypatch, world) -> str:
     from agent_sessions import projects
 
-    monkeypatch.setattr(mission_plan, "resolve_chosen_project", REAL_RESOLVE)
-    monkeypatch.setattr(mission_plan, "project_options", REAL_OPTIONS)
+    monkeypatch.setattr(mission_targets, "resolve_chosen_project", REAL_RESOLVE)
+    monkeypatch.setattr(mission_targets, "project_options", REAL_OPTIONS)
     p = projects.create("api", folders=[str(world["proj"])], default_folder=str(world["proj"]))
     return p.id
 

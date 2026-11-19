@@ -394,6 +394,13 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if via not in VIAS:
                 raise ValueError("unknown channel")
             out["via"] = via
+        # The draft a Plan with HQ bound this turn to (#2152): a mission id, validated by the
+        # route. Anything else is refused, never repaired.
+        mission = rec.get("mission")
+        if mission is not None:
+            if not (isinstance(mission, str) and missions.MISSION_ID_RE.match(mission)):
+                raise ValueError("malformed mission id")
+            out["mission"] = mission
         # Files shared with this question (#1707): descriptors only — the bytes never enter the
         # JSONL. An id is a server-made UUID hex, the name stored text, the kind one of three.
         atts = rec.get("attachments")

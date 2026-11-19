@@ -178,10 +178,12 @@ export function triggerWords(t: Trigger | null): { label: string; detail: string
   return { label: "Schedule", detail: `${cadenceWords(t.cadence)} · ${t.tz}` };
 }
 
+/** #2152: HQ plans missions, so a mission automation only creates a draft. The dispatch modes stay
+ *  readable for an automation saved before that; the server refuses saving or running them. */
 export const AUTONOMY_WORDS: Record<Autonomy, string> = {
-  propose: "Plans it and waits for you to dispatch",
-  dispatch: "Dispatches the plan without asking",
-  dispatch_auto_choose: "Dispatches and may answer menus on its own",
+  propose: "Creates the draft; you plan it with HQ",
+  dispatch: "Dispatches the plan without asking (retired: HQ plans missions)",
+  dispatch_auto_choose: "Dispatches and may answer menus on its own (retired: HQ plans missions)",
 };
 
 export function actionLabel(kind: AutomationAction["kind"] | undefined): string {

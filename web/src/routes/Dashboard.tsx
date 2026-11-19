@@ -1,3 +1,4 @@
+import { NEW_MISSION_TARGET } from "../components/pulse/hqPlanning";
 import { useEffect, useState } from "react";
 import {
   ChevronDown,
@@ -36,7 +37,7 @@ import m from "../components/pulse/mission.module.css";
 import { AnchoredMenu } from "../components/ui/AnchoredMenu";
 import { api } from "../lib/api";
 import type { WizardEntryState } from "../lib/newProject";
-import { MISSION_PATH, NEW_PROJECT_PATH, SESSIONS_PATH } from "../lib/routes";
+import { NEW_PROJECT_PATH, SESSIONS_PATH } from "../lib/routes";
 import { coerceRecentWindowDays } from "../lib/recentWindow";
 import styles from "./Ask.module.css";
 
@@ -218,7 +219,8 @@ export default function Dashboard() {
                       <Link
                         role="menuitem"
                         className={d.menuItem}
-                        to={MISSION_PATH}
+                        to={NEW_MISSION_TARGET.to}
+                        state={NEW_MISSION_TARGET.state}
                         onClick={close}
                         data-testid="dashboard-new-mission"
                       >

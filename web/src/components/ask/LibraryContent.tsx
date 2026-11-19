@@ -164,6 +164,7 @@ export function LibraryContent({
       </div>
     );
   }
+  if (content.kind === "flow") return <FlowContent content={content} />;
   return (
     <div data-testid="ask-library-automation">
       {content.name || content.changed.length ? (
@@ -203,6 +204,88 @@ export function LibraryContent({
           {STATUS_LINE[content.status]}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** A mission card's flow (#2152): every step in order, who does it, and an agent step's role —
+ *  the skills it needs and its MINIMUM grade, which the Team card fills from the specialists. */
+function FlowContent({ content }: { content: Extract<AskLibraryContent, { kind: "flow" }> }) {
+  const local = content.source === "mission_local";
+  return (
+    <div data-testid="ask-mission-flow">
+      <div className={c.flowHead}>
+        <span className={c.blockLabel}>{local ? "The flow HQ wrote" : "The procedure"}</span>
+        <span className={c.flowChip} data-testid="ask-mission-flow-source">
+          <i aria-hidden="true" />
+          {local ? "Written for this mission" : "Deployed procedure"}
+        </span>
+      </div>
+      <div className={c.flowTitle} data-testid="ask-mission-flow-title">
+        {content.title}
+        {content.playbook ? <span className={c.flowDim}> · {content.playbook}</span> : null}
+      </div>
+      <ol className={c.flowSteps} aria-label="Steps">
+        {content.steps.map((st, i) => (
+          <li key={i} className={c.flowStep} data-testid="ask-mission-flow-step">
+            <span className={c.flowN} aria-hidden="true">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <span className={c.flowWhat}>
+              <span className={c.flowStepTitle}>{st.title}</span>
+              {/* Everything the agent will be told, verbatim and whole (#2152 review). */}
+              {st.brief ? (
+                <span className={c.flowBrief} data-testid="ask-mission-flow-brief">
+                  {st.brief}
+                </span>
+              ) : null}
+              {(st.prompts ?? []).map((p, k) => (
+                <span key={k} className={c.flowBrief} data-testid="ask-mission-flow-prompt">
+                  {p}
+                </span>
+              ))}
+              {st.checklist?.length ? (
+                <span className={c.flowBrief} data-testid="ask-mission-flow-done">
+                  Done means: {st.checklist.join("; ")}
+                </span>
+              ) : null}
+              {st.distinct_from?.length ? (
+                <span className={c.flowBrief} data-testid="ask-mission-flow-distinct">
+                  Not the same specialist as: {st.distinct_from.join(", ")}
+                </span>
+              ) : null}
+              {st.memory && st.memory !== "none" ? (
+                <span className={c.flowBrief} data-testid="ask-mission-flow-memory">
+                  Project memory: {st.memory}
+                </span>
+              ) : null}
+              {st.outputs?.length ? (
+                <span className={c.flowBrief}>Hands on: {st.outputs.join(", ")}</span>
+              ) : null}
+              {st.rework ? (
+                <span className={c.flowBrief}>
+                  Sent back at most {st.rework} {st.rework === 1 ? "time" : "times"}.
+                </span>
+              ) : null}
+            </span>
+            <span
+              className={st.actor === "operator" ? c.flowRoleOp : c.flowRole}
+              data-testid="ask-mission-flow-role"
+            >
+              {st.actor === "operator"
+                ? "You"
+                : st.actor === "agent"
+                  ? [
+                      st.skills.length ? st.skills.join(", ") : "any specialist",
+                      st.min_grade ? `min. grade ${st.min_grade}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : "Note"}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

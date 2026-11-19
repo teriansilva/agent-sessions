@@ -17,6 +17,7 @@ import {
 } from "./mission-console";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { TOUCH_FLOOR } from "./touchTarget";
+import { mockAskConversations } from "./askStream";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -39,6 +40,8 @@ const OVERVIEW = {
 };
 
 async function stub(page: Page, rows: unknown[] = []) {
+  // HQ's conversations, for "+ New mission", which opens HQ (#2152).
+  await mockAskConversations(page, []);
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
@@ -73,21 +76,6 @@ async function stub(page: Page, rows: unknown[] = []) {
     r.fulfill({ json: { variables: [], limits: { name_max: 120 } } }),
   );
   await mockMissions(page, { missions: missionList(rows) });
-}
-
-/** A typed deferred. `let x: (() => void) | null = null` assigned inside a Promise executor is
- *  narrowed to `null` by control-flow analysis, so `x?.()` is `never` and does not compile — a
- *  definite-assignment assertion states the fact the executor guarantees instead.
- *
- *  A second copy of the one in `mission-console-layout.spec.ts`, deliberately for now: #938
- *  moves it to a shared e2e helper along with the twelve pre-existing sites that need it, and
- *  doing that here would drag an unrelated sweep into a layout PR. */
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
 }
 
 const box = async (p: Page, sel: string) =>
@@ -158,7 +146,8 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
 
     await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
-    // The rail's own heading (the page's h1 also says Missions since #2146).
+    // The rail's own heading (the page's h1 also says Missions since #2146, and the landing
+    // keeps its own "Missions" heading since #2152).
     await expect(
       page.getByRole("complementary").getByRole("heading", { name: "Missions" }),
     ).toBeAttached();
@@ -676,6 +665,14 @@ test("navigating to the mission route does not remount the shell (#935)", async 
   expect(stillThere).toBe("sidebar");
 });
 
+/** "+ New mission" landed on HQ's page on a FRESH conversation (#2152): `/hq` itself, its thread's
+ *  composer empty. */
+async function expectFreshHq(page: Page) {
+  await expect(page).toHaveURL(/\/hq$/);
+  await expect(page.locator("[data-hq-thread] textarea")).toBeVisible();
+  await expect(page.locator("[data-hq-thread] textarea")).toHaveValue("");
+}
+
 /** The rail is a SECTION, not just a list (#935) — the operator's words: "sessions and missions
  *  are separate sections. you have similar options as in the sessions sidebar, new mission etc."
  *  So the mission sidebar leads with its primary verb, exactly as the sessions sidebar leads
@@ -694,13 +691,10 @@ test("the mission sidebar leads with its own primary action (#935)", async ({
   const inSidebar = await create.evaluate((el) => !!el.closest(".sidebar"));
   expect(inSidebar).toBe(true);
 
-  // It does not create anything on its own: it returns to the landing — which IS the brief form
-  // since #1058 removed the NEW MISSION | ASK strip — and focuses the field where the brief is
-  // written. Asserting the form WITHOUT the focus would pass for a button that leaves the
-  // operator hunting for the cursor.
+  // It does not create anything on its own: it opens HQ on a fresh conversation (#2152 — HQ plans
+  // every mission, and there is no New-mission form), where HQ asks for the goal and the project.
   await create.click();
-  await expect(page.getByTestId("new-mission-form")).toBeVisible();
-  await expect(page.getByTestId("new-mission-instruction")).toBeFocused();
+  await expectFreshHq(page);
 });
 
 test("the archived scope offers no create, because the server refuses one (#935)", async ({
@@ -792,8 +786,8 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
 
     await page.getByTestId("rail-new-mission").click();
 
-    await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
-    await expect(page.getByTestId("new-mission-instruction")).toBeFocused();
+    // It opens HQ on a fresh conversation, from here as from the landing (#2152).
+    await expectFreshHq(page);
   });
 
   test("the mission sidebar cannot re-sort the SESSION list (finding 3)", async ({
@@ -863,66 +857,6 @@ test("the mission sidebar has no empty header strip where the sort control was (
   expect(create.y - slot.y).toBeLessThan(56);
 });
 
-/** #937 review 2 — a stale creation must not close a newer form.
- *
- *  Lifting the composer's mode to the console (review 1, finding 2) widened the lifetime of the
- *  "close the form" setter, and that turned a harmless no-op into data loss. Before the lift, a
- *  slow create settling after its composer unmounted wrote to a dead component. After it, the
- *  same late response reaches the console's SHARED mode and closes whatever form happens to be
- *  open — losing a draft the operator typed in between.
- *
- *  This is the "stale policy across the await" shape: a decision taken before a network call and
- *  applied after it, to a screen that has moved on.
- */
-test("a slow creation settling later cannot close a newer form or eat its draft (#937)", async ({
-  page,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop shell");
-  await page.setViewportSize({ width: 1600, height: 900 });
-  await stub(page, [missionRow({ id: "m1", title: "an existing mission" })]);
-  await page.route("**/api/projects**", (r) =>
-    r.fulfill({ json: { projects: [{ id: "p1", name: "infra" }] } }),
-  );
-
-  const gate = deferred();
-  await page.route("**/api/missions", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    await gate.promise; // creation A hangs here while the operator moves on
-    await r.fulfill({
-      json: missionRow({ id: "mA", title: "created A" }),
-    });
-  });
-
-  await page.goto("/mission");
-  // Start from a selected mission, explicitly — nothing is auto-selected since #948 P3.
-  await selectMission(page, /an existing mission/i);
-
-  // A: start a creation and submit it, leaving the response in flight.
-  await page.getByTestId("rail-new-mission").click();
-  await page.getByTestId("new-mission-instruction").fill("mission A");
-  const project = page.getByTestId("new-mission-project");
-  if (await project.isVisible().catch(() => false)) {
-    await project.selectOption({ index: 1 }).catch(() => {});
-  }
-  await page.getByTestId("new-mission-start").click();
-
-  // Move to an existing mission — this unmounts the composer A was typed in.
-  await page.locator('[data-testid="rail-mission"]').first().click();
-  await expect(page.getByTestId("mission-state")).toBeVisible();
-
-  // B: come back and start a second creation, with a draft in it.
-  await page.getByTestId("rail-new-mission").click();
-  const field = page.getByTestId("new-mission-instruction");
-  await expect(field).toBeVisible();
-  await field.fill("mission B, still being written");
-
-  // A finally lands. RED before the fix: A's retained callback flipped the shared mode off, B's
-  // form unmounted, and the draft went with it.
-  gate.resolve();
-  await page.waitForTimeout(600);
-
-  await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
-  await expect(page.getByTestId("new-mission-instruction")).toHaveValue(
-    "mission B, still being written",
-  );
-});
+// RETIRED BY #2152: "a slow creation settling later cannot close a newer form or eat its draft
+// (#937)". There is no New-mission form; New mission only opens HQ, so there is no creation in
+// flight to settle late.

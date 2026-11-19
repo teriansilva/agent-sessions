@@ -54,7 +54,6 @@ from . import (
     mission_archive,
     mission_dispatch_recover,
     mission_objectives,
-    mission_plan,
     mission_supervisor_loop,
     missions,
     models_loop,
@@ -491,10 +490,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # that discharges it, exactly as it is for a half-finished archive above.
             with contextlib.suppress(Exception):
                 await mission_objectives.recover_pending()
-            # …and so is planning (#967): a new mission plans itself in a background task, and a
-            # restart between the create and the plan must not leave it `pending` for ever.
+            # A one-agent planning attempt left `pending` from before the upgrade (#967) is
+            # settled WITHOUT a model call (#2152): the planner is retired and HQ plans missions.
+            # A stored legacy plan stays runnable; a mission without one offers Plan with HQ.
             with contextlib.suppress(Exception):
-                await mission_plan.recover_pending()
+                await missions.run_admitted(missions.settle_pending_plans)
             # Discharge any scrub a busy reader left owed at the last shutdown. Sensitive text
             # sits on disk until this runs, so boot is the backstop for an obligation the
             # process that created it could not collect.
@@ -515,7 +515,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             except Exception as e:  # noqa: BLE001 — never take the app down over housekeeping
                 log.warning("mission retention failed: %s", type(e).__name__)
 
-        mission_task = asyncio.create_task(_mission_maintenance())
+        # AGENT_SESSIONS_MISSION_MAINTENANCE=0 skips the boot passes (a test whose scripted model
+        # replies the objective recovery would otherwise race for, #2152); a no-op task keeps the
+        # shutdown list uniform.
+        mission_task = asyncio.create_task(
+            _mission_maintenance()
+            if os.environ.get("AGENT_SESSIONS_MISSION_MAINTENANCE", "1") != "0"
+            else asyncio.sleep(0)
+        )
 
         # Per-agent usage (#839): asks each engine what it has spent, on an interval, off the
         # event loop. Env kill-switch AGENT_SESSIONS_USAGE_LOOP=0; nothing else gates it,

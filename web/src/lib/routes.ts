@@ -20,6 +20,9 @@ export const SESSIONS_PATH = NEW_SESSION_PATH;
 /** The Missions section (#948). */
 export const MISSION_PATH = "/mission";
 
+/** A "new mission" URL (#2152): there is no New-mission form; it redirects to HQ's fresh compose. */
+export const MISSION_NEW_PATH = `${MISSION_PATH}/new`;
+
 /** The pre-#948 mission path, still served as a permanent replace-redirect. */
 export const LEGACY_MISSION_PATH = "/pulse";
 
@@ -132,3 +135,10 @@ export const NEW_PROJECT_PATH = "/projects/new";
 /** The NIGHTJAR primitives gallery (#1531): every primitive in every state, the Playwright baseline
  *  for the design system. Unlinked from the app, behind the normal login like every route. */
 export const NIGHTJAR_GALLERY_PATH = "/__nightjar";
+
+/** The navigation state that hands a message to HQ's page (#2152): a draft's Plan with HQ
+ *  (`mission` binds the conversation to it). The page opens a new conversation and sends it once
+ *  (`AskConsole`'s `seed`). */
+export function hqSeedState(text: string, mission?: string) {
+  return { hqCompose: true, hqSeed: { text, ...(mission ? { mission } : {}) } };
+}

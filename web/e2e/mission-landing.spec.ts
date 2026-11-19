@@ -1,13 +1,15 @@
 /** The Missions section's front door (#948 P3).
  *
- * Entering the section opens the new-mission page with nothing selected — even while a mission
- * needs the operator. What needs them is previewed on the landing from the rail's own rows, and
+ * Entering the section opens the landing with nothing selected — even while a mission needs the
+ * operator. What needs them is previewed on the landing from the rail's own rows, and
  * that preview names its scope instead of pretending to be global. One tab strip, THREAD | SHELF (#1740); below 1400px
- * the details are one disclosure that never unmounts the thread. No untracked-session surface. The
- * composer takes templates, insert-only, and refuses to start a brief the server would truncate.
+ * the details are one disclosure that never unmounts the thread. No untracked-session surface. There
+ * is no New-mission form (#2152): New mission opens HQ on a fresh conversation, and HQ plans it.
  */
 import { expect, test, type Page } from "@playwright/test";
 import { openAsk } from "./askSidebar";
+import { mockAskConversations } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 import { MISSION_PATH, missionLink } from "../src/lib/missionLink";
 import {
   MISSION,
@@ -20,21 +22,17 @@ import {
 
 const NEEDY = "msn_" + "1".repeat(32);
 const OTHER = "msn_" + "2".repeat(32);
-const CREATED = "msn_" + "3".repeat(32);
 
-const TEMPLATE = {
-  id: "tpl_1",
-  name: "PR checklist",
-  description: "Ship a fix with a PR",
-  tags: [],
-  body: "Fix {{area}} and open a PR",
-  fields: [{ name: "area", label: "Area", default: "auth", required: true }],
-  images: [{ name: "shot.png", path: "/tmp/uploads/20260914-shot.png" }],
-  created_at: 1,
-  updated_at: 1,
-  used_count: 0,
-  last_used_at: null,
-};
+/** Every write that would START something: a mission POST, or a message sent to HQ (#2152). */
+function watchStarts(page: Page) {
+  const starts: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST") return;
+    const path = new URL(req.url()).pathname;
+    if (path === "/api/missions" || path.endsWith("/message/stream")) starts.push(path);
+  });
+  return starts;
+}
 
 async function setup(page: Page, opts: { cards?: unknown[]; config?: Record<string, unknown> } = {}) {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
@@ -88,23 +86,23 @@ async function setup(page: Page, opts: { cards?: unknown[]; config?: Record<stri
   });
   await page.route(/\/api\/missions\/msn_[0-9a-f]{32}(\?.*)?$/, (r) => {
     const id = /msn_[0-9a-f]{32}/.exec(r.request().url())![0];
-    const title = id === NEEDY ? "Needy mission" : id === CREATED ? "Created mission" : "Quiet mission";
+    const title = id === NEEDY ? "Needy mission" : "Quiet mission";
     return r.fulfill({ json: { ...MISSION, id, title, events: [], events_next_seq: null } });
   });
   return { details };
 }
 
-test("entering Missions opens the new-mission page, even while a mission needs you", async ({ page }) => {
+test("entering Missions opens the landing, even while a mission needs you", async ({ page }) => {
   const { details } = await setup(page);
   await page.goto(MISSION_PATH);
   await expect(page.getByTestId("mission-landing")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "What should this mission achieve?" })).toBeVisible();
+  await expect(page.getByTestId("mission-landing-heading")).toHaveText("Missions");
   // Nothing was selected for the operator: no mission header, no mission read.
   await expect(page.getByTestId("console-title")).toHaveCount(0);
   await expect(page.getByTestId("landing-needs-row")).toContainText("Needy mission");
   expect(details).toEqual([]);
-  // The brief does not grab focus on arrival (a phone would pop its keyboard).
-  await expect(page.getByTestId("new-mission-instruction")).not.toBeFocused();
+  // Nothing grabs focus on arrival.
+  await expect(page.getByTestId("landing-new-mission")).not.toBeFocused();
 
   // The preview row is the way in.
   await page.getByTestId("landing-needs-row").click();
@@ -275,16 +273,18 @@ test("no untracked-session surface anywhere in the section", async ({ page }, te
   await expect(page.locator("body")).not.toContainText("An unadopted session");
 });
 
-test("the landing is the brief form, and ASK has left for its own section (#1058)", async ({
+test("the landing is ONE New mission button, and ASK has left for its own section (#1058, #2152)", async ({
   page,
 }) => {
   // It used to be "ASK stays reachable from the landing" — one press of a segmented control. Ask is
   // the Ask sidebar now (#1294), which is the whole point: a question about SESSIONS no longer lives behind the
-  // MISSIONS section. What has to stay true is that neither surface lost anything — the landing is
-  // the brief with no mode to pick, and Ask is one tap away in the same top bar.
+  // MISSIONS section. What has to stay true is that neither surface lost anything — the landing has
+  // no mode to pick (and, since #2152, no form: New mission is HQ's), and Ask is one tap away in the
+  // same top bar.
   await setup(page);
   await page.goto(MISSION_PATH);
-  await expect(page.getByTestId("new-mission-form")).toBeVisible();
+  await expect(page.getByTestId("landing-new-mission")).toBeVisible();
+  await expect(page.locator("[data-testid='mission-landing'] textarea")).toHaveCount(0);
   await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
   await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
 
@@ -293,36 +293,8 @@ test("the landing is the brief form, and ASK has left for its own section (#1058
   await expect(panel.getByTestId("composer-input")).toBeVisible();
 });
 
-test("a template inserts into the brief without creating anything; Start sends exactly that text", async ({
-  page,
-}) => {
-  await setup(page);
-  const creates: unknown[] = [];
-  await page.route(/\/api\/missions$/, async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    creates.push(r.request().postDataJSON());
-    return r.fulfill({ status: 201, json: { ...MISSION, id: CREATED, title: "Created mission" } });
-  });
-  await page.goto(MISSION_PATH);
-  await page.getByTestId("new-mission-template").click();
-  const picker = page.getByRole("dialog");
-  await picker.getByRole("button", { name: /PR checklist/ }).first().click();
-  // A mission has no session to send into, so the picker offers Insert only.
-  await expect(picker.getByRole("button", { name: /^Send PR checklist/ })).toHaveCount(0);
-  await picker.getByRole("button", { name: "Insert PR checklist into mission brief" }).click();
-
-  const brief = page.getByTestId("new-mission-instruction");
-  await expect(brief).toHaveValue("Fix auth and open a PR /tmp/uploads/20260914-shot.png");
-  expect(creates).toEqual([]);
-
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
-  await expect.poll(() => creates.length).toBe(1);
-  expect(creates[0]).toMatchObject({
-    instruction: "Fix auth and open a PR /tmp/uploads/20260914-shot.png",
-    project_id: "p1",
-  });
-});
+// RETIRED BY #2152 (no New-mission form): "a template inserts into the goal without creating
+// anything; Plan with HQ sends exactly that text".
 
 test("the workspace type scale is the §4 one, not 0.66–0.84rem", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "computed once, on the desktop project");
@@ -334,12 +306,8 @@ test("the workspace type scale is the §4 one, not 0.66–0.84rem", async ({ pag
       return [s.fontSize, s.fontWeight];
     });
 
-  await page.goto(MISSION_PATH);
-  // The landing brief is the centrepiece: 16px. The footer's mono chrome is 11px — measured on the
-  // shortcut hint since #1058 retired the mode control that used to carry that value.
-  expect((await type(page.getByTestId("new-mission-instruction")))[0]).toBe("16px");
-  expect((await type(page.getByTestId("new-mission-hint")))[0]).toBe("11px");
-
+  // (The landing's goal box and its 11px shortcut hint were measured here until #2152 removed the
+  // New-mission form.)
   // A selected mission: the console's heading on the v2 scale (#1573: `--fs-h2`, 18px/600 in the
   // display face, as the PR 4a board draws it), the thread composer at the 14px body size.
   await page.goto(missionLink(OTHER));
@@ -348,66 +316,10 @@ test("the workspace type scale is the §4 one, not 0.66–0.84rem", async ({ pag
   expect((await type(page.locator('[data-testid="split"] textarea').first()))[0]).toBe("14px");
 });
 
-test("a brief over the server's 8000-character cap cannot be started", async ({ page }) => {
-  await setup(page);
-  await page.goto(MISSION_PATH);
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-instruction").fill("x".repeat(8001));
-  await expect(page.getByTestId("new-mission-count")).toContainText("8001 / 8000");
-  await expect(page.getByTestId("new-mission-start")).toBeDisabled();
-  await page.getByTestId("new-mission-instruction").fill("x".repeat(7999));
-  await expect(page.getByTestId("new-mission-start")).toBeEnabled();
-});
+// RETIRED BY #2152 (no New-mission form): "a goal over HQ's 1800-character cap cannot be planned",
+// "Ctrl/⌘+Enter honours the cap too" and "a template appends to an existing brief on a new line".
 
-test("Ctrl/⌘+Enter honours the cap too: an over-cap brief is not created", async ({ page }) => {
-  // `requestSubmit()` submits a form whose submit button is disabled, so the button alone never
-  // guarded the keyboard path.
-  await setup(page);
-  const creates: { instruction: string }[] = [];
-  await page.route(/\/api\/missions$/, async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    creates.push(r.request().postDataJSON());
-    return r.fulfill({ status: 201, json: { ...MISSION, id: CREATED, title: "Created mission" } });
-  });
-  await page.goto(MISSION_PATH);
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  const brief = page.getByTestId("new-mission-instruction");
-  await brief.fill("x".repeat(8001));
-  await brief.press("Control+Enter");
-  // Then a legal brief by the same key. If the first press had gone through, the FIRST create
-  // would carry 8001 characters.
-  await brief.fill("x".repeat(7999));
-  await brief.press("Control+Enter");
-  await expect.poll(() => creates.length).toBe(1);
-  expect(creates[0].instruction).toHaveLength(7999);
-});
-
-test("a template appends to an existing brief on a new line, and a cancelled picker changes nothing", async ({
-  page,
-}) => {
-  await setup(page);
-  await page.goto(MISSION_PATH);
-  const brief = page.getByTestId("new-mission-instruction");
-  await brief.fill("Keep the retry budget   ");
-
-  // Cancel: pick a template, then dismiss the picker without inserting.
-  await page.getByTestId("new-mission-template").click();
-  const picker = page.getByRole("dialog");
-  await picker.getByRole("button", { name: /PR checklist/ }).first().click();
-  await page.keyboard.press("Escape");
-  await expect(picker).toBeHidden();
-  await expect(brief).toHaveValue("Keep the retry budget   ");
-
-  // Insert into a non-empty brief: trailing space trimmed, the template on its own line.
-  await page.getByTestId("new-mission-template").click();
-  await picker.getByRole("button", { name: /PR checklist/ }).first().click();
-  await picker.getByRole("button", { name: "Insert PR checklist into mission brief" }).click();
-  await expect(brief).toHaveValue(
-    "Keep the retry budget\nFix auth and open a PR /tmp/uploads/20260914-shot.png",
-  );
-});
-
-test("a new mission has no checklist: no picker, no playbook_id, and the line under the box says how it is measured (#1653)", async ({
+test("New mission opens HQ on a fresh conversation and starts nothing; the landing offers no checklist (#1653, #2152)", async ({
   page,
 }) => {
   // A config from an old server (or a stale cache) can still carry a checklist block: nothing
@@ -421,24 +333,23 @@ test("a new mission has no checklist: no picker, no playbook_id, and the line un
       },
     },
   });
-  const creates: Record<string, unknown>[] = [];
-  await page.route("**/api/missions", (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    creates.push(r.request().postDataJSON());
-    return r.fulfill({ status: 201, json: { ...MISSION, id: CREATED, title: "Created mission" } });
-  });
+  await mockAskConversations(page, []);
+  const starts = watchStarts(page);
   await page.goto(MISSION_PATH);
-  await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
+  const button = page.getByTestId("landing-new-mission");
+  await expect(button).toHaveText("New mission");
   await expect(page.getByTestId("new-mission-playbook")).toHaveCount(0);
-  const note = page.getByTestId("new-mission-objectives-note");
-  await expect(note).toBeVisible();
-  await expect(note).not.toContainText(/checklist/i);
-  // The note stays inside the page on a phone too.
+  await expect(page.getByTestId("mission-landing")).not.toContainText(/checklist/i);
+  // The one primary sits at the touch floor, and the landing stays inside the page on a phone too.
+  expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const vw = page.viewportSize()!.width;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vw);
-  await page.getByTestId("new-mission-instruction").fill("tidy the readme");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
-  await expect.poll(() => creates.length).toBe(1);
-  expect(creates[0]).toEqual({ instruction: "tidy the readme", project_id: "p1" });
+
+  await button.click();
+  // HQ's page on a FRESH conversation: `/hq` itself, an empty composer, nothing sent or created.
+  await expect(page).toHaveURL(/\/hq$/);
+  await expect(page.locator("[data-hq-thread] textarea")).toBeVisible();
+  await expect(page.locator("[data-hq-thread] textarea")).toHaveValue("");
+  await page.waitForTimeout(300);
+  expect(starts).toEqual([]);
 });

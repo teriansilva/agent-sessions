@@ -247,13 +247,13 @@ beforeEach(() => {
 // The console's own surfaces.
 // =============================================================================================
 
-test("no missions renders the new-mission page, not a blank (#878, #948)", async () => {
+test("no missions renders the landing with New mission, not a blank (#878, #948, #2152)", async () => {
   renderPulse();
-  // The invitation is the front door itself now: the new-mission page, with nothing selected and
-  // therefore no mission header above it.
-  expect(await screen.findByTestId("mission-landing")).toHaveTextContent(
-    /what should this mission achieve\?/i,
-  );
+  // The landing, with nothing selected and therefore no mission header above it. There is no
+  // New-mission form (#2152): its New mission opens HQ.
+  const landing = await screen.findByTestId("mission-landing");
+  expect(within(landing).getByTestId("landing-new-mission")).toHaveTextContent("New mission");
+  expect(within(landing).queryByRole("textbox")).toBeNull();
   expect(screen.queryByTestId("console-title")).not.toBeInTheDocument();
 });
 

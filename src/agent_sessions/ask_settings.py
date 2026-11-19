@@ -13,8 +13,8 @@ through here.
 
 **Never readable, by construction:** the AI key and endpoint URL and model; template variables;
 auth configuration, password state and the username; forge credentials; analytics ids; project
-roots, folder exclusions and every other filesystem path (``mission_plan``'s rule: a model that
-never sees a path cannot echo one).
+roots, folder exclusions and every other filesystem path (#893's rule, ``mission_targets``: a
+model that never sees a path cannot echo one).
 
 Changing a setting stays in Settings: HQ points the operator there (``ask_orchestrator``'s prompt).
 """

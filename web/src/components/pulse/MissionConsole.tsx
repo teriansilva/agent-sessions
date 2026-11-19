@@ -25,7 +25,6 @@ import { useMissionRailSlot } from "./railSlot";
 
 import { ApiError, api } from "../../lib/api";
 import type {
-  Mission,
   MissionListRow,
   OrchestratorAction,
   PulseCard,
@@ -37,7 +36,7 @@ import { ActionRow } from "./ActionRow";
 import type { DraftEdit } from "./draftDirection";
 import { announceActionResolved } from "../../lib/actionEvents";
 import { MISSION_ID_RE } from "../../lib/missionLink";
-import { NewMissionForm } from "./NewMissionForm";
+import { NEW_MISSION_TARGET } from "./hqPlanning";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionApprovalCard } from "./MissionApprovalCard";
@@ -1168,14 +1167,7 @@ export function MissionConsole({
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const deepLink = searchParams.get("m");
-  /** "Plan a mission here" from the New project wizard (#1187) names the project to start in, in
-   *  router state. Read once; the form only uses it as its initial choice. */
   const location = useLocation();
-  const [initialProjectId] = useState(() => {
-    const v = (location.state as { missionProjectId?: unknown } | null)
-      ?.missionProjectId;
-    return typeof v === "string" ? v : "";
-  });
   const [consumedLink, setConsumedLink] = useState<string | null>(null);
   if (deepLink !== consumedLink) {
     setConsumedLink(deepLink);
@@ -1200,25 +1192,14 @@ export function MissionConsole({
   const railSlot = useMissionRailSlot();
   const { el: railSlotEl, dismiss: dismissRail } = railSlot;
 
-  /** Bumped by "+ New mission" so the brief takes focus — which it must not do on plain arrival.
-   *
-   *  The composer's MODE used to be lifted here too (#935, #937 review 1), because a
-   *  `NEW MISSION | ASK` strip meant "which mode" had to outlive the remount that "+ New mission"
-   *  causes. #1058 moved Ask to `/ask`, so the landing has exactly one mode and there is nothing
-   *  left to remember: the brief form IS the landing.
-   *
-   *  `startNewMission` dismisses whatever surface the rail lives in, so it closes over
-   *  `dismissRail` — which is why the slot is read ABOVE this. Reading a `const` declared below
-   *  it is a TDZ error, which the react-hooks lint catches and a browser would too. */
-  const [focusKey, setFocusKey] = useState(0);
+  /** "+ New mission" OPENS HQ (#2152): HQ plans every mission, so there is no New-mission form.
+   *  HQ's page on a fresh conversation, where HQ asks for the goal and the project and proposes the
+   *  draft; nothing is created until the operator confirms its card. The rail's surface is closed
+   *  first (on a phone it is the drawer). */
   const startNewMission = useCallback(() => {
-    // Back to the front door (#948): with nothing selected the workspace IS the new-mission page.
-    setSelected(null);
-    setFocusKey((n) => n + 1);
-    // On a phone the rail IS the drawer; leaving it open hides the field the operator is about
-    // to type into.
     dismissRail();
-  }, [dismissRail]);
+    navigate(NEW_MISSION_TARGET.to, { state: NEW_MISSION_TARGET.state });
+  }, [dismissRail, navigate]);
 
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -1247,15 +1228,6 @@ export function MissionConsole({
   // because a comparison against `null` is not the same statement.
   const isCurrent = useCallback(
     (id: string) => (shownRef.current ?? LANDING_VIEW) === id,
-    [],
-  );
-  /** The visit to capture. Read from an event handler — after the effect below has published it
-   *  — never during a render, where the effect for the current selection has not run yet. */
-  const visit = useCallback(() => visitRef.current, []);
-  /** Strictly stronger than `isCurrent`: the counter moves on every view AND scope change, so an
-   *  equal token already implies the same view is showing, in the same visit, in the same scope. */
-  const isVisitCurrent = useCallback(
-    (at: number) => at === visitRef.current,
     [],
   );
 
@@ -1895,34 +1867,6 @@ export function MissionConsole({
     [reload, onMembershipChanged, setScope, setSelected],
   );
 
-  const onCreated = useCallback(
-    (m: Mission, opts: { focus: boolean } = { focus: true }) => {
-      // The mission EXISTS whatever happened on the client, so the rail is refreshed either way.
-      // Only the focus is conditional: a completion that arrived after the operator cancelled or
-      // moved on must not switch scope and selection out from under them (#896 review 2).
-      if (!opts.focus) {
-        void reload();
-        return;
-      }
-      setNote(null);
-      if (archived) {
-        // SCOPE SWITCH ONLY — no `reload()` here, and that is finding 3 from #896's review.
-        // `reload` is a callback closed over `archived`, so the instance in hand at this moment
-        // still requests `archived=1`; and `setScope` has already bumped the list generation, so
-        // that archived response would share the NEW generation with the active-scope effect and
-        // overwrite the active rail with archived rows.
-        //
-        // Nothing is lost by dropping it: `setScope` changes `archived`, which is in the list
-        // effect's dependencies, so the active list is fetched by the effect that owns that scope.
-        // One owner per scope, rather than two requests racing under one generation.
-        setScope(false);
-      } else {
-        void reload();
-      }
-      setSelected(m.id);
-    },
-    [archived, setScope, reload, setSelected],
-  );
 
 
   const select = useCallback(
@@ -2131,15 +2075,7 @@ export function MissionConsole({
             />
           ) : (
             <MissionLanding
-              composer={
-                <NewMissionForm
-                  visit={visit}
-                  isVisitCurrent={isVisitCurrent}
-                  onCreated={onCreated}
-                  focusKey={focusKey}
-                  initialProjectId={initialProjectId}
-                />
-              }
+              onNewMission={startNewMission}
               missions={missions}
               filtered={missionFiltered || archived}
               partial={hasMore || needsReRead}

@@ -10,7 +10,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { MISSION_PATH } from "../src/lib/missionLink";
-import { missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
+import { MISSION, missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
 import { storeMotionChoice } from "./nightjarShell";
 
 const id = (n: number) => "msn_" + String(n).repeat(32);
@@ -110,11 +110,14 @@ test("each row's LED carries its state's tone, steady in the list (#1573)", asyn
 
 test("a mission that joins the rail ARRIVES; the first load does not (#1573)", async ({ page }) => {
   const { rows } = await setup(page);
-  await page.route(/\/api\/missions(\?.*)?$/, async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    const made = missionRow({ id: id(7), title: "Freshly started", project_id: "p1", state: "dispatching" });
-    rows.unshift(made);
-    return r.fulfill({ json: made });
+  // The rail re-reads its list after a mutation. A mission HQ created meanwhile (#2152: HQ's draft
+  // card creates missions, not this page) is in that read, and joins the rail. Mark done on a
+  // mission the operator opened is the mutation; it was the form's own create until #2152.
+  await page.route("**/api/missions/*/state", (r) => {
+    rows.unshift(
+      missionRow({ id: id(7), title: "Freshly started", project_id: "p1", state: "draft" }),
+    );
+    return r.fulfill({ json: { ...MISSION, id: id(2), state: "done" } });
   });
   await page.goto(MISSION_PATH);
   await openMissionRail(page);
@@ -122,11 +125,11 @@ test("a mission that joins the rail ARRIVES; the first load does not (#1573)", a
   // The first load is a list arriving, not a row: nothing slides in.
   for (const row of await page.getByTestId("rail-mission").all())
     await expect(row).not.toHaveClass(/rowArrived/);
-  await page.keyboard.press("Escape");
+  await page.getByTestId("rail-mission").filter({ hasText: "Working away" }).click();
+  if (await page.getByRole("dialog").count()) await page.keyboard.press("Escape");
 
-  await page.getByTestId("new-mission-instruction").fill("Start something new");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  await page.getByTestId("mission-done").click();
+  await page.getByTestId("mission-done").click();
 
   await openMissionRail(page);
   const fresh = page.getByTestId("rail-mission").filter({ hasText: "Freshly started" });

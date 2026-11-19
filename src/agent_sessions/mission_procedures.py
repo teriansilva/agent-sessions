@@ -369,6 +369,27 @@ def _project_listing(
     return out, record, bundle
 
 
+def procedure_flow(project_id: str, index: int) -> dict:
+    """The deployed procedure at ``index`` of ``project_id``'s listing, from ONE snapshot (#2152):
+    `{listing, flow_id, flow, playbook}`, for HQ's `mission.plan` card to SHOW its steps and roles.
+    Display only; the apply names it by `{index, listing}` and re-checks. `ProcedureError` when
+    the index is not a ready procedure. BLOCKING."""
+    now, record, bundle = _project_listing(project_id, None)
+    if now["reason"] is not None or bundle is None:
+        raise ProcedureError(now["reason"] or "the project has no deployed playbook", status=409)
+    if type(index) is not int or not 0 <= index < len(now["procedures"]):
+        raise ProcedureError("no procedure has that index", status=422)
+    row = now["procedures"][index]
+    if not row["ready"]:
+        raise ProcedureError(row["reason"], status=409)
+    return {
+        "listing": now["listing"],
+        "flow_id": row["flow_id"],
+        "flow": copy.deepcopy(bundle["flows"][row["flow_id"]]),
+        "playbook": (now.get("playbook") or {}).get("name") or "",
+    }
+
+
 # ---- procedure inputs picked by index (S1d, #1076) ----------------------------------------------
 
 #: How many choices one input offers: the deployed value plus open pull requests.
@@ -574,6 +595,7 @@ def apply_listed(
     picked: dict[str, dict] | None = None,
     project: object = None,
     after: object = None,
+    require_unplanned: bool = False,
 ) -> dict:
     """Apply the procedure at `index` of the listing whose digest the client echoes; optionally
     with per-objective inputs picked by index (`inputs` + `choices`, checked here, or `picked`
@@ -584,7 +606,16 @@ def apply_listed(
         picked = resolve_picks(mission_id, index, listing_digest, inputs, choices, project)
     now, record, bundle = _checked_listing(mission_id, index, listing_digest, project)
     assert record is not None and bundle is not None  # a listing with procedures has both
-    return _apply_from(mission_id, now, record, bundle, index, picked or {}, order)  # type: ignore[arg-type]
+    return _apply_from(
+        mission_id,
+        now,
+        record,
+        bundle,
+        index,
+        picked or {},
+        order,
+        require_unplanned,  # type: ignore[arg-type]
+    )
 
 
 def _after(after: object) -> list[str] | None:
@@ -606,6 +637,7 @@ def _apply_from(
     index: int,
     picked: dict,
     after: list[str] | None = None,
+    require_unplanned: bool = False,
 ) -> dict:
     pid = now["project_id"]
     fid = now["procedures"][index]["flow_id"]
@@ -652,6 +684,7 @@ def _apply_from(
         reason=f"applied {record['playbook_id']}@{revision[:12]} · {fid}",
         primary_project_id=now["primary_project_id"],
         after=after,
+        require_unplanned=require_unplanned,
     )
 
 
@@ -744,21 +777,15 @@ def _with_picks(flow: dict, items: list[dict], picked: dict) -> list[dict]:
     return out
 
 
-def apply_local(
-    mission_id: str, flow_id: object, doc: object, project: object = None, after: object = None
-) -> dict:
-    """Apply a mission-local procedure the operator wrote: the bundle's own flow validator, and
-    targets from the project's current bindings with bundle defaults refused."""
-    order = _after(after)
-    scope = missions.procedure_scope(mission_id)
-    primary = scope["project_id"]
-    if not primary:
-        raise ProcedureError(
-            "the mission has no project; every objective names one (choose it first)", status=409
-        )
-    # In the chosen project (#1797 S2b): ITS deployed playbook's declarations and ITS bindings.
-    pid = _chosen_project(mission_id, project) or primary
-    record, bundle, reason = _deployment(pid)
+def _resolve_local(pid: str, flow_id: object, doc: object) -> tuple[dict, list[dict], list[dict]]:
+    """`(procedure, inputs, items)` for a mission-local flow in project ``pid``, WRITING NOTHING:
+    the bundle's own flow validator over the project's deployed declarations (or none), targets
+    from the project's CURRENT bindings with bundle defaults refused, and the evidence bound.
+
+    The one resolution :func:`apply_local` writes from and :func:`check_local` stages from
+    (#2152, D6), so a card is never shown a flow the apply would refuse for a reason it could
+    see."""
+    _record, bundle, reason = _deployment(pid)
     if bundle is None and reason != NO_DEPLOYMENT:
         # The project HAS a playbook, and its declarations are what a mission-local procedure may
         # reference — but not while the deployment is unsettled or out of date.
@@ -798,6 +825,8 @@ def apply_local(
             items.append(_item(step, item, t["args"], t["pending"]))
     if len(items) > missions.OBJECTIVES_MAX:
         raise ProcedureError("this procedure has more evidence than a mission holds", status=422)
+    for it in items:
+        plan_doc.evidence_key("o99", it["key"])  # the store's key rule, checked before a write
     sources = {row["name"]: row.get("source") for row in resolved.public}
     procedure = {
         "source": "mission_local",
@@ -811,6 +840,53 @@ def apply_local(
     inputs = [
         {"name": n, "source": str(sources.get(n) or "missing")} for n in _variables_used(flow)
     ]
+    return procedure, inputs, items
+
+
+def check_local(project_id: str, flow_id: object, doc: object) -> dict:
+    """Stage a mission-local flow for a project WITHOUT writing (#2152, D6): the full
+    :func:`apply_local` resolution — the project's declarations and bindings, unusable
+    deployments and default-derived targets refused, the evidence bounds — before any card exists.
+
+    Returns the validated flow (`flow`, as the validator normalized it) and `digest`, a digest of
+    everything the apply would write from it (the procedure, its inputs and every resolved target)
+    plus the deployment it was resolved against. A card binds that digest, so a binding or a
+    deployment that moves before the tap makes the card stale; `apply_local` runs again on confirm
+    regardless. Raises `ProcedureError` (422 invalid, 409 not applicable). BLOCKING."""
+    record, _bundle, _reason = _deployment(project_id)
+    procedure, inputs, items = _resolve_local(project_id, flow_id, doc)
+    basis = {
+        "project": project_id,
+        "deployment": [record.get("id"), record.get("generation")] if record else None,
+        "procedure": procedure,
+        "inputs": inputs,
+        "items": items,
+    }
+    return {"flow": procedure["flow"], "digest": _digest(basis)}
+
+
+def apply_local(
+    mission_id: str,
+    flow_id: object,
+    doc: object,
+    project: object = None,
+    after: object = None,
+    *,
+    require_unplanned: bool = False,
+) -> dict:
+    """Apply a mission-local procedure the operator (or HQ's confirmed card, #2152) wrote: the
+    bundle's own flow validator, and targets from the project's current bindings with bundle
+    defaults refused. `require_unplanned` is `missions.apply_procedure`'s write-boundary fence."""
+    order = _after(after)
+    scope = missions.procedure_scope(mission_id)
+    primary = scope["project_id"]
+    if not primary:
+        raise ProcedureError(
+            "the mission has no project; every objective names one (choose it first)", status=409
+        )
+    # In the chosen project (#1797 S2b): ITS deployed playbook's declarations and ITS bindings.
+    pid = _chosen_project(mission_id, project) or primary
+    procedure, inputs, items = _resolve_local(pid, flow_id, doc)
     return missions.apply_procedure(
         mission_id,
         project_id=pid,
@@ -820,6 +896,7 @@ def apply_local(
         reason=f"mission-local procedure {flow_id} added by the operator",
         primary_project_id=primary,
         after=order,
+        require_unplanned=require_unplanned,
     )
 
 
@@ -843,4 +920,4 @@ def plan(mission_id: str, revision: int | None = None) -> dict:
     }
 
 
-__all__ = ["ProcedureError", "apply_listed", "apply_local", "listing", "plan"]
+__all__ = ["ProcedureError", "apply_listed", "apply_local", "check_local", "listing", "plan"]

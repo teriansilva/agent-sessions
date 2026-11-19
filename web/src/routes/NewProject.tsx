@@ -1,3 +1,4 @@
+import { NEW_MISSION_TARGET } from "../components/pulse/hqPlanning";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useProjectPlaybook } from "../components/playbooks/useProjectPlaybook";
 import {
@@ -26,7 +27,7 @@ import {
   readWizardEntry,
   returnTarget,
 } from "../lib/newProject";
-import { MAP_PATH, MISSION_PATH, SESSIONS_PATH } from "../lib/routes";
+import { MAP_PATH, SESSIONS_PATH } from "../lib/routes";
 import type { FsDir, ProjectEntity } from "../types/api";
 import {
   folderOwner,
@@ -703,10 +704,8 @@ export default function NewProject() {
               type="button"
               className={styles.ghostBtn}
               onClick={() =>
-                navigate(MISSION_PATH, {
-                  replace: true,
-                  state: { missionProjectId: created.id },
-                })
+                // HQ plans every mission (#2152): a fresh conversation, where HQ asks the goal.
+                navigate(NEW_MISSION_TARGET.to, { replace: true, state: NEW_MISSION_TARGET.state })
               }
             >
               Plan a mission here

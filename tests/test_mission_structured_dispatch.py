@@ -21,8 +21,8 @@ from agent_sessions import (
     headless_dispatch,
     mission_dispatch,
     mission_fence,
-    mission_plan,
     mission_structured,
+    mission_targets,
     missions,
     prefs,
     session_input,
@@ -121,14 +121,14 @@ def test_mission_ready_is_a_per_kind_capability_never_readiness(host, monkeypatc
 
 def test_plan_admits_an_api_client_only_when_mission_ready_and_ready(store, monkeypatch):
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], False)  # the rollback switch
-    offered = {o["id"] for o in mission_plan.engine_options()}
+    offered = {o["id"] for o in mission_targets.engine_options()}
     assert ENGINE not in offered
-    listed = {u["id"]: u["reason"] for u in mission_plan.engine_unavailable()}
+    listed = {u["id"]: u["reason"] for u in mission_targets.engine_unavailable()}
     assert listed.get(ENGINE) == mission_structured.NOT_MISSION_READY
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], True)
-    assert ENGINE in {o["id"] for o in mission_plan.engine_options()}
+    assert ENGINE in {o["id"] for o in mission_targets.engine_options()}
     monkeypatch.setattr(mission_structured.registry, "can_start", lambda _p: False)
-    assert ENGINE not in {o["id"] for o in mission_plan.engine_options()}
+    assert ENGINE not in {o["id"] for o in mission_targets.engine_options()}
 
 
 def test_no_mission_module_reaches_the_facade_but_through_mission_structured():

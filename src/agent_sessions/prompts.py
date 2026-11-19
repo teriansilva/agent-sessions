@@ -287,16 +287,23 @@ for anything else you cannot do, say so and point to where in BattleLab the oper
 When the Commander asks you to set something up or plan it, propose the draft card and keep \
 refining it with them; asking first for a detail you cannot find is fine.
 
-To plan a mission that does not exist yet, call list_missions (state draft), list_projects and \
-list_procedures, then propose_mission with the project's index, the instruction and the \
-procedure_index (omit it if there is one procedure). The operator confirms a card that creates a \
-draft and applies the procedure; nothing runs until the operator presses Begin, which you cannot \
-do. After the tap you get a turn of your own naming the new mission: read_plan and assemble the \
-team as asked, without waiting to be told. Never say you cannot plan or create a mission, and do \
-not ask for inputs such as a job posting before the draft exists; the intake step asks. Only if \
-propose_mission is refused or the project or procedure is unclear, say so (ask_operator) and say \
-the operator can also open Missions, choose New mission and pick the project: nothing runs until \
-Begin.
+You plan every mission; there is no other planner. To plan a mission that does not exist yet, \
+call list_missions (state draft), list_projects and list_procedures, then propose_mission with \
+the project's index, the instruction and the procedure_index (omit it if there is one \
+procedure). Prefer a deployed procedure whenever one fits the goal. Only when none fits, or the \
+project has no deployed playbook, write one for this mission and pass it as flow: a format 5 \
+flow (call playbook_schema for its shape) whose agent steps each name a role (skills that exist \
+in the Library, list_skills, and a min_grade) and whose approvals are operator steps; it uses \
+only the project's declared variables. Never plan a mission as one agent with one brief. When \
+the Commander opened you from a mission's Plan with HQ, plan THAT mission: pass its mission_id \
+to propose_mission (no project_index or instruction), never create a second one. The operator \
+confirms a card that creates the draft, or plans the existing one, and applies the procedure; \
+nothing runs until the operator approves the plan, which you cannot do. After the tap you get a \
+turn of your own naming the mission: read_plan and assemble the team as asked, without waiting \
+to be told. Never say you cannot plan or create a mission, and do not ask for inputs such as a \
+job posting before the draft exists; the intake step asks. If propose_mission is refused, fix \
+what the refusal names and propose again. New mission opens you with nothing filled in: if the \
+goal, the project or the procedure is unclear, ask_operator for it before proposing.
 
 You also write the Library. To make or change a playbook (how a project's work flows: steps, \
 agents, evidence), call playbook_schema and look at an existing one with list_playbooks and \
@@ -438,26 +445,7 @@ Rules:
 - A note is a title and nothing else. You may NOT choose what kind of check it is or name any
   target: there is no field for that, and any you add refuses the row.
 - Prefer few outcomes. A list nobody reads is worse than three that matter."""
-_MISSION_PLAN = """You turn a mission instruction into a DISPATCH PROPOSAL. Nothing you write
-launches anything: an operator reads your proposal, edits it, and decides.
 
-You are given the instruction, a NUMBERED LIST of projects, and a NUMBERED LIST of agents.
-
-Reply with JSON only:
-{"project_index": <int or null>, "engine_index": <int or null>,
- "engine_reason": "<one short sentence: why this agent for this work>",
- "brief": "<what you would tell the agent, in its own words>"}
-
-Rules:
-- `project_index` and `engine_index` are indices into the lists you were given. Never invent one,
-  and never write a path, a directory, a repository URL or an agent name anywhere else.
-- Use `null` when the instruction does not say which project or which agent. `null` is a real
-  answer — the operator picks. A guess presented as a choice is worse than an empty field.
-- `engine_reason` is shown to the operator beside your suggestion. Say what about THIS work makes
-  that agent the right one. If you have no reason, use `null` for the agent instead.
-- `brief` is the first thing the agent will be told. Write it for the agent, not about it: what
-  to do, what "done" looks like, and anything from the instruction it would otherwise not know.
-  It is pasted verbatim into a fresh session, so it must stand alone."""
 _CHAT_INSTRUCT = _strip_guard(_CHAT_INSTRUCT_ORIGINAL)
 
 
@@ -1303,30 +1291,6 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
         # narrow a reading: an objective list is what the follow-through loop nudges against, so
         # text that shapes it shapes autonomous action a phase later (#840 §13).
-        guarded=True,
-    ),
-    Prompt(
-        id="mission_plan",
-        group="Missions",
-        label="Mission plan",
-        description=(
-            "Turns a mission instruction into a dispatch proposal — project, agent and brief — "
-            "by SELECTING from server-built lists. It never writes a path or an agent name."
-        ),
-        # Index-shaped (as `mission_objectives` was, #883), and here it is the difference
-        # between a wrong link and a path-traversal bug with an unattended agent on the end of
-        # it: the cwd is resolved server-side from the chosen project entity, so there is no
-        # code path from model text to a launch argument (#893, #840 §4).
-        contract='{"project_index": int|null, "engine_index": int|null, '
-        '"engine_reason": str, "brief": str}',
-        default=_MISSION_PLAN,
-        max_chars=6000,
-        block=BLOCK,
-        field="mission_plan",
-        # GUARDED. The brief it writes is pasted verbatim into a fresh agent running UNATTENDED
-        # — the most direct route from prompt text to autonomous action in the app, so this is
-        # the last prompt that could reasonably be left unguarded — and the agent may be
-        # permission-bypassed, under the operator's `agent_defaults.bypass` grant (#1215).
         guarded=True,
     ),
     Prompt(

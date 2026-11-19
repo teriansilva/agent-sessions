@@ -919,9 +919,9 @@ def test_the_dispatch_path_reads_neither_the_plan_nor_pending():
     and nothing launches on the plan document's say-so."""
     from pathlib import Path
 
-    from agent_sessions import mission_dispatch, mission_dispatch_recover, mission_plan
+    from agent_sessions import mission_dispatch, mission_dispatch_recover
 
-    for mod in (mission_dispatch, mission_dispatch_recover, mission_plan):
+    for mod in (mission_dispatch, mission_dispatch_recover):
         text = Path(mod.__file__).read_text()
         for needle in (
             "mission_plan_revisions",

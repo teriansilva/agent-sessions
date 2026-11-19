@@ -2,11 +2,9 @@
 
 There is no second launcher here. Each action goes through the path a manual start uses:
 
-* ``start_mission`` → ``missions.create_mission`` + the background producers the create route runs
-  (objectives + plan), then — when the consented autonomy says so — ``routes.missions.
-  dispatch_approved``, the manual dispatch route's own body, with every fence it has (master
-  switch, tier, containment, cwd and objectives comparands, plan CAS). The mission-orchestration
-  tier is never raised here (#1019): ``dispatch`` refuses exactly where the route would.
+* ``start_mission`` → ``missions.create_mission`` + the background producer the create route runs
+  (objectives). A DRAFT only (#2152): HQ plans missions, so the operator plans it with HQ. The
+  dispatch autonomies are refused at save, and a stored one's runs are refused before any draft.
 * ``start_session`` → ``headless_dispatch.dispatch``. The run records the dispatch's own facts —
   launched → started → briefed (→ bound) — never a summary of them. The engine must pass
   ``engines.unattended_start_state`` at save AND here.
@@ -40,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import time
@@ -76,6 +73,17 @@ _TASKS: set[asyncio.Task] = set()
 #: Runs whose EFFECT has already happened: ``{run_id: (outcome, reason)}``. Anything that fails
 #: afterwards is bookkeeping, and must never turn a delivered run into a `failed` one (#1201).
 _DELIVERED: dict[str, tuple[str, str]] = {}
+
+
+#: A mission run's outcome now that the one-agent planner is retired (#2152): the run creates the
+#: draft, and the operator plans it with HQ. A `dispatch` automation therefore starts nothing.
+HQ_PLANS_RUN = "mission created as a draft — HQ plans missions now: open it and choose Plan with HQ"
+#: Why a `start_mission` automation that may dispatch is refused (#2152): nothing can plan its draft
+#: unattended any more, so it would leave a draft behind on every run and start nothing. Refused at
+#: save for a new or edited automation, and at run time — BEFORE any draft — for a stored one.
+HQ_PLANS_DISPATCH = (
+    "HQ plans missions now — this automation can only create drafts (autonomy: propose)"
+)
 
 
 def _delivered(run_id: str, outcome: str, reason: str) -> None:
@@ -201,6 +209,8 @@ def check_save(config: dict) -> None:
     ``AutomationError``; blocking — run off the event loop."""
     template = model.check_template(config)
     action = config["action"]
+    if action["kind"] == "start_mission" and action.get("autonomy") != "propose":
+        raise model.AutomationError(HQ_PLANS_DISPATCH)
     if action["kind"] == "start_session":
         ok, why = client_settings_state(action)
         if not ok:
@@ -393,30 +403,15 @@ def _real_still_pinned(pinned: dict) -> str:
 # ---- actions ------------------------------------------------------------------------------------
 
 
-def _mission_fence(run: dict, pinned: dict, project_id: str | None):
-    """The automation's check INSIDE the dispatch fence (with the fence's own realpath compare)."""
-    from .routes import missions as mroutes
-
-    def check() -> str | None:
-        ok, why = _still_authorized(run)
-        if not ok:
-            return why
-        try:
-            now = mroutes._resolve_cwd(project_id)[1]
-        except missions.MissionError as e:
-            return str(e)
-        if not now or os.path.realpath(now) != pinned.get("real"):
-            return "the project's folder changed while the launch was being authorised"
-        return _real_still_pinned(pinned) or None
-
-    return check
-
-
 async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
     from .routes import missions as mroutes
 
     rid = run["id"]
     action = config["action"]
+    if action["autonomy"] != "propose":
+        # A stored config from before #2152 is kept as the operator saved it, never rewritten;
+        # its runs are refused here, before the effect lock and before any draft exists.
+        return "refused", HQ_PLANS_DISPATCH
     pinned = pins.get("cwd") or {}
     # THE EFFECT LOCK is held from the final authority read through create → plan → dispatch, so
     # an operator's disable/pause/edit either lands first (and this refuses) or reports in_flight.
@@ -474,78 +469,10 @@ async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tu
             if plan
             else f"planning: {(mission or {}).get('plan_state') or 'unknown'}",
         )
-        if action["autonomy"] == "propose":
-            if plan is None:
-                return "failed", "the mission was created but no plan was produced"
-            _delivered(rid, "ok", "mission planned — waiting for you to dispatch it")
-            return _DELIVERED[rid]
-        if plan is None:
-            return "failed", "the mission was created but no plan was produced, so nothing started"
-        # …AND AGAIN before the spawn: planning takes a model call, and a change that landed while
-        # it ran must stop the launch (the fence below checks once more).
-        stop = await asyncio.to_thread(_authority_outcome, run)
-        if stop:
-            return stop
-        try:
-            fresh = (await asyncio.to_thread(mroutes._resolve_cwd, plan.get("project_id")))[1]
-        except missions.MissionError as e:
-            return "refused", str(e)
-        drift = await asyncio.to_thread(_identity_drift, pinned, fresh)
-        if drift:
-            await asyncio.to_thread(_flag, run, drift)
-            return "refused", f"{drift} — it needs your approval again"
-        resp = await mroutes.dispatch_approved(
-            mid,
-            {
-                "plan_id": plan["plan_id"],
-                # The PINNED folder is the comparand, so the route's own fence refuses a project
-                # that moved in the minutes the planner took.
-                "expect_cwd": pinned.get("path") or "",
-                "expect_objectives": missions.objectives_digest(objectives),
-            },
-            registry=registry,
-            # Automated missions never launch permission-bypassed (Phase 1).
-            bypass_ceiling=False,
-            # Launch in the pinned REAL path, compared inside the fence.
-            pinned_real_cwd=pinned.get("real"),
-            authorize=_mission_fence(run, pinned, plan.get("project_id")),
-        )
-        try:
-            data = json.loads(bytes(resp.body))
-        except ValueError:
-            data = {}
-        if resp.status_code != 200:
-            return "refused", str(data.get("detail") or f"dispatch refused ({resp.status_code})")
-        if data.get("state") == "running":
-            _delivered(rid, "started", "mission dispatched and running")
-        if data.get("session_key"):
-            await asyncio.to_thread(store.link, rid, session_key=str(data["session_key"]))
-        if data.get("state") != "running":
-            outcome = "refused" if data.get("outcome") == "refused" else "failed"
-            return outcome, str(data.get("reason") or "the dispatch did not start")
-        await asyncio.to_thread(
-            store.add_step, rid, "dispatched", str(data.get("session_key") or "")
-        )
-        if action["autonomy"] == "dispatch_auto_choose":
-            # A GRANT, so it is an effect like any other: still under the lock, after a fresh
-            # authority read. The mission already dispatched keeps running either way.
-            stop = await asyncio.to_thread(_authority_outcome, run)
-            if stop:
-                await asyncio.to_thread(
-                    store.add_step,
-                    rid,
-                    "auto_choose_skipped",
-                    f"auto-choose not granted: {stop[1].removeprefix('stopped: ')}",
-                )
-            else:
-                try:
-                    await missions.run_admitted(lambda: missions.set_auto_choose(mid, True))
-                    await asyncio.to_thread(
-                        store.add_step, rid, "auto_choose", "menu answers opted in"
-                    )
-                except missions.MissionError as e:
-                    await asyncio.to_thread(store.add_step, rid, "auto_choose_refused", str(e))
-    return "started", "mission dispatched and running"
+        # Only `propose` gets here (a dispatch mode is refused above): the draft waits for the
+        # operator's Plan with HQ (#2152). A new draft never holds a one-agent plan.
+        _delivered(rid, "ok", HQ_PLANS_RUN)
+        return _DELIVERED[rid]
 
 
 def session_cwd_drift(pinned: dict, folder: str) -> str:

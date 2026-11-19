@@ -3327,10 +3327,12 @@ def create_mission(
                 "INSERT INTO missions (id, title, instruction, brief, project_id, cwd, engine,"
                 " engine_source, state, playbook_id, created_at, updated_at,"
                 " objectives_state, objectives_at, plan_state, plan_generation, plan_at) "
-                # BOTH INTENTS IN THE CREATE TRANSACTION (#883, #967). A crash between this commit
-                # and the background producers can then never lose either: `recover_pending`
-                # finds a `pending` row. Generation 1 is the planning attempt the create starts.
-                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,'pending',?,'pending',1,?)",
+                # THE OBJECTIVES INTENT IN THE CREATE TRANSACTION (#883): a crash between this
+                # commit and the background producer can never lose it, `recover_pending` finds
+                # a `pending` row. NO PLANNING INTENT (#2152): HQ plans missions, so a new draft
+                # starts `skipped` at generation 0 — never planned by a one-agent planner, the
+                # same reading the v25 backfill gave a mission that never had one.
+                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,'pending',?,'skipped',0,?)",
                 (
                     mission_id,
                     _cap(title, TITLE_MAX) or text[:TITLE_MAX],
@@ -4981,6 +4983,58 @@ def missions_awaiting_objectives(
         return [(float(r["objectives_at"]), r["id"]) for r in rows]
     finally:
         con.close()
+
+
+#: Why a mission's one-agent planning attempt was settled without a model call (#2152): the
+#: planner is retired, and HQ plans missions.
+HQ_PLANS = "HQ plans missions now; ask HQ to plan this one"
+
+
+def settle_pending_plans(*, now: float | None = None, path: Path | None = None) -> list[str]:
+    """Settle every one-agent planning attempt left `pending` from before the upgrade (#2152).
+
+    The planner is retired, so nothing will ever discharge such an intent, and DISPATCH refuses
+    while it holds. Settled WITHOUT a model call, in one transaction: `ready` when the mission
+    already stores a legacy plan (a Plan again was in flight; that plan stays runnable, D2), else
+    `skipped` with :data:`HQ_PLANS` (the card offers Plan with HQ). Each settlement is a
+    `planning` event on the mission. Never re-plans; returns the settled mission ids.
+    """
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute(
+                "SELECT m.id, EXISTS (SELECT 1 FROM mission_plans p WHERE p.mission_id = m.id) "
+                "AS has_plan FROM missions m WHERE m.plan_state='pending' ORDER BY m.id"
+            ).fetchall()
+            for r in rows:
+                state = "ready" if r["has_plan"] else "skipped"
+                con.execute(
+                    "UPDATE missions SET plan_state=?, plan_at=?, plan_detail=?, updated_at=? "
+                    "WHERE id=? AND plan_state='pending'",
+                    (state, ts, None if r["has_plan"] else HQ_PLANS, ts, r["id"]),
+                )
+                _append_event(
+                    con,
+                    r["id"],
+                    "planning",
+                    at=ts,
+                    text=(
+                        "planning moved to HQ: the stored plan is kept"
+                        if r["has_plan"]
+                        else f"no plan proposed: {HQ_PLANS}"
+                    ),
+                    meta={"outcome": state, "retired": True},
+                )
+            con.execute("COMMIT")
+            return [str(r["id"]) for r in rows]
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
 
 def missions_awaiting_plan(
@@ -12588,10 +12642,16 @@ def apply_procedure(
     reason: str,
     primary_project_id: str | None = None,
     after: list[str] | None = None,
+    require_unplanned: bool = False,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Apply ONE procedure to a mission as one more objective (#1777 S1b) — in ONE transaction.
+
+    `require_unplanned` (#2152, HQ's `mission.plan`): the FIRST plan of an existing draft. Checked
+    inside this transaction, at the write boundary: the mission must be a `draft` with no plan
+    revision and no legacy one-agent plan, or nothing is written (409). A plan another request
+    applied after the card was staged is refused here, whatever the card's own check saw.
 
     `after` (#1797 S2c) names objectives ALREADY in the latest revision that this one comes
     after — the only place objective order is authored, so a cycle cannot be expressed. The
@@ -12653,6 +12713,16 @@ def apply_procedure(
                     status=409,
                 )
             latest = _latest_plan_tx(con, mission_id)
+            if require_unplanned:
+                legacy = con.execute(
+                    "SELECT 1 FROM mission_plans WHERE mission_id=?", (mission_id,)
+                ).fetchone()
+                if m["state"] != "draft" or latest is not None or legacy is not None:
+                    raise MissionError(
+                        "this mission already has a plan, or is no longer a draft; nothing was "
+                        "applied",
+                        status=409,
+                    )
             prior = latest["document"] if latest else None
             objectives_so_far = list(prior["objectives"]) if prior else []
             for o in objectives_so_far:
@@ -12832,6 +12902,20 @@ def commit_plan_op(
         finally:
             con.close()
     return {"revision": revision, "replayed": False}
+
+
+def latest_plan_revision(mission_id: str, *, path: Path | None = None) -> int | None:
+    """The latest plan revision's NUMBER, or None when there is none (#2152: the mission detail
+    says whether HQ planned it on every poll, so it reads one integer, never the document)."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        latest = con.execute(
+            "SELECT MAX(revision) FROM mission_plan_revisions WHERE mission_id=?", (mission_id,)
+        ).fetchone()[0]
+    finally:
+        con.close()
+    return int(latest) if latest is not None else None
 
 
 def plan_revision(

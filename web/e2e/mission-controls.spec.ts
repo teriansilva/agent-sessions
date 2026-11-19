@@ -17,6 +17,8 @@ import { openMissionDetails } from "./mission-console";
  */
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { mockAskConversations } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 import {
   MISSION,
@@ -237,16 +239,6 @@ async function selectOnlyMission(page: Page) {
   await expect(page.getByTestId("console-title")).toBeVisible();
 }
 
-/** Back to the new-mission page through the rail's "+ New mission" (#948 P3) — the way to the
- *  landing composer while a mission is selected. */
-async function newMissionFromRail(page: Page) {
-  await ready(page);
-  await openMissionRail(page);
-  await page.locator('[data-testid="rail-new-mission"]:visible').first().click();
-  await closeRail(page);
-  await expect(page.getByTestId("mission-landing")).toBeVisible();
-}
-
 /** How many rows the rail shows, on whatever layout the project supplies.
  *
  *  Through the SHELL's control since #940; the console's own `☰` is gone.
@@ -266,48 +258,65 @@ async function railRowCount(page: Page) {
   return n;
 }
 
+/** Every write that would START something: a mission POST, or a message sent to HQ (#2152). */
+function watchStarts(page: Page) {
+  const starts: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST") return;
+    const path = new URL(req.url()).pathname;
+    if (path === "/api/missions" || path.endsWith("/message/stream")) starts.push(path);
+  });
+  return starts;
+}
+
+/** HQ's page on a FRESH conversation: `/hq` itself, its thread's composer, nothing in it. */
+async function expectFreshHq(page: Page) {
+  await expect(page).toHaveURL(/\/hq$/);
+  await expect(page.getByTestId("hq-page")).toBeVisible();
+  await expect(page.locator("[data-hq-thread] textarea")).toBeVisible();
+  await expect(page.locator("[data-hq-thread] textarea")).toHaveValue("");
+}
+
 const HELD_ROW = missionRow({ session_keys: ["claude:aaa"] });
 const HELD = {
   ...MISSION,
   sessions: [{ session_key: "claude:aaa", removed_at: null }],
 };
 
-test("NEW MISSION posts the instruction and the project ENTITY id, and never a cwd", async ({
+test("NEW MISSION opens HQ on a fresh conversation, from the landing and from the rail, and starts nothing (#2152)", async ({
   page,
 }) => {
+  // HQ plans every mission (#2152) and there is no New-mission form: both "New mission" buttons
+  // open HQ's page on a fresh conversation, where HQ asks for the goal and the project. Asserted on
+  // the wire: no `POST /api/missions` and no message to HQ — the operator has not said anything yet.
   await stub(page);
-  await mockMissions(page, { missions: missionList([]) });
-
-  const posts: { url: string; body: unknown }[] = [];
-  // Registered AFTER mockMissions so it wins for this exact URL (most-recent-first).
-  await page.route("**/api/missions", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    posts.push({ url: r.request().url(), body: r.request().postDataJSON() });
-    return r.fulfill({
-      status: 201,
-      json: { ...MISSION, id: "msn_new", state: "draft", sessions: [] },
-    });
+  await mockMissions(page, {
+    missions: missionList([HELD_ROW]),
+    mission: { ...HELD, events: [], events_next_seq: null },
   });
+  await mockAskConversations(page, []);
+  const starts = watchStarts(page);
 
+  // THE LANDING: one primary, New mission, at the touch floor.
   await page.goto("/mission");
   await expect(page.getByTestId("mission-landing")).toBeVisible();
+  const landing = page.getByTestId("landing-new-mission");
+  await expect(landing).toHaveText("New mission");
+  expect((await landing.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await landing.click();
+  await expectFreshHq(page);
 
-  // The new-mission page IS the brief form (#948 P3; #1058 removed the NEW MISSION | ASK strip,
-  // so there is no mode to be in — Ask is its own route).
-  await expect(page.getByTestId("new-mission-form")).toBeVisible();
-  await page
-    .getByTestId("new-mission-instruction")
-    .fill("implement the probe runner");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  // THE RAIL's "+ New mission", from a selected mission.
+  await page.goto("/mission");
+  await selectOnlyMission(page);
+  await openMissionRail(page);
+  await page.locator('[data-testid="rail-new-mission"]:visible').first().click();
+  await expectFreshHq(page);
+  // The rail's surface was closed on the way (on a phone it is the drawer).
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 
-  await expect.poll(() => posts.length).toBe(1);
-  const body = posts[0].body as Record<string, unknown>;
-  expect(body.instruction).toBe("implement the probe runner");
-  expect(body.project_id).toBe("p1");
-  // The route REFUSES a client-sent cwd (422). Asserting on the wire, because this is the
-  // property that keeps a mission's working directory out of the client's hands.
-  expect(Object.keys(body)).not.toContain("cwd");
+  await page.waitForTimeout(300);
+  expect(starts).toEqual([]);
 });
 
 test("a REFUSED transition paints the server's state, not the one that was asked for", async ({
@@ -366,7 +375,28 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
   page,
 }) => {
   await stub(page);
-  const planned = { ...MISSION, state: "planned", sessions: [] };
+  // A LEGACY one-agent plan (#2152, D2) with no session and an empty checklist. Begin is the
+  // legacy plan's — a mission with no plan offers Plan with HQ instead, and no Begin at all.
+  const planned = {
+    ...MISSION,
+    state: "planned",
+    sessions: [],
+    plan_revision: null,
+    plan_state: "ready",
+    objectives: [],
+    objectives_state: "done",
+    plan: {
+      plan_id: "pln_1",
+      mission_id: MISSION.id,
+      project_id: "p1",
+      cwd: "/repo",
+      engine: "claude",
+      engine_reason: "",
+      brief: "implement the probe runner",
+      created_at: T,
+      project_options: [{ id: "p1", name: "agent-sessions", cwd: "/repo" }],
+    },
+  };
   await mockMissions(page, {
     missions: missionList([missionRow({ state: "planned", session_keys: [] })]),
     mission: { ...planned, events: [], events_next_seq: null },
@@ -380,14 +410,18 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
   // The reason DESCRIBES the control, and it sits in the plan card beside the plan it is about
   // (#967). A disabled button with no explanation is a dead end.
   await expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
-  // A mission from before planning ran on create has no plan and nothing planning it (#967 P2b): the
-  // reason says so, and the card offers Plan manually as the way on.
   await expect(page.locator("#mission-start-reason")).toContainText(
-    /No plan yet/i,
+    /Add at least one objective before beginning/i,
   );
+  // …and offers the way on, right there.
   await expect(
-    page.getByTestId("mission-plan-card").getByTestId("mission-plan-manually"),
+    page.locator("#mission-start-reason").getByRole("button", { name: "Add objectives" }),
   ).toBeVisible();
+  expect(
+    await page
+      .locator("#mission-start-reason")
+      .evaluate((el) => !!el.closest('[data-testid="mission-plan-card"]')),
+  ).toBe(true);
 });
 
 test("an objective edit posts ONE batch of ops", async ({ page }) => {
@@ -611,52 +645,9 @@ test("a refusal for the mission you LEFT is discarded, not shown over the one yo
 // #896 review round 1 — findings 3, 4 and 6, each as the browser probe the review used.
 // ==============================================================================================
 
-test("creating from the ARCHIVED rail never issues an archived list request afterwards", async ({
-  page,
-}) => {
-  await stub(page);
-  const scopes: string[] = [];
-  await page.route("**/api/missions**", async (r) => {
-    const u = new URL(r.request().url());
-    if (r.request().method() === "POST") {
-      return r.fulfill({
-        status: 201,
-        json: { ...MISSION, id: "msn_new", state: "draft", sessions: [] },
-      });
-    }
-    // Only the LIST — `/api/missions/{id}` is routed more specifically below.
-    if (u.pathname === "/api/missions") {
-      scopes.push(
-        u.searchParams.get("archived") === "1" ? "archived" : "active",
-      );
-      return r.fulfill({ json: missionList([]) });
-    }
-    return r.fallback();
-  });
-  await page.route("**/api/missions/*", (r) =>
-    r.fulfill({ json: { ...MISSION, events: [], events_next_seq: null } }),
-  );
-
-  await page.goto("/mission");
-  await expect(page.getByTestId("mission-console")).toBeVisible();
-
-  await toggleScope(page); // → Archived
-  await expect.poll(() => scopes.at(-1)).toBe("archived");
-  const before = scopes.length;
-
-  await page.getByTestId("new-mission-instruction").fill("start it here");
-  // A project is REQUIRED — a mission without one has no cwd and no way to acquire one from
-  // this console, so START is withheld until one is chosen (#896 review 9, finding 2).
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
-
-  await expect.poll(() => scopes.length).toBeGreaterThan(before);
-  await page.waitForTimeout(500);
-  // Every request issued AFTER the create is for the active scope. `reload()` is closed over the
-  // old `archived`, and `setScope` has already bumped the generation — so an archived response
-  // would share the new generation and overwrite the active rail.
-  expect(scopes.slice(before)).not.toContain("archived");
-});
+// RETIRED BY #2152: "creating from the ARCHIVED rail never issues an archived list request
+// afterwards". There is no New-mission form; HQ's draft card creates missions, so there is no client
+// create, no `onCreated` scope switch and no refresh of its own to fence.
 
 test("archiving the mission you SELECTED does not leave it on screen", async ({
   page,
@@ -964,78 +955,9 @@ test("CLOSING a mission also re-reads the overview that stamps ownership", async
   await expect.poll(() => overviewReads).toBeGreaterThan(before);
 });
 
-test("a CREATE that lands after switching to ASK refreshes the rail but does not steal the SELECTION", async ({
-  page,
-}) => {
-  // The first version of this asserted only that the composer was back in ASK mode — which CANCEL
-  // does on its own, so it passed against the unfenced code. The hijack is observable in the
-  // SELECTION: the console switching to a mission the operator has already walked away from.
-  await stub(page);
-  const BRAVO = missionRow({ id: "msn_b", title: "Bravo" });
-  const lists: string[] = [];
-  await page.route("**/api/missions**", async (r) => {
-    const u = new URL(r.request().url());
-    if (r.request().method() === "POST" && u.pathname === "/api/missions") {
-      await new Promise((res) => setTimeout(res, 900)); // held open, so the switch to ASK lands first
-      return r.fulfill({
-        status: 201,
-        json: {
-          ...MISSION,
-          id: "msn_new",
-          title: "Newly made",
-          state: "draft",
-          sessions: [],
-        },
-      });
-    }
-    if (u.pathname === "/api/missions") {
-      lists.push(u.search);
-      return r.fulfill({ json: missionList([BRAVO]) });
-    }
-    return r.fallback();
-  });
-  await page.route("**/api/missions/*", (r) => {
-    if (r.request().method() !== "GET") return r.fallback();
-    const id = new URL(r.request().url()).pathname.split("/").pop();
-    return r.fulfill({
-      json: {
-        ...MISSION,
-        id,
-        title: id === "msn_new" ? "Newly made" : "Bravo",
-        sessions: [],
-        events: [],
-        events_next_seq: null,
-      },
-    });
-  });
-
-  await page.goto("/mission");
-  // NEW MISSION LIVES ON THE NEW-MISSION PAGE, which is what `/mission` opens on (#948 P3). The
-  // mission body's composer is the DURABLE one (#890) and creating a different mission is not one
-  // of its turns, so the create starts here and the operator then moves to a mission — the same
-  // sequence this test was always about, entered from where the control actually is.
-  await expect(page.getByTestId("mission-landing")).toBeVisible();
-  await page
-    .getByTestId("new-mission-instruction")
-    .fill("start then change my mind");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  const before = lists.length;
-  await page.getByTestId("new-mission-start").click();
-  // Selecting a mission unmounts the form, and its `liveRef` fence is what withholds the focus
-  // below. (Before #1058 this test switched to ASK to cause the unmount; the mode strip is gone,
-  // and selecting a mission is the unmount the operator actually performs.)
-  await selectMission(page, "Bravo");
-  await expectMissionSelected(page, "Bravo");
-
-  await page.waitForTimeout(1500);
-  // The rail WAS refreshed — the mission exists, and hiding it would be worse than showing it …
-  expect(lists.length).toBeGreaterThan(before);
-  // … but the operator is still where they were.
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
-  await expect(page.getByTestId("mission-console")).not.toContainText(
-    "Newly made",
-  );
-});
+// RETIRED BY #2152: "a CREATE that lands after switching to ASK refreshes the rail but does not
+// steal the SELECTION". There is no New-mission form; New mission only opens HQ, so there is no
+// late create whose focus could be fenced.
 
 for (const state of ["done", "failed", "abandoned"] as const) {
   test(`a ${state} mission is a finished record — no objective edits, no stand-down, no release`, async ({
@@ -1551,20 +1473,18 @@ test("a SUPERSEDED list failure does not paint a store outage over newer rows", 
   // that one finally rejects it painted "the mission store could not be read" over data that had
   // just arrived.
   //
-  // NEW MISSION is the trigger because it needs no painted rail: the mount read is held, so
-  // there is nothing to select.
+  // The mount read is held, so there is no painted rail to select from: the mission is opened by
+  // its deep link, and MARK DONE is the mutation whose refresh answers with real rows. (This was
+  // NEW MISSION's create until #2152 retired it.)
   await stub(page);
-  await page.route("**/api/projects**", (r) =>
-    r.fulfill({ json: { projects: [{ id: "p1", name: "repo" }] } }),
-  );
-  const A = missionRow({ id: "msn_a", title: "Alpha" });
+  const MID = "msn_" + "a".repeat(32);
+  const A = missionRow({ id: MID, title: "Alpha" });
   let releaseMount: (() => void) | null = null;
   let calls = 0;
+  let state = "running";
   await page.route("**/api/missions**", async (r) => {
     const u = new URL(r.request().url());
     if (u.pathname !== "/api/missions") return r.fallback();
-    if (r.request().method() === "POST")
-      return r.fulfill({ status: 201, json: { ...MISSION, id: "msn_a" } });
     calls += 1;
     if (calls === 1) {
       // The MOUNT read, held open — and then failed, after the refresh below has landed.
@@ -1573,30 +1493,34 @@ test("a SUPERSEDED list failure does not paint a store outage over newer rows", 
       });
       return r.fulfill({ status: 500, json: { detail: "boom" } });
     }
-    return r.fulfill({ json: missionList([A]) });
+    return r.fulfill({ json: missionList([{ ...A, state }]) });
+  });
+  const detail = () => ({
+    ...MISSION,
+    id: MID,
+    title: "Alpha",
+    state,
+    sessions: [],
+    events: [],
+    events_next_seq: null,
   });
   await page.route("**/api/missions/*", (r) => {
     if (r.request().method() !== "GET") return r.fallback();
-    return r.fulfill({
-      json: {
-        ...MISSION,
-        id: "msn_a",
-        title: "Alpha",
-        sessions: [],
-        events: [],
-        events_next_seq: null,
-      },
-    });
+    return r.fulfill({ json: detail() });
+  });
+  await page.route("**/api/missions/*/state", (r) => {
+    state = "done";
+    return r.fulfill({ json: detail() });
   });
 
-  await page.goto("/mission");
+  await page.goto(`/mission?m=${MID}`);
   await expect(page.getByTestId("mission-console")).toBeVisible();
   await expect.poll(() => calls).toBe(1);
+  await expect(page.getByTestId("mission-state")).toHaveText("running");
 
-  // A create issues the authoritative refresh, which answers with real rows.
-  await page.getByTestId("new-mission-instruction").fill("ship it");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  // A mutation issues the authoritative refresh, which answers with real rows.
+  await page.getByTestId("mission-done").click();
+  await page.getByTestId("mission-done").click();
   await expect.poll(() => calls).toBeGreaterThan(1);
   await expect.poll(() => railCount(page)).toBeGreaterThan(0);
 
@@ -1870,12 +1794,12 @@ test("a refusal from the visit you LEFT stays gone after you come back to that m
 // console's ADOPT from the untracked view; both are gone, and adoption is the session's own
 // control (`mission-adopt.spec.ts`).
 
-test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGIN → confirm done → archive", async ({
+test("THE #889 JOURNEY: open → objectives arrive → edit → adopt → BEGIN → confirm done → archive", async ({
   page,
 }) => {
   // #896 review 10, finding 7. Every step below was already covered somewhere — but each in its
   // own fixture, each starting from a mission that was already in the state the step needed.
-  // What was never asserted is that the states CONNECT: that the mission a create returns is the
+  // What was never asserted is that the states CONNECT: that the mission the operator opens is the
   // one whose objectives arrive, that the objectives you edit belong to the mission you adopt a
   // session into, that BEGIN unlocks because of THAT adoption, and that the archive at the end
   // takes the same mission off the active rail.
@@ -1883,11 +1807,13 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   // So this is one evolving server, not seven fixtures. The mocks hold real state and every
   // response is computed from it; a step that silently did nothing changes what the next step
   // sees, which is precisely what a per-step fixture cannot notice.
+  //
+  // It began with the console's own CREATE until #2152: HQ plans every mission now, and its draft
+  // card creates it (`hq-plans-missions.spec.ts`). The journey picks the draft up from the rail.
   await stub(page);
 
   const MID = "msn_j";
   const server = {
-    created: false,
     objectivesReady: false,
     titles: ["Draft the adapter", "Open the PR"],
     state: "draft",
@@ -1946,14 +1872,9 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await page.route("**/api/missions**", async (r) => {
     const u = new URL(r.request().url());
     const method = r.request().method();
-    if (u.pathname === "/api/missions" && method === "POST") {
-      server.created = true;
-      return r.fulfill({ json: detail() });
-    }
     if (u.pathname === "/api/missions" && method === "GET") {
       const wantArchived = u.searchParams.get("archived") === "1";
-      const rows =
-        server.created && server.archived === wantArchived ? [row()] : [];
+      const rows = server.archived === wantArchived ? [row()] : [];
       return r.fulfill({ json: missionList(rows) });
     }
     return r.fallback();
@@ -2029,14 +1950,9 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await page.goto("/mission");
   await ready(page);
 
-  // ── 1. CREATE ────────────────────────────────────────────────────────────────────────────
-  await page.getByTestId("new-mission-instruction").fill("Wire the adapter");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
-  // The console SELECTS what the create returned — not what a later list happens to carry.
-  await expect(page.getByTestId("mission-console")).toContainText(
-    "Wire the adapter",
-  );
+  // ── 1. OPEN THE DRAFT ────────────────────────────────────────────────────────────────────
+  await selectMission(page, "Wire the adapter");
+  await expect(page.getByTestId("console-title")).toHaveText("Wire the adapter");
 
   // ── 2. OBJECTIVES ARRIVE ─────────────────────────────────────────────────────────────────
   // `pending` is a list the server is about to change, and the console says so rather than
@@ -2068,10 +1984,11 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   );
 
   // ── 4. ADOPT ─────────────────────────────────────────────────────────────────────────────
-  // BEGIN is refused without one, and the button SAYS so before the adoption.
+  // BEGIN is not offered without one: a draft with no plan and no session has nothing to begin
+  // (#2152 — Begin is a legacy plan's or an attached session's).
   await openMissionConversation(page);
   await expect(page.getByTestId("mission-state")).toHaveText("draft");
-  await expect(page.getByTestId("mission-begin")).toBeDisabled();
+  await expect(page.getByTestId("mission-begin")).toHaveCount(0);
 
   // Adoption is the SESSION's control since #948 P3 — its row ⋯ menu and pane header, pinned by
   // `mission-adopt.spec.ts` — and the console's ADOPT is gone. This journey is about the states
@@ -2091,7 +2008,8 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
 
   // ── 5. BEGIN, then CONFIRM DONE ──────────────────────────────────────────────────────────
   // Leave and come back, so the mission body mounts afresh and reads what the server now holds.
-  await newMissionFromRail(page);
+  // (Through a fresh load since #2152: the rail's "+ New mission" now leaves for HQ.)
+  await page.goto("/mission");
   await selectMission(page, "Wire the adapter");
   await expect(page.getByTestId("mission-begin")).toBeEnabled();
   await page.getByTestId("mission-begin").click();
@@ -2788,22 +2706,25 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   await expect.poll(railNeedsYou, { timeout: 10_000 }).toBe(0);
 });
 
-test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
+test("BEGIN on a legacy plan refreshes the RAIL, not just the pane", async ({
   page,
 }) => {
   // #904 review 18, finding 2. The plan card was the ONE mutation surface handed `d.reload`
-  // alone, which re-reads the mission DETAIL and nothing else. So planning left the pane showing
-  // a proposal beside a rail row still saying `draft`, and a dispatch left the session it had
-  // just attached sitting in UNTRACKED until the supervisor's next sweep. The rule is stated
-  // forty lines above the call site and every other surface follows it.
+  // alone, which re-reads the mission DETAIL and nothing else. So a dispatch left the rail row
+  // saying `planned` and the session it had just attached sitting in UNTRACKED until the
+  // supervisor's next sweep. The rule is stated forty lines above the call site and every other
+  // surface follows it.
+  //
+  // It was asserted through PLAN AGAIN until #2152 retired the one-agent planner; a legacy plan's
+  // BEGIN is the plan card's remaining mutation, and the same rule holds for it.
   //
   // Asserted on WHAT THE RAIL SAYS, not on a second request being issued: a count passes against
   // a generation fence that receives the fresh row and drops it, which leaves the stale row
   // painted — the exact defect. Same reasoning as the waive regression above.
   //
-  // Red against `onChanged={d.reload}`: the rail row still reads `draft`.
+  // Red against `onChanged={d.reload}`: the rail row still reads `planned`.
   await stub(page);
-  let planned = false;
+  let running = false;
   const PLAN = {
     plan_id: "pln_a",
     mission_id: "msn_a",
@@ -2814,7 +2735,19 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
     brief: "open a PR that does the thing",
     created_at: 1,
     project_options: [{ id: "p1", name: "the-app", cwd: "/repo/the-app" }],
-    engine_options: [{ id: "claude", label: "claude" }],
+  };
+  const OBJECTIVE = {
+    mission_id: "msn_a",
+    key: "pr_open",
+    ord: 0,
+    title: "A PR is open",
+    probe: null,
+    probe_args: null,
+    gate: true,
+    state: "pending",
+    met_at: null,
+    observed: null,
+    source: "playbook",
   };
   await page.route("**/api/missions**", async (r) => {
     const u = new URL(r.request().url());
@@ -2825,28 +2758,33 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
           missionRow({
             id: "msn_a",
             title: "Alpha",
-            state: planned ? "planned" : "draft",
+            state: running ? "running" : "planned",
           }),
         ]),
       });
     if (u.pathname.endsWith("/objectives"))
-      return r.fulfill({ json: { objectives: [] } });
+      return r.fulfill({ json: { objectives: [OBJECTIVE] } });
     return r.fulfill({
       json: {
         ...MISSION,
         id: "msn_a",
         title: "Alpha",
-        state: planned ? "planned" : "draft",
-        plan: planned ? PLAN : null,
+        state: running ? "running" : "planned",
+        plan: PLAN,
+        plan_revision: null,
+        plan_state: "ready",
+        objectives: [OBJECTIVE],
+        objectives_state: "done",
         events: [],
         events_next_seq: null,
       },
     });
   });
-  await page.route("**/api/missions/*/plan", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    planned = true; // the SERVER moved draft -> planned, as the real route does
-    return r.fulfill({ json: PLAN });
+  await page.route("**/api/missions/*/dispatch", async (r) => {
+    running = true; // the SERVER moved planned -> running, as the real route does
+    return r.fulfill({
+      json: { state: "running", reason: "", session_key: "claude:worker" },
+    });
   });
 
   // The rail is a column on desktop and a drawer on the phone: open, read, close. Read from the
@@ -2865,18 +2803,20 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
 
   await page.goto("/mission");
   await ready(page);
-  await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
+  await expect.poll(railState, { timeout: 10_000 }).toContain("planned");
 
   await selectOnlyMission(page);
-  // Plan again lives behind the header's ⋯ (#967), under its original `mission-replan` testid.
-  await overflow(page);
-  await expect(page.getByTestId("mission-replan")).toBeVisible();
-  await page.getByTestId("mission-replan").click();
+  // Begin arms the launch; the second press confirms it.
+  const begin = page.getByTestId("mission-begin");
+  await expect(begin).toBeEnabled();
+  await begin.click();
+  await expect(begin).toHaveText("Confirm begin");
+  await begin.click();
 
-  // The PANE gets the proposal…
-  await expect(page.getByTestId("mission-plan-brief")).toBeVisible();
+  // The PANE moves…
+  await expect(page.getByTestId("mission-state")).toHaveText("running");
   // …AND SO DOES THE RAIL, without waiting for a poll or a trip through another mission.
-  await expect.poll(railState, { timeout: 10_000 }).toContain("planned");
+  await expect.poll(railState, { timeout: 10_000 }).toContain("running");
 });
 
 test("a late DISPATCH failure cannot paint over the mission you moved to", async ({
@@ -3064,13 +3004,13 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
 }) => {
   // #896 reviews 25 and 26, finding 1. `reload()` re-reads the pages the operator has OPENED, and
   // it took that count from the `missions.length` its own callback closed over. An async child
-  // holds a `reload` across its await — the composer's create resolves and calls `onCreated` — so
-  // if the operator loaded another page while the create was pending, the refresh asked for the
-  // OLD window and replaced the wider rail with it. Every opened page gone, and a mission
+  // holds a `reload` across its await — a header mutation resolves and calls `onChanged` — so if
+  // the operator loaded another page while it was pending, the refresh asked for the OLD window
+  // and replaced the wider rail with it. Every opened page gone, and a mission
   // selected from the later page with it.
   //
-  // **THE LOAD MORE PAGE IS HELD, AND THE CREATE IS RELEASED WHILE IT IS** (review 26). The first
-  // version of this test waited for the 200-row paint before releasing the create, which only
+  // **THE LOAD MORE PAGE IS HELD, AND THE MUTATION IS RELEASED WHILE IT IS** (review 26). The
+  // first version of this test waited for the 200-row paint before releasing the mutation, which only
   // ever exercised the closure — a ref that MIRRORS the rendered length is already correct by
   // then. The gap is one paint wide and it is where the operator actually clicks: the ask is out,
   // the answer has not come back. Holding the page makes that gap the whole test rather than a
@@ -3078,12 +3018,15 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
   //
   // Red against a captured length AND against a rendered-length mirror: the rail falls back to
   // 100 rows in both.
+  //
+  // The held mutation is MARK DONE. It was the composer's create until #2152 retired it (HQ's
+  // draft card creates missions now); any mutation that refreshes the rail holds `reload` the same.
   await stub(page);
   const ALL = Array.from({ length: 200 }, (_, i) =>
     missionRow({ id: `msn_${i}`, title: `M${i}`, state: "running" }),
   );
-  let releaseCreate: (() => void) | null = null;
-  const heldCreate = new Promise<void>((r) => (releaseCreate = r));
+  let releaseDone: (() => void) | null = null;
+  const heldDone = new Promise<void>((r) => (releaseDone = r));
   let releasePage: (() => void) | null = null;
   const heldPage = new Promise<void>((r) => (releasePage = r));
   const asked: number[] = [];
@@ -3101,26 +3044,20 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
       };
     },
   });
-  // Registered AFTER `mockMissions` so it wins for this exact URL — and only for the POST, so the
-  // detail and objectives reads keep the shapes their components expect.
-  await page.route("**/api/missions", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    await heldCreate;
-    return r.fulfill({
-      status: 201,
-      json: { ...MISSION, id: "msn_new", state: "draft", sessions: [] },
-    });
+  // Registered AFTER `mockMissions` so it wins for this exact URL, and is never read as a LIST.
+  await page.route("**/api/missions/*/state", async (r) => {
+    await heldDone;
+    return r.fulfill({ json: { ...MISSION, state: "done" } });
   });
 
   await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
-  // A CREATE, held open — its `onCreated` reload will be issued with a callback captured NOW.
-  // Started on the new-mission page, which is what `/mission` opens on (#948 P3).
-  await page.getByTestId("new-mission-instruction").fill("start something");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  // A MUTATION, held open — its refresh will be issued with a callback captured NOW.
+  await selectOnlyMission(page); // the first row, M0
+  await page.getByTestId("mission-done").click();
+  await page.getByTestId("mission-done").click();
 
   // …and the operator opens the next page while it is in flight.
   await openMissionRail(page);
@@ -3132,7 +3069,7 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
     .toBe(beforeClick + 1);
 
   asked.length = 0;
-  releaseCreate?.();
+  releaseDone?.();
 
   // THE REFRESH RE-READS WHAT THE OPERATOR ASKED FOR, not what had painted when they asked.
   await expect.poll(() => asked, { timeout: 10_000 }).toContain(200);
@@ -3279,9 +3216,9 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   page,
 }) => {
   // #896 review 26, finding 1 — the INVERSE ordering of the test above, and a different bug with
-  // the same symptom. There the create settled after the click; here it settles BEFORE it:
+  // the same symptom. There the mutation settled after the click; here it settles BEFORE it:
   //
-  //   1. a create resolves and issues a refresh for the 100 rows that are open;
+  //   1. a mutation resolves and issues a refresh for the 100 rows that are open;
   //   2. while that is in flight the operator clicks LOAD MORE — the window becomes 200 and the
   //      offset-100 page goes out;
   //   3. the older, narrower refresh comes back.
@@ -3293,6 +3230,7 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   // the narrow window again, so it never came back.
   //
   // Both responses are HELD and released in order, so this is the ordering rather than a race.
+  // The mutation is MARK DONE; it was the composer's create until #2152 retired it.
   //
   // Red against a window an older answer may narrow, and against dropping a page whose digest
   // proves it is a continuation of the rail: the rail stops at 100 rows.
@@ -3300,14 +3238,14 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   const ALL = Array.from({ length: 200 }, (_, i) =>
     missionRow({ id: `msn_${i}`, title: `M${i}`, state: "running" }),
   );
-  let releaseCreate: (() => void) | null = null;
-  const heldCreate = new Promise<void>((r) => (releaseCreate = r));
   let releaseRefresh: (() => void) | null = null;
   const heldRefresh = new Promise<void>((r) => (releaseRefresh = r));
   let releasePage: (() => void) | null = null;
   const heldPage = new Promise<void>((r) => (releasePage = r));
   const asked: { limit: number; offset: number }[] = [];
-  let fromTheTop = 0;
+  /** Set just before the mutation: the next read from the top is ITS refresh, and is held. */
+  let holdNextTop = false;
+  let topsAfterMutation = 0;
   await mockMissions(page, {
     missions: async (q: URLSearchParams) => {
       const offset = Number(q.get("offset") ?? 0);
@@ -3315,37 +3253,36 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
       asked.push({ limit, offset });
       // The APPEND is held until the refresh it is racing has landed.
       if (offset > 0) await heldPage;
-      // …and the create's refresh — the SECOND read from the top, the mount being the first — is
-      // held open across the click that must outlive it.
-      else if ((fromTheTop += 1) === 2) await heldRefresh;
+      // …and the mutation's refresh — the first read from the top after it — is held open across
+      // the click that must outlive it.
+      else if (holdNextTop) {
+        holdNextTop = false;
+        topsAfterMutation += 1;
+        await heldRefresh;
+      }
       return {
         ...missionList(ALL.slice(offset, offset + limit)),
         total: ALL.length,
       };
     },
   });
-  await page.route("**/api/missions", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    await heldCreate;
-    return r.fulfill({
-      status: 201,
-      json: { ...MISSION, id: "msn_new", state: "draft", sessions: [] },
-    });
-  });
+  await page.route("**/api/missions/*/state", (r) =>
+    r.fulfill({ json: { ...MISSION, state: "done" } }),
+  );
 
   await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
-  await page.getByTestId("new-mission-instruction").fill("start something");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  await selectOnlyMission(page); // the first row, M0
+  await page.getByTestId("mission-done").click();
+  holdNextTop = true;
+  await page.getByTestId("mission-done").click();
 
   // THE REFRESH GOES FIRST, and is held.
-  releaseCreate?.();
   await expect
-    .poll(() => asked.filter((a) => a.offset === 0).length, { timeout: 10_000 })
-    .toBe(2);
+    .poll(() => topsAfterMutation, { timeout: 10_000 })
+    .toBe(1);
 
   // …and the operator opens the next page while it is still in flight.
   await openMissionRail(page);
@@ -3385,10 +3322,11 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   // PHASES, not a request count: the console reads the list more than once while settling, and a
   // counted fixture starts failing under the operator's feet.
   let phase: "ok" | "hold" | "fail" = "ok";
-  // The create is the marker between the settling's own refused reads and the newer authoritative
-  // one this test needs before it releases the stale answer (#1156).
-  let createSeen = false;
-  let refusedAfterCreate = false;
+  // The REOPEN is the marker between the settling's own refused reads and the newer authoritative
+  // one this test needs before it releases the stale answer (#1156). It was the composer's create
+  // until #2152 retired it; any mutation that refreshes the rail issues the same newer read.
+  let reopenSeen = false;
+  let refusedAfterReopen = false;
   await mockMissions(page, {
     missions: missionList([ALPHA, BRAVO]),
     mission: { ...MISSION, state: "done", events: [], events_next_seq: null },
@@ -3406,10 +3344,10 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
       heldSeen = true;
       await heldStale;
     } else if (phase === "fail") {
-      // Only a read refused AFTER the create proves the newest issued generation has moved past
+      // Only a read refused AFTER the reopen proves the newest issued generation has moved past
       // the held one — the fence's precondition. Whether the settling's own reads were refused
       // proves nothing about it.
-      if (createSeen) refusedAfterCreate = true;
+      if (reopenSeen) refusedAfterReopen = true;
       return r.fulfill({
         status: 500,
         json: { detail: "the store could not be read" },
@@ -3417,13 +3355,11 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
     }
     return r.fulfill({ json: missionList([ALPHA, BRAVO]) });
   });
-  // The create itself, marked so the refusal that follows it can be told apart from the
-  // settling's own refusals. Registered after `mockMissions` and falling through, so the create
-  // still answers with the shape the console expects.
-  await page.route("**/api/missions", async (r) => {
-    if (r.request().method() !== "POST") return r.fallback();
-    createSeen = true;
-    return r.fallback();
+  // The reopen itself, marked so the refusal that follows it can be told apart from the
+  // settling's own refusals.
+  await page.route("**/api/missions/*/state", (r) => {
+    reopenSeen = true;
+    return r.fulfill({ json: { ...MISSION, state: "running" } });
   });
   await page.route("**/api/missions/*/archive", (r) =>
     r.fulfill({ json: { ...MISSION, id: "msn_a", archived_at: 1 } }),
@@ -3439,18 +3375,16 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   await expect.poll(() => heldSeen, { timeout: 10_000 }).toBe(true);
 
   // A NEWER authoritative read, refused — `appliedGen` is untouched by it, which is the defect.
-  // The create starts from the new-mission page, reached through the rail's own "+ New mission".
-  await newMissionFromRail(page);
-  await page.getByTestId("new-mission-instruction").fill("start something");
-  await page.getByTestId("new-mission-project").selectOption("p1");
-  await page.getByTestId("new-mission-start").click();
+  // Issued by REOPENING the other mission, whose refresh is refused.
+  await selectMission(page, "Bravo");
+  await page.getByTestId("mission-reopen").click();
   // THE REFUSAL ITSELF, not the phase flag (#1156): `phase` flipped to "fail" when the HELD read
   // arrived, so polling it proved nothing about the newer read — and under a starved runner the
   // test could release the stale answer before the app had issued anything newer, making the
-  // fence's CORRECT acceptance of it read as a defect. A read refused after the create is the
+  // fence's CORRECT acceptance of it read as a defect. A read refused after the reopen is the
   // precondition the fence needs: the newest ISSUED generation has moved past the held one.
   await expect
-    .poll(() => refusedAfterCreate, { timeout: 10_000 })
+    .poll(() => refusedAfterReopen, { timeout: 10_000 })
     .toBe(true);
 
   releaseStale?.();

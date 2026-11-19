@@ -34,7 +34,7 @@ from agent_sessions import (
     mission_dispatch,
     mission_dispatch_recover,
     mission_fence,
-    mission_plan,
+    mission_targets,
     missions,
     ptybridge,
     runtime_cleanup,
@@ -663,7 +663,7 @@ def test_the_MISSION_picker_drops_an_incapable_late_id_engine_and_the_HANDOFF_pi
             return True
 
     monkeypatch.setattr(engines, "all_providers", lambda: [Late()])
-    assert mission_plan.engine_options() == []
+    assert mission_targets.engine_options() == []
     assert handoff.seed_start_state(Late(), present=True) == (True, None)
 
 

@@ -506,3 +506,102 @@
   gap: var(--sp-2);
   color: var(--text-1);
 }
+
+/* A mission card's flow (#2152, mockup B/B2): the steps in order, who does each, and an agent
+   step's role (skills + MINIMUM grade). Tokens only, square, hairline rows. */
+.flowHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: baseline;
+  justify-content: space-between;
+}
+.flowChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--hud);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.flowChip i {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.flowTitle {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.flowDim {
+  font-weight: 400;
+  color: var(--text-2);
+}
+.flowSteps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.flowStep {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.flowN {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--text-3);
+}
+.flowWhat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.flowStepTitle {
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.flowBrief {
+  font-size: var(--fs-label);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.flowRole,
+.flowRoleOp {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: right;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.flowRoleOp {
+  color: var(--accent-text);
+}
+@media (max-width: 700px) {
+  .flowStep {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+  .flowRole,
+  .flowRoleOp {
+    grid-column: 2;
+    text-align: left;
+  }
+}

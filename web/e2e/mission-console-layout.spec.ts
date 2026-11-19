@@ -137,7 +137,7 @@ async function stub(
 }
 
 /** Select a mission from the rail. Nothing is auto-selected since #948 P3 — the section opens on
- *  the new-mission page — so a test about a selected mission picks one itself, on either project. */
+ *  the landing — so a test about a selected mission picks one itself, on either project. */
 async function selectFromRail(page: Page, title: RegExp) {
   await openMissionRail(page);
   await page
@@ -151,22 +151,20 @@ async function selectFromRail(page: Page, title: RegExp) {
 
 test.describe("the workspace's content is reachable at every width (#929, #948)", () => {
   for (const width of [1399, 1400, 1600]) {
-    test(`no mission selected at ${width}px: the new-mission page is the content, with nothing to disclose`, async ({
+    test(`no mission selected at ${width}px: the landing is the content, with nothing to disclose`, async ({
       page,
     }) => {
       // #929's defect was a no-mission page whose content depended on the width: at 1400+ the
       // operator saw neither the stops nor what they led to. The no-mission page is now the
-      // new-mission landing (#948 P3), and the width still must not decide what it offers.
+      // landing (#948 P3; its New mission opens HQ since #2152), and the width still must not
+      // decide what it offers.
       await page.setViewportSize({ width, height: 900 });
       await stub(page);
       await page.goto("/mission");
 
       await expect(page.getByTestId("mission-landing")).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: "What should this mission achieve?" }),
-      ).toBeVisible();
-      await expect(page.getByTestId("new-mission-form")).toBeVisible();
-      await expect(page.getByTestId("new-mission-instruction")).toBeInViewport();
+      await expect(page.getByTestId("mission-landing-heading")).toHaveText("Missions");
+      await expect(page.getByTestId("landing-new-mission")).toBeInViewport();
       // Nothing is selected, so there is no mission header and no details to disclose.
       await expect(page.getByTestId("console-title")).toHaveCount(0);
       await expect(page.getByTestId("details-toggle")).toHaveCount(0);
@@ -193,7 +191,7 @@ test.describe("the workspace's content is reachable at every width (#929, #948)"
   });
 });
 
-test("a fresh install leads with the composer (#929, #948)", async ({
+test("a fresh install leads with New mission (#929, #948, #2152)", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
@@ -203,18 +201,17 @@ test("a fresh install leads with the composer (#929, #948)", async ({
   // A READ that found nothing — the rail says so — not a list still in flight.
   await expect(page.getByTestId("rail-no-missions")).toBeVisible();
 
-  // ASSERTED AS GEOMETRY, NOT AS DOM NESTING (#930 review 1, finding 1). "Leads with the composer"
-  // is a layout claim: the heading that explains it, then the composer, above the fold. (It was
-  // also measured against the untracked-session list below it; that list was removed by #948 P3.)
-  const heading = page.getByRole("heading", {
-    name: "What should this mission achieve?",
-  });
-  const composer = page.getByTestId("new-mission-form");
+  // ASSERTED AS GEOMETRY, NOT AS DOM NESTING (#930 review 1, finding 1). "Leads with New mission"
+  // is a layout claim: the heading that explains it, then the button, above the fold. (It was the
+  // New-mission form until #2152, and was also measured against the untracked-session list below
+  // it; that list was removed by #948 P3.)
+  const heading = page.getByTestId("mission-landing-heading");
+  const button = page.getByTestId("landing-new-mission");
   await expect(heading).toBeVisible();
-  await expect(composer).toBeVisible();
+  await expect(button).toBeVisible();
   const [hb, cb] = [
     (await heading.boundingBox())!,
-    (await composer.boundingBox())!,
+    (await button.boundingBox())!,
   ];
   expect(cb.y).toBeGreaterThan(hb.y);
   expect(cb.y + cb.height).toBeLessThanOrEqual(900);
@@ -241,48 +238,8 @@ test("a store failure is not read as 'you have no missions' (#929)", async ({
 /** The defects the first review of PR #930 found. Each is about WHEN a render happens relative to
  *  a request landing — a thing a DOM emulator with synchronous fakes cannot put in the wrong order. */
 test.describe("#930 review 1 — the console under a slow store", () => {
-  // ONE mode since #1058: the landing's ASK half became `/ask`, a route with no mission list to
-  // arrive underneath it, so the parameterised "ask" case has no list to survive. The defect was
-  // never about which mode was on screen — it was about the list's arrival remounting the composer
-  // — and the brief form is the composer that is still mounted there.
-  for (const mode of ["new mission"] as const) {
-    test(`a ${mode} draft survives the empty mission list arriving (finding 1)`, async ({
-      page,
-    }) => {
-      // The composer used to be two mounts either side of the first-run flag. Typing while the list
-      // was still in flight and then having it resolve EMPTY unmounted the field being typed into
-      // and mounted a fresh one — silently discarding the draft. The landing keeps ONE composer
-      // mount (#948 P3), and this pins that the list arriving does not replace it.
-      await page.setViewportSize({ width: 1280, height: 900 });
-      const gate = deferred();
-      await stub(page, {
-        missionsResolver: async () => {
-          await gate.promise;
-          return missionList([]);
-        },
-      });
-
-      await page.goto("/mission");
-      const field = page.getByTestId("new-mission-instruction");
-      await field.waitFor();
-      const draft = "what happened to the parser work";
-      await field.fill(draft);
-      await expect(field).toHaveValue(draft);
-      const node = await field.elementHandle();
-
-      // The answer lands: an empty list, which the rail announces.
-      gate.resolve();
-      await expect(page.getByTestId("rail-no-missions")).toBeAttached();
-
-      // RED if the list's arrival remounts the composer: the value would be "" and the node gone.
-      await expect(field).toHaveValue(draft);
-      expect(
-        await node!.evaluate(
-          (el) => (el as HTMLTextAreaElement).isConnected && (el as HTMLTextAreaElement).value,
-        ),
-      ).toBe(draft);
-    });
-  }
+  // RETIRED BY #2152 (no New-mission form): "a new mission draft survives the empty mission list
+  // arriving (finding 1)". The landing has no field to type a draft into.
 
   test("switching scope does not declare 'no missions' on the old scope's evidence (finding 4)", async ({
     page,

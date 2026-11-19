@@ -32,15 +32,14 @@ SONNET, HAIKU = 3, 6
 def live(auth_cfg, monkeypatch):
     missions.reset_schema_cache_for_test()
     monkeypatch.setattr(team, "snapshot", lambda: context())
-    # A new draft mission is planned in the background (`mission_plan.recover_pending`), which
-    # (and its objectives written, `mission_objectives.recover_pending`), which would answer with
-    # THIS test's scripted AI replies and shift every round: not under test here.
-    from agent_sessions import mission_objectives, mission_plan
+    # A new draft mission has its objectives written in the background
+    # (`mission_objectives.recover_pending`), which would answer with THIS test's scripted AI
+    # replies and shift every round: not under test here. (No planner runs any more, #2152.)
+    from agent_sessions import mission_objectives
 
     async def _no_planning(**kw):
         return {}
 
-    monkeypatch.setattr(mission_plan, "recover_pending", _no_planning)
     monkeypatch.setattr(mission_objectives, "recover_pending", _no_planning)
     # The rail's read degrades to an empty list while the store is briefly locked (a busy shared
     # host); this test is about the team tools, so it waits that out instead of flaking.
@@ -166,7 +165,44 @@ def _project(a, name: str, folder=None) -> str:
 
 
 def _mission_cards(a, cid):
-    return [p for t in a.get(cid)["turns"] for p in t["proposals"] if p["op"] == "mission.create"]
+    return [
+        p for t in a.get(cid)["turns"] for p in t["proposals"] if p["op"].startswith("mission.")
+    ]
+
+
+#: The flow HQ writes for a project with no deployed playbook (#2152: HQ always plans with a flow).
+LOCAL_FLOW = {
+    "format": 5,
+    "title": "Application",
+    "steps": [
+        {
+            "id": "cv",
+            "title": "Tailor the CV",
+            "actor": {"kind": "agent"},
+            "role": {"skills": ["cv-writing"], "min_grade": "strong"},
+            "checklist": [{"key": "cv_ready", "title": "Tailored", "probe": "supervisor_judged"}],
+        },
+        {
+            "id": "approve",
+            "title": "Approve",
+            "actor": {"kind": "operator"},
+            "after": ["cv"],
+            "checklist": [{"key": "ok", "title": "Approved", "probe": "none"}],
+        },
+    ],
+}
+
+
+def _with_flow(args: dict) -> dict:
+    return {**args, "flow_id": "application", "flow": json.loads(json.dumps(LOCAL_FLOW))}
+
+
+@pytest.fixture
+def library(monkeypatch):
+    from agent_sessions import specialists
+    from mission_team_fixture import LIBRARY
+
+    monkeypatch.setattr(specialists, "library_revisions", lambda: dict(LIBRARY))
 
 
 def test_propose_mission_is_a_proposal_that_can_only_create_a_draft():
@@ -179,27 +215,38 @@ def test_propose_mission_is_a_proposal_that_can_only_create_a_draft():
     assert (method, path) == ("POST", "/api/missions")
     assert body == {"instruction": "apply for the job", "project_id": "p-1"}
     assert [o.id for o in ask_operations.CATALOG.values() if o.group == "mission"] == [
-        "mission.create"
+        "mission.create",
+        "mission.create_local",  # HQ's own flow (#2152)
+        "mission.plan",  # Plan with HQ on an existing draft (#2152): one apply route, no create
     ]
+    plan = ask_operations.CATALOG["mission.plan"]
+    assert plan.run is not None and plan.target == "mission" and plan.fields == ()
     assert not [n for n in ask_orchestrator.TOOLS if re.search(r"approve|launch|dispatch|begin", n)]
 
 
-def test_hq_creates_a_draft_mission_then_assembles_its_team_in_one_conversation(live, ai, tmp_path):
+def test_hq_creates_a_draft_mission_then_assembles_its_team_in_one_conversation(
+    live, ai, tmp_path, library
+):
     """THE ACCEPTANCE FLOW (#1950): no mission exists; HQ proposes a draft, the operator taps, the
     server creates it as a DRAFT (nothing launched); the next turn finds it, reads its plan and
     stages the team card."""
     pid = _project(live, "Marcus Privat", tmp_path)
     ai(
         calls(("list_projects", {})),
-        call("propose_mission", {"project_index": 0, "instruction": "Apply for the job"}, cid="m"),
+        call(
+            "propose_mission",
+            _with_flow({"project_index": 0, "instruction": "Apply for the job"}),
+            cid="m",
+        ),
         answer("Confirm the card and I will assemble the team."),
     )
     cid = live.new()
     r = live.ask(cid, "plan a job application mission for Marcus Privat")
     assert r.status_code == 200, r.text
     (card,) = _mission_cards(live, cid)
-    assert card["title"] == "Marcus Privat" and "press Begin" in card["text"]
-    assert "no deployed playbook" in card["text"]  # this project has none: no procedure
+    assert card["title"] == "Marcus Privat" and "until you approve the plan" in card["text"]
+    # This project has no deployed playbook, so HQ wrote the flow (#2152): never a bare draft.
+    assert card["op"] == "mission.create_local" and "flow HQ wrote" in card["text"]
     assert len(missions.safe_list_missions()["missions"]) == 1, "staging creates nothing"
     d = live.decide(card["action_id"], {"decision": "confirm"})
     assert d.status_code in (200, 202), d.text
@@ -216,8 +263,8 @@ def test_hq_creates_a_draft_mission_then_assembles_its_team_in_one_conversation(
     (new,) = [m for m in missions.safe_list_missions()["missions"] if m["title"] != "Apply"]
     assert new["state"] == "draft" and new["project_id"] == pid
     assert new["instruction"] == "Apply for the job"
-    # The server writes the plan in the background; here the fixture plan stands in for it.
-    store_plan(new["id"], document())
+    # The card applied HQ's flow: the plan revision has its steps and roles (#2152).
+    assert missions.plan_revision(new["id"])["revision"] == 1
 
     script = ai(
         calls(("list_missions", {"state": "draft"})),
@@ -230,7 +277,7 @@ def test_hq_creates_a_draft_mission_then_assembles_its_team_in_one_conversation(
     listed = json.loads(script.tool_results(1)[-1]["content"])
     assert new["id"] in [m["mission_id"] for m in listed["missions"]]
     cards = [p for t in live.get(cid)["turns"] for p in t["proposals"]]
-    assert [c["op"] for c in cards] == ["mission.create", "team.assemble"]
+    assert [c["op"] for c in cards] == ["mission.create_local", "team.assemble"]
     assert missions.get_mission(new["id"])["state"] == "draft"
 
 
@@ -261,12 +308,16 @@ def test_a_project_hq_was_not_given_or_one_the_route_would_refuse_stages_no_draf
 
 
 def test_a_project_renamed_before_the_tap_makes_the_card_stale_and_creates_nothing(
-    live, ai, tmp_path
+    live, ai, tmp_path, library
 ):
     pid = _project(live, "Marcus Privat", tmp_path)
     ai(
         calls(("list_projects", {})),
-        call("propose_mission", {"project_index": 0, "instruction": "Apply for the job"}, cid="m"),
+        call(
+            "propose_mission",
+            _with_flow({"project_index": 0, "instruction": "Apply for the job"}),
+            cid="m",
+        ),
         answer("Confirm the card."),
     )
     cid = live.new()
@@ -284,6 +335,8 @@ def test_a_draft_mission_card_is_never_voice_confirmed():
     from agent_sessions import voice_calls
 
     assert voice_calls._voice_operation("mission.create") is False
+    assert voice_calls._voice_operation("mission.create_local") is False
+    assert voice_calls._voice_operation("mission.plan") is False
     assert voice_calls._voice_operation("team.assemble") is False
 
 

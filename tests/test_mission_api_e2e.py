@@ -25,8 +25,8 @@ from agent_sessions import (
     mission_judge,
     mission_observe,
     mission_permission,
-    mission_plan,
     mission_structured,
+    mission_targets,
     missions,
     orchestrator,
     prefs,
@@ -83,7 +83,8 @@ def _verdict(key: str, quote: str) -> dict:
 
 
 def _dispatched(project, brief="Harden the login flow") -> tuple[str, str]:
-    assert ENGINE in {o["id"] for o in mission_plan.engine_options()}  # the planner offers it
+    # a mission may dispatch into it
+    assert ENGINE in {o["id"] for o in mission_targets.engine_options()}
     mid, claimed = _claimed(project, brief=brief)
     result = asyncio.run(_run(mid, claimed))
     assert result["outcome"] == "started", result
@@ -304,8 +305,8 @@ def test_the_mission_ready_bit_is_the_rollback_switch(store, judged, host, proje
     facts = asyncio.run(mission_observe.facts(key))
     assert facts["api"] and facts["readable"]
     # …the planner and picker give the reason…
-    assert ENGINE not in {o["id"] for o in mission_plan.engine_options()}
-    reasons = {u["id"]: u["reason"] for u in mission_plan.engine_unavailable()}
+    assert ENGINE not in {o["id"] for o in mission_targets.engine_options()}
+    reasons = {u["id"]: u["reason"] for u in mission_targets.engine_unavailable()}
     assert reasons.get(ENGINE) == mission_structured.NOT_MISSION_READY
     # …a dispatch is refused…
     other, claimed = _claimed(project)

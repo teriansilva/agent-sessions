@@ -69,8 +69,9 @@ def test_registry_covers_every_system_prompt():
     # #2136 hq_turn_watch (a second model judges whether an HQ turn converges, guarded) and
     # hq_turn_notes (what HQ read becomes its notes before it is dropped for room, guarded).
     # #2137 P2 hq_conversation_compact (the background summary of a long conversation, guarded).
-    # #2179 removed pulse_session_line with the session scan.
-    assert len(prompts.REGISTRY) == 50
+    # #2152 retired mission_plan (HQ plans every mission); #2179 removed pulse_session_line with
+    # the session scan.
+    assert len(prompts.REGISTRY) == 49
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -111,11 +112,7 @@ def test_registry_covers_every_system_prompt():
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
-        # `mission_plan` writes the BRIEF that is pasted verbatim into a fresh agent running
-        # UNATTENDED — the shortest path from prompt text to autonomous action anywhere in the
-        # app, so it is guarded for a more direct reason than the two above (#893). Permission-
-        # bypassed only under the operator's `agent_defaults.bypass` grant (#1215).
-        "mission_plan",
+        # (`mission_plan`, the one-agent planner's brief, is retired with it: #2152.)
         "mission_question",
         "mission_supervisor",
         # `mission_judge` decides whether a completion gate is settled, reading session content —
@@ -166,7 +163,6 @@ EXPECTED_DEFAULT_SHA = {
     # Re-pinned by #983 P4: the contract gained `draft.confidence`, and the draft rule now says
     # plainly that an opted-in operator has a draft typed with nobody reading it first.
     "mission_supervisor": "b78c12d41c8d5867",
-    "mission_plan": "a4d0cb1003a79e45",
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
     "mission_debrief": "0b28d8947c0560cd",
@@ -178,7 +174,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "449e27527aa21fc8",  # #2137 (needs_you, set-up); #1960 P2; #1950; #2136
+    "ask_orchestrator": "cd049db5e9fe36b6",  # #2152; #2137 (needs_you); #1960 P2; #1950; #2136
     "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
@@ -236,27 +232,34 @@ def test_default_text_is_pinned_by_hash():
     assert actual == EXPECTED_DEFAULT_SHA
 
 
-def test_hq_prompt_creates_the_draft_and_keeps_new_mission_as_the_fallback():
+def test_hq_prompt_plans_every_mission_with_a_flow():
     """#1950: HQ proposes the draft itself (propose_mission), continues with read_plan and assemble,
-    never says it cannot plan, and names New mission and Begin only as the fallback."""
+    and never says it cannot plan. #2152: HQ is the only planner — a deployed procedure that fits
+    is preferred, a flow is written only when none fits, never a one-agent plan, and Plan with HQ
+    plans THAT draft."""
     text = " ".join(prompts.get("ask_orchestrator").default.split())
     for needle in (
+        "You plan every mission; there is no other planner",
         "propose_mission",
-        "Begin, which you cannot do",
         "read_plan",
         "assemble the team",
         "Never say you cannot plan or create a mission",
         "do not ask for inputs such as a job posting before the draft exists",
-        "Only if propose_mission is refused",
-        "choose New mission",
-        "nothing runs until Begin",
         "You cannot approve or start missions",
-        # The second live run (#1950): the procedure is applied on the card, and HQ continues.
         "list_procedures",
         "procedure_index",
-        "a turn of your own naming the new mission",
+        "Prefer a deployed procedure whenever one fits the goal",
+        "Only when none fits, or the project has no deployed playbook, write one",
+        "pass it as flow",
+        "Never plan a mission as one agent with one brief",
+        "pass its mission_id to propose_mission",
+        "never create a second one",
+        "which you cannot do",
+        "New mission opens you with nothing filled in",
+        "if the goal, the project or the procedure is unclear, ask_operator for it",
     ):
         assert needle in text, needle
+    assert "choose New mission" not in text, "New mission is HQ's own hand-off now"
 
 
 def test_hq_prompt_reads_needs_you_and_never_searches_for_a_reference_phrase():

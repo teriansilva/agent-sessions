@@ -27,8 +27,8 @@ from agent_sessions import (
     mission_judge,
     mission_observe,
     mission_permission,
-    mission_plan,
     mission_structured,
+    mission_targets,
     missions,
     orchestrator,
     prefs,
@@ -116,7 +116,7 @@ def _claimed(adapter: str, cwd, brief="Harden the login flow"):
 
 
 def _dispatched(adapter, project, judged) -> tuple[str, str]:
-    assert _engine(adapter) in {o["id"] for o in mission_plan.engine_options()}
+    assert _engine(adapter) in {o["id"] for o in mission_targets.engine_options()}
     mid, claimed = _claimed(adapter, project)
     result = asyncio.run(_run(mid, claimed))
     assert result["outcome"] == "started", result
@@ -237,8 +237,8 @@ def test_the_mission_ready_bit_is_the_rollback_switch(
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS[adapter], False)
     facts = asyncio.run(mission_observe.facts(key))  # observation keeps working
     assert facts["api"] and facts["readable"]
-    assert _engine(adapter) not in {o["id"] for o in mission_plan.engine_options()}
-    reasons = {u["id"]: u["reason"] for u in mission_plan.engine_unavailable()}
+    assert _engine(adapter) not in {o["id"] for o in mission_targets.engine_options()}
+    reasons = {u["id"]: u["reason"] for u in mission_targets.engine_unavailable()}
     assert reasons.get(_engine(adapter)) == mission_structured.NOT_MISSION_READY
     other, claimed = _claimed(adapter, project)
     assert asyncio.run(_run(other, claimed))["outcome"] == "refused"

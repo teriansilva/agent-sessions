@@ -371,7 +371,8 @@ test("the mission landing no longer offers ASK — there is no mode strip left",
 }) => {
   await mockShell(page);
   await page.goto("/mission");
-  await expect(page.getByTestId("new-mission-form")).toBeVisible();
+  // The landing (no New-mission form since #2152: its New mission opens HQ).
+  await expect(page.getByTestId("landing-new-mission")).toBeVisible();
   await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
   await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
 });

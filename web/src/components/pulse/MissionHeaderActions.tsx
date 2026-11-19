@@ -17,7 +17,7 @@
  * - AT MOST ONE PRIMARY, by state: Begin for draft and planned (disabled until the plan and the
  *   objectives are ready), Starting… while dispatching, Mark done as a ghost while running or in
  *   review, Reopen for done and failed, Unarchive for an archived mission;
- * - ⋯ for everything else: Plan again, Review plan, Not yet, Mark failed, Abandon and Archive. Each
+ * - ⋯ for everything else: Review plan, Not yet, Mark failed, Abandon and Archive. Each
  *   keeps the testid it had as a button.
  *
  * Nothing that EXPLAINS goes in the row. The start reason lives in the plan card, next to the plan it
@@ -52,7 +52,6 @@ import {
   CircleX,
   FileText,
   Package,
-  RotateCw,
   Route,
   Undo2,
 } from "lucide-react";
@@ -290,8 +289,12 @@ export function MissionHeaderActions({
     );
   } else if (
     start &&
+    start.offersBegin &&
     (state === "draft" || state === "planned" || state === "dispatching")
   ) {
+    // BEGIN is the legacy one-agent plan's (and an attached session's, #2152): a mission HQ
+    // planned starts its steps from the Plan approval and Steps cards, and one with no plan
+    // offers Plan with HQ on its plan card instead.
     primary = (
       <button
         type="button"
@@ -394,23 +397,6 @@ export function MissionHeaderActions({
         ) : null
       }
     >
-      {/* PLAN AGAIN (#967): it prepares a new proposal and starts nothing. Held while an attempt is
-          already running, which the server would refuse with a 409 (#967 P2b). */}
-      {planning ? (
-        <button
-          type="button"
-          className={styles.menuItem}
-          disabled={planning.disabled || planning.planPending}
-          onClick={planning.propose}
-          role="menuitem"
-          data-testid="mission-replan"
-        >
-          {icon(<RotateCw size={15} />)}
-          {planning.busy === "plan" || planning.planPending
-            ? "Planning…"
-            : "Plan again"}
-        </button>
-      ) : null}
       {planning?.plan && planning.canReviewPlan ? (
         <button
           type="button"

@@ -134,7 +134,6 @@ import type {
   MissionNow,
   MissionList,
   MissionObjective,
-  MissionPlan,
   MissionTurn,
   MissionTurnEvent,
   NotificationList,
@@ -595,6 +594,8 @@ async function streamAskTurn(
     contact?: string;
     /** Staged attachment ids (#1707) — claimed server-side under the turn lock. */
     attachments?: string[];
+    /** Plan with HQ (#2152): the draft mission this conversation plans. */
+    mission?: string;
   },
   onEvent: (ev: AskTurnEvent) => void,
   signal?: AbortSignal,
@@ -612,6 +613,7 @@ async function streamAskTurn(
       // Who answers (#1525): the client's resolved contact. The server validates it.
       ...(body.contact ? { contact: body.contact } : {}),
       ...(body.attachments?.length ? { attachments: body.attachments } : {}),
+      ...(body.mission ? { mission: body.mission } : {}),
     }),
     ...(signal ? { signal } : {}),
   });
@@ -2810,56 +2812,6 @@ export const api = {
   /** Take a live session into a mission. Membership is exclusive: a session already held by
    *  another mission comes back 409 NAMING the holder, so the operator is told where it went
    *  rather than being told "no". `mutateJson` so that detail survives (#834). */
-  /** Produce a dispatch PROPOSAL. Launches nothing — that is a separate, explicit call (#893).
-   *  `mutateJson` because a refusal carries a `detail` the operator needs (no AI endpoint
-   *  configured, the mission is already running). */
-  planMission: (id: string) =>
-    mutateJson<MissionPlan>(
-      "POST",
-      `/api/missions/${encodeURIComponent(id)}/plan`,
-      {},
-    ),
-
-  /** The operator's own edit of the proposal. Sends a PROJECT ID, never a path — the server
-   *  resolves the working directory. Every edit comes back with a NEW `plan_id`.
-   *
-   *  **`planId` is the proposal being edited, and it is a comparand, not a hint.** This route
-   *  replaces the whole row, so two tabs editing different fields of one plan would both be told
-   *  the save worked while the later write restored its own stale copy of the other's field. The
-   *  server compares it inside the transaction and answers 409 (#904 review 6). */
-  editMissionPlan: (
-    id: string,
-    planId: string,
-    body: {
-      project_id?: string | null;
-      engine?: string | null;
-      brief?: string;
-    },
-  ) =>
-    mutateJson<MissionPlan>(
-      "PATCH",
-      `/api/missions/${encodeURIComponent(id)}/plan`,
-      { plan_id: planId, ...body },
-    ),
-
-  /** PLAN MANUALLY: the FIRST plan of a mission whose planning was `skipped` (no AI endpoint) or
-   *  `failed` (#967 P2b). The same authenticated, CSRF-guarded `PATCH /plan` as an edit, and
-   *  deliberately WITHOUT `plan_id`: there is no plan to name, and the server accepts this shape only
-   *  while no plan exists and planning is not running, so it cannot overwrite one. A project ID and
-   *  an engine ID, never a path. `mutateJson`, so a 422 carries the server's own `detail`. */
-  firstMissionPlan: (
-    id: string,
-    body: { project_id: string; engine: string; brief: string },
-  ) =>
-    mutateJson<MissionPlan>(
-      "PATCH",
-      `/api/missions/${encodeURIComponent(id)}/plan`,
-      {
-        project_id: body.project_id,
-        engine: body.engine,
-        brief: body.brief,
-      },
-    ),
 
   /** RUN the proposal. The highest-privilege call the client can make: it starts an agent with
    *  nobody watching it, so it names the plan it is dispatching and the server refuses any other

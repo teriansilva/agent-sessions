@@ -1213,7 +1213,41 @@ export type AskLibraryContent =
       /** `off` (saved switched off), `enabled` (an edit of one that is on), `enable`. */
       status: "off" | "enabled" | "enable" | "";
       widened: string[];
+    }
+  | {
+      /** The flow a mission card applies (#2152): the deployed procedure, or one HQ wrote for
+       *  this mission. Every step with who does it; an agent step's role is its skills and its
+       *  MINIMUM grade (the Team card fills it from the specialists). */
+      kind: "flow";
+      source: "playbook" | "mission_local";
+      title: string;
+      playbook: string | null;
+      steps: AskFlowStep[];
     };
+
+/** One step of a mission card's flow (#2152). */
+export type AskFlowStep = {
+  id: string;
+  title: string;
+  /** Everything below that reaches the agent's instruction is shown VERBATIM, never cut. */
+  brief: string;
+  /** A deployed procedure's step prompts (a flow HQ writes may carry none). */
+  prompts: string[];
+  /** What "done" means for the step, as the agent is told it. */
+  checklist: string[];
+  /** `none`, `read` or `read-write`: the step's project memory. */
+  memory: string;
+  outputs: string[];
+  /** Titles of the steps this one must not share a specialist with. */
+  distinct_from: string[];
+  /** `agent`, `operator` (you), or `none` (a note). */
+  actor: string;
+  skills: string[];
+  /** The role's MINIMUM grade label (Intern, Specialist, Senior); "" for a step with no role. */
+  min_grade: string;
+  /** How often a reviewer may send work back here, when the step reworks. */
+  rework: number | null;
+};
 
 export type AskOperationDecision = Pick<
   AskOperationCard,
@@ -3247,26 +3281,16 @@ export interface Mission {
    *  and "not worked out yet" are different things to approve a launch against. */
   objectives_state?: "pending" | "done" | "failed" | "skipped" | null;
   objectives_at?: number | null;
-  /** How PLANNING stands (#967 P2). A new mission plans itself, so this is `pending` from the create
-   *  transaction until the attempt settles: `ready` (a plan was written, in the same transaction),
-   *  `failed` (with `plan_detail`), or `skipped` (no AI endpoint). A mission from before the column
-   *  was backfilled `ready` if it had a plan and `skipped` otherwise, with no `plan_detail`.
-   *
-   *  `pending` is a server-side fence as well as a label: DISPATCH answers 409 while it holds. */
+  /** How the retired one-agent planner left this mission (#967; retired by #2152). A new mission is
+   *  `skipped` (HQ plans it); a `pending` left from before the upgrade is settled at boot. Still a
+   *  server-side fence: DISPATCH answers 409 while it says `pending`. */
   plan_state?: "pending" | "ready" | "failed" | "skipped" | null;
-  /** The planning ATTEMPT. Every intent (create, Plan again, a manual first plan) takes a new one. */
   plan_generation?: number;
-  /** Why the last attempt settled `failed` or `skipped`. Null otherwise. */
   plan_detail?: string | null;
   plan_at?: number | null;
-  /** What PLAN MANUALLY may choose from (#967 P2b). Present only while the mission has no plan and
-   *  planning settled `skipped` or `failed` — exactly the states `PATCH /plan` accepts a first plan
-   *  in. Once a plan exists the lists ride on it (`MissionPlan.project_options`). */
-  plan_options?: {
-    project_options: { id: string; name: string; cwd: string }[];
-    engine_options: { id: string; label: string }[];
-    engine_unavailable?: MissionEngineUnavailable[];
-  } | null;
+  /** The latest plan revision HQ's procedure wrote (#2152), or null when it has none. ABSENT when
+   *  the server could not read it: not known to be unplanned. */
+  plan_revision?: number | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
   /** How many LIVE sub-agents this mission may hold (#894). A server constant, echoed so the
@@ -3339,7 +3363,8 @@ export interface MissionEngineUnavailable {
   detail?: string;
 }
 
-/** A proposal: which project, which agent, what the agent will be told — and why that agent.
+/** A LEGACY one-agent plan (#893; read-only since #2152): which project, which agent, what the
+ *  agent will be told. Kept so a mission that holds one can still Begin; nothing writes new ones.
  *
  *  `plan_id` is the identity DISPATCH compares against. Every edit mints a new one, so a dispatch
  *  approved against the version on screen a minute ago cannot run the version typed since. */

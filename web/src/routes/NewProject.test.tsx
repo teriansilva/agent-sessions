@@ -15,6 +15,7 @@ import type { NewSessionDraft, WizardEntryState } from "../lib/newProject";
 import { COLOR_PRESETS, PROJECT_COLORS } from "../lib/projectColors";
 import {
   DASHBOARD_PATH,
+  HQ_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
   SESSIONS_PATH,
@@ -97,6 +98,7 @@ function renderWizard(
       { path: SESSIONS_PATH, element: <Probe name="New session" /> },
       { path: DASHBOARD_PATH, element: <Probe name="Dashboard" /> },
       { path: MISSION_PATH, element: <Probe name="Missions" /> },
+      { path: HQ_PATH, element: <Probe name="HQ" /> },
       { path: "/settings/:tab", element: <Probe name="Settings" /> },
     ],
     { initialEntries: [{ pathname: NEW_PROJECT_PATH, state }] },
@@ -394,7 +396,7 @@ test("Done returns to the entry point; Plan a mission carries the project", asyn
   ).toBeInTheDocument();
 });
 
-test("Plan a mission here preselects the new project", async () => {
+test("Plan a mission here opens HQ on a fresh conversation (#2152: no New-mission form)", async () => {
   const user = userEvent.setup();
   renderWizard({ from: "dashboard" });
   await toReview(user);
@@ -402,12 +404,10 @@ test("Plan a mission here preselects the new project", async () => {
   await user.click(
     await screen.findByRole("button", { name: "Plan a mission here" }),
   );
-  await screen.findByRole("heading", { name: "Missions" });
+  await screen.findByRole("heading", { name: "HQ" });
   expect(
     JSON.parse(screen.getByTestId("landed-state").textContent ?? "null"),
-  ).toEqual({
-    missionProjectId: "p-new",
-  });
+  ).toEqual({ hqCompose: true });
 });
 
 test("an unknown entry point gets no Done — only DONE's own actions", async () => {

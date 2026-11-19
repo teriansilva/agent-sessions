@@ -90,6 +90,7 @@ import {
   LEGACY_CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
+  MISSION_NEW_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
   PLAYBOOKS_PATH,
@@ -876,7 +877,13 @@ function Layout() {
                   <Route path="/settings/agents/setup/new" element={<AgentSetup />} />
                   <Route path="/settings/agents/:agent" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
-                  <Route path={MISSION_PATH} element={<MissionControl />} />
+                  <Route path={MISSION_PATH} element={<MissionControlRoute />} />
+                  {/* The New-mission form is gone (#2152: HQ plans every mission). A link or
+                      bookmark that meant "start a mission" opens HQ on a fresh conversation. */}
+                  <Route
+                    path={MISSION_NEW_PATH}
+                    element={<Navigate to={HQ_PATH} state={{ hqCompose: true }} replace />}
+                  />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
                   <Route path={`${MISSION_PATH}/:missionId`} element={<MissionIdRedirect />} />
                   <Route
@@ -1022,6 +1029,16 @@ function LegacyMissionRedirect() {
 }
 
 /** Path-shaped mission links share the existing console's query selector and validation. */
+/** Missions, except a navigation that carried the New project wizard's "Plan a mission here"
+ *  (`missionProjectId`, #1187): that opened the New-mission form, which is gone (#2152), so it
+ *  opens HQ on a fresh conversation instead — an old history entry included. */
+function MissionControlRoute() {
+  const { state } = useLocation();
+  if ((state as { missionProjectId?: unknown } | null)?.missionProjectId !== undefined)
+    return <Navigate to={HQ_PATH} state={{ hqCompose: true }} replace />;
+  return <MissionControl />;
+}
+
 function MissionIdRedirect() {
   const { pathname, search, hash } = useLocation();
   const query = new URLSearchParams(search);

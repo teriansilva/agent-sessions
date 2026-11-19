@@ -1,4 +1,9 @@
-"""The dispatch proposal (#893, Phase 4 of #840).
+"""The LEGACY one-agent dispatch (#893, Phase 4 of #840; the planner is retired, #2152).
+
+The one-agent planner that wrote these plans is gone: HQ plans missions (#2152). A mission that
+already holds such a plan keeps it and its Begin (D2), so the dispatch below is still pinned here;
+the plans are seeded with the store's own `put_plan`, which no production path calls any more
+(`tests/test_hq_plans_missions.py` ratchets that).
 
 One property runs through this file and it is the reason the phase is gated the way it is: **no
 model-authored value becomes a launch argument.** The model picks an INDEX into a server-built
@@ -20,7 +25,7 @@ import time
 
 import pytest
 
-from agent_sessions import mission_plan, mission_structured, missions
+from agent_sessions import mission_structured, mission_targets, missions
 
 #: Missions launch only API clients (#1902): every dispatch here goes through the structured door
 #: (`mission_structured.dispatch`, faked per test). A fake's `key` stays the console fixture's where
@@ -39,102 +44,6 @@ def store(tmp_path, monkeypatch):
     missions.reset_schema_cache_for_test()
     yield tmp_path
     missions.reset_schema_cache_for_test()
-
-
-# NEUTRAL FIXTURE NAMES. The public-snapshot gate scans the whole tree for internal project and
-# host names, and a test fixture is as public as any other file — quoting a real one here failed
-# `pr-validate` on the first push.
-PROJECTS = [
-    {"id": "prj_a", "name": "the-app", "cwd": "/repo/the-app"},
-    {"id": "prj_b", "name": "the-docs", "cwd": "/repo/the-docs"},
-]
-ENGINES = [{"id": "claude", "label": "claude"}, {"id": "codex", "label": "codex"}]
-
-
-# ---- the index discipline ---------------------------------------------------------------
-
-
-def test_the_model_NEVER_SEES_a_path_so_it_cannot_echo_one_back():
-    """The cheapest half of the guarantee: a list with no paths in it.
-
-    `render_options` is the entire text the model is given about projects. If a cwd appeared
-    there, a model could put it in `brief` — and a brief is pasted verbatim into a real agent.
-    """
-    text = mission_plan.render_options(PROJECTS, ENGINES)
-    assert "the-app" in text and "the-docs" in text
-    for p in PROJECTS:
-        assert p["cwd"] not in text
-        assert p["id"] not in text
-
-
-def test_a_MODEL_AUTHORED_PATH_never_becomes_the_plans_cwd():
-    """The load-bearing one. A reply carrying a literal path — the shape a prompt injection would
-    take — resolves to nothing: there is no field for it, and `project_index` is an index."""
-    proposal, dropped = mission_plan.proposal_from_reply(
-        {
-            "project_index": "/etc",
-            "cwd": "/etc",
-            "project": "/etc",
-            "engine_index": 0,
-            "engine_reason": "it is a python repo",
-            "brief": "do the thing",
-        },
-        PROJECTS,
-        ENGINES,
-    )
-    assert proposal["project"] is None
-    assert "project" in dropped
-    # …and nothing anywhere in the proposal carries the path it tried to supply.
-    assert "/etc" not in repr(proposal)
-
-
-@pytest.mark.parametrize("bad", [True, False, "0", 1.0, None, -1, 2, 99])
-def test_an_index_that_is_not_a_real_index_selects_NOTHING(bad):
-    """`isinstance(True, int)` is True in Python, so an unguarded check lets `true` select
-    element 1 — an agent nobody chose. Out of range DROPS rather than clamps: a clamped index is
-    the server inventing a choice and presenting it as the model's."""
-    proposal, _ = mission_plan.proposal_from_reply(
-        {"project_index": bad, "engine_index": bad, "brief": "x"}, PROJECTS, ENGINES
-    )
-    assert proposal["project"] is None
-    assert proposal["engine"] is None
-
-
-def test_a_VALID_index_resolves_to_the_entity_and_its_server_side_cwd():
-    proposal, dropped = mission_plan.proposal_from_reply(
-        {
-            "project_index": 1,
-            "engine_index": 1,
-            "engine_reason": "it is a docs repo",
-            "brief": "update the guide",
-        },
-        PROJECTS,
-        ENGINES,
-    )
-    assert proposal["project"]["id"] == "prj_b"
-    assert proposal["project"]["cwd"] == "/repo/the-docs"
-    assert proposal["engine"] == "codex"
-    assert dropped == []
-
-
-def test_a_SUGGESTION_WITHOUT_A_REASON_says_so_rather_than_arriving_silently():
-    """ "A suggestion is a proposal, never a silent choice." An agent chosen for the operator with
-    no stated why is a decision disguised as a default."""
-    proposal, _ = mission_plan.proposal_from_reply(
-        {"engine_index": 0, "brief": "x"}, PROJECTS, ENGINES
-    )
-    assert proposal["engine"] == "claude"
-    assert proposal["engine_reason"] == "no reason was given"
-
-
-def test_NULL_is_a_real_answer_and_is_not_reported_as_a_refusal():
-    """The instruction may simply not say which project. That is what the picker is for, and it
-    is different from a reply the server had to throw away."""
-    proposal, dropped = mission_plan.proposal_from_reply(
-        {"project_index": None, "engine_index": None, "brief": "x"}, PROJECTS, ENGINES
-    )
-    assert proposal["project"] is None and proposal["engine"] is None
-    assert dropped == []
 
 
 # ---- what is offered --------------------------------------------------------------------
@@ -178,7 +87,7 @@ def test_no_TERMINAL_client_is_offered_as_a_dispatch_target(monkeypatch):
         "all_providers",
         lambda: [_P("claude"), _P("shell"), _P("gemini", False), _P("claude-api")],
     )
-    ids = {e["id"] for e in mission_plan.engine_options()}
+    ids = {e["id"] for e in mission_targets.engine_options()}
     assert ids == {"claude-api"}
     assert "shell" not in ids, "a brief pasted into a login shell executes"
 
@@ -201,8 +110,8 @@ def test_the_LEFT_OUT_agents_are_listed_with_a_reason_and_never_offered(monkeypa
         "all_providers",
         lambda: [_P("claude"), _P("shell"), _P("codex"), _P("claude-api"), _P("codex-api")],
     )
-    offered = {e["id"] for e in mission_plan.engine_options()}
-    left_out = {e["id"]: e for e in mission_plan.engine_unavailable()}
+    offered = {e["id"] for e in mission_targets.engine_options()}
+    left_out = {e["id"]: e for e in mission_targets.engine_unavailable()}
     assert offered == {"claude-api"}
     assert set(left_out) == {"claude", "codex", "codex-api"}, "shell is not an agent"
     assert not offered & set(left_out), "a left-out agent was also offered"
@@ -223,8 +132,8 @@ def test_an_API_client_that_CANNOT_START_is_not_offered(monkeypatch):
     monkeypatch.setattr(registry, "can_start", lambda prov: False)
     monkeypatch.setattr(registry, "api_unavailable_reason", lambda prov: "not signed in")
     monkeypatch.setattr(engines, "all_providers", lambda: [_P("claude-api")])
-    assert mission_plan.engine_options() == []
-    assert mission_plan.engine_unavailable()[0]["reason"] == "not signed in"
+    assert mission_targets.engine_options() == []
+    assert mission_targets.engine_unavailable()[0]["reason"] == "not signed in"
 
 
 def test_a_project_with_NO_FOLDER_is_not_offered(monkeypatch, tmp_path):
@@ -247,7 +156,7 @@ def test_a_project_with_NO_FOLDER_is_not_offered(monkeypatch, tmp_path):
             "b": E("b", ("/repo",), "/repo"),
         },
     )
-    assert [p["id"] for p in mission_plan.project_options()] == ["b"]
+    assert [p["id"] for p in mission_targets.project_options()] == ["b"]
 
 
 # ---- the stored proposal ----------------------------------------------------------------
@@ -377,99 +286,6 @@ def test_the_plan_is_on_the_TIMELINE_as_its_own_kind(store):
 
 
 # ---- the whole pass ---------------------------------------------------------------------
-
-
-def test_PROPOSE_stores_the_proposal_and_launches_NOTHING(store, monkeypatch):
-    """The separation is the feature. `/plan` spends a model call and writes a row; the agent
-    starts when the operator presses a different button."""
-    from agent_sessions import review
-
-    monkeypatch.setattr(mission_plan, "project_options", lambda: PROJECTS)
-    monkeypatch.setattr(mission_plan, "engine_options", lambda: ENGINES)
-
-    async def reply(messages, **kw):
-        return {
-            "project_index": 0,
-            "engine_index": 0,
-            "engine_reason": "it is a python repo",
-            "brief": "open a PR that does the thing",
-        }
-
-    monkeypatch.setattr(review, "complete_json", reply)
-    mid = _mission()
-    plan = asyncio.run(mission_plan.propose(mid))
-
-    assert plan["cwd"] == "/repo/the-app", "the cwd came from the entity, not the model"
-    assert plan["engine"] == "claude"
-    assert plan["brief"] == "open a PR that does the thing"
-    # NOTHING STARTED — and that is not the same as nothing HAPPENED. A plan is what `planned`
-    # means, so the mission is now dispatchable; the agent starts when a different button is
-    # pressed (#904 review 1). Leaving it in `draft` made the plan un-dispatchable, because
-    # `claim_plan` only claims from `planned`.
-    assert missions.get_mission(mid)["state"] == "planned"
-    assert plan["mission_state"] == "planned"
-    # …and the proposal is durable, with the options the card needs to offer an override.
-    assert missions.get_plan(mid)["plan_id"] == plan["plan_id"]
-    assert plan["project_options"] == PROJECTS and plan["engine_options"] == ENGINES
-
-
-def test_PROPOSE_resolves_indices_against_the_lists_THE_MODEL_SAW(store, monkeypatch):
-    """ "An index is not an identity", in the one place where the identity it names is a
-    filesystem path. A list re-read after the model call resolves an index into a set the model
-    never saw — so a project added mid-call would silently retarget the plan.
-
-    Red against a `propose` that rebuilds the options after the await.
-    """
-    from agent_sessions import review
-
-    live = [dict(p) for p in PROJECTS]
-    monkeypatch.setattr(mission_plan, "project_options", lambda: [dict(p) for p in live])
-    monkeypatch.setattr(mission_plan, "engine_options", lambda: ENGINES)
-
-    async def reply(messages, **kw):
-        # A project is added at the FRONT while the model is thinking — every later index shifts.
-        live.insert(0, {"id": "prj_new", "name": "brand new", "cwd": "/repo/new"})
-        return {"project_index": 0, "engine_index": 0, "brief": "go"}
-
-    monkeypatch.setattr(review, "complete_json", reply)
-    plan = asyncio.run(mission_plan.propose(_mission()))
-    assert plan["project_id"] == "prj_a", "the index resolved against a list the model never saw"
-    assert plan["cwd"] == "/repo/the-app"
-
-
-def test_PROPOSE_falls_back_to_the_INSTRUCTION_when_no_brief_comes_back(store, monkeypatch):
-    """A plan with no brief cannot be dispatched, and the operator's own words are a better
-    default than an empty box."""
-    from agent_sessions import review
-
-    monkeypatch.setattr(mission_plan, "project_options", lambda: PROJECTS)
-    monkeypatch.setattr(mission_plan, "engine_options", lambda: ENGINES)
-    monkeypatch.setattr(review, "complete_json", lambda *a, **k: _async({"brief": ""}))
-    plan = asyncio.run(mission_plan.propose(_mission()))
-    assert plan["brief"] == "ship it"
-    assert "brief" in plan["dropped"]
-
-
-async def _async(value):
-    return value
-
-
-def test_an_UNCONFIGURED_endpoint_is_a_409_rather_than_an_empty_plan(store, monkeypatch):
-    """Unlike a question, a plan the operator cannot see is not a state worth writing: there is
-    nothing for the console to render and nothing for DISPATCH to consume."""
-    from agent_sessions import review
-
-    async def boom(*a, **k):
-        raise review.NotConfiguredError("no endpoint")
-
-    monkeypatch.setattr(review, "complete_json", boom)
-    mid = _mission()
-    with pytest.raises(mission_plan.PlanError) as e:
-        asyncio.run(mission_plan.propose(mid))
-    assert e.value.status == 409
-    # THE SAME mission — a second `_mission()` here would create a different one and the
-    # assertion would hold against any implementation at all.
-    assert missions.get_plan(mid) is None
 
 
 def test_a_mission_with_NO_PROJECT_acquires_one_when_its_plan_is_dispatched(store):

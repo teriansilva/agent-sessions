@@ -877,10 +877,10 @@ async def facts_for(
             if not facts["dest"]:
                 return None  # a destination already gone stages nothing
         return facts
-    if op.group == "mission":  # a draft mission's project (#1950): its name, not archived
+    if op.group == "mission":  # a draft mission's project (#1950), or the mission HQ plans (#2152)
         from . import ask_mission
 
-        return await ask_mission.facts(target, fields, app, operator)
+        return await ask_mission.facts(op.id, target, fields, app, operator)
     if op.group == "memory":
         from . import ask_memory
 
@@ -967,6 +967,11 @@ def changed(before: dict, now: dict | None) -> str:
         "flow" in before and before["flow"] != now.get("flow")
     ):
         return "the project's deployed playbook changed"
+    # The existing draft a `mission.plan` card plans (#2152): still a draft, still without a plan.
+    if "planned" in before and before["planned"] != now.get("planned"):
+        return "it was planned elsewhere"
+    if "state" in before and before["state"] != now.get("state"):
+        return f"it is {now.get('state')} now"
     if "scope" in before and before["scope"] != now.get("scope"):
         return "what it would do changed"
     return ""
@@ -1117,7 +1122,8 @@ def _mission_of(op: Operation | None, row: dict) -> str:
     if op.group == "team":
         mid = row.get("target")
     elif op.group == "mission":
-        mid = row.get("mission_id")
+        # The draft a create made, or the existing draft `mission.plan` plans (#2152).
+        mid = row.get("mission_id") or (row.get("target") if op.id == "mission.plan" else None)
     else:
         return ""
     return mid if isinstance(mid, str) and missions.MISSION_ID_RE.match(mid) else ""
@@ -1211,8 +1217,8 @@ async def stage(
             )
         if op.group == "mission":  # the procedure HQ validated is not the one the card would show
             raise Refused(
-                "refused: the project's procedures changed while the card was prepared; read "
-                "them again with list_procedures. Nothing was written",
+                "refused: the project's procedures or the mission changed while the card was "
+                "prepared; read them again with list_procedures. Nothing was written",
                 "stale",
             )
         raise Refused("refused: that note changed after HQ read it; search again", "not_available")
@@ -1340,6 +1346,10 @@ def content(pid: str) -> tuple[int, dict]:
             "kind": "diff",
             "diff": ask_library._diff(draft.get("before", {}), draft.get("files", {})),
         }
+    if op_id.startswith("mission."):  # the flow a mission card applies (#2152)
+        from . import ask_mission
+
+        return 200, ask_mission.content_view(draft)
     return 200, ask_library.content_view(op_id, draft)
 
 

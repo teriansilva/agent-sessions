@@ -121,9 +121,9 @@ def _folder_refusal(row: dict) -> str:
 def _project_refusal(row: dict, index: dict | None = None) -> str:
     """The project still exists, is not archived, and still has the folder the card showed.
     ``index`` is a store read under its own flock (the spawn's hold), else it is read fresh."""
-    from . import mission_plan
+    from . import mission_targets
 
-    project, why = mission_plan.resolve_chosen_project(row["project_id"], index=index)
+    project, why = mission_targets.resolve_chosen_project(row["project_id"], index=index)
     if project is None:
         return why
     if project["cwd"] != row["cwd"]:

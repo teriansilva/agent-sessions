@@ -1,10 +1,10 @@
 """Missions refuse console clients server-side (#1902, #1273 P3f, #1613 D7/D17).
 
 A mission runs on API sessions only. `mission_structured.admits` is the one admission, and every
-producer asks it through `mission_plan.engine_options`: the picker, `PATCH /plan`, the first plan,
-dispatch, spawn and adopt. `mission_dispatch.run` has no console branch left. A legacy mission that
-already holds a terminal session keeps it for the operator: nothing automatic is typed into it, and
-the operator's tap and relay still deliver.
+producer asks it through `mission_targets.engine_options`: dispatch, spawn and adopt (the
+one-agent planner and its `PATCH /plan` are retired, #2152). `mission_dispatch.run` has no console
+branch left. A legacy mission that already holds a terminal session keeps it for the operator:
+nothing automatic is typed into it, and the operator's tap and relay still deliver.
 
 Each negative test asserts the refusal's reason AND that nothing was created: no session, no
 claim, no dispatch row, no keystrokes. The launchers are spies that fail the test if reached.
@@ -24,12 +24,11 @@ from agent_sessions import (
     engines,
     headless_dispatch,
     mission_dispatch,
-    mission_plan,
     mission_structured,
+    mission_targets,
     missions,
     prefs,
     projects,
-    review,
     scopedspawn,
     session_input,
 )
@@ -158,10 +157,10 @@ def test_the_refusal_names_the_api_client_to_use_or_says_none_exists_yet(api_rea
 
 
 def test_the_real_offer_holds_no_terminal_client(api_ready):
-    offered = {o["id"] for o in mission_plan.engine_options()}
+    offered = {o["id"] for o in mission_targets.engine_options()}
     assert offered, "a mission-ready API client should be offered"
     assert all(mission_structured.is_api(engines.get(e)) for e in offered), offered
-    left_out = {u["id"]: u["reason"] for u in mission_plan.engine_unavailable()}
+    left_out = {u["id"]: u["reason"] for u in mission_targets.engine_unavailable()}
     assert TERMINAL in left_out["claude"]
 
 
@@ -175,28 +174,18 @@ def test_HQ_team_planning_refuses_a_terminal_client_with_the_same_words():
     assert client.not_ready_reason == mission_structured.CONSOLE_REFUSED
 
 
-def test_with_NO_mission_ready_client_the_plan_fails_with_the_remedy_and_asks_no_model(
-    monkeypatch,
-):
-    """The empty picker (Hermes on 123884): no model call over an empty agent list."""
+def test_with_NO_mission_ready_client_nothing_is_offered(monkeypatch):
+    """The empty offer (Hermes on 123884): no client can hold a mission role, so none is listed
+    for dispatch, spawn or adopt. (The one-agent planner that used to fail here is retired.)"""
     monkeypatch.setattr(registry, "can_start", lambda prov: False)
-    assert mission_plan.engine_options() == []
-
-    async def model(*a, **k):
-        raise AssertionError("the model was asked to pick from nothing")
-
-    monkeypatch.setattr(review, "complete_json", model)
-    mid = missions.create_mission("ship it")["id"]
-    with pytest.raises(mission_plan.PlanError) as e:
-        asyncio.run(mission_plan.propose(mid))
-    assert e.value.status == 409 and str(e.value) == mission_plan.NO_MISSION_AGENT
-    assert missions.get_plan(mid) is None
+    assert mission_targets.engine_options() == []
 
 
 # ---- the routes: a direct API call --------------------------------------------------------------
 
 
-def test_PATCH_plan_refuses_a_terminal_client_with_the_api_client_to_use(routes):
+def test_PATCH_plan_is_retired_and_never_replaces_an_old_console_plan(routes):
+    """#2152 D5: an edit of a legacy plan is refused outright (410), whatever it names."""
     c, hdr, proj, reached = routes
     mid, plan = _old_console_plan(proj)
     r = c.patch(
@@ -204,8 +193,7 @@ def test_PATCH_plan_refuses_a_terminal_client_with_the_api_client_to_use(routes)
         json={"plan_id": plan["plan_id"], "engine": "codex"},
         headers=hdr,
     )
-    assert r.status_code == 422, r.text
-    assert TERMINAL in r.json()["detail"]
+    assert r.status_code == 410, r.text
     assert missions.get_plan(mid)["plan_id"] == plan["plan_id"], "the plan was replaced"
     assert reached == []
 
@@ -313,30 +301,38 @@ def test_a_SPAWN_claim_naming_a_terminal_client_is_refused_and_the_mission_keeps
 
 
 def test_a_saved_automations_START_MISSION_never_launches_a_terminal_client(routes, monkeypatch):
-    """The automation plans and dispatches a stored plan naming no engine of its own
-    (`automation_runner._start_mission` → `dispatch_approved`). A plan that names a terminal
-    client (here, what an old planner would have written) is refused with the reason."""
+    """#1902's guarantee, made stronger by #2152 (HQ plans every mission): a `start_mission`
+    automation can no longer be SAVED with a dispatch autonomy, and one stored before that is
+    refused at run time BEFORE any draft exists, so nothing is planned or dispatched and no
+    client of any kind (terminal or otherwise) is ever launched for it."""
+    from agent_sessions import automations as model
     from agent_sessions.routes import missions as mroutes
 
     _c, _hdr, proj, reached = routes
+    produced: list[str] = []
 
     async def producers(mid):
-        missions.put_plan(
-            mid, project_id=proj.id, cwd=proj.default_folder, engine="claude", brief="go"
-        )
-        missions.patch_objectives(mid, [{"op": "add", "key": "pr", "title": "a PR", "gate": True}])
-        missions.settle_objectives_state(mid, "done")
+        produced.append(mid)
 
     monkeypatch.setattr(mroutes, "_produce_for_new_mission", producers)
-    from test_automations import _made, _manual_run, _real_mission_config
+    from test_automations import _create, _made, _manual_run, _real_mission_config
 
-    aid = _made(_real_mission_config(proj.id, "dispatch"))
+    # A new one is refused at save.
+    with pytest.raises(model.AutomationError) as e:
+        _create(_real_mission_config(proj.id, "dispatch"))
+    assert str(e.value) == automation_runner.HQ_PLANS_DISPATCH
+
+    # One stored before #2152 (the save check did not exist then) is refused before any draft.
+    with monkeypatch.context() as m:
+        m.setattr(automation_runner, "check_save", lambda config: None)
+        aid = _made(_real_mission_config(proj.id, "dispatch"))
+    before = len(missions.safe_list_missions()["missions"])
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
-    assert res["run"]["outcome"] in ("refused", "failed"), res
-    assert TERMINAL in str(res["run"].get("reason") or ""), res
-    mid = res["run"]["mission_id"]
-    assert missions.get_dispatch(mid) is None
-    assert missions.active_session_keys(mid) == []
+    assert res["run"]["outcome"] == "refused", res
+    assert res["run"]["reason"] == automation_runner.HQ_PLANS_DISPATCH, res
+    assert res["run"].get("mission_id") in (None, ""), res
+    assert len(missions.safe_list_missions()["missions"]) == before, "no draft, nothing to launch"
+    assert produced == []
     assert reached == []
 
 

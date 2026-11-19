@@ -272,8 +272,8 @@ for (const [width, railIsColumn] of [
 test("every interactive control on a phone is ≥44px, focusable, and inside the viewport", async ({
   page,
 }) => {
-  // NEW MISSION lives on the LANDING (#948): with nothing selected the workspace is the new-mission
-  // page, so the sweep starts there and needs no loose session to reach it.
+  // The LANDING (#948): with nothing selected the workspace is the landing, so the sweep starts
+  // there and needs no loose session to reach it.
   await stub(page);
   // AN ARCHIVED MISSION TOO, so the inventory can reach the UNARCHIVE confirmation — two controls
   // that exist only after it is opened, on a scope the default stops never visit (#896 review 7,
@@ -429,11 +429,10 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
   // re-checking the touch floor.
   const surfaces: (() => Promise<void>)[] = [
     async () => {
-      // THE LANDING (#948). Nothing is selected on arrival and the composer opens in NEW MISSION
-      // mode, so the brief, the REQUIRED project picker and TEMPLATE are on the first screen. The
-      // mission body's composer is the DURABLE one (#890); creating lives here.
+      // THE LANDING (#948). Nothing is selected on arrival, so its one primary, New mission, is on
+      // the first screen (it opens HQ since #2152, which replaced the New-mission form).
       await expect(page.getByTestId("mission-landing")).toBeVisible();
-      await expect(page.getByTestId("new-mission-project")).toBeVisible();
+      await expect(page.getByTestId("landing-new-mission")).toBeVisible();
     },
     // ASK was a mode of this composer and is a route of its own since #1058, so it is no longer
     // one of the CONSOLE's surfaces. Its own 44px audit lives in `ask-sidebar.spec.ts`.
@@ -480,10 +479,10 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await expect(page.getByTestId("mission-begin")).toBeVisible();
     },
     async () => {
-      // PLAN AGAIN, behind the header's ⋯ (#967). It was a header button and is a menu item
-      // now, and a menu nobody opens is a menu nobody measures.
+      // The header's ⋯ (#967): a menu nobody opens is a menu nobody measures. (Plan again was
+      // the item reached here until #2152 retired it; Artifacts… is in every state the menu is.)
       await page.getByTestId("mission-overflow").click();
-      await expect(page.getByTestId("mission-replan")).toBeVisible();
+      await expect(page.getByTestId("mission-artifacts")).toBeVisible();
     },
     async () => {
       // REOPEN: a terminal mission. Same argument, other end of the lifecycle. The ⋯ menu above is
@@ -667,14 +666,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     "objective-up",
     "objective-down",
     "objective-stand-down",
-    // The REQUIRED project picker — the control the sweep could not see at all until `select`
-    // joined the selector above.
-    "new-mission-project",
-    // #967 moved these: Template and the mode control into the composer box's footer, the plan button into
-    // ⋯ as Plan again, and ⋯ itself became the shared 44×44 icon button.
-    "new-mission-template",
+    // The landing's one primary (#2152: it replaced the New-mission form, whose project picker and
+    // Template button were named here).
+    "landing-new-mission",
+    // ⋯ became the shared 44×44 icon button (#967). Its items are reached through it.
     "mission-overflow",
-    "mission-replan",
+    "mission-artifacts",
   ]) {
     expect(seen, `the inventory never reached ${id}`).toContain(id);
   }
@@ -723,13 +720,12 @@ test("no missions and no sessions is an invitation, not a blank", async ({
   await stub(page, { cards: [] });
   await mockMissions(page);
   await page.goto("/mission");
-  // The invitation is the new-mission page itself (#948): its question, and a brief ready to type.
+  // The invitation is the landing itself (#948): its heading, and New mission, which opens HQ on a
+  // fresh conversation (#2152).
   const landing = page.getByTestId("mission-landing");
   await expect(landing).toBeVisible();
-  await expect(
-    landing.getByRole("heading", { name: /what should this mission achieve/i }),
-  ).toBeVisible();
-  await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
+  await expect(landing.getByTestId("mission-landing-heading")).toHaveText("Missions");
+  await expect(page.getByTestId("landing-new-mission")).toBeVisible();
   // …and no header claims a mission that does not exist.
   await expect(page.getByTestId("console-title")).toHaveCount(0);
 });
@@ -745,7 +741,7 @@ test("a store that will not answer says so, and never claims you have no mission
   // In the PANE, not only the rail: on a phone the rail is a drawer, so a rail-only notice is
   // invisible exactly when the console is degraded.
   await expect(page.getByTestId("console-store-error")).toBeVisible();
-  // …and the outage does not take the workspace down: the new-mission page still renders. (The
+  // …and the outage does not take the workspace down: the landing still renders. (The
   // old "live session still listed" line is gone with the untracked view, #948 — running work is
   // listed in the sessions sidebar, which never read the mission store.)
   await expect(page.getByTestId("mission-landing")).toBeVisible();

@@ -61,6 +61,7 @@ from .. import (
     asgi_call,
     ask_attachments,
     ask_follow,
+    ask_mission,
     ask_operations,
     ask_orchestrator,
     ask_proposals,
@@ -387,7 +388,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         # Never free text: anything but a known contact id is plain HQ (#1525).
         contact = hq_contacts.resolve(body.get("contact"))
-        return turn_id, text, answers, option, contact, attachments  # type: ignore[return-value]
+        # Plan with HQ (#2152, D4): the draft this conversation plans, an id that must exist.
+        mission = body.get("mission")
+        if mission is not None:
+            why = await ask_mission.bindable(mission)
+            if why:
+                status = 404 if why == "no such mission" else 503 if "just now" in why else 422
+                return JSONResponse({"detail": why}, status_code=status)
+        return turn_id, text, answers, option, contact, attachments, mission or ""  # type: ignore[return-value]
 
     async def _begin(cid: str, request: Request):
         """``(task, settled view)`` or the JSONResponse that refuses the turn."""
@@ -396,7 +404,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         parsed = await _message_body(request)
         if isinstance(parsed, JSONResponse):
             return parsed
-        turn_id, text, answers, option, contact, attachments = parsed
+        turn_id, text, answers, option, contact, attachments, mission = parsed
         try:
             started = await ask_orchestrator.begin(
                 cid,
@@ -410,6 +418,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 attachments=attachments,
                 operator=asgi_call.Operator.from_scope(request.scope),
                 app=request.app,
+                mission=mission,
             )
         except ask_store.ConversationNotFound:
             return _missing(cid)

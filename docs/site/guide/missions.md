@@ -38,38 +38,57 @@ actually allows:
 
 ## Starting one
 
-Entering Missions opens on the new-mission page: the brief is the centre of the screen, and
-anything that needs you is listed below it. A
-**Template** control inserts a template from your library into the brief; nothing is sent until you
-start the mission. See [Prompt Templates](/guide/templates).
+Entering Missions shows the missions list and, when no mission is open, the missions that need
+you. There is no new-mission form: **New mission** — on the Missions page, in the rail, on the
+Dashboard's **New** menu, or **Plan a mission here** at the end of the New project wizard — opens
+**HQ** on a fresh conversation. An older link to `/mission/new` does the same. A conversation you
+already had, and anything you were typing in the HQ sidebar, stay as they were.
 
-The new-mission page is where Missions lands whenever no mission is selected, not a pop-up
-dialog, so it is there in every state the page can be in — including a completely fresh install
-where there is nothing else on screen yet. **+ New mission** at the top of the rail brings you back
-to it from any mission and puts the cursor in the brief.
+### HQ plans every mission
 
-You give it an instruction and a project. The project matters: the server resolves the mission's
-working directory from it, and a mission with no project stays a `draft` — legal, but it cannot
-start work — so **Start mission** stays disabled until you pick one, rather than letting you find
-out later.
+Tell HQ what the mission should achieve. HQ asks for whatever it is missing — the goal, the
+project — and then answers with a draft-mission card:
+
+- the **project**, and the **flow** it applies — a deployed procedure from the project's playbook
+  that fits the goal, or, when none fits (or the project has no deployed playbook), a procedure
+  HQ writes for this mission;
+- every **step** of that flow: who does it, and for an agent step its **role** — the skills it
+  needs and its **minimum grade**. Approvals are your own steps.
+
+Nothing is created until you confirm the card. Then the draft exists with its plan, the **Team**
+card fills each role from your specialists, you approve the plan, and the approved steps start.
+HQ never approves or starts anything itself. A flow HQ wrote is checked twice before anything is
+written: when HQ proposes it, and again when you confirm (a skill removed from the Library or a
+project setting that changed in between makes the card stale, and nothing is created).
+
+Without an AI endpoint HQ can't answer; HQ's page says so and links to the endpoint settings.
+
+### A draft with no plan
+
+A mission created another way (through the API, or one an older version left unplanned) shows
+**This mission has no plan** and a **Plan with HQ** button. It opens HQ bound to *that* mission:
+HQ's card says **Plan this mission** and **Apply to this mission**, and confirming it adds the plan
+to the same draft — its goal and history stay, and no second mission is created. A mission that
+already has a plan is refused.
+
+### Missions planned before HQ planning
+
+Earlier versions planned a mission as one agent with one set of instructions. A mission that still
+holds such a plan keeps it, read-only, marked **Legacy plan**, with its **Begin** — until it is
+finished or archived. Those plans can no longer be edited, and new ones are never written.
 
 There is no objective list to pick. With an AI endpoint configured, the orchestrator writes the
-objectives from your instruction and the supervisor judges them (see
-[Where objectives come from](#where-objectives-come-from) below). Without an endpoint they are notes
-only, and the mission can never confirm itself finished.
-
-Objectives arrive a moment after the mission does; see below.
+objectives from the mission's goal and the supervisor judges them (see
+[Where objectives come from](#where-objectives-come-from) below).
 
 ### Which agents can run a mission
 
-A mission runs on **API sessions** only: an agent's API client, never its terminal. The agent
-picker offers only API clients that can hold a mission role and can start now, and it lists every
-other agent with the reason it is left out. A terminal agent's reason names its API client to use
-instead, or says none can hold a mission role yet. Today those are Claude's and opencode's API clients. If none is
-ready, planning stops with that reason: set one up in **Settings › Agents**, then plan again.
+A mission runs on **API sessions** only: an agent's API client, never its terminal. Only API
+clients that can hold a mission role and can start now are used, and every other agent is listed
+with the reason it is left out. A terminal agent's reason names its API client to use instead, or
+says none can hold a mission role yet. Today those are Claude's and opencode's API clients.
 
-A plan written before this rule that still names a terminal agent is refused when you press
-**Dispatch**. The plan is kept, so you can choose another agent for it.
+A legacy plan that still names a terminal agent is refused when you press **Begin**.
 
 ### Permission bypass
 

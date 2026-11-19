@@ -79,11 +79,11 @@ from .. import (
     mission_now,
     mission_objectives,
     mission_observe,
-    mission_plan,
     mission_questions,
     mission_relay_reconcile,
     mission_shelf_git,
     mission_supervisor,
+    mission_targets,
     mission_turn_reconcile,
     missions,
     orchestrator,
@@ -331,17 +331,19 @@ def _resolve_cwd(project_id: object, *, index: dict | None = None) -> tuple[str 
 
 
 async def _produce_for_new_mission(mission_id: str) -> None:
-    """A new mission's two background producers: objectives and the plan (#883, #967).
+    """A new mission's background producer: its objectives (#883). Never raises.
 
-    Run CONCURRENTLY, because Begin needs both settled and neither needs the other — in sequence
-    the plan would wait out the objectives' model call for no reason. Both never raise; the gather
-    still collects exceptions so one cannot cancel the other.
+    The one-agent planner used to ride the same task (#967). It is retired (#2152): HQ plans
+    missions, so a new mission is a draft with no plan until HQ's card applies one.
     """
-    await asyncio.gather(
-        mission_objectives.propose_for_new_mission(mission_id),
-        mission_plan.propose_for_new_mission(mission_id),
-        return_exceptions=True,
-    )
+    await mission_objectives.propose_for_new_mission(mission_id)
+
+
+#: What the retired one-agent plan writers answer (#2152, D5): `POST`/`PATCH /plan`.
+HQ_PLANS_DETAIL = (
+    "HQ plans missions: open the mission and choose Plan with HQ. One-agent plans are no longer "
+    "written; a saved one stays runnable from Begin"
+)
 
 
 def _session_key(raw: object) -> str:
@@ -485,15 +487,15 @@ async def _session_exists(key: str) -> bool:
 
 def _adoption_admission(key: str) -> tuple[bool, str]:
     """May the session ``key`` be adopted into a mission? Only when its client is one a plan could
-    name (`mission_plan.engine_options`, the one mission admission): a mission-ready API client
+    name (`mission_targets.engine_options`, the one mission admission): a mission-ready API client
     (#1902). Blocking."""
     try:
         prov, _native = engines.parse_key(key)
     except Exception:  # noqa: BLE001 — a key that names no client names nothing adoptable
         return False, "it is not a session of an available agent"
-    if prov.engine_id in {str(o.get("id")) for o in mission_plan.engine_options()}:
+    if prov.engine_id in {str(o.get("id")) for o in mission_targets.engine_options()}:
         return True, ""
-    return False, mission_plan.engine_refusal(prov.engine_id)
+    return False, mission_targets.engine_refusal(prov.engine_id)
 
 
 def _reap_dead_spawns(mission_id: str) -> int:
@@ -656,16 +658,17 @@ async def dispatch_approved(
         # THE PLAN'S AGENT, RE-ASKED AT THE WRITE BOUNDARY (#1902), against the same list the
         # plan was offered from. A plan can name a terminal client because it was written before
         # missions refused them, or saved for an automation that dispatches it later; refused here
-        # the plan is not consumed, and the operator can pick another agent. `mission_dispatch.run`
+        # the plan is not consumed. A legacy plan is read-only (#2152): the way on is to archive the
+        # mission and plan a new one with HQ, never another agent. `mission_dispatch.run`
         # refuses a terminal client again for every other caller (a spawn).
         plan_engine = str(current.get("engine") or "")
-        options = await asyncio.to_thread(mission_plan.engine_options)
+        options = await asyncio.to_thread(mission_targets.engine_options)
         if plan_engine not in {str(o.get("id")) for o in options}:
-            why = await asyncio.to_thread(mission_plan.engine_refusal, plan_engine)
+            why = await asyncio.to_thread(mission_targets.engine_refusal, plan_engine)
             return _fail(
                 missions.MissionError(
-                    f"this plan's agent can't hold a mission role ({why}); choose another "
-                    "agent for the plan",
+                    f"this plan's agent can't hold a mission role ({why}). One-agent plans can "
+                    "no longer be edited: archive this mission, and plan a new one with HQ",
                     status=409,
                 )
             )
@@ -874,9 +877,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # * `propose_for_new_mission` never raises: every outcome it cannot deliver is a
             #   timeline event on the mission instead.
             #
-            # THE PLANNER RIDES THE SAME TASK (#967). Its intent (`plan_state='pending'`) was
-            # written by `create_mission` in the transaction above, so this task is the first
-            # attempt at discharging it — not the only record that it is owed.
+            # NO PLANNER (#2152): HQ plans missions. The draft has no plan until HQ's card
+            # applies a procedure to it (`ask_mission`), or the operator hands it to HQ.
             return JSONResponse(
                 row,
                 status_code=201,
@@ -1061,7 +1063,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # can only 409.
         row["spawn_engine"] = None
         try:
-            allowed = {str(o.get("id")) for o in mission_plan.engine_options()}
+            allowed = {str(o.get("id")) for o in mission_targets.engine_options()}
             for sess in row.get("sessions") or []:
                 if sess.get("removed_at") is not None:
                     continue
@@ -1093,19 +1095,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # kind of fact: it is not derived from the mission's own rows, it carries the CURRENT
         # project and engine lists an override needs, and nothing on the page is cross-checked
         # against it. A stale plan is a stale proposal, never a page that contradicts itself.
+        #
+        # A LEGACY ONE-AGENT PLAN (#2152, D2) is read-only: it carries the project names so the
+        # card can say where it runs, and nothing to choose from (no plan is edited any more).
         with contextlib.suppress(Exception):
             plan = await missions.run_admitted(lambda: missions.get_plan(mission_id))
             if plan is not None:
-                plan.update(await asyncio.to_thread(mission_plan.picker_lists))
-            elif row.get("plan_state") in ("skipped", "failed"):
-                # PLAN MANUALLY NEEDS SOMETHING TO CHOOSE FROM (#967 P2b). The lists rode only on
-                # a stored plan, so the one mission that has to be planned by hand — no plan, and
-                # planning `skipped` or `failed` — had no project or agent to offer. Attached in
-                # exactly the states `PATCH /plan` accepts a first plan in, and built on the rules
-                # its validation uses, so an offered choice is one the save accepts. The OPERATOR'S
-                # list, uncapped: the model's 40-project cap hid a mission's own project (#984).
-                row["plan_options"] = await asyncio.to_thread(mission_plan.picker_lists)
+                plan["project_options"] = await asyncio.to_thread(
+                    mission_targets.picker_project_options
+                )
             row["plan"] = plan
+        # WHETHER HQ HAS PLANNED IT (#2152): the latest plan revision's number, or None. The plan
+        # card offers Plan with HQ only for a mission with neither this nor a legacy plan. Absent
+        # (never None) when it could not be read: "unknown" must not read as "no plan".
+        with contextlib.suppress(Exception):
+            row["plan_revision"] = await missions.run_admitted(
+                lambda: missions.latest_plan_revision(mission_id)
+            )
         return JSONResponse(row)
 
     @app.post("/api/missions/{mission_id}/adopt")
@@ -1243,24 +1249,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        """Produce a dispatch PROPOSAL. Launches nothing (#893, Phase 4 of #840).
-
-        The separation is the feature: an instruction becomes a project, an agent, a brief and a
-        stated reason, on screen, editable, before anything runs unattended. A route
-        that planned and dispatched in one call would be a button whose consequences the operator
-        first learns about afterwards.
-
-        A re-plan supersedes rather than stacks, and `POST` rather than `GET` because it spends
-        the operator's money on a model call and writes a durable row.
-        """
-        try:
-            missions.validate_id(mission_id)
-            plan = await mission_plan.propose(mission_id)
-        except missions.MissionError as e:
-            return _fail(e)
-        except mission_plan.PlanError as e:
-            return JSONResponse({"detail": str(e)}, status_code=e.status)
-        return JSONResponse(plan)
+        """RETIRED (#2152, D5): the one-agent planner is gone, and HQ plans missions. 410, and
+        nothing is written: no `mission_plans` row, no planning intent."""
+        return JSONResponse({"detail": HQ_PLANS_DETAIL}, status_code=410)
 
     @app.patch("/api/missions/{mission_id}/autonomy")
     async def mission_autonomy_route(
@@ -1290,180 +1281,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     @app.patch("/api/missions/{mission_id}/plan")
     async def edit_plan_route(
         mission_id: str,
-        request: Request,
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        """The operator's edit of the proposal. **A new `plan_id` every time.**
-
-        Editing is not a lesser act than planning: it produces a different proposal, and DISPATCH
-        compares the id it was given against the one stored. If an edit reused the id, a dispatch
-        approved against the version on screen a minute ago would run the version typed since —
-        which is the whole failure the id exists to prevent, arriving through the other door.
-
-        `project_id` is resolved to a cwd SERVER-SIDE, exactly as `POST /api/missions` does. The
-        client sends an id; it never sends a path.
-
-        **The manual FIRST plan** (#967). With no `plan_id`, no stored plan, and planning
-        `skipped` or `failed` (no AI endpoint, or the planner could not produce one), a body with
-        `project_id`, `engine` and `brief` creates the first plan through the same validation and
-        settles `ready`. Every other shape keeps its previous answer.
-        """
-        try:
-            body = await _body(request)
-            missions.validate_id(mission_id)
-            if body.get("plan_id") is None:
-                first = await _first_plan(mission_id, body)
-                if first is not None:
-                    return first
-            # THE PROPOSAL BEING EDITED, named by the client (#904 review 6). This route reads a
-            # plan, changes one field and writes the whole row back — so two tabs editing
-            # different fields of the same proposal both succeed, and the later write restores
-            # its own stale copy of the field the first one changed. Both operators are told the
-            # save worked and one of the edits is gone. The id makes the write a compare-and-set
-            # instead, and the comparison happens inside `put_plan`'s transaction, not here.
-            expect = body.get("plan_id")
-            if not isinstance(expect, str) or not expect.strip():
-                return _fail(
-                    missions.MissionError(
-                        "plan_id is required and names the plan you are editing", status=422
-                    )
-                )
-            current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
-            if current is None:
-                return _fail(missions.MissionError("this mission has no plan", status=404))
-            if current["plan_id"] != expect:
-                return _fail(
-                    missions.MissionError(
-                        "the plan changed while you were editing it; read it again", status=409
-                    )
-                )
-
-            if "project_id" in body:
-                project_id, cwd = _resolve_cwd(body.get("project_id"))
-            else:
-                project_id, cwd = current["project_id"], current["cwd"]
-
-            engine = current["engine"]
-            if "engine" in body:
-                raw = body.get("engine")
-                if raw is not None and not isinstance(raw, str):
-                    return _fail(missions.MissionError("engine must be a string", status=422))
-                engine = (raw or "").strip() or None
-                if engine is not None:
-                    # THE SAME GATE THE LIST WAS BUILT WITH. An operator may choose any agent that
-                    # could have been offered — and may not choose one that could not: only a
-                    # mission-ready API client holds a mission role (#1902).
-                    if engine not in {e["id"] for e in mission_plan.engine_options()}:
-                        why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
-                        return _fail(
-                            missions.MissionError(
-                                f"{engine!r} cannot be dispatched into: {why}", status=422
-                            )
-                        )
-
-            brief = current["brief"]
-            if "brief" in body:
-                raw_brief = body.get("brief")
-                if not isinstance(raw_brief, str):
-                    return _fail(missions.MissionError("brief must be a string", status=422))
-                brief = raw_brief.strip()
-                if not brief:
-                    return _fail(missions.MissionError("a plan needs a brief", status=422))
-
-            # The operator's own edit carries no model reason — saying "the model chose this" over
-            # a value the operator typed would be a false attribution, and an empty reason reads
-            # correctly on the card as "you chose this".
-            reason = current["engine_reason"] if engine == current["engine"] else ""
-            plan = await missions.run_admitted(
-                lambda: missions.put_plan(
-                    mission_id,
-                    project_id=project_id,
-                    cwd=cwd,
-                    engine=engine,
-                    engine_reason=reason,
-                    brief=brief,
-                    expect_plan_id=expect,
-                )
-            )
-        except missions.MissionError as e:
-            return _fail(e)
-        plan.update(await asyncio.to_thread(mission_plan.picker_lists))
-        return JSONResponse(plan)
-
-    async def _first_plan(mission_id: str, body: dict) -> JSONResponse | None:
-        """The manual first plan, or None when this request is not one (#967).
-
-        None hands the request back to the edit path, which answers exactly as it did before:
-        a missing `plan_id` is still a 422 for a mission that has a plan or is not `skipped` /
-        `failed`. The eligibility is checked again inside `put_plan`'s transaction, so a planner
-        result that lands in between cannot be silently overwritten by this save — nor this save
-        by it.
-        """
-        row = await missions.run_admitted(lambda: missions.get_mission(mission_id, events_limit=1))
-        if row is None:
-            return None
-        current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
-        if current is not None or row.get("plan_state") not in ("skipped", "failed"):
-            return None
-
-        raw_project = body.get("project_id")
-        if not isinstance(raw_project, str) or not raw_project.strip():
-            return _fail(
-                missions.MissionError("project_id is required for the first plan", status=422)
-            )
-
-        raw_engine = body.get("engine")
-        engine = raw_engine.strip() if isinstance(raw_engine, str) else ""
-        if not engine:
-            return _fail(missions.MissionError("engine is required for the first plan", status=422))
-        # THE SAME GATE THE LIST WAS BUILT WITH: only a mission-ready API client (#1902).
-        if engine not in {e["id"] for e in mission_plan.engine_options()}:
-            why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
-            return _fail(
-                missions.MissionError(f"{engine!r} cannot be dispatched into: {why}", status=422)
-            )
-
-        raw_brief = body.get("brief")
-        brief = raw_brief.strip() if isinstance(raw_brief, str) else ""
-        if not brief:
-            return _fail(missions.MissionError("a plan needs a brief", status=422))
-
-        def _resolve_and_write():
-            # ONE FENCE FROM THE PROJECT CHECK TO THE COMMIT (#974 review). Resolved on the loop
-            # and written in a later worker call, an archive or delete could land between the two
-            # and the first plan settled `ready` against a project that was gone. The project
-            # store's own flock — the one `projects.update` / `delete` take — is held across both.
-            #
-            # LOCK ORDER: projects-store flock (outer) -> missions `_write_lock` -> missions.db
-            # write lock (inner), the same order as the planner's write boundary.
-            try:
-                with projects.locked_index() as index:
-                    try:
-                        project_id, cwd = _resolve_cwd(raw_project, index=index)
-                    except missions.MissionError as e:
-                        return None, e
-                    stored = missions.put_plan(
-                        mission_id,
-                        project_id=project_id,
-                        cwd=cwd,
-                        engine=engine,
-                        engine_reason="",
-                        brief=brief,
-                        first_plan=True,
-                    )
-                    return stored, None
-            except OSError:
-                return None, missions.MissionError("could not resolve the project", status=503)
-
-        plan, bad_project = await missions.run_admitted(_resolve_and_write)
-        if bad_project is not None:
-            # SAME VALIDATION AS AN EDIT, one status: every reason a project cannot be planned
-            # into is an invalid field of this request. An unreadable store stays a 503.
-            e = bad_project
-            return _fail(e if e.status >= 500 else missions.MissionError(str(e), status=422))
-        plan.update(await asyncio.to_thread(mission_plan.picker_lists))
-        return JSONResponse(plan)
+        """RETIRED (#2152, D5): neither a manual first plan nor an edit of a legacy one-agent plan
+        is written any more. A legacy plan is read-only (D2) and keeps its Begin (`POST
+        …/dispatch`, unchanged). 410, and nothing is written."""
+        return JSONResponse({"detail": HQ_PLANS_DETAIL}, status_code=410)
 
     @app.post("/api/missions/{mission_id}/dispatch")
     async def dispatch_route(
@@ -1607,7 +1431,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # THE ENGINE IS CHECKED AGAINST THE MISSION ADMISSION, which keeps every terminal
             # client out (#1902) — the same list the plan picker is built from, so there is no
             # second opinion about what may be launched unattended (#899).
-            options = {str(o.get("id")) for o in mission_plan.engine_options()}
+            options = {str(o.get("id")) for o in mission_targets.engine_options()}
             want = body.get("engine")
             engine = str(want).strip() if isinstance(want, str) and want.strip() else ""
             if not engine:
@@ -1617,7 +1441,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
             if engine not in options:
-                why = await asyncio.to_thread(mission_plan.engine_refusal, engine)
+                why = await asyncio.to_thread(mission_targets.engine_refusal, engine)
                 return _fail(
                     missions.MissionError(
                         f"{engine} cannot be started unattended; choose one that can: {why}",
@@ -2569,6 +2393,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if "after" in body and body["after"] is None:
                 raise missions.MissionError("after is a list of objective ids", status=422)
             order = mission_procedures._after(body.pop("after", None))
+            # `if_unplanned` (#2152, HQ's `mission.plan`): apply only as the FIRST plan of a
+            # draft, checked again inside the store's transaction. Optional, a JSON bool.
+            if "if_unplanned" in body and type(body["if_unplanned"]) is not bool:
+                raise missions.MissionError("if_unplanned is true or false", status=422)
+            first = bool(body.pop("if_unplanned", False))
             if "mission_local" in body:
                 if set(body) != {"mission_local"}:
                     raise missions.MissionError(
@@ -2579,7 +2408,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     raise missions.MissionError("mission_local is {flow_id, flow}", status=422)
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_local(
-                        mission_id, local["flow_id"], local["flow"], chosen, order
+                        mission_id,
+                        local["flow_id"],
+                        local["flow"],
+                        chosen,
+                        order,
+                        require_unplanned=first,
                     )
                 )
             else:
@@ -2614,6 +2448,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         picked=picked,
                         project=chosen,
                         after=order,
+                        require_unplanned=first,
                     )
                 )
         except missions.MissionError as e:

@@ -76,6 +76,22 @@ export default function HqPage() {
   const conversationId = missing ? null : routeId;
   /** New conversation on a phone: the thread, before it has an id. */
   const composing = Boolean((location.state as { hqCompose?: boolean } | null)?.hqCompose);
+  /** A message another screen handed to HQ (#2152, `hqSeedState`): sent by the console once, in
+   *  a new conversation. Keyed on the navigation, so a reload or Back never sends it again (the
+   *  first send replaces this entry with the conversation's own URL). */
+  const handed = (location.state as { hqSeed?: { text?: unknown; mission?: unknown } } | null)
+    ?.hqSeed;
+  const seed = useMemo(
+    () =>
+      handed && typeof handed.text === "string" && handed.text.trim() && routeId === null
+        ? {
+            key: location.key,
+            text: handed.text,
+            ...(typeof handed.mission === "string" ? { mission: handed.mission } : {}),
+          }
+        : null,
+    [handed, routeId, location.key],
+  );
 
   useEffect(() => {
     void refreshConversations();
@@ -240,6 +256,7 @@ export default function HqPage() {
           conversationId={conversationId}
           onConversationChange={onChange}
           onBack={back}
+          seed={seed}
         />
       </div>
       </div>

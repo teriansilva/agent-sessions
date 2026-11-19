@@ -16,7 +16,6 @@ import pytest
 
 from agent_sessions import (
     automation_runner,
-    headless_dispatch,
     mission_structured,
     missions,
     prefs,
@@ -462,50 +461,7 @@ async def test_a_worker_that_could_not_be_stopped_is_a_failure_on_record(project
 # ---- start_mission ----------------------------------------------------------------------------
 
 
-@pytest.mark.anyio
-async def test_an_automation_mission_on_an_api_engine_dispatches_structured(project, monkeypatch):
-    """Nothing new for `start_mission`: the real `dispatch_approved` → `mission_dispatch.run`
-    already sends an API plan through `mission_structured.dispatch` (#1898)."""
-    from agent_sessions import projects, scopedspawn
-    from agent_sessions.routes import missions as mroutes
-
-    proj = projects.create("repo", folders=[str(project)], default_folder=str(project))
-    prefs.set_orchestrator({"enabled": True})
-    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
-    monkeypatch.setattr(scopedspawn, "available", lambda: True)
-
-    async def producers(mid):  # what the planner and the objective producer would have written
-        m = missions.get_mission(mid)
-        missions.put_plan(mid, project_id=m["project_id"], cwd=m["cwd"], engine=CLAUDE, brief="go")
-        missions.patch_objectives(mid, [{"op": "add", "key": "pr", "title": "a PR", "gate": True}])
-        missions.settle_objectives_state(mid, "done")
-
-    monkeypatch.setattr(mroutes, "_produce_for_new_mission", producers)
-
-    async def no_console(**_kw):
-        raise AssertionError("an API plan never reaches the console launcher")
-
-    monkeypatch.setattr(headless_dispatch, "dispatch", no_console)
-    aid = _made(
-        {
-            "name": "nightly audit",
-            "trigger": {"kind": "manual"},
-            "action": {
-                "kind": "start_mission",
-                "project_id": proj.id,
-                "instruction": {"text": "audit the dependencies"},
-                "autonomy": "dispatch",
-            },
-        }
-    )
-    res = await automation_runner.execute(_claim(aid), registry=object())
-    assert res["run"]["outcome"] == "started", res["run"]["reason"]
-    mid = res["run"]["mission_id"]
-    key = res["run"]["session_key"]
-    assert key.startswith(f"{CLAUDE}:")
-    snap = await runtime.snapshot(key)
-    assert not snap["bypass"]
-    [brief] = [t for t in snap["turns"] if t.get("kind") != "agent"]
-    assert brief["context"]["mission_id"] == mid
-    assert _users(project).count("go") == 1
-    await runtime.stop(key)
+# RETIRED BY #2152: "an automation mission on an API engine dispatches structured". A
+# `start_mission` automation only creates drafts now (HQ plans missions, and its dispatch modes are
+# refused at save and at run, `test_automations.py`); the legacy plan's structured dispatch is the
+# manual route's, pinned by `test_mission_api_e2e.py`.

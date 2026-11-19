@@ -758,7 +758,7 @@ def test_a_forged_mission_id_is_refused(app, ai):
 
 def test_projects_and_agents_are_names_by_index_never_paths(app, ai, monkeypatch):
     monkeypatch.setattr(
-        ask_orchestrator.mission_plan,
+        ask_orchestrator.mission_targets,
         "project_options",
         lambda: [{"id": "p1", "name": "api", "cwd": "/srv/secret/api"}],
     )

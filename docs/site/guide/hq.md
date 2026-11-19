@@ -244,7 +244,7 @@ with the sidebar open.
     tries it again.
   - If the project, its folder, the agent or Session assistance changed since the card appeared,
     it says *Out of date* and starts nothing.
-  - Starting needs Session assistance on (Suggest or YOLO). HQ doesn't create missions yet.
+  - Starting needs Session assistance on (Suggest or YOLO).
 - HQ can **change sessions and projects for you**. Ask in your own words, for example "archive the
   docs session", "rename the API session to release notes", "archive everything older than a
   week", "create a project called web" or "delete the scratch project". HQ shows a card with
@@ -271,6 +271,15 @@ with the sidebar open.
   - Some things HQ never does, even if you ask: passwords, two-factor and keys; editing prompts;
     switching on more autonomy or permission bypass (switching them off is fine); approving
     another pending decision for you; installing plugins.
+- HQ **plans every mission**. **New mission** (Missions, the rail, the Dashboard's **New** menu)
+  opens HQ on a fresh conversation; HQ asks for the goal and the project. **Plan with HQ** on a
+  draft that has no plan opens HQ bound to that draft. HQ answers with a mission card: the project, the
+  flow it applies — a procedure deployed in the project that fits, or one HQ writes for this
+  mission when none does — and every step with who does it (an agent step's skills and **minimum
+  grade**; approvals are your steps). Confirming it creates the draft with its plan, or, opened
+  from an existing draft, plans **that** draft (*Apply to this mission*: no second mission is
+  created). HQ then proposes the team. It can never approve a plan or start a step: those stay
+  your taps on the mission.
 - HQ **follows** the sessions it started (up to 10 per conversation). When one finishes its turn or
   starts needing you, a short line appears in the conversation, at the point in time it happened,
   with **Open** and **Unfollow**. When a followed session is archived, HQ stops following it and

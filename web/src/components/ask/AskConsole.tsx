@@ -366,6 +366,7 @@ export function AskConsole({
   chrome = "sidebar",
   onOpenPage,
   onBack,
+  seed = null,
 }: {
   /** False when no AI endpoint is configured. Ask has no local fallback, so the control is
    *  disabled and says why. */
@@ -402,6 +403,10 @@ export function AskConsole({
    *  empty thread). Disabled while the composer holds an unsent draft or a staged file. */
   onOpenPage?: (id: string | null) => void;
   onBack?: () => void;
+  /** A message another screen hands to HQ (#2152): a draft mission's Plan with HQ (`mission`
+   *  binds the conversation to that draft, checked by the server). Sent ONCE per `key`, as the
+   *  first message of a new conversation, as soon as the empty thread can send. */
+  seed?: { key: string; text: string; mission?: string } | null;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   // #1443 Phase 4: followed sessions' updates, which sessions are followed, and unseen updates.
@@ -607,7 +612,8 @@ export function AskConsole({
       const most = newest?.status === "stopped" ? 0 : phase === "pending" ? 1 : CONTINUE_RECHECKS;
       let again = false;
       for (const p of newest?.proposals ?? []) {
-        if (p.kind !== "operation" || p.op !== "mission.create" || p.state !== "done") continue;
+        // Every mission card continues (#2152): a create, HQ's own flow, a plan of a draft.
+        if (p.kind !== "operation" || !p.op.startsWith("mission.") || p.state !== "done") continue;
         const key = `${p.action_id}:${phase}`;
         const n = continueSeen.current.get(key) ?? 0;
         if (n < most) {
@@ -841,6 +847,7 @@ export function AskConsole({
       q: string,
       atts: AskAttachment[] = [],
       reply?: { answers: string; option?: number },
+      mission?: string,
     ): Promise<{
       outcome: "sent" | "refused" | "canceled" | "uncertain";
       conv: string | null;
@@ -953,6 +960,7 @@ export function AskConsole({
             ...(reply?.option !== undefined ? { option: reply.option } : {}),
             contact: optimistic.contact,
             ...(atts.length ? { attachments: atts.map((x) => x.id) } : {}),
+            ...(mission ? { mission } : {}),
           },
           (ev) => {
             if (ev.type === "screen") {
@@ -1034,6 +1042,20 @@ export function AskConsole({
     // `current` reads refs only.
     [busy, configured, load, refreshList, title, screen],
   );
+
+  /** THE HANDED-OVER MESSAGE (#2152), sent once the empty thread is ready to send it. */
+  const seeded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!seed || seeded.current === seed.key) return;
+    if (cid !== null || busy || !configured) return;
+    // Sent from a task, never from the effect itself (its state updates are the send's own).
+    const t = window.setTimeout(() => {
+      if (seeded.current === seed.key) return;
+      seeded.current = seed.key;
+      void ask(seed.text, [], undefined, seed.mission);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [seed, cid, busy, configured, ask]);
 
   /** STOP (#2076). It names the running turn, so it can never end another; the server lets what
    *  the turn is doing reach its recorded outcome first and answers with the turn as it is. A

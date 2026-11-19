@@ -13,7 +13,7 @@
  *  mount it without the start model, which is the lifecycle half on its own; the planning-state
  *  tests mount it with one (`WithStart`).
  */
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -32,7 +32,6 @@ vi.mock("../../lib/api", async () => {
       setMissionState: vi.fn(),
       archiveMission: vi.fn(),
       unarchiveMission: vi.fn(),
-      planMission: vi.fn(),
     },
   };
 });
@@ -78,7 +77,6 @@ beforeEach(() => {
   vi.mocked(api.setMissionState).mockReset();
   vi.mocked(api.archiveMission).mockReset();
   vi.mocked(api.unarchiveMission).mockReset();
-  vi.mocked(api.planMission).mockReset();
 });
 
 /** Open the secondary-lifecycle menu (#942).
@@ -169,24 +167,36 @@ test("the re-read happens on SUCCESS too, not only on a refusal", async () => {
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
 });
 
-test("a planning state offers Begin as its one primary, and Plan again behind ⋯ (#967)", async () => {
-  // Begin and the old plan button used to be two buttons in the header, owned by the plan card. With
-  // one owner the row holds ONE action; the plan button is still there, as "Plan again", under the
-  // same testid.
+test("Begin is the LEGACY plan's: no plan offers none, and there is no Plan again behind ⋯ (#2152)", async () => {
+  // HQ plans every mission (#2152): a mission with no plan offers Plan with HQ on its plan card, so
+  // the header holds no Begin to press, and the one-agent planner's Plan again is gone.
   render(<WithStart mission={mission({ state: "planned", sessions: [] })} />);
-  const begin = screen.getByTestId("mission-begin");
-  // No plan and no session: nothing to start yet, and the reason names the way forward.
-  expect(begin).toBeDisabled();
-  expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
-  expect(screen.queryByTestId("mission-replan")).toBeNull();
-  expect(screen.queryByTestId("mission-done")).toBeNull();
-
+  expect(screen.queryByTestId("mission-begin")).toBeNull();
   await openOverflow();
-  const again = screen.getByTestId("mission-replan");
-  expect(again).toHaveTextContent("Plan again");
-  vi.mocked(api.planMission).mockResolvedValue({} as never);
-  await userEvent.click(again);
-  await waitFor(() => expect(api.planMission).toHaveBeenCalledWith("msn_1"));
+  expect(screen.queryByTestId("mission-replan")).toBeNull();
+  cleanup();
+  // A legacy one-agent plan keeps its Begin (D2), pointing at the plan card's reason.
+  render(
+    <WithStart
+      mission={mission({
+        state: "planned",
+        sessions: [],
+        plan: {
+          plan_id: "pln_1",
+          mission_id: "msn_1",
+          project_id: "p1",
+          cwd: "/repo",
+          engine: "claude",
+          engine_reason: "",
+          brief: "go",
+          created_at: 1,
+        },
+      })}
+    />,
+  );
+  const begin = screen.getByTestId("mission-begin");
+  expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
+  expect(screen.queryByTestId("mission-done")).toBeNull();
 });
 
 test("the chip reads the rail's label: dispatching is 'starting', and the primary says so (#967)", () => {

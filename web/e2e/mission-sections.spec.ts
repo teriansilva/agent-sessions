@@ -667,10 +667,6 @@ for (const initial of ["draft", "planned"]) {
     await page.goto("/mission");
     await selectMission(page);
     await expect(page.getByTestId("mission-begin")).toBeEnabled();
-    // Plan again is still offered, behind ⋯ (#967); Begin stays the row's one primary.
-    await page.getByTestId("mission-overflow").click();
-    await expect(page.getByTestId("mission-replan")).toBeVisible();
-    await page.keyboard.press("Escape");
     await page.getByTestId("mission-begin").click();
     await expect(page.getByTestId("mission-state")).toHaveText("running");
     expect(transitions).toEqual(
@@ -753,9 +749,6 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
   );
   await page.getByTestId("mission-begin").click();
   await expect(page.getByTestId("mission-begin")).toBeDisabled();
-  // Plan again, behind ⋯ (#967), is held with it.
-  await page.getByTestId("mission-overflow").click();
-  await expect(page.getByTestId("mission-replan")).toBeDisabled();
   expect(launches).toBe(1);
   release();
   await expect(page.getByTestId("mission-state")).toHaveText("running");
