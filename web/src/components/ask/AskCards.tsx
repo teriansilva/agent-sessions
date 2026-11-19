@@ -610,6 +610,7 @@ const OPERATION_GROUP: Record<string, string> = {
   automation: "Automation",
   secret: "Secret",
   mission: "Mission",
+  mcp: "MCP server",
 };
 
 /** An automation the tap lets run unattended reads as such, not as a bare "External". */
@@ -618,8 +619,11 @@ const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
 const SECRET_FILE_MAX = 256 * 1024;
 const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
 
-/** Turning a secret's agent access on (#1786) widens what agents can read: said on the stamp. */
-const WIDENS = new Set(["secret.access_on"]);
+/** Turning a secret's agent access on (#1786) widens what agents can read: said on the stamp. So
+ * do letting projects use a shared secret and turning an MCP server on for projects (#2163). */
+const WIDENS = new Set(["secret.access_on", "secret.bind", "mcp.enable"]);
+/** Installing an MCP server package (#2163) puts third-party code in every session that gets it. */
+const THIRD_PARTY = new Set(["mcp.install"]);
 /** Storing a shared file as a secret (#1786) deletes the chat copy once the Library holds it. */
 const MOVES = new Set(["secret.store_attachment"]);
 
@@ -676,9 +680,11 @@ export function OperationCard({
     ? { label: "Runs agents unattended", tone: "hud" as const }
     : WIDENS.has(p.op)
       ? { label: "Widens access", tone: "hud" as const }
-      : MOVES.has(p.op)
-        ? { label: "Moves the chat copy", tone: "hud" as const }
-        : RISK_STAMP[p.risk];
+      : THIRD_PARTY.has(p.op)
+        ? { label: "Third-party code", tone: "hud" as const }
+        : MOVES.has(p.op)
+          ? { label: "Moves the chat copy", tone: "hud" as const }
+          : RISK_STAMP[p.risk];
   const danger = p.risk === "destructive";
   const ready =
     (!needsFolder || folder !== "") &&

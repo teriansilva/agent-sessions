@@ -60,6 +60,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   list_secrets: { label: "Listing your secrets' names", noun: ["secret", "secrets"] },
   propose_library: { label: "Preparing the Library change for you to confirm" },
   propose_secret: { label: "Preparing the secret change for you to confirm" },
+  // #2163: project MCP servers.
+  list_mcp_servers: { label: "Listing your MCP servers", noun: ["MCP server", "MCP servers"] },
+  propose_mcp: { label: "Preparing the MCP server change for you to confirm" },
   // #1750, #1833: connected services.
   list_connectors: { label: "Listing your connectors", noun: ["connector", "connectors"] },
   connector_search: { label: "Searching a connected service", noun: ["result", "results"] },

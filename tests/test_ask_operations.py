@@ -114,6 +114,13 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     from agent_sessions import ask_secrets
 
     monkeypatch.setattr(ask_secrets, "_current", lambda target, facts: 1.0)
+    # An MCP server (#2163 P2): the review an install takes, a check's scope, an enable's
+    # projects (read at the tap against the bound revision), and a project's own secret / a bind.
+    from agent_sessions import ask_mcp
+
+    monkeypatch.setattr(ask_mcp, "_current", lambda target, facts: 1.0)
+    fields.update(server_name="docs", review_id="a1b2c3d4e5f60718", scope="shared")
+    fields.update(projects="all", project_ids="p1", named="P", server_id="0123456789abcdef")
     # A library save (#1611) builds its body from its bound draft, injected at the tap.
     fields["_content"] = {
         "files": {"playbook.toml": "", "note.md": "A corrected fact."},
@@ -136,6 +143,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "attachment": "0" * 32,
             "mission": "m1",
             "memory": "research-protocol",
+            "mcp": "0123456789abcdef",
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

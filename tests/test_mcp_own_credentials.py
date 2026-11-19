@@ -123,3 +123,35 @@ def test_only_the_servers_own_variables_a_real_project_and_csrf(client, auth_cfg
     assert no_csrf.status_code == 403
     detail = client.get(f"/api/mcp/servers/{sid}").json()
     assert _row(detail, atlas)["credentials"] == "missing"
+
+
+def test_create_only_never_replaces_a_value_or_a_shared_reference(client):
+    """HQ's create-only card (#2208): the store refuses, inside its own fence, a name the project
+    already holds — its own value or a reference to the shared one — and nothing is replaced."""
+    atlas = projects.create("Atlas").id
+    beta = projects.create("Beta").id
+    variables.create({"name": "api_key", "kind": "secret", "value": SHARED})
+    store.bind_project(beta, [{"name": "api_key", "kind": "secret", "ref": "global"}])
+    store.bind_project(atlas, [{"name": "api_key", "kind": "secret", "value": OWN}])
+    sid = _server()["id"]
+    for pid in (atlas, beta):
+        r = client.put(
+            f"/api/mcp/servers/{sid}/projects/{pid}/credentials",
+            json={"values": {"api_key": "new-value-123"}, "create_only": True},
+        )
+        assert r.status_code == 409 and "already has" in r.json()["detail"], r.text
+        assert "new-value-123" not in r.text
+    rec = mcp_registry.get(sid)
+    assert mcp_registry.resolve(rec, atlas, with_values=True).secret_values == (OWN,)
+    assert mcp_registry.resolve(rec, beta).sources == {"api_key": "shared"}
+    gamma = projects.create("Gamma").id
+    r = client.put(
+        f"/api/mcp/servers/{sid}/projects/{gamma}/credentials",
+        json={"values": {"api_key": "gamma-own-456"}, "create_only": True},
+    )
+    assert r.status_code == 200 and _row(r.json(), gamma)["credentials"] == "own"
+    bad = client.put(
+        f"/api/mcp/servers/{sid}/projects/{gamma}/credentials",
+        json={"values": {"api_key": "gamma-own-456"}, "create_only": "yes"},
+    )
+    assert bad.status_code == 422

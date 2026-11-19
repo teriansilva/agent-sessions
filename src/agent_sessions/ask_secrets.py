@@ -17,9 +17,22 @@ operations are proposals the operator confirms on a card:
   at any autonomy level; the card names the bound projects, and a project set that changed
   before the tap makes it ``stale``.
 - ``secret.access_off`` narrows it again.
+- ``secret.create_project`` (#2163 P2: ``create`` with a ``project`` and a ``server``) stores a
+  project's OWN value for a credential an MCP server names, through the server page's own route
+  (``PUT /api/mcp/servers/{sid}/projects/{pid}/credentials``, which accepts only the variables
+  that server names). Every rule of ``secret.create`` holds: the value is the card input only.
+  Create only: a project already holding the name is refused at staging, and one that set it
+  (its own value or the shared one) before the tap makes the card ``stale``, as does a project
+  renamed or gone.
+- ``secret.bind`` (#2163 P2) lets projects use a Library secret by ``ref: global`` (``PUT
+  /api/variables/{vid}/projects``), only ADDING projects. It WIDENS where the value is used: MCP
+  servers enabled there get it, and, with agent access on, agents there may request a copy. So it
+  is treated like ``secret.access_on``: a card only, never voice, the card names the projects it
+  adds, and a project set or revision that moved before the tap makes it ``stale``.
 
 Ids are the 32-hex library ids, and only one ``list_secrets`` returned in THIS turn may be named
-(`ask_orchestrator._Turn.secrets`).
+(`ask_orchestrator._Turn.secrets`); a project id only one ``list_mcp_servers`` returned in this
+turn (``_Turn.mcp_projects``).
 """
 
 from __future__ import annotations
@@ -176,6 +189,24 @@ async def facts(op: Operation, target: str, app, operator) -> dict | None:
     return None
 
 
+async def project_facts(fields: dict, app, operator) -> dict | None:
+    """What a project's own-secret card binds: the project's name, as the card names it (`dest`:
+    renamed or gone before the tap is `stale`), and whether the project holds that name yet
+    (`holds`: set elsewhere before the tap is `stale`, so the tap never replaces a value or
+    swaps a project from the shared one). None when the project is gone."""
+    from . import template_vars
+
+    names = await _project_names(app, operator)
+    pid = fields.get("project_id")
+    if pid not in names:
+        return None
+    held = await asyncio.to_thread(template_vars.project_bindings, pid)
+    return {
+        "dest": names[pid],
+        "holds": any(b.get("name") == fields.get("secret_name") for b in held),
+    }
+
+
 def _current(target: str, facts: dict) -> float:
     """The secret's revision as the route needs it, read at the tap: still the one the card's
     facts were read at, bound to the same projects, or the card is stale (`_Moved`) — never a
@@ -254,6 +285,61 @@ def _created(status: int, body: object, x: dict) -> tuple[str, str]:
     if 200 <= status < 300:
         return _ops().DONE, "Stored. Agent access is off."
     return _ops()._plain(status, body, "")
+
+
+def _created_project(status: int, body: object, x: dict) -> tuple[str, str]:
+    """Stored; or the store refused because the project set that name after the card's last read
+    (409 from the create-only write): `stale`, nothing replaced."""
+    if status == 409:
+        return _ops().STALE, "the project set that secret elsewhere since this was proposed"
+    return _ops()._plain(status, body, f"Stored for {x.get('dest') or 'the project'}.")
+
+
+def _create_project_route(target: str, f: dict, x: dict):
+    # The card input, merged at the tap. ``create_only``: the store refuses, inside its own fence,
+    # a name the project gained after the card's last read (Hermes on #2208) — never a replace.
+    body = {"values": {f["secret_name"]: f["value"]}, "create_only": True}
+    path = f"/api/mcp/servers/{f['server_id']}/projects/{f['project_id']}/credentials"
+    return "PUT", path, body
+
+
+def _describe_create_project(f: dict, x: dict) -> str:
+    project = x.get("dest") or "the project"
+    return (
+        f"Stores “{f['secret_name']}” as {project}'s own secret, for the MCP server "
+        f"“{f.get('server_name') or 'it'}”. Type its value below: it goes straight to the "
+        "encrypted store, and HQ never sees it. In that project its own value wins over a shared "
+        "one, for every MCP server that names it."
+    )
+
+
+def _bind_route(target: str, f: dict, x: dict):
+    """The projects bound now plus the ones the card ADDS, at the revision and project set the
+    card bound (`_current`, read at the tap) — never a binding removed."""
+    from . import variables
+
+    expected = _current(target, x)
+    bound = next((_bound(v) for v in variables.library()["variables"] if v.get("id") == target), [])
+    added = [p for p in f["project_ids"].split(",") if p]
+    return (
+        "PUT",
+        f"/api/variables/{target}/projects",
+        {"project_ids": sorted({*bound, *added}), "expected_updated_at": expected},
+    )
+
+
+def _describe_bind(f: dict, x: dict) -> str:
+    name = x.get("name") or "this secret"
+    said = (
+        f"Lets {f.get('named') or 'the chosen projects'} use the shared “{name}”: the MCP servers "
+        "enabled there are given it with their checked settings."
+    )
+    if x.get("agent_access"):
+        said += (
+            " Its agent access is on, so agents there can also request a copy and send it "
+            "anywhere."
+        )
+    return said
 
 
 # ---- moving a file shared as a secret into the Library (#1786 P4b) --------------------------
@@ -673,6 +759,35 @@ def secret_ops() -> tuple[Operation, ...]:
             lambda st, d, x: f"Not turned off: {d or 'refused'}. Access is still on.",
         ),
         Operation(
+            "secret.create_project",
+            GROUP,
+            "create_project",
+            "Store a project's own secret",
+            "Store",
+            "reversible",
+            "none",
+            ("secret_name",),
+            _create_project_route,
+            _describe_create_project,
+            _created_project,
+            lambda st, d, x: f"Not stored: {d or 'refused'}. Nothing changed.",
+            inputs=("value",),
+        ),
+        Operation(
+            "secret.bind",
+            GROUP,
+            "bind",
+            "Use the shared secret in projects",
+            "Allow",
+            "external",
+            GROUP,
+            (),
+            _bind_route,
+            _describe_bind,
+            lambda st, b, x: _ops()._plain(st, b, "Those projects use the shared secret now."),
+            lambda st, d, x: f"Not changed: {d or 'refused'}. The projects are as they were.",
+        ),
+        Operation(
             "secret.create_file",
             GROUP,
             "create_file",
@@ -716,22 +831,36 @@ async def prepare(
     operator,
     cid: str = "",
     attachments: list[dict] | None = None,
+    known_projects: dict | None = None,
+    known_servers: dict | None = None,
 ) -> dict:
     """What `propose_secret` stages: the operation, its target, title and fields. Raises
     ``Refused``. A secret must be one ``list_secrets`` returned in this turn; a shared file one
-    of THIS turn's attachments, by its index in the message's list."""
+    of THIS turn's attachments, by its index in the message's list; a project one
+    ``list_mcp_servers`` returned in this turn (``known_projects``: id → name), and so a server
+    (``known_servers``)."""
+    if action == "create_project":
+        action = None  # an internal id: the model says create with a project
     op = _ops().by_action(GROUP, action) if isinstance(action, str) else None
     if op is None:
         raise Refused(
-            "action must be create, access_on, access_off or store_attachment", "bad_arguments"
+            "action must be create, access_on, access_off, bind or store_attachment",
+            "bad_arguments",
         )
-    if "value" in args:
+    if "value" in args or "values" in args:
         raise Refused(
             "refused: HQ never carries a secret's value — the operator types it on the card",
             "never",
         )
+    known_projects = known_projects or {}
     if op.id == "secret.store_attachment":
         return await _prepare_move(op, args, cid, attachments or [], app, operator)
+    if op.id == "secret.create" and args.get("project") is not None:
+        return await _prepare_project_secret(
+            args, known_projects, known_servers or {}, app, operator
+        )
+    if op.id == "secret.bind":
+        return await _prepare_bind(op, args, known, known_projects, app, operator)
     if op.id == "secret.create" and args.get("kind") == "file":
         op = _ops().CATALOG["secret.create_file"]
     elif args.get("kind") not in (None, "text"):
@@ -759,6 +888,122 @@ async def prepare(
                 "too_many_projects",
             )
     return {"op": op, "target": tid, "title": known[tid].get("name") or tid, "fields": {}}
+
+
+async def _prepare_project_secret(
+    args: dict, known_projects: dict, known_servers: dict, app, operator
+) -> dict:
+    """A project's own value for a credential an MCP server names (#2163 P2). The project and the
+    server are ones this turn listed; the name one of that server's credential variables; a name
+    the project already holds is refused (create only)."""
+    from . import ask_mcp, template_vars
+
+    op = _ops().CATALOG["secret.create_project"]
+    pid = args.get("project")
+    if not isinstance(pid, str) or pid not in known_projects:
+        raise Refused(
+            "refused: project is a project id list_mcp_servers returned in this turn",
+            "unknown_target",
+        )
+    if args.get("kind") not in (None, "text"):
+        raise Refused("refused: a project's own secret is text", "bad_arguments")
+    sid = args.get("server")
+    if not isinstance(sid, str) or sid not in known_servers:
+        raise Refused(
+            "refused: server is the id of the MCP server this credential is for, one "
+            "list_mcp_servers returned in this turn",
+            "unknown_target",
+        )
+    try:
+        name = secret_name(args.get("name"))
+    except _ops().Refused as e:
+        raise Refused(str(e), "bad_arguments") from None
+    detail = await ask_mcp._detail(app, operator, sid)
+    if detail is None or not isinstance(detail.get("server"), dict):
+        raise Refused("refused: that MCP server no longer exists", "not_available")
+    rec = detail["server"]
+    named = [s.get("variable") for s in rec.get("settings") or [] if s.get("kind") == "credential"]
+    if name not in named:
+        raise Refused(
+            f"refused: that server names no credential {name}"
+            + (f"; it names {', '.join(map(str, named))}" if named else "; it needs none"),
+            "bad_arguments",
+        )
+    held = await asyncio.to_thread(template_vars.project_bindings, pid)
+    if any(b.get("name") == name for b in held):
+        raise Refused(
+            f"refused: that project already has {name} (its own value or the shared one)",
+            "exists",
+        )
+    return {
+        "op": op,
+        "target": "",
+        "title": name,
+        "fields": {
+            "secret_name": name,
+            "project_id": pid,
+            "server_id": sid,
+            "server_name": str(rec.get("name") or ""),
+        },
+    }
+
+
+async def _prepare_bind(op, args: dict, known: dict, known_projects: dict, app, operator):
+    """Let projects use a Library secret (#2163 P2): only ADDS, names every project it adds."""
+    from . import template_vars
+
+    tid = args.get("id")
+    if not isinstance(tid, str) or not _ID_RE.match(tid) or tid not in known:
+        raise Refused(
+            "refused: use a secret id list_secrets returned in this turn", "unknown_target"
+        )
+    raw = args.get("projects")
+    if raw == "all":
+        pids = sorted(known_projects)
+    elif isinstance(raw, list) and raw and all(isinstance(p, str) for p in raw):
+        pids = list(dict.fromkeys(raw))
+    else:
+        raise Refused(
+            'refused: projects is "all" or a list of project ids list_mcp_servers returned in '
+            "this turn",
+            "bad_arguments",
+        )
+    if any(p not in known_projects for p in pids):
+        raise Refused(
+            "refused: use project ids list_mcp_servers returned in this turn", "unknown_target"
+        )
+    rec = next((v for v in await _library(app, operator) if v["id"] == tid), None)
+    if rec is None:
+        raise Refused("refused: that secret no longer exists", "not_available")
+    if rec.get("kind") != "secret":
+        raise Refused("refused: only a text secret is bound here", "bad_arguments")
+    bound = set(_bound(rec))
+    added = [p for p in pids if p not in bound]
+    own = []
+    for p in added:
+        held = await asyncio.to_thread(template_vars.project_bindings, p)
+        if any(b.get("name") == rec.get("name") for b in held):
+            own.append(str(known_projects[p]))
+    if own:
+        raise Refused(
+            f"refused: {', '.join(own)} already {'has' if len(own) == 1 else 'have'} its own "
+            f"{rec.get('name')}; its own value is used there",
+            "exists",
+        )
+    if not added:
+        raise Refused("refused: those projects already use it", "unchanged")
+    named = ", ".join(str(known_projects[p]) for p in added)
+    fields = {"project_ids": ",".join(added), "named": named}
+    now = await facts(op, tid, app, operator)
+    if now is None:
+        raise Refused("refused: that secret no longer exists", "not_available")
+    if len(_describe_bind(fields, now)) > _ops().SUMMARY_MAX:
+        raise Refused(
+            "refused: that is more projects than one card can name — propose fewer at a time, "
+            "or the operator binds them in the Library",
+            "too_many_projects",
+        )
+    return {"op": op, "target": tid, "title": known[tid].get("name") or tid, "fields": fields}
 
 
 async def _prepare_move(op, args: dict, cid: str, attachments: list[dict], app, operator):

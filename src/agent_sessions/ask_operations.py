@@ -345,7 +345,7 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # session, project, playbook, skill, automation, secret, team or mission
+    group: str  # session, project, playbook, skill, automation, secret, team, mission or mcp
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
@@ -841,12 +841,21 @@ def _ops() -> tuple[Operation, ...]:
 
 def _all_ops() -> tuple[Operation, ...]:
     from .ask_library import library_ops
+    from .ask_mcp import mcp_ops
     from .ask_memory import operations as memory_ops
     from .ask_mission import mission_ops
     from .ask_secrets import secret_ops
     from .ask_team import team_ops
 
-    return (*_ops(), *library_ops(), *secret_ops(), *team_ops(), *mission_ops(), *memory_ops())
+    return (
+        *_ops(),
+        *library_ops(),
+        *secret_ops(),
+        *team_ops(),
+        *mission_ops(),
+        *memory_ops(),
+        *mcp_ops(),
+    )
 
 
 CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
@@ -881,6 +890,14 @@ async def facts_for(
         from . import ask_mission
 
         return await ask_mission.facts(op.id, target, fields, app, operator)
+    if op.group == "mcp":  # a project MCP server (#2163 P2)
+        from . import ask_mcp
+
+        return await ask_mcp.facts(op, target, fields, app, operator)
+    if op.id == "secret.create_project":  # a project's own secret: the project it names
+        from . import ask_secrets
+
+        return await ask_secrets.project_facts(fields, app, operator)
     if op.group == "memory":
         from . import ask_memory
 
@@ -972,6 +989,12 @@ def changed(before: dict, now: dict | None) -> str:
         return "it was planned elsewhere"
     if "state" in before and before["state"] != now.get("state"):
         return f"it is {now.get('state')} now"
+    # An MCP server's install card (#2163): the source the package review was run for.
+    if "source_rev" in before and before["source_rev"] != now.get("source_rev"):
+        return "its source changed"
+    # A project's own credential (#2163): the project set that name elsewhere before the tap.
+    if "holds" in before and before["holds"] != now.get("holds"):
+        return "the project set that secret elsewhere"
     if "scope" in before and before["scope"] != now.get("scope"):
         return "what it would do changed"
     return ""
@@ -1221,6 +1244,12 @@ async def stage(
                 "prepared; read them again with list_procedures. Nothing was written",
                 "stale",
             )
+        if op.group == "mcp":  # the package HQ reviewed is not the one the card would install
+            raise Refused(
+                "refused: the MCP server's source changed while the card was prepared; read it "
+                "again with list_mcp_servers. Nothing was installed",
+                "stale",
+            )
         raise Refused("refused: that note changed after HQ read it; search again", "not_available")
     shown = facts.get("title") or facts.get("name") or title
     pid = uuid.uuid4().hex
@@ -1341,6 +1370,10 @@ def content(pid: str) -> tuple[int, dict]:
     status, draft, op_id = bound_draft(pid)
     if status != 200:
         return status, draft
+    if op_id.startswith("mcp."):  # a server a create card registers (#2163 P2)
+        from . import ask_mcp
+
+        return 200, ask_mcp.content_view(draft)
     if op_id == "memory.edit":
         return 200, {
             "kind": "diff",

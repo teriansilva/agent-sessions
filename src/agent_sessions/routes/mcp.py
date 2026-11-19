@@ -248,8 +248,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         variable. Write-only: the answer is the server's detail, never a value."""
         payload = await _json_object(request)
         values = payload.get("values")
+        create_only = payload.get("create_only", False)
         if (
-            set(payload) != {"values"}
+            not {"values"} <= set(payload) <= {"values", "create_only"}
+            or not isinstance(create_only, bool)
             or not isinstance(values, dict)
             or not values
             or not all(isinstance(v, str) for v in values.values())
@@ -269,7 +271,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 template_vars.bind_project(
                     pid,
                     [{"name": n, "kind": "secret", "value": v} for n, v in sorted(values.items())],
+                    create_only=create_only,
                 )
+            except template_vars.BindingExists as e:
+                raise mcp_registry.Conflict(str(e)) from None
             except template_vars.VariableError as e:
                 raise mcp_registry.RegistryError(str(e)) from None
             return _detail(sid)

@@ -345,6 +345,16 @@ access. access_off takes it away again. A file the operator shares as a secret r
 its name and size only; to keep it, propose_secret store_attachment with its place in the \
 message's files.
 
+To set up an MCP server, call list_mcp_servers and ask whether it is for every \
+project with shared credentials or for one project with its own, unless that is clear. Then \
+propose_mcp create (credentials only as Variables secret names); after its tap, install for a \
+package (it takes minutes; list_mcp_servers shows when it is done); then a \
+credential card per secret (propose_secret create, with project and server for a \
+project's own; bind lets projects use a shared one) together with the check card; after the \
+check, enable. The operator types every credential on its card: never ask for one in the chat, \
+and if one is pasted, do not repeat or use it and say to type it on the card. After a check, say \
+in words what it proved or why it failed.
+
 For "how is my usage", call agent_usage: answer from what each agent itself reported. Its \
 source says what a figure is: none means not measured, never 0 %; plan and tokens are not \
 interchangeable. Always give how long ago a figure was checked; if it is stale or its check \

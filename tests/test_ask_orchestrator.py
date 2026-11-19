@@ -323,6 +323,10 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "propose_library": "proposal",
         "list_secrets": "read",
         "propose_secret": "proposal",
+        # #2163: project MCP servers — a read, and one proposal tool whose cards the operator
+        # confirms (register, install, check, enable); never a credential value.
+        "list_mcp_servers": "read",
+        "propose_mcp": "proposal",
         # #1750: the Commander's connected services — reads only; P1a has no send or proposal.
         "list_connectors": "read",
         "connector_search": "read",

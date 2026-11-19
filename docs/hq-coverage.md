@@ -216,7 +216,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Secrets: create / replace (value typed on the card), delete | POST/PATCH/DELETE /api/variables (kind secret) | P3 W (secret_input) |
 | Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off; the projects a secret is bound to; its access log | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`); PUT /api/variables/{vid}/projects; GET /api/variables/{vid}/access-log | #1786 W (P4a: `list_secrets`, `secret.create` with the value typed on the card, `secret.access_on` / `access_off`, never voice- or auto-confirmed; P4b: `secret.store_attachment`, the custody-transfer move of a Secret-shared chat attachment) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
-| Project MCP servers (#2163): list, add, edit, remove; enable per project; check; review and install a package | GET/POST/PATCH/DELETE /api/mcp/servers*, PUT …/projects, POST …/check, GET /api/mcp/operations/{op} | #2163 R/W (P2 of #2163: `list_mcp_servers`, `mcp.create`, `mcp.check`, `mcp.enable` cards; credentials through `secret.create`, never voice- or auto-confirmed) |
+| Project MCP servers (#2163): list, add, edit, remove; enable per project; check; review and install a package | GET/POST/PATCH/DELETE /api/mcp/servers*, PUT …/projects, POST …/check, …/review, …/install, GET /api/mcp/operations/{op} | have (P2 of #2163: `list_mcp_servers`; `propose_mcp` create / install / check / enable cards; a project's own credential through `propose_secret` create with a project, a shared one through `propose_secret` bind; never voice- or auto-confirmed, never a credential value) → edit and remove: #2163 (the Library page) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: bounded on-demand notebook discovery, indexed search and current note read | shared Memory service | **have** (#2036: current-turn refs; no startup preload) |
 | HQ memory: explicit remember and confirmable correction / forget | common admission; existing cards | **have** (#2036; HQ scope only, no operational authority) |
@@ -432,17 +432,17 @@ GET    /api/share/imports                                                       
 POST   /api/share/export                                                          n/a  # share bundles: a file download
 POST   /api/share/import/preview                                                  n/a  # share bundles: a file upload
 POST   /api/share/import                                                          n/a  # share bundles: confirms an uploaded file's preview
-GET    /api/mcp/servers                                                           #2163  # project MCP servers (P2 of #2163)
-POST   /api/mcp/servers                                                           #2163
+GET    /api/mcp/servers                                                           have  # list_mcp_servers (#2163 P2)
+POST   /api/mcp/servers                                                           have  # propose_mcp create, the server as a bound draft on the card (#2163 P2)
 DELETE /api/mcp/servers/{sid}                                                     #2163
-GET    /api/mcp/servers/{sid}                                                     #2163
+GET    /api/mcp/servers/{sid}                                                     have  # list_mcp_servers per-project state; the cards' facts
 PATCH  /api/mcp/servers/{sid}                                                     #2163
-POST   /api/mcp/servers/{sid}/check                                               #2163
-PUT    /api/mcp/servers/{sid}/projects                                            #2163
-PUT    /api/mcp/servers/{sid}/projects/{pid}/credentials                          #2163
-POST   /api/mcp/servers/{sid}/review                                              #2163
-POST   /api/mcp/servers/{sid}/install                                             #2163
-GET    /api/mcp/operations/{op_id}                                                #2163
+POST   /api/mcp/servers/{sid}/check                                               have  # propose_mcp check; the outcome in words + counts
+PUT    /api/mcp/servers/{sid}/projects                                            have  # propose_mcp enable, bound to the revision
+PUT    /api/mcp/servers/{sid}/projects/{pid}/credentials                          have  # propose_secret create with project + server: the value typed on the card (#2163 P2)
+POST   /api/mcp/servers/{sid}/review                                              have  # propose_mcp install runs it at staging
+POST   /api/mcp/servers/{sid}/install                                             have  # propose_mcp install, the reviewed lock only
+GET    /api/mcp/operations/{op_id}                                                have  # propose_mcp install: the review it waits on, the install it starts
 GET    /api/maintenance/compact                                                   P6
 POST   /api/maintenance/compact                                                   P6
 GET    /api/maintenance/prune                                                     P6
@@ -708,7 +708,7 @@ DELETE /api/variables/{vid}                                                     
 PATCH  /api/variables/{vid}                                                       P3
 PUT    /api/variables/{vid}/file                                                  #1786  # secret files (P4 of #1786)
 GET    /api/variables/{vid}/access-log                                            #1786  # secret access log (P4 of #1786)
-PUT    /api/variables/{vid}/projects                                              #1786  # bind a secret to projects (P4 of #1786)
+PUT    /api/variables/{vid}/projects                                              have  # propose_secret bind: adds projects only, never voice (#2163 P2)
 GET    /api/version                                                               n/a  # app shell read
 GET    /change-password                                                           never  # identity
 POST   /change-password                                                           never  # identity

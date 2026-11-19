@@ -36,6 +36,7 @@ GATED = {
     "propose_project_change",
     "propose_mission",
     "propose_secret",
+    "propose_mcp",
     "propose_session",
     "propose_session_change",
     # #2120: withdrawing a card is an effect on it; it waits for the commit like a proposal.

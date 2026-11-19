@@ -177,7 +177,8 @@ EXPECTED_DEFAULT_SHA = {
     # #1910: web research — HQ cannot browse; it proposes a research specialist and relays the
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
-    "ask_orchestrator": "cd049db5e9fe36b6",  # #2152; #2137 (needs_you); #1960 P2; #1950; #2136
+    # #2163 P2; #2152; #2137 (needs_you, set-up); #1960 P2; #1950; #2136
+    "ask_orchestrator": "a36818ce5d0c50e6",
     "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",

@@ -429,7 +429,14 @@ def test_a_continuation_reads_and_proposes_but_never_sends_or_remembers(hq, monk
 
 def test_a_continuation_turn_runs_only_for_a_card_that_asks_for_one():
     follow = [o.id for o in ask_operations.CATALOG.values() if o.follow_up]
-    assert follow == ["mission.create", "mission.create_local", "mission.plan"]  # #2152
+    assert follow == [  # #2152; #2163 P2: the MCP setup walks create → install → check → enable
+        "mission.create",
+        "mission.create_local",
+        "mission.plan",
+        "mcp.create",
+        "mcp.install",
+        "mcp.check",
+    ]
     assert "card" in ask_store.VIAS
 
 

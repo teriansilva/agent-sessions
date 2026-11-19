@@ -2360,8 +2360,16 @@ def _voice_operation(op_id: object) -> bool:
     # A secret operation (#1786) is never voice-confirmed: turning agent access on widens what
     # agents can read, and the operator approved HQ proposing it only as a card they tap.
     # A team card (#1950) names its step and model on screen; it is a screen decision too, and so
-    # is a draft mission (#1950): its instruction is on the card.
-    return op is not None and op.group not in (*ask_library.GROUPS, "secret", "team", "mission")
+    # is a draft mission (#1950): its instruction is on the card. An MCP server card (#2163)
+    # registers, installs third-party code, checks with credentials or widens which projects'
+    # agents get a server and its credentials: like a secret's access, only ever a tap.
+    return op is not None and op.group not in (
+        *ask_library.GROUPS,
+        "secret",
+        "team",
+        "mission",
+        "mcp",
+    )
 
 
 #: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only
@@ -2813,6 +2821,8 @@ def screen_reasons(
             out[pid] = "A team change is confirmed on screen."
         elif group == "secret":
             out[pid] = "Secrets are only ever confirmed on screen."
+        elif group == "mcp":
+            out[pid] = "MCP servers are only ever set up on screen."
         elif group in ask_library.GROUPS and op_id not in VOICE_DRAFTS:
             out[pid] = "Library changes are confirmed on screen, where their content is."
         elif op_id in VOICE_DRAFTS and not (summaries or {}).get(pid):

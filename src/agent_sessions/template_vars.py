@@ -81,6 +81,10 @@ VariableError = tstore.TemplateError
 VariableConflict = tstore.TemplateConflict
 
 
+class BindingExists(Exception):
+    """A create-only binding named something the project already holds (`bind_project`)."""
+
+
 class VariableNotFound(LookupError):
     """No variable with that name."""
 
@@ -1195,8 +1199,12 @@ def _binding(raw: object, pid: str) -> dict:
     return {"name": name, "kind": kind, "value": value}
 
 
-def bind_project(project: object, bindings: object) -> list[dict]:
+def bind_project(project: object, bindings: object, *, create_only: bool = False) -> list[dict]:
     """Set some of a project's bindings, all or nothing, under the binding/deletion fence.
+
+    ``create_only`` refuses (`BindingExists`) a name the project already holds — its own value
+    or a reference to the shared one — decided inside the same fence that writes, so a value set
+    by another request after a caller checked is never replaced (#2163: HQ's create-only card).
 
     Each binding replaces the project's record of that name (whatever its kind). A ``ref: "global"``
     binding is refused unless the global variable of that name AND kind exists in the same locked
@@ -1234,6 +1242,10 @@ def bind_project(project: object, bindings: object) -> list[dict]:
                 old = _find(records, b["name"], SCOPE_PROJECT, pid)
             except VariableNotFound:
                 old = None
+            if old is not None and create_only:
+                raise BindingExists(
+                    f"{b['name']}: the project already has its own value or uses the shared one"
+                )
             if old is not None:
                 _retire(old)
                 records.remove(old)
