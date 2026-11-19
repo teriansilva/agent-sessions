@@ -217,6 +217,7 @@ _NOT_MANIFEST_VALUES = {
     "API_MISSION_REFUSAL",  # why each off kind is off (#1903)
     "API_HANDOFF_READY",  # BattleLab's structured handoff delivery per protocol (#2141)
     "ACCOUNT_RECIPES",  # each account kind's reviewed recipe; a manifest chooses the kind (#1820)
+    "SELF_UPDATE_OFF",  # the updater switch for MANAGED installs, not a manifest value
 }
 
 

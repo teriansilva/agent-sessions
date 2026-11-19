@@ -545,7 +545,8 @@ def _probe_sink(limit: int) -> int:
 
 
 def forced_environment(config: dict) -> dict[str, str]:
-    """The forced XDG tree of an isolated source (#1986, #2084), or ``{}``.
+    """The forced XDG tree of an isolated source (#1986, #2084) plus a managed agent's
+    self-update switch (`kinds.SELF_UPDATE_OFF`), or ``{}``.
 
     Computed by the web process from `forced_env(source)` at generation launch — after the 1.x
     overlap refusal, before any spawn — and passed explicitly in the config: exactly
@@ -553,19 +554,26 @@ def forced_environment(config: dict) -> dict[str, str]:
     generation without it is refused: a 2.x child must never run on its defaults, which are
     1.x's database."""
     from .engines.opencode2 import XDG_DIRS
+    from .plugins.kinds import SELF_UPDATE_OFF
 
     value = config.get("forced_env", {})
     if not isinstance(value, dict):
         raise WorkerError("invalid isolated environment")
-    if value and (
-        set(value) != set(XDG_DIRS)
+    tree = {k: v for k, v in value.items() if k in XDG_DIRS}
+    if tree and (
+        set(tree) != set(XDG_DIRS)
         or any(
             not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
-            for v in value.values()
+            for v in tree.values()
         )
     ):
         raise WorkerError("invalid isolated environment")
-    if config.get("adapter") == OPENCODE2 and not value:
+    # Besides the tree, only a managed agent's own "never update yourself" switch, exactly as
+    # `kinds.SELF_UPDATE_OFF` spells it: never an arbitrary variable over the child.
+    switches = {pair for row in SELF_UPDATE_OFF.values() for pair in row.items()}
+    if any((k, v) not in switches for k, v in value.items() if k not in XDG_DIRS):
+        raise WorkerError("invalid isolated environment")
+    if config.get("adapter") == OPENCODE2 and not tree:
         raise WorkerError("opencode 2 has no isolated environment; refusing to run it")
     return dict(value)
 

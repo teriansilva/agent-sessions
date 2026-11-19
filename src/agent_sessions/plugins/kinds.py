@@ -227,6 +227,20 @@ STORE_LAYOUTS = frozenset(
         "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
 )
+#: A MANAGED agent never updates itself (2026-11-19): BattleLab's catalog pins and digest-verifies
+#: the install and owns its upgrades. Per `store.layout`, the vendor's documented environment
+#: switch that stops the CLI's own updater, laid on every process started from a managed
+#: entrypoint (`plugins.provider.self_update_off`) — never on an adopted binary, the operator's own.
+#: Keyed here rather than in the manifest because an installed generation runs the manifest frozen
+#: into its install record. No row: copilot turns it off in its manifest (`--no-auto-update`);
+#: codex only prompts (`check_for_update_on_startup`); gemini (`general.enableAutoUpdate`) and kimi
+#: (`tui.toml [upgrade].auto_install`) have only a settings file in the operator's own config.
+SELF_UPDATE_OFF: dict[str, dict[str, str]] = {
+    "claude-projects": {"DISABLE_AUTOUPDATER": "1"},
+    "opencode-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+    "opencode2-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+    "antigravity-cli": {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"},
+}
 #: `memory.kind` (#1471) — an agent's OWN memory store that BattleLab may READ to import into a
 #: project's shared memory, mapped to the store layouts it can read (the reader locates it through
 #: that store's manifest paths, never a literal). Read-only by construction: no kind writes.

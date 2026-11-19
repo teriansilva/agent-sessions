@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .. import metadata as _metadata
 from ..engine_errors import EngineError
-from . import provenance
+from . import kinds, provenance
 from .manifest import ArgvStep, Manifest
 
 _NEW_PLACEHOLDER_RE = re.compile(
@@ -142,11 +142,30 @@ def forced_env(prov) -> dict[str, str]:
     """What ``prov``'s processes must be given LAST, over every other variable (#1986).
 
     The one question every spawn seam asks — an interactive launch (`webterm.run`), an unattended
-    dispatch (`headless_dispatch`) and the temporary sign-in/version/verify processes
-    (`plugins.process`). A provider without the method (a duck-typed test fake) needs nothing.
+    dispatch (`headless_dispatch`), the API worker's child (`native_runtime`) and the temporary
+    sign-in/version/verify processes (`plugins.process`). Two parts: the switch that stops a
+    MANAGED agent's own updater (`self_update_off`), then the kind's isolation (`isolation_env`),
+    which wins. A provider without either (a duck-typed test fake) needs nothing.
     `EngineError` propagates: a launch that cannot be isolated must not happen.
     """
+    return {**self_update_off(prov), **isolation_env(prov)}
+
+
+def isolation_env(prov) -> dict[str, str]:
+    """The store kind's own tree (#1986: opencode 2.x's XDG tree), or nothing. A non-empty answer
+    means the agent is ISOLATED: a probe that builds its own environment must not run it."""
     fn = getattr(prov, "agent_env", None) if prov is not None else None
+    return dict(fn()) if callable(fn) else {}
+
+
+def self_update_off(prov) -> dict[str, str]:
+    """The vendor's documented switch that stops its CLI updating itself — for a MANAGED
+    entrypoint only. BattleLab's catalog pins and digest-verifies a managed install and owns its
+    upgrades; the vendor updater rewrites the operator's own install instead (2026-11-19: a managed
+    claude ran `npm install -g @anthropic-ai/claude-code` and removed `~/.local/bin/claude`). An
+    adopted binary is the operator's own CLI and keeps its vendor behaviour. Spawn seams that
+    build their own environment (model and usage probes) lay this over it too."""
+    fn = getattr(prov, "managed_env", None) if prov is not None else None
     return dict(fn()) if callable(fn) else {}
 
 
@@ -239,6 +258,19 @@ class PluginProvider:
 
     def store_path(self, name: str) -> Path | None:
         return store_location(self.manifest, home=self.home, env=self.env, name=name)
+
+    def managed_env(self) -> dict[str, str]:
+        """`kinds.SELF_UPDATE_OFF` for this store layout when argv[0] is a MANAGED entrypoint,
+        else nothing. Ask through `self_update_off` / `forced_env`, never this directly."""
+        store = self.manifest.store
+        off = kinds.SELF_UPDATE_OFF.get(store.layout) if store is not None else None
+        if not off or self.manifest.binary is None:
+            return {}
+        try:
+            ep = self.entrypoint()
+        except provenance.ProvenanceError:
+            return {}  # nothing may run; the launch itself reports the refusal
+        return dict(off) if ep is not None and ep.state == provenance.MANAGED else {}
 
     def agent_env(self) -> dict[str, str]:
         """Environment EVERY process for this agent must run with, laid over whatever else a

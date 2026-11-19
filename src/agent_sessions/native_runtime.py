@@ -332,13 +332,15 @@ def source_environment(adapter: str, source) -> dict[str, str]:
     Asked before every such process (version, discovery, the worker's child): a source whose
     tree would reach a 1.x store refuses, and an isolated adapter's source that reports no tree
     refuses too — it would otherwise run on its defaults, which are 1.x's database."""
-    from .plugins.provider import forced_env
+    from .plugins.provider import forced_env, isolation_env
 
     try:
         forced = forced_env(source)
+        isolated = bool(isolation_env(source))
     except Exception as exc:  # noqa: BLE001 — EngineError: the isolation refusal, verbatim
         raise NativeError(409, str(exc)) from None
-    if adapter in _ISOLATED and not forced:
+    # The tree, not the whole forced env: a managed agent's self-update switch is no isolation.
+    if adapter in _ISOLATED and not isolated:
         raise NativeError(409, "this agent must run in its own isolated tree, and has none")
     return forced
 

@@ -56,6 +56,7 @@ from . import procgroup
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 from .engines import registry as _registry
 from .plugins import admission
+from .plugins.provider import self_update_off
 
 log = logging.getLogger("agent_sessions.agent_usage")
 
@@ -217,12 +218,17 @@ def _run(
     try:
         with contextlib.ExitStack() as stack:
             prov = _PROBE_PROVIDER.get()
+            env = None  # the app's own environment, inherited
             if prov is not None:
                 guard = stack.enter_context(admission.acquire(prov))
                 if guard.reason:
                     return 126, guard.reason
+                # A managed agent's updater stays off in a probe too (`self_update_off`).
+                off = self_update_off(prov)
+                env = {**os.environ, **off} if off else None
             proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
                 argv,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if send is not None else subprocess.DEVNULL,

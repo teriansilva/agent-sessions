@@ -207,7 +207,9 @@ APPLIES = {
 }
 #: `forced_env` itself, or the API path's one wrapper of it (`native_runtime.source_environment`,
 #: which also refuses an isolated adapter whose source reports no tree).
-APPLY_NAMES = {"forced_env", "source_environment"}
+#: `isolation_env` is `native_models`' question: a model probe builds its own environment, so it
+#: refuses an isolated source, and lays only `self_update_off` over its minimal environment.
+APPLY_NAMES = {"forced_env", "source_environment", "isolation_env"}
 RESOLVERS = {"entrypoint_path", "launch_argv", "new_launch_argv", "unattended_launch"}
 
 

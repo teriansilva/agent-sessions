@@ -360,6 +360,12 @@ absolute path it resolved, after checking that nobody but you or root can replac
 directory above it. A binary you installed yourself is shown as **adopted** — BattleLab found it
 rather than installed it.
 
+An agent BattleLab installed from its catalog is **managed**. BattleLab pins its version and
+upgrades it itself, so every process it starts from a managed install has the agent's own
+updater switched off (Claude Code `DISABLE_AUTOUPDATER`, opencode `OPENCODE_DISABLE_AUTOUPDATE`,
+Antigravity `AGY_CLI_DISABLE_AUTO_UPDATE`, Copilot `--no-auto-update`). An adopted binary is
+yours and keeps updating the way its vendor ships it.
+
 The API agent has no binary: it is present once its endpoint has a URL, a key and a model.
 
 An engine without a runnable binary cannot start or resume a session. If its store is still on

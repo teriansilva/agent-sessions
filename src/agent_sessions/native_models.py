@@ -46,6 +46,7 @@ only; nothing is substituted (`model_choice.select_api`).
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -135,6 +136,13 @@ def _model(mid: Any, *, label: Any, description: Any, efforts: Any, is_default: 
     }
 
 
+#: A managed source's self-update switch (`plugins.provider.self_update_off`), set by `_probe`
+#: around one discovery and laid over each probe's minimal environment.
+_SPAWN_ENV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "models_spawn_env", default=None
+)
+
+
 class _Proc:
     """A short-lived JSON-lines conversation with a CLI under one deadline."""
 
@@ -149,6 +157,7 @@ class _Proc:
                 "HOME": str(Path.home()),
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "LANG": "C.UTF-8",
+                **(_SPAWN_ENV.get() or {}),
                 **(extra_env or {}),
             },
         )
@@ -335,6 +344,7 @@ def _opencode(binary: str, *, source) -> list[dict]:
                     "HOME": str(Path.home()),
                     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                     "LANG": "C.UTF-8",
+                    **(_SPAWN_ENV.get() or {}),
                     # Should the command open opencode's internal listener, it is not left open.
                     "OPENCODE_SERVER_PASSWORD": secrets.token_urlsafe(32),
                 },
@@ -646,19 +656,21 @@ def _target(prov) -> _Target | ModelList:
 def _probe(t: _Target) -> ModelList:
     """Ask the CLI once. The outcome — a list or why there is none — stamped with `_clock`.
 
-    An isolated source (`forced_env`, opencode 2: #1986, #2084) is asked FIRST, before anything
+    An isolated source (`isolation_env`, opencode 2: #1986, #2084) is asked FIRST, before anything
     can run: a tree that would reach a 1.x store refuses here, and only a discovery that starts
     no process (`spawns_nothing`) may serve such a source — the CLI probes below build their own
     environments and would run it on its defaults."""
-    from .plugins.provider import forced_env
+    from .plugins.provider import isolation_env, self_update_off
 
     try:
-        if forced_env(t.source) and not getattr(t.discover, "spawns_nothing", False):
+        if isolation_env(t.source) and not getattr(t.discover, "spawns_nothing", False):
             return ModelList(
                 "unavailable",
                 reason="this agent's models cannot be listed outside its isolated tree",
                 fetched_at=_clock(),
             )
+        # A managed source's updater stays off in the probe's own environment too.
+        token = _SPAWN_ENV.set(self_update_off(t.source))
     except Exception as exc:  # noqa: BLE001 — EngineError: the isolation refusal, as a reason
         return ModelList("unavailable", reason=str(exc)[:_TEXT_MAX], fetched_at=_clock())
     try:
@@ -678,6 +690,8 @@ def _probe(t: _Target) -> ModelList:
         reason = str(exc) if isinstance(exc, ProbeError) else "the agent could not be asked"
     except Exception:  # noqa: BLE001 — a reply of an unforeseen shape is "unavailable", never a 500
         reason = "the agent's answer was not understood"
+    finally:
+        _SPAWN_ENV.reset(token)
     return ModelList("unavailable", reason=reason[:_TEXT_MAX], fetched_at=_clock())
 
 
