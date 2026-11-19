@@ -46,6 +46,8 @@ scripts/resolve-visual-scope.mjs   export-ignore
 scripts/check-public-snapshot      export-ignore
 # Builds the mirror commit's message from the private forge's PR (#1326); runs the gate above.
 scripts/public-commit-message      export-ignore
+scripts/changelog/                 export-ignore
+tests/test_changelog.py            export-ignore
 # One-time historical migration tooling and its policy/fixtures are private (#1352).
 scripts/rebuild-public-history     export-ignore
 tests/test_rebuild_public_history.py export-ignore
