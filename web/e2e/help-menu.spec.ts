@@ -4,13 +4,16 @@ import { DOCS_HOME_URL, SOURCE_URL } from "../src/lib/links";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { TOUCH_FLOOR } from "./touchTarget";
+import { supplyWhatsNewFixture } from "./whatsNewFixture";
 
 /** Help — in the operator menu since #1085, the `?` menu before (#987) — and the setup wizard's docs
  *  links, in a real browser (desktop + mobile).
  *
  * The server is mocked. `whats_new_seen` already covers 0.20 and the build is unstamped, so What's
- * new never opens on its own here — every dialog in these tests was opened by the test. The docs
- * host is routed to a stub page, so following the Documentation link never leaves the test. */
+ * new never opens on its own here — every dialog in these tests was opened by the test. The app
+ * bundles no release notes (#2013), so `setup` hands the page the spec fixture (`whatsNewFixture`)
+ * unless a test asks for the shipped, empty list. The docs host is routed to a stub page, so
+ * following the Documentation link never leaves the test. */
 
 const NOOP_WS = `
 window.WebSocket = class {
@@ -20,8 +23,12 @@ window.WebSocket = class {
 };
 `;
 
-async function setup(page: Page, { onboarded = true }: { onboarded?: boolean } = {}) {
+async function setup(
+  page: Page,
+  { onboarded = true, releases = true }: { onboarded?: boolean; releases?: boolean } = {},
+) {
   await page.addInitScript(NOOP_WS);
+  if (releases) await supplyWhatsNewFixture(page);
   // Catch-all first: Playwright consults the most recently registered route first.
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/sessions**", (r) =>
@@ -130,6 +137,25 @@ test("a second click closes it, a double-click does not leave it open, and an ou
   const vp = page.viewportSize()!;
   await page.mouse.click(40, vp.height - 60);
   await expect(helpMenu(page)).toHaveCount(0);
+});
+
+test("with no release notes bundled, Help has no What's new item and nothing opens on its own (#2013)", async ({
+  page,
+}) => {
+  await setup(page, { releases: false });
+  await mockRoster(page, { only: ["claude"] });
+  await page.goto(NEW_SESSION_PATH);
+  await trigger(page).click();
+  const menu = helpMenu(page);
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Settings",
+    "Security & 2FA",
+    "Intro tour",
+    `Documentation${new URL(DOCS_HOME_URL).host}`,
+    `Report an issue${new URL(SOURCE_URL).host}`,
+  ]);
+  await expect(page.getByRole("dialog", { name: /what's new/i })).toHaveCount(0);
 });
 
 test("Tab and Shift+Tab leave the menu: it closes and focus is back on the tile", async ({ page }, testInfo) => {

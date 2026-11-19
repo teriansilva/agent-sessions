@@ -63,6 +63,14 @@ test("main has no release, so no link — it says why", () => {
   expect(screen.getByTestId("update-main-notes")).toHaveTextContent("development branch");
 });
 
+test("the shipped build bundles no release notes: no 0.20 summary and nothing to open (#2013)", () => {
+  render(<UpdateWhatsNew channel="main" current="0.20.3" available={null} onOpen={vi.fn()} />);
+  expect(screen.getByRole("heading", { name: "What's new" })).toBeInTheDocument();
+  expect(screen.getByText("No release notes are bundled with this build.")).toBeInTheDocument();
+  expect(screen.queryByText(/0\.20/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /show what's new/i })).toBeNull();
+});
+
 test.each([
   ["v1.2.3", "https://github.com/teriansilva/agent-sessions/releases/tag/v1.2.3"],
   ["1.2.3", "https://github.com/teriansilva/agent-sessions/releases/tag/v1.2.3"],

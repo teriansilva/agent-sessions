@@ -1,6 +1,7 @@
 /** Settings → Updates: what this build brought, and where the full notes are (#1085).
  *
- *  The summary is the newest release BUNDLED in this build (`whatsnew/releases.ts`) — the build
+ *  The summary is the newest release BUNDLED in this build (`whatsnew/releases.ts`, empty since
+ *  #2013 until generated release notes replace it) — the build
  *  only knows its own notes, and fetching another version's from the server would be a new
  *  outbound call. So it describes what you have, and the button opens the full What's new dialog.
  *
@@ -13,7 +14,7 @@ import { ExternalLink, Sparkles } from "lucide-react";
 
 import { releaseNotesUrl } from "../../lib/links";
 import { newestRelease, releaseLabel } from "../../whatsnew/due";
-import { RELEASES, type WhatsNewRelease } from "../../whatsnew/releases";
+import { bundledReleases, type WhatsNewRelease } from "../../whatsnew/releases";
 
 import styles from "./UpdateWhatsNew.module.css";
 
@@ -22,7 +23,7 @@ export function UpdateWhatsNew({
   current,
   available,
   onOpen,
-  releases = RELEASES,
+  releases = bundledReleases(),
 }: {
   channel: string;
   /** The running version (`/api/version`). */

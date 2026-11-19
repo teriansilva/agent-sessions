@@ -2,12 +2,24 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { ResourceSettings } from "../types/resources";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { AppConfig, EngineInfo } from "../types/api";
 import { resetHqChoiceStore } from "../components/hq/hqChoiceStore";
 import { Onboarding } from "./Onboarding";
+
+/** The app bundles no release notes (#2013). A test that needs one supplies it the way the e2e
+ *  specs do: the unstamped vitest build reads `__BATTLELAB_E2E_RELEASES__` (`bundledReleases`). */
+const RELEASE_GLOBAL = globalThis as { __BATTLELAB_E2E_RELEASES__?: unknown };
+function withRelease() {
+  RELEASE_GLOBAL.__BATTLELAB_E2E_RELEASES__ = [
+    { version: "0.20.0", assetDir: "whatsnew/0.20", slides: [{ id: "intro", eyebrow: "e", title: "t", body: "b" }] },
+  ];
+}
+afterEach(() => {
+  delete RELEASE_GLOBAL.__BATTLELAB_E2E_RELEASES__;
+});
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -347,7 +359,15 @@ test("Skip setup persists onboarded and closes the wizard", async () => {
   const onClose = renderWizard();
   await userEvent.click(screen.getByRole("button", { name: /skip setup/i }));
   expect(api.completeOnboarding).toHaveBeenCalledTimes(1);
-  // Finishing setup covers the current release notes, so the dialog never follows the wizard (#971).
+  // No release notes are bundled (#2013), so there is nothing for setup to cover.
+  expect(api.completeOnboarding).toHaveBeenCalledWith(undefined);
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("Skip setup covers the bundled release notes, so the dialog never follows the wizard (#971)", async () => {
+  withRelease();
+  const onClose = renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /skip setup/i }));
   expect(api.completeOnboarding).toHaveBeenCalledWith("0.20.0");
   expect(onClose).toHaveBeenCalledTimes(1);
 });
@@ -548,6 +568,7 @@ test("tour mode shows the slideshow and Done closes it", async () => {
 });
 
 test("the tour offers What's new when the shell can open it (#971)", async () => {
+  withRelease();
   const onWhatsNew = vi.fn();
   render(
     <MemoryRouter>
@@ -558,6 +579,18 @@ test("the tour offers What's new when the shell can open it (#971)", async () =>
   );
   await userEvent.click(screen.getByRole("button", { name: "What's new in 0.20" }));
   expect(onWhatsNew).toHaveBeenCalledTimes(1);
+});
+
+test("the tour offers no What's new while no release notes are bundled (#2013)", () => {
+  render(
+    <MemoryRouter>
+      <ConfigCtx.Provider value={cfg()}>
+        <Onboarding mode="tour" onClose={vi.fn()} onWhatsNew={vi.fn()} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("1 / 10")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /what's new/i })).not.toBeInTheDocument();
 });
 
 test("the tour answers the arrow keys (#971)", async () => {

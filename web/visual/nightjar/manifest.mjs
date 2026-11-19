@@ -89,6 +89,24 @@ const SHARE_PREVIEW = {
  *  `height`: the desktop viewport height (default 960). */
 
 /** On a phone the session rows live in the off-canvas drawer: open it first. */
+/** A stand-in What's new release for the dialog capture: invented copy, a real illustration. */
+const WHATS_NEW_SAMPLE = [
+  {
+    version: "0.20.0",
+    assetDir: "whatsnew/0.20",
+    slides: [
+      {
+        id: "missions",
+        eyebrow: "Mission control",
+        title: "Say the outcome. It plans, dispatches and follows through.",
+        body: "Describe what you want done, review the plan, and press Begin.",
+        points: ["Objectives settle on evidence", "When it is unsure, it asks you"],
+        image: "missions",
+      },
+      { id: "also", eyebrow: "Also new", title: "And more around the deck.", body: "Smaller changes, one line each." },
+    ],
+  },
+];
 const DRAWER = [{ role: "button", name: "Open session list" }];
 
 // The promo fixtures' sessions and missions (visual/promo/fixtures.mjs).
@@ -389,6 +407,9 @@ export const SWEEP = [
   {
     id: "popup:whats-new",
     path: "/dashboard",
+    // The app bundles no release notes (#2013), so the dialog is shown with a stand-in release.
+    // An unstamped build reads it from `__BATTLELAB_E2E_RELEASES__` (`bundledReleases`).
+    init: `window.__BATTLELAB_E2E_RELEASES__ = ${JSON.stringify(WHATS_NEW_SAMPLE)};`,
     open: [{ testId: "operator-menu" }, { role: "menuitem", name: "What's new in 0.20" }],
     expect: "dialog",
   },

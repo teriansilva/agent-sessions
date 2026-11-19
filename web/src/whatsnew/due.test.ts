@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { MISSION_PATH } from "../lib/missionLink";
 import {
   newestRelease,
   releaseLabel,
@@ -11,8 +10,7 @@ import {
   whatsNewLabel,
   type DueInput,
 } from "./due";
-import { DOCS_HOME_URL } from "../lib/links";
-import { RELEASES, TEMPLATES_ROUTE, type WhatsNewRelease } from "./releases";
+import { bundledReleases, RELEASES, type WhatsNewRelease } from "./releases";
 import { atLeast, compareVersions, parseVersion } from "./version";
 
 const R020: WhatsNewRelease = {
@@ -181,38 +179,61 @@ describe("helpers", () => {
 });
 
 describe("the shipped manifest", () => {
-  const newest = newestRelease()!;
+  test("ships no hand-written release: the out-of-date 0.20 slides were removed (#2013)", () => {
+    expect(RELEASES).toEqual([]);
+    expect(newestRelease(RELEASES)).toBeNull();
+    expect(whatsNewLabel(RELEASES)).toBeNull();
+    expect(whatsNewDue(input({ releases: RELEASES }))).toBeNull();
+  });
 
-  test("0.20.0 is the newest entry, with seven slides", () => {
-    expect(newest.version).toBe("0.20.0");
-    expect(newest.slides.map((s) => s.id)).toEqual([
-      "intro",
-      "missions",
-      "files",
-      "editing",
-      "templates",
-      "also",
-      "moved",
-    ]);
+  // These rules hold for any release that ships with the bundle again. Today they pass trivially.
+  test("every bundled version is exactly MAJOR.MINOR.PATCH", () => {
     expect(RELEASES.every((r) => /^\d+\.\d+\.\d+$/.test(r.version))).toBe(true);
   });
 
-  test("every illustration exists, animated and still", () => {
-    for (const s of newest.slides.filter((x) => x.image)) {
-      for (const suffix of ["", "-still"]) {
-        const file = resolve(process.cwd(), "public", newest.assetDir, `${s.image}${suffix}.svg`);
-        expect(existsSync(file), file).toBe(true);
+  test("every bundled illustration exists, animated and still", () => {
+    for (const r of RELEASES) {
+      for (const s of r.slides.filter((x) => x.image)) {
+        for (const suffix of ["", "-still"]) {
+          const file = resolve(process.cwd(), "public", r.assetDir, `${s.image}${suffix}.svg`);
+          expect(existsSync(file), file).toBe(true);
+        }
       }
     }
   });
 
-  test("the CTAs go to Missions, Templates and the docs home — never a page only the launch creates", () => {
-    const ctas = newest.slides.flatMap((s) => (s.cta ? [s.cta] : []));
-    expect(ctas.map((c) => c.to ?? c.href)).toEqual([MISSION_PATH, TEMPLATES_ROUTE, DOCS_HOME_URL]);
+  test("every bundled intro tile names a slide that exists", () => {
+    for (const r of RELEASES) {
+      const ids = new Set(r.slides.map((s) => s.id));
+      for (const t of r.slides[0]?.tiles ?? []) expect(ids.has(t.slide), t.slide).toBe(true);
+    }
+  });
+});
+
+describe("bundledReleases — a spec's list, read only by an unstamped build", () => {
+  const g = globalThis as { __BATTLELAB_E2E_RELEASES__?: unknown };
+  afterEach(() => {
+    delete g.__BATTLELAB_E2E_RELEASES__;
   });
 
-  test("every intro tile names a slide that exists", () => {
-    const ids = new Set(newest.slides.map((s) => s.id));
-    for (const t of newest.slides[0].tiles ?? []) expect(ids.has(t.slide), t.slide).toBe(true);
+  test("an unstamped build reads the spec's list", () => {
+    g.__BATTLELAB_E2E_RELEASES__ = [R020];
+    expect(bundledReleases("dev")).toEqual([R020]);
+    expect(whatsNewLabel(bundledReleases("dev"))).toBe("What's new in 0.20");
+  });
+
+  test("a stamped build ignores it", () => {
+    g.__BATTLELAB_E2E_RELEASES__ = [R020];
+    expect(bundledReleases("0.20.0")).toBe(RELEASES);
+  });
+
+  test.each([
+    ["not a list", { version: "0.20.0", slides: [] }],
+    ["an entry without slides", [{ version: "0.20.0" }]],
+    ["an entry without a version", [{ slides: [] }]],
+    ["a null entry", [null]],
+  ])("an unstamped build falls back to the bundle on %s", (_n, value) => {
+    g.__BATTLELAB_E2E_RELEASES__ = value;
+    expect(bundledReleases("dev")).toBe(RELEASES);
   });
 });

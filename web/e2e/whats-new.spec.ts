@@ -2,12 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { TOUCH_FLOOR } from "./touchTarget";
+import { supplyWhatsNewFixture } from "./whatsNewFixture";
 
 /** What's new (#971) — the once-per-operator slideshow, in a real browser (desktop + mobile).
  *
  * The preview build is unstamped, and an unstamped bundle never auto-shows the dialog, so each test
  * states the stamp it stands in for on `window.__BATTLELAB_E2E_BUNDLE_VERSION__` — which the app
- * reads only when the build is unstamped (`whatsNewBundleVersion`). The server is mocked:
+ * reads only when the build is unstamped (`whatsNewBundleVersion`). The app bundles no release notes
+ * (#2013), so each test also hands the page the spec fixture (`whatsNewFixture`), read by the same
+ * unstamped-only rule (`bundledReleases`). The server is mocked:
  * `/api/config` carries `whats_new_seen` (or omits it), `/api/version` answers (or fails), and
  * `/api/prefs` records every write and can be told to fail. The server's never-lower rule and its
  * onboarding fence are pinned in pytest (`tests/test_whats_new_seen.py`), not re-modelled here. */
@@ -44,6 +47,7 @@ async function setup(page: Page, s: Scenario = {}) {
   const bundle = s.bundle === undefined ? "0.20.0" : s.bundle;
 
   await page.addInitScript(NOOP_WS);
+  await supplyWhatsNewFixture(page);
   if (bundle !== null) {
     await page.addInitScript((v) => {
       (window as unknown as { __BATTLELAB_E2E_BUNDLE_VERSION__: string }).__BATTLELAB_E2E_BUNDLE_VERSION__ = v;

@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { DOCS_HOME_URL } from "../lib/links";
 import { newestRelease } from "./due";
+import { FIXTURE_RELEASES } from "./fixtureRelease";
 import { WhatsNewDialog } from "./WhatsNewDialog";
 
-const release = newestRelease()!;
+const release = newestRelease(FIXTURE_RELEASES)!;
 
 function renderDialog() {
   const onDismiss = vi.fn();

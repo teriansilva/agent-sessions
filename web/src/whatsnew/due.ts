@@ -1,4 +1,4 @@
-import { RELEASES, type WhatsNewRelease } from "./releases";
+import { bundledReleases, type WhatsNewRelease } from "./releases";
 import { atLeast, compareVersions, parseVersion } from "./version";
 
 /** When the What's new dialog auto-shows (#971). Pure, so every rule below is a table row in
@@ -24,7 +24,7 @@ export interface DueInput {
 }
 
 export function newestRelease(
-  releases: readonly WhatsNewRelease[] = RELEASES,
+  releases: readonly WhatsNewRelease[] = bundledReleases(),
 ): WhatsNewRelease | null {
   let best: WhatsNewRelease | null = null;
   for (const r of releases) {
@@ -71,7 +71,7 @@ export function releaseLabel(version: string): string {
 }
 
 export function whatsNewLabel(
-  releases: readonly WhatsNewRelease[] = RELEASES,
+  releases: readonly WhatsNewRelease[] = bundledReleases(),
 ): string | null {
   const newest = newestRelease(releases);
   return newest ? `What's new in ${releaseLabel(newest.version)}` : null;
