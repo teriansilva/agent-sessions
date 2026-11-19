@@ -369,8 +369,8 @@ def _dispatcher(tmp_path, admission_error, monkeypatch, recorded):
 
     worker._answer_current = current
 
-    @contextlib.contextmanager
-    def refuse(_params=None):  # the queued message it admits (#1897)
+    @contextlib.asynccontextmanager
+    async def refuse(_params=None):  # the queued message it admits (#1897)
         raise admission_error
         yield  # pragma: no cover
 

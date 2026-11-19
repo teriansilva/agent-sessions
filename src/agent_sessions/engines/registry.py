@@ -140,6 +140,43 @@ def snapshot_scope(*, fresh: bool = False, require_current: bool = False):
         _REQUEST_ROSTER.reset(token)
 
 
+def admission_snapshot() -> Roster:
+    """The roster a release-skew admission check reads (#2165): the packaged manifests, the
+    committed manager rows and the recorded retirement facts, built WITHOUT publishing a
+    generation, reconciling retirement or saving anything, and without any storage lock.
+
+    `reload` is not read-only (`_apply_retirement` saves the roster state), so the helper process
+    that runs `native_worker.admit_queued` for an older worker uses this instead. A retiring or
+    removed engine is absent from ``by_id``, which admission refuses as removed. The process-wide
+    tables `_build_roster` fills are restored, so nothing a reader sees changes.
+    """
+    from ..plugins import roster_state
+
+    recorded = roster_state.load()
+    with _ROSTER_LOCK:
+        before, labels = dict(LOAD_PROBLEMS), dict(_API_LABELS)
+        try:
+            providers = _build_roster()
+            problems = dict(LOAD_PROBLEMS)
+        finally:
+            LOAD_PROBLEMS.clear()
+            LOAD_PROBLEMS.update(before)
+            _API_LABELS.clear()
+            _API_LABELS.update(labels)
+    by_id = {p.engine_id: p for p in providers}
+    return Roster(
+        _GENERATION,
+        tuple(providers),
+        MappingProxyType(by_id),
+        MappingProxyType({}),
+        frozenset((set(recorded.removed) | set(recorded.manifests)) - set(by_id)),
+        None,
+        MappingProxyType(problems),
+        tuple(recorded.problems),
+        MappingProxyType({}),
+    )
+
+
 def sync_committed() -> None:
     """Reconcile the revision committed with enable/disable before admitting any new work."""
     from ..plugins import manager, provenance, storage

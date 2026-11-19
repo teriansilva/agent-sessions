@@ -133,7 +133,8 @@ def _load(path: Path) -> dict:
         raise ManagerError("plugin manager state is unreadable; it was left untouched")
     if "roster_revision" in doc:
         _operation_id(doc["roster_revision"])
-        _remember_revision(path)
+        if not storage.persists_nothing():  # a read-only reader (#2165) leaves the marker alone
+            _remember_revision(path)
     elif _revision_required(path):
         raise ManagerError("plugin manager revision is missing; restore its durable state")
     return doc

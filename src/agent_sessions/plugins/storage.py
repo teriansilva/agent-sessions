@@ -31,6 +31,22 @@ class LockBusy(StateError):
     """Transient lock contention, distinct from an invalid or unreadable state."""
 
 
+#: Set once, for the whole process, by a process that must leave shared state exactly as it found
+#: it: the release-skew admission helper (#2165), whose parent already holds the ``launch`` lock.
+_PERSIST_NOTHING = False
+
+
+def persist_nothing() -> None:
+    """From now on this process takes no plugin-state lock and writes no plugin state: either
+    raises `StateError`, and a roster save is refused too (`roster_state.save`). One way only."""
+    global _PERSIST_NOTHING
+    _PERSIST_NOTHING = True
+
+
+def persists_nothing() -> bool:
+    return _PERSIST_NOTHING
+
+
 @contextlib.contextmanager
 def directory(path: Path) -> Iterator[int]:
     path = path.absolute()
@@ -70,6 +86,8 @@ def root() -> Path:
 def locked(name: str, *, wait: float = 2) -> Iterator[Path]:
     if not name or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-." for c in name):
         raise StateError("invalid state name")
+    if _PERSIST_NOTHING:
+        raise StateError("this process takes no plugin-state lock")
     path = root() / name
     with directory(path.parent) as dfd:
         fd = os.open(
@@ -127,6 +145,8 @@ def read(path: Path, *, max_bytes: int | None = None) -> dict | None:
 def write(path: Path, doc: dict, *, max_bytes: int | None = None) -> None:
     # Called only while locked() owns the already verified parent and stable sidecar.
     # Match atomic_write_json exactly, including indentation, ordering and UTF-8 encoding.
+    if _PERSIST_NOTHING:
+        raise StateError("this process writes no plugin state")
     limit = MAX_STATE_BYTES if max_bytes is None else max_bytes
     if len(json.dumps(doc, indent=2, sort_keys=True).encode("utf-8")) > limit:
         raise StateError("plugin state is too large")

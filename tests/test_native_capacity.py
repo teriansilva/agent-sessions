@@ -934,8 +934,8 @@ async def test_a_queue_failure_ends_the_generation(conversation):
     async def boom(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    @contextlib.contextmanager
-    def admitted(_params=None):
+    @contextlib.asynccontextmanager
+    async def admitted(_params=None):
         yield
 
     worker._answer_current = answered

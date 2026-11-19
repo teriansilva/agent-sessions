@@ -405,8 +405,8 @@ async def test_send_now_admission_refusal_is_definite_and_keeps_the_queue(
     (409), never `unavailable` (503, which the pane must read as "status unknown")."""
     worker, queued, control = prepared_worker(conversation, monkeypatch)
 
-    @contextlib.contextmanager
-    def refuse(_params=None):  # the promoted message it admits (#1897)
+    @contextlib.asynccontextmanager
+    async def refuse(_params=None):  # the promoted message it admits (#1897)
         raise native_worker.AdmissionRefused(code)
         yield  # pragma: no cover
 
@@ -1163,8 +1163,8 @@ async def test_steer_hands_the_authority_release_to_its_handoff(conversation, mo
     def release():
         pass
 
-    @contextlib.contextmanager
-    def admission(_params=None):
+    @contextlib.asynccontextmanager
+    async def admission(_params=None):
         yield release
 
     async def handoff(action, params, *, receipt=None, queued=False, now=False, on_durable=None):

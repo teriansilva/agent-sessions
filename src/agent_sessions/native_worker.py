@@ -46,6 +46,7 @@ from pathlib import Path
 
 from . import (
     agent_tools,
+    native_admit,
     native_attachments,
     native_authority,
     native_containment,
@@ -151,6 +152,12 @@ class WorkerError(RuntimeError):
     pass
 
 
+class AdmissionPreempted(native_state.LockBusy):
+    """A Stop (or the worker's own end) arrived while the installed release was still deciding a
+    queued message's admission (#2165). Nothing was decided or written: it is the same transient
+    contention as a busy lock, so the message keeps its place and Send now answers ``busy``."""
+
+
 class AdmissionRefused(WorkerError):
     """An expected refusal of a queued message at delayed handoff (#1538), before anything was
     written to the agent. ``code`` is one of `native_journal.REASON_CODES`; the operator sees
@@ -187,6 +194,13 @@ def log_queue_refusal(session_key: str, operation_id: str, code: str, exc: BaseE
         code,
         type(exc).__name__,
     )
+
+
+def log_admission_unverified(session_key: str, cause: str) -> None:
+    """Why a queued message's admission could not be checked by the installed release (#2165):
+    a fixed phrase (`native_admit.Unverified`), never the config or the helper's output. The
+    message itself is refused `agent_changed`, logged by `log_queue_refusal` as usual."""
+    log.warning("queued admission could not be checked: session=%s cause=%s", session_key, cause)
 
 
 def _log_to_journal() -> None:
@@ -643,6 +657,8 @@ class Worker:
         self.pending: list[dict] = []
         self.flush_now = asyncio.Event()
         self.effects = asyncio.Lock()
+        # The installed release's admission check in flight (#2165), which a Stop preempts.
+        self.admission_check: asyncio.Task | None = None
         self.queued: list[dict] = []
         self.priority_turn: str | None = None
         # Queued messages a Send now promoted: each goes ahead of the agent's own queue (#1475).
@@ -1882,20 +1898,34 @@ class Worker:
                 raise
             return native_journal.claim(self.journal_root, request, queued=queued)
 
-    @contextlib.contextmanager
-    def queued_admission(self, params: dict | None = None):
+    @contextlib.asynccontextmanager
+    async def queued_admission(self, params: dict | None = None):
         """Recheck the current generation and source at delayed stdin handoff (#1378, #1538),
         and a guarded message's caller authority (#1897). The authority lock is held from the
         comparison until the handoff's durable `uncertain` record (the yielded release), or to
-        the end of the block when the caller has no such point."""
+        the end of the block when the caller has no such point.
+
+        A worker that is not the installed release has the installed release decide (#2165,
+        `native_admit`), awaited under the same locks; the generation is checked again after it.
+        """
         from .engines import registry
         from .plugins import storage
 
         with native_state.session_lock(self.session_id, wait=0), storage.locked("launch", wait=0):
             if not self.gate_open() or self.terminated or self.closing:
                 raise AdmissionRefused("generation_closed")
-            with registry.snapshot_scope(fresh=True, require_current=True) as roster:
-                admit_queued(roster, self.session_key, self.adapter, self.config)
+            where = native_admit.plan()
+            if where.mode == native_admit.IN_PROCESS:
+                scope = registry.snapshot_scope(fresh=True, require_current=True)
+            else:
+                await self.installed_admission(where)
+                # Awaited: a Stop, a signal or a closed generation meanwhile makes it stale.
+                if not self.gate_open() or self.terminated or self.closing:
+                    raise AdmissionRefused("generation_closed")
+                scope = contextlib.nullcontext()
+            with scope as roster:
+                if roster is not None:
+                    admit_queued(roster, self.session_key, self.adapter, self.config)
                 with contextlib.ExitStack() as authority:
                     if params is not None and "authority" in params:
                         try:
@@ -1909,6 +1939,38 @@ class Worker:
                     # Yields the early release: the handoff calls it once its `uncertain` record
                     # is durable, so a stalled write never holds every withdrawal behind it.
                     yield authority.close
+
+    async def installed_admission(self, where: native_admit.Plan) -> None:
+        """Ask the installed release (#2165). Raises `AdmissionRefused` with its code, or
+        `agent_changed` when it could not decide; `AdmissionPreempted` when a Stop preempted it."""
+        if where.mode != native_admit.DELEGATE:
+            log_admission_unverified(self.session_key, where.cause)
+            raise AdmissionRefused(native_admit.UNVERIFIED)
+        task = asyncio.ensure_future(
+            native_admit.ask(where, self.session_key, self.adapter, self.config)
+        )
+        self.admission_check = task
+        try:
+            code = await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and current is not None and not current.cancelling():
+                raise AdmissionPreempted("a Stop preempted the admission check") from None
+            raise
+        except native_admit.Unverified as exc:
+            log_admission_unverified(self.session_key, exc.cause)
+            raise AdmissionRefused(native_admit.UNVERIFIED) from None
+        finally:
+            self.admission_check = None
+        if code is not None:
+            raise AdmissionRefused(code)
+
+    def preempt_admission(self) -> None:
+        """A Stop is served now, not after the installed release's check (#2165): the check is
+        cancelled (its helper killed and reaped) and the message stays queued."""
+        check = getattr(self, "admission_check", None)  # absent before `__init__` ran
+        if check is not None:
+            check.cancel()
 
     async def dispatch_queue(self) -> None:
         """Only this live connection may drain its FIFO; a successor never replays it."""
@@ -1932,7 +1994,11 @@ class Worker:
                         try:
                             if not await self._answer_current(params):
                                 raise AdmissionRefused("question_replaced")
-                            with self.queued_admission(params) as release:
+                            async with self.queued_admission(params) as release:
+                                if not self._still_due(params):
+                                    # Stale after the awaited admission (#2165): the head moved,
+                                    # a turn started, the worker is ending. Nothing was written.
+                                    continue
                                 admitted = True
                                 self.queued.pop(0)
                                 now = params["operation_id"] in self.sent_now
@@ -1955,7 +2021,9 @@ class Worker:
                                 raise
                             code = exc.code if isinstance(exc, AdmissionRefused) else "unexpected"
                             log_queue_refusal(self.session_key, params["operation_id"], code, exc)
-                            self.queued.pop(0)
+                            # By identity, not position: an awaited admission (#2165) may have
+                            # let the reader promote another message to the head meanwhile.
+                            self.queued[:] = [p for p in self.queued if p is not params]
                             self.sent_now.discard(params["operation_id"])
                             await asyncio.to_thread(
                                 native_journal.record_handoff,
@@ -2245,6 +2313,7 @@ class Worker:
 
     def stop_child(self) -> None:
         self.terminated = True  # a stop before the child exists prevents its spawn
+        self.preempt_admission()
         if self.proc is not None and self.proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 self.proc.terminate()
@@ -2343,6 +2412,9 @@ class Worker:
 
     async def effect(self, request: dict) -> dict:
         action, params = request["action"], request["params"]
+        if action == "stop":
+            # A Stop never waits for the installed release's admission check (#2165).
+            self.preempt_admission()
         async with self.effects:
             self.last_activity = time.monotonic()
             if (self.closing or self.terminated) and action != "stop":
@@ -2607,7 +2679,9 @@ class Worker:
                     request, "busy", "a message is already waiting for this response to stop"
                 )
             # The PROMOTED message's own authority (#1897): it leaves the queue under this fence.
-            with self.queued_admission(queued) as release:
+            # Its target and head are checked again after the claim, which covers an admission
+            # the installed release decided meanwhile (#2165).
+            async with self.queued_admission(queued) as release:
                 fresh, receipt = await asyncio.to_thread(
                     native_journal.claim, self.journal_root, request
                 )
@@ -2814,6 +2888,15 @@ class Worker:
         self.flush()
         journal = await asyncio.to_thread(native_journal.read, self.journal_root, self.session_id)
         return native_journal.answer_current(journal, params["operation_id"])
+
+    def _still_due(self, params: dict) -> bool:
+        """Is FIFO dispatch of ``params`` still what it was when it was chosen? Asked once its
+        admission returned, which may have awaited the installed release (#2165)."""
+        return (
+            self._queue_head(params)
+            and not (self.terminated or self.closing or self.done.is_set())
+            and (not self.dispatch_busy() or self._sent_now_cuts())
+        )
 
     def _queue_head(self, queued: dict) -> bool:
         """Is ``queued`` the first message waiting (#1442)? Checked before the claim and again

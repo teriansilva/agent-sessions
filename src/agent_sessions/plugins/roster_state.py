@@ -146,6 +146,10 @@ def save(state: RosterState, env: Mapping[str, str] | None = None) -> None:
     that would overwrite the recovery copy with less than it holds."""
     if not state.intact:
         raise ValueError("refusing to save over a roster file that could not be read intact")
+    from .storage import persists_nothing
+
+    if persists_nothing():
+        raise ValueError("this process saves no roster state (#2165)")
     p = state_path(env)
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     records: dict[str, dict] = {
