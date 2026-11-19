@@ -192,6 +192,23 @@ sidecar, keyed by the engine-qualified id — never in the engine's store. Favou
 sessions pin to the top of the list. `POST /api/sessions/archive-older` bulk-archives everything
 past a cutoff.
 
+### One session menu, wherever you open it
+
+A session's actions are one list: **Session brief**, **Hand off…**, **Share** (**Public…** and
+**Peer…**), its mission entry, **Artifacts…**, the AI-review entries where AI review is set up,
+**Favorite**, **Rename**, **Set tag…**, **Move to project…**, **Move to cluster…** and
+**Archive**. You reach it from the **⋯** on a sidebar row (or a right-click), from a chip or a
+window on the map, and from the session itself: the **…** at the end of the session header, or
+**Actions** on a phone.
+
+Opened from the session (or from a map window) the menu has two groups. **Session** is the list
+above. **Pane** holds the header's own buttons that did not fit on the bar, such as **Files**,
+**Repaint** and the text-size controls; on a phone that is all of them. A button that is already
+on the bar is not repeated in the menu. A change made here shows on the sidebar row at once.
+
+**Archive** from the session's own menu closes the session view and takes you to the new-session
+page, exactly as archiving the open session from the sidebar does.
+
 Filtering (`q`, `project`, `engine`) is applied to the **full** archived-scoped set *before*
 pagination, so `total` and "load more" describe the filtered result rather than a filtered view of
 one page. The dropdown facets are computed over the full set *before* filters, so they keep listing

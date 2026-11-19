@@ -67,6 +67,7 @@ import { SESSIONS_PATH } from "../../lib/routes";
 import { reloadRoster } from "../../app/reloadRoster";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
+import { PaneHeadActions } from "../sessions/PaneHeadActions";
 import { HeadFacts } from "../terminal/HeadFacts";
 import { KeyBar, type KeyAction } from "../terminal/KeyBar";
 import type { PaneHost } from "../terminal/paneHost";
@@ -3455,7 +3456,9 @@ export function StructuredPane({
           </span>
         )}
       </span>
-      <HeadActions
+      {/* #2173: the same merged session menu as the terminal pane's and a map window's. */}
+      <PaneHeadActions
+        row={row}
         className={term.headActions}
         btnClassName={term.restartBtn}
         labelClassName={term.headActionLabel}

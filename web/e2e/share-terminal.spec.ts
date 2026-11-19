@@ -132,7 +132,7 @@ test("the terminal pane's Share offers Peer…, in the menu's own form, and Publ
     await expect(menu).toBeVisible();
     const item = menu.getByRole("menuitem", { name: SHARE_TERMINAL });
     await expect(item).toHaveText("Peer…");
-    await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+    await expect(menu.locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
     // The last entries: nothing that was in the menu moved for them.
     const names = await menu.getByRole("menuitem").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
     expect(names.slice(-2)).toEqual([SHARE_PUBLIC, SHARE_TERMINAL]);

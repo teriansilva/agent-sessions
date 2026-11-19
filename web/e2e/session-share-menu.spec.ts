@@ -138,7 +138,15 @@ test("terminal session: Share is the last chip; Public… is listed, off, with i
   expect(ids[ids.length - 1]).toBe("share");
   // Hand off keeps its place on the bar (#783): Share did not push it into a fold.
   expect(ids).toContain("handoff");
-  await expect(head(page).getByRole("button", { name: MORE_MENU })).toHaveCount(0);
+  // The "…" is on the bar all the same (#2173 P2: it opens the session menu); nothing folded into
+  // it, so its menu has no Pane group and does not name Share a second time.
+  const more = head(page).getByRole("button", { name: MORE_MENU });
+  await expect(more).toHaveCount(1);
+  await more.click();
+  const merged = page.getByRole("menu", { name: MORE_MENU });
+  await expect(merged.locator("[data-menu-group]")).toHaveText(["Session"]);
+  await page.keyboard.press("Escape");
+  await expect(merged).toHaveCount(0);
 
   await chip.click();
   const menu = page.getByRole("menu", { name: SHARE_MENU });
@@ -175,7 +183,9 @@ test('folded into the "…": a Share label once, then the two items; the dialog 
   await more.click();
   const menu = page.getByRole("menu", { name: MORE_MENU });
   await expect(menu).toBeVisible();
-  await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+  // #2173 P2: the "…" is the merged session menu. The folded Share is in its Pane group, once;
+  // the Session group does not repeat it.
+  await expect(menu.locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
   // The label is no control: there is no "Share" row to press and no nested menu behind it.
   await expect(menu.getByRole("menuitem", { name: SHARE_MENU, exact: true })).toHaveCount(0);
   const names = await menu.getByRole("menuitem").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
@@ -206,7 +216,7 @@ test("≤800px, API session: the Actions menu carries the Share group; each choi
   await trigger.click();
   const menu = page.getByRole("menu", { name: ACTIONS_MENU });
   await expect(menu).toBeVisible();
-  await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+  await expect(menu.locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
   await expect(menu.getByRole("menuitem", { name: SHARE_PUBLIC })).toHaveText("Public…");
   await expect(menu.getByRole("menuitem", { name: SHARE_PEER })).toHaveText("Peer…");
   // Still an anchored popover, not a sheet (docs/design.md §5): the pane shows around it.
@@ -228,7 +238,7 @@ test("≤800px, terminal session: Public… is off with its reason and opens not
   const trigger = head(page).getByTestId("head-actions-menu");
   await trigger.click();
   const menu = page.getByRole("menu", { name: ACTIONS_MENU });
-  await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+  await expect(menu.locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
   const off = menu.getByRole("menuitem", { name: SHARE_PUBLIC });
   await off.scrollIntoViewIfNeeded();
   await expect(off).toBeDisabled();

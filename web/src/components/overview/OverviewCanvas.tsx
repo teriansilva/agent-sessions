@@ -62,7 +62,7 @@ import {
 import { useIsMobile } from "../../lib/useIsMobile";
 import type { ProjectRef, Session } from "../../types/api";
 import type { MenuAnchor, RowMenuEntry } from "../sidebar/RowMenu";
-import { MapSessionMenu } from "./MapSessionMenu";
+import { SessionMenuHost } from "../sessions/SessionMenuHost";
 import {
   applyPins,
   loadPins,
@@ -1514,7 +1514,7 @@ function OverviewCanvasInner({
           />
         )}
         {menuTarget && (
-          <MapSessionMenu
+          <SessionMenuHost
             // Keyed by session: switching the menu to another session mounts a FRESH host, so one
             // session's busy / reviewing / dialog state can never leak into another's menu
             // (#968 review). A review still in flight for the previous session stays guarded by

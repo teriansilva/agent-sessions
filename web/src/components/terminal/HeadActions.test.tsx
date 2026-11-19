@@ -193,3 +193,66 @@ test("foldInto external publishes the action whole, menu and all, for the host t
   // No trigger and no menu of its own (#1109).
   expect(screen.queryByRole("button")).toBeNull();
 });
+
+// ---- `merged` (#2173 P2): the session pane's trigger opens the host's merged menu ----
+
+test("merged: the … is on the bar with nothing folded, and a press hands the host the trigger", async () => {
+  const opened: HTMLElement[] = [];
+  const overflowRef = { current: [] as HeadAction[] };
+  const allRef = { current: [] as HeadAction[] };
+  const view = (expanded: boolean) => (
+    <HeadActions
+      className="c"
+      btnClassName="b"
+      labelClassName="l"
+      actions={[action("files"), action("recap")]}
+      overflowRef={overflowRef}
+      allRef={allRef}
+      merged={{ expanded, toggle: (t) => opened.push(t) }}
+    />
+  );
+  const { rerender } = render(view(false));
+  // Both chips fit (jsdom measures nothing), and the trigger is there all the same.
+  expect(document.querySelectorAll("[data-head-action]")).toHaveLength(2);
+  const more = screen.getByRole("button", { name: "More session actions" });
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(more);
+  expect(opened).toEqual([more]);
+  // The menu is the host's: this component opens none of its own.
+  expect(screen.queryByRole("menu")).toBeNull();
+  // The fold is published to the host in the self-hosted case too.
+  expect(allRef.current.map((a) => a.id)).toEqual(["files", "recap"]);
+  expect(overflowRef.current).toEqual([]);
+  rerender(view(true));
+  expect(more).toHaveAttribute("aria-expanded", "true");
+});
+
+test("merged, collapsed: the one Actions trigger, everything published as folded, no menu of its own", async () => {
+  const opened: HTMLElement[] = [];
+  const overflowRef = { current: [] as HeadAction[] };
+  render(
+    <HeadActions
+      className="c"
+      btnClassName="b"
+      labelClassName="l"
+      collapsed
+      actions={[action("files"), action("recap")]}
+      overflowRef={overflowRef}
+      merged={{ expanded: false, toggle: (t) => opened.push(t) }}
+    />,
+  );
+  expect(document.querySelectorAll("[data-head-action]")).toHaveLength(0);
+  const trigger = screen.getByTestId("head-actions-menu");
+  expect(trigger).toHaveAccessibleName("Actions for this session");
+  await userEvent.click(trigger);
+  expect(opened).toEqual([trigger]);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(overflowRef.current.map((a) => a.id)).toEqual(["files", "recap"]);
+});
+
+test("without `merged` nothing changes: no trigger while every chip fits", () => {
+  render(
+    <HeadActions className="c" btnClassName="b" labelClassName="l" actions={[action("files")]} />,
+  );
+  expect(document.querySelector("[data-head-more]")).toBeNull();
+});

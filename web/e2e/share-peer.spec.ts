@@ -86,7 +86,7 @@ test("Share offers Peer… directly under Public…, as a chip's menu or a folde
   const order = await items.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
   await expect(page.getByRole("menuitem", { name: SHARE_PEER })).toHaveText("Peer…");
   if (viaChip) expect(order).toEqual(["Share this session publicly", SHARE_PEER]);
-  else await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Share"]);
+  else await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
   const at = order.indexOf(SHARE_PEER);
   expect(at).toBeGreaterThan(0);
   expect(order[at - 1]).toBe("Share this session publicly");

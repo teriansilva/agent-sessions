@@ -886,8 +886,9 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
     const led = (await pane.locator("[data-panel-head] [data-head-led]").boundingBox())!;
     expect(t.x).toBeGreaterThanOrEqual(led.x + led.width);
     await pane.getByTestId("head-actions-menu").click();
-    // #2173: Share is one group, its label once, then Public… and Peer….
-    await expect(page.getByRole("menuitem")).toHaveText([
+    // #2173: Share is one group, its label once, then Public… and Peer…. The head's actions are
+    // the merged menu's Pane group (P2), after the Session group.
+    await expect(page.locator('[role="menuitem"][data-head-menu-item]')).toHaveText([
       "Files",
       "Plan & tools",
       "Recap",
@@ -896,7 +897,7 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
       "Peer…",
       "Stop",
     ]);
-    await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Share"]);
+    await expect(page.getByRole("menu").locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
     await page.keyboard.press("Escape");
   } else {
     const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>

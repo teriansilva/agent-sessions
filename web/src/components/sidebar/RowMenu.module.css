@@ -66,6 +66,14 @@
   max-height: calc(100vh - 16px);
   overflow-y: auto;
 }
+/* An ANCHORED menu (#2173: the session pane's own menu, design.md §5) stays this popover at every
+ * width, capped to the space under its trigger (set by the placement, `--rm-max-h`) and scrolling
+ * inside the cap. The phone query below skips it: every sheet rule there is `:not(.anchored…)`.
+ * z-index: over the compose bar and the files drawer's own head, as the pane's overflow always sat. */
+.menu.menu.anchored {
+  max-height: var(--rm-max-h, calc(100vh - 16px));
+  z-index: calc(var(--z-shell) + 5);
+}
 /* The placement props default to the corner until the layout effect measures the anchor. */
 .menu {
   --rm-top: 0px;
@@ -119,14 +127,14 @@
     width: 32px;
     height: 32px;
   }
-  .scrim.scrim {
+  .scrim.scrim:not(.anchoredScrim) {
     display: block;
   }
-  .sheetWrap.sheetWrap {
+  .sheetWrap.sheetWrap:not(.anchoredWrap) {
     display: flex;
     pointer-events: none;
   }
-  .menu.menu {
+  .menu.menu:not(.anchored) {
     /* relative + inset:auto: a normal flex item (neutralising the desktop --rm-top/right offsets),
      * flush to the floor with the rail along its top. */
     position: relative;
@@ -146,7 +154,7 @@
     clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
     animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
   }
-  .sheetHead.sheetHead {
+  .menu:not(.anchored) > .sheetHead.sheetHead {
     display: flex;
   }
   .item {
@@ -155,7 +163,7 @@
     font-size: var(--fs-row);
     gap: var(--sp-3);
   }
-  .cancel.cancel {
+  .menu:not(.anchored) > .cancel.cancel {
     display: inline-flex;
   }
 }

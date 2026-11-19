@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, ApiError } from "../lib/api";
 import { parseSessionKey } from "../lib/format";
+import { SESSION_ROW_CHANGED_EVENT, type SessionRowChange } from "../lib/sessionRowEvents";
 import type { Session } from "../types/api";
 import {
   isNewSessionPlaceholder,
@@ -120,6 +121,26 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     },
     [bump, setPhase],
   );
+
+  // A row changed from a surface in this tab (#2173: the session pane's own menu). The list
+  // applies it to its rows; THIS is the same change for a session the list does not carry (a deep
+  // link, an archived or list-hidden session), whose pane reads the looked-up copy. Bumping the
+  // generation drops a lookup still in flight, which would land with the pre-change row. A key
+  // with no answer (never asked, or a settled 404) is left alone: there is no row to patch.
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const d = (e as CustomEvent<SessionRowChange>).detail;
+      if (!d) return;
+      setLooked((prev) => {
+        const row = prev[d.key];
+        if (!row) return prev;
+        bump(d.key);
+        return { ...prev, [d.key]: { ...row, ...d.patch } };
+      });
+    };
+    window.addEventListener(SESSION_ROW_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(SESSION_ROW_CHANGED_EVENT, onChange);
+  }, [bump]);
 
   const forget = useCallback((key: string) => {
     asked.current.delete(key);

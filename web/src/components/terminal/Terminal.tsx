@@ -75,6 +75,7 @@ import { shareHeadAction } from "../sessions/shareAction";
 import { SharePeerModal } from "../federation/SharePeerModal";
 import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
+import { PaneHeadActions } from "../sessions/PaneHeadActions";
 import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
 import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel, SessionLimitPanel,
@@ -2212,7 +2213,10 @@ export function Terminal({
           {/* Actions with measured overflow (#783). A fourth labelled button breaks the header's
               own measured contract (see Terminal.module.css), so trailing actions fold into a "…"
               menu that still carries full labels — the KeyBar idiom, not an icon-only shrink. */}
-          <HeadActions
+          {/* #2173: the "…" (the "Actions" trigger at the compact width) opens the merged session
+              menu, the one a map window's chrome opens: Session group, then what folded here. */}
+          <PaneHeadActions
+            row={row}
             className={styles.headActions}
             btnClassName={styles.headChip}
             labelClassName={styles.headActionLabel}

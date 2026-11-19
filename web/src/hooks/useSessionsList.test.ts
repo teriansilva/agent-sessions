@@ -561,3 +561,65 @@ test("Review now keeps the row's title when the server could not resolve one (#1
   });
   expect(result.current.sessions[0].title).toBe("Mine");
 });
+
+// A change announced from another surface (#2173: the session pane's own menu) lands on the
+// list's rows exactly as the row menu's own handlers land theirs.
+test("an announced row change patches, re-sorts or drops the row, as the list's own handlers do (#2173)", async () => {
+  const { announceSessionRowChanged } = await import("../lib/sessionRowEvents");
+  mockSessions.mockResolvedValueOnce({
+    sessions: [sess("A"), sess("B")],
+    next_offset: 2,
+    total: 3,
+    facets: { projects: [], engines: [] },
+  });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() =>
+    expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B"]),
+  );
+  const calls = mockSessions.mock.calls.length;
+
+  // Rename: in place.
+  act(() => announceSessionRowChanged("claude:B", { title: "B2" }));
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B2"]);
+  // Favorite: the row floats to the top (the server's sticky-first sort).
+  act(() => announceSessionRowChanged("claude:B", { sticky: true }));
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["B2", "A"]);
+  // Archive: the row leaves the active list, and the next page's offset follows it.
+  act(() => announceSessionRowChanged("claude:B", { archived: true }));
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]);
+  expect(result.current.total).toBe(2);
+  // A session the list does not carry changes nothing here…
+  act(() => announceSessionRowChanged("claude:elsewhere", { title: "x", archived: true }));
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]);
+  expect(result.current.total).toBe(2);
+  // …and none of it cost a request.
+  expect(mockSessions.mock.calls.length).toBe(calls);
+
+  mockSessions.mockResolvedValueOnce({
+    sessions: [sess("C")],
+    next_offset: null,
+    total: 2,
+    facets: { projects: [], engines: [] },
+  });
+  await act(async () => {
+    result.current.loadMore();
+  });
+  expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 }));
+});
+
+test("an announced Unarchive of a session this list does not carry re-reads the list (#2173)", async () => {
+  const { announceSessionRowChanged } = await import("../lib/sessionRowEvents");
+  mockSessions.mockResolvedValueOnce(pageOf([sess("A")]));
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]));
+  // The pane of an archived session pressed Unarchive: the row now belongs in this (active)
+  // list, and there is nothing here to patch.
+  mockSessions.mockResolvedValueOnce(pageOf([sess("Z"), sess("A")]));
+  await act(async () => {
+    announceSessionRowChanged("claude:Z", { archived: false });
+  });
+  await waitFor(() =>
+    expect(result.current.sessions.map((s) => s.title)).toEqual(["Z", "A"]),
+  );
+  expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
+});

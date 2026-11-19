@@ -1,20 +1,22 @@
-import { useEffect, useState } from "react";
+import { type RefObject, useEffect, useState } from "react";
 import type { Session } from "../../types/api";
 import {
   type SessionMenuHandlers,
   useSessionMenu,
-} from "../sessions/useSessionMenu";
+} from "./useSessionMenu";
 import {
   type RowMenuEntry,
   type MenuAnchor,
   MenuPopover,
 } from "../sidebar/RowMenu";
-import { SessionTextDialog } from "./SessionTextDialog";
+import { SessionTextDialog } from "../overview/SessionTextDialog";
 
-/** The Overview map's ONE session menu (#968) — the sidebar row's menu (`useSessionMenu`), opened
- *  from a chip's ⋯, a right-click, or a window's chrome.
+/** The session menu's HOST for a surface that is not a sidebar row (#968, shared in #2173) — the
+ *  sidebar row's menu (`useSessionMenu`), opened from a map chip's ⋯, a right-click, a map
+ *  window's chrome, or the session pane's own "…" (`PaneHeadActions`). One host, so the merged
+ *  list, the rename/tag dialog and the lifecycle below cannot differ between the map and the pane.
  *
- *  The canvas mounts this while a target is set and unmounts it on `onDone`. The host outlives the
+ *  The surface mounts this while a target is set and unmounts it on `onDone`. The host outlives the
  *  popover on purpose: an item like Session brief closes the menu and opens a dialog in the same
  *  press, and that dialog's state lives in this component — unmounting on menu-close would take
  *  the dialog with it. So `onDone` fires only once the menu is closed, no dialog is open, no
@@ -26,7 +28,7 @@ import { SessionTextDialog } from "./SessionTextDialog";
  *  actions the pane REALLY offers, so one action is never named twice — it is a chip when the bar had
  *  room, the Pane group when it did not. A chat/api window's pane offers no head actions, so it omits
  *  nothing and the session group keeps Session brief / Hand off / mission. */
-export function MapSessionMenu({
+export function SessionMenuHost({
   session,
   anchor,
   handlers,
@@ -35,6 +37,9 @@ export function MapSessionMenu({
   reviewInFlight,
   paneItems,
   omit,
+  label,
+  placement,
+  ownerRef,
 }: {
   /** The live row while the session is on the map, else the row captured when the menu opened —
    *  a dialog already open keeps naming its session after a refetch drops the chip. */
@@ -56,6 +61,13 @@ export function MapSessionMenu({
   /** The session-menu keys the host omits (#1329) — the twins of the actions the pane really
    *  offers. Absent for a chip's ⋯ (no pane) and for a chat/api window (pane offers none). */
   omit?: ReadonlySet<string>;
+  /** The menu's accessible name. Defaults to `MenuPopover`'s "Session actions". */
+  label?: string;
+  /** `"anchored"` for the session pane's own menu, which stays a popover under its trigger at
+   *  every width (docs/design.md §5); the map's menus keep the default (a sheet at ≤800px). */
+  placement?: "auto" | "anchored";
+  /** The trigger, when it toggles the menu itself: a press on it is not an outside press. */
+  ownerRef?: RefObject<HTMLElement | null>;
 }) {
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
   const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null);
@@ -107,6 +119,9 @@ export function MapSessionMenu({
           title={session.title || session.short_uuid}
           anchor={anchor}
           onClose={onMenuClose}
+          label={label}
+          placement={placement}
+          ownerRef={ownerRef}
         />
       )}
       {menu.dialogs}

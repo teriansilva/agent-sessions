@@ -31,6 +31,7 @@ import { clampRect, type Rect, type Size } from "./workspace";
 import { runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { RuntimeGate } from "../terminal/RuntimeGate";
 import { resolveApiModel } from "../../lib/apiModel";
+import { omittedSessionKeys, paneMenuEntries } from "../sessions/paneMenu";
 
 /** One floating session window on the Overview map (#208).
  *
@@ -62,18 +63,6 @@ import { resolveApiModel } from "../../lib/apiModel";
  *  top (`reservePx`), so the fold is decided against what the bar really has — folding a
  *  little early is the safe direction; folding late would clip the title. */
 const CHROME_RESERVE = 214;
-
-/** The session-menu items a pane action mirrors (#1329). Only the ones the mounted pane
- *  actually offers are omitted from the merged menu's session group — a chat/api runtime mounts no
- *  head actions at all, so its session items stay. */
-const PANE_TO_SESSION_KEYS: Record<string, string[]> = {
-  recap: ["brief"],
-  handoff: ["handoff"],
-  mission: ["adopt-mission", "open-mission"],
-  // #2173: the pane's one Share action carries both choices, as a chip menu or a folded group.
-  share: ["share-public", "share-peer"],
-};
-
 
 /** The footer's link word (#1600), from the pane's own socket status. */
 type LinkState = "live" | "linking" | "down" | "idle";
@@ -284,37 +273,15 @@ export const SessionWindow = memo(function SessionWindow({
   // off the map there is no row — but the pane actions never needed one.
   const [paneMenuAnchor, setPaneMenuAnchor] = useState<MenuAnchor | null>(null);
 
-  /** The folded pane actions as menu entries. The opener is the ⋯ the menu returns focus to —
-   *  a menu item unmounts with its menu. The merged menu DROPS the session group's twins of
-   *  these actions instead (#1329), so a pane action is named once — as a chip when it fits,
-   *  else here. */
-  const paneMenuItems = useCallback((opener: HTMLElement | null): RowMenuEntry[] => {
-    const entry = (a: HeadAction): RowMenuEntry => ({
-      key: a.id,
-      label: a.label,
-      ariaLabel: a.aria,
-      icon: a.icon,
-      disabled: a.disabled,
-      // A pressed pane toggle (Files, Plan & tools) says so in the menu too (#1726); an item
-      // that is off says why (#2173).
-      hint: a.active ? "Shown" : a.hint,
-      onSelect: () => a.run(opener),
-    });
-    const folded = paneOverflowRef.current;
-    const out: RowMenuEntry[] = [];
-    folded.forEach((a, i) => {
-      if (!a.menu?.length) {
-        out.push(entry(a));
-        return;
-      }
-      // A folded group of choices (#2173, Share): its label once, then its items, ruled off
-      // from the pane actions on either side. No nested fly-out.
-      if (out.length > 0 && out[out.length - 1] !== "separator") out.push("separator");
-      out.push({ group: a.label }, ...a.menu.map(entry));
-      if (i < folded.length - 1) out.push("separator");
-    });
-    return out;
-  }, []);
+  /** The folded pane actions as menu entries (`paneMenuEntries`, shared with the session pane's
+   *  own menu, #2173), read from the ref at menu-open time. The merged menu DROPS the session
+   *  group's twins of the pane's actions (#1329), so a pane action is named once — as a chip when
+   *  it fits, else here. */
+  const paneMenuItems = useCallback(
+    (opener: HTMLElement | null): RowMenuEntry[] =>
+      paneMenuEntries(paneOverflowRef.current, opener),
+    [],
+  );
 
   const openMergedMenu = useCallback(
     (anchor: MenuAnchor) => {
@@ -326,13 +293,7 @@ export const SessionWindow = memo(function SessionWindow({
       // Omit only the session twins of the actions the pane REALLY offers (#1329): read from
       // the full list, not the overflow, so a pane that mounts no head actions (a chat/api
       // runtime) or has not committed its fold yet omits nothing.
-      const offered = new Set(paneAllRef.current.map((a) => a.id));
-      const omit = new Set<string>();
-      for (const [paneId, keys] of Object.entries(PANE_TO_SESSION_KEYS)) {
-        if (!offered.has(paneId)) continue;
-        for (const k of keys) omit.add(k);
-      }
-      onMenu?.(wkey, anchor, opener, paneMenuItems(opener), omit);
+      onMenu?.(wkey, anchor, opener, paneMenuItems(opener), omittedSessionKeys(paneAllRef.current));
     },
     [offMapReason, onMenu, wkey, paneMenuItems],
   );

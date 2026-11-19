@@ -8,6 +8,12 @@ import {
   SESSION_MISSION_CHANGED_EVENT,
   type SessionMissionChange,
 } from "../lib/missionEvents";
+import {
+  projectAfterMove,
+  reviewPatch,
+  SESSION_ROW_CHANGED_EVENT,
+  type SessionRowChange,
+} from "../lib/sessionRowEvents";
 import type {
   ProjectRef,
   Session,
@@ -306,97 +312,108 @@ export function useSessionsList() {
   );
   const clear = useCallback(() => setFilters(EMPTY), [setFilters]);
 
-  // Rename in place: the row stays in the current view, only its title changes.
-  const renameRow = useCallback(async (id: string, title: string) => {
-    const r = await api.rename(id, title);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, title: r.title } : s)),
-    );
-  }, []);
+  // The loaded rows and the list's archived scope, readable from a callback without re-creating
+  // it (a row patch must know whether the row is here, and which archived-state the list shows).
+  const rowsRef = useRef<Session[]>([]);
+  const archivedScope = useRef(filters.archived);
+  useEffect(() => {
+    rowsRef.current = sessions;
+    archivedScope.current = filters.archived;
+  });
 
-  // Set/clear the custom tag (#551): patch the row in place from the server's echoed value
-  // (already trimmed + capped), so the summary line reflects it without a refetch.
-  const setTag = useCallback(async (id: string, tag: string) => {
-    const r = await api.setTag(id, tag);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, tag: r.tag } : s)),
-    );
-  }, []);
-
-  // Toggle archived: the list is scoped to one archived-state, so after the flip the
-  // row leaves the current view → drop it locally (avoids a full refetch + flicker).
-  // Removing it shrinks the server's archived-scoped set by one, so every still-unloaded
-  // row shifts down one offset — decrement nextOffset to match, or the next "Load more"
-  // would skip the first unloaded row (it sat at the old offset). When all rows are
-  // already loaded (nextOffset == null) there is nothing to backfill.
-  const setArchived = useCallback(
-    async (id: string, currentlyArchived: boolean) => {
-      await (currentlyArchived ? api.unarchive(id) : api.archive(id));
+  /** Fold a change the server has already recorded into the loaded rows, in place. ONE function
+   *  for the row menu's own handlers below and for a change announced from another surface
+   *  (`sessionRowEvents`, #2173: the session pane's menu), so the two cannot drift.
+   *
+   *  - `archived` leaving the list's scope drops the row. The list is scoped to one
+   *    archived-state, so the server's set shrank by one and every still-unloaded row shifted
+   *    down one offset: `nextOffset` follows, or the next Load more would skip the first
+   *    unloaded row. With everything loaded (`nextOffset == null`) there is nothing to backfill.
+   *  - `sticky` re-sorts the loaded rows sticky-first, mirroring the server sort (sticky desc,
+   *    then created_at desc in "Creation date" mode, else last_mtime desc, #506), so a
+   *    just-favorited row floats up at once. The next poll reconciles either way.
+   *  - Anything else patches the row where it stands.
+   *
+   *  Returns whether the list had the row. */
+  const applyRowPatch = useCallback((id: string, patch: Partial<Session>): boolean => {
+    const has = rowsRef.current.some((s) => s.id === id);
+    if (patch.archived !== undefined && patch.archived !== archivedScope.current) {
+      if (!has) return false;
       setSessions((prev) => prev.filter((s) => s.id !== id));
       setTotal((t) => Math.max(0, t - 1));
       setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
-    },
-    [],
-  );
-
-  // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the loaded
-  // rows sticky-first to MIRROR the server sort (sticky desc, then the active timestamp tier —
-  // created_at desc in "Creation date" mode, else last_mtime desc, #506) so a just-favorited row
-  // floats to the top immediately and the rest don't briefly disagree with server order. The next
-  // poll/refetch reconciles either way.
-  const setSticky = useCallback(async (id: string, value: boolean) => {
-    const r = await (value ? api.favorite(id) : api.unfavorite(id));
+      return true;
+    }
+    if (!has) return false;
     const ts = (s: Session) =>
       orderRef.current === "created_at" ? (s.created_at ?? 0) : s.last_mtime;
-    setSessions((prev) =>
-      prev
-        .map((s) => (s.id === id ? { ...s, sticky: r.sticky } : s))
-        .sort((a, b) => Number(b.sticky) - Number(a.sticky) || ts(b) - ts(a)),
-    );
+    setSessions((prev) => {
+      const next = prev.map((s) => (s.id === id ? { ...s, ...patch } : s));
+      return patch.sticky === undefined
+        ? next
+        : next.sort((a, b) => Number(b.sticky) - Number(a.sticky) || ts(b) - ts(a));
+    });
+    return true;
   }, []);
+
+  // Rename in place: the row stays in the current view, only its title changes.
+  const renameRow = useCallback(
+    async (id: string, title: string) => {
+      const r = await api.rename(id, title);
+      applyRowPatch(id, { title: r.title });
+    },
+    [applyRowPatch],
+  );
+
+  // Set/clear the custom tag (#551): patch the row in place from the server's echoed value
+  // (already trimmed + capped), so the summary line reflects it without a refetch.
+  const setTag = useCallback(
+    async (id: string, tag: string) => {
+      const r = await api.setTag(id, tag);
+      applyRowPatch(id, { tag: r.tag });
+    },
+    [applyRowPatch],
+  );
+
+  // Toggle archived: after the flip the row leaves the current view, so it is dropped locally
+  // (avoids a full refetch + flicker). See `applyRowPatch`.
+  const setArchived = useCallback(
+    async (id: string, currentlyArchived: boolean) => {
+      await (currentlyArchived ? api.unarchive(id) : api.archive(id));
+      applyRowPatch(id, { archived: !currentlyArchived });
+    },
+    [applyRowPatch],
+  );
+
+  // Toggle favorite (#122): flip the row's `sticky` flag in place and re-sort (`applyRowPatch`).
+  const setSticky = useCallback(
+    async (id: string, value: boolean) => {
+      const r = await (value ? api.favorite(id) : api.unfavorite(id));
+      applyRowPatch(id, { sticky: r.sticky });
+    },
+    [applyRowPatch],
+  );
 
   // Manual "Review now" (#356): run one AI review and fold the result into the row in
   // place (summary, badge, and the possibly-new display title) — no refetch flicker.
   // Returns the fresh payload so the sidebar can toast the outcome (#392); a failure
   // throws (with the server's `detail`) and leaves the last good row state untouched.
-  const reviewRow = useCallback(async (id: string) => {
-    const r = await api.reviewNow(id);
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? {
-              ...s,
-              // The server's RESOLVED title, adopted verbatim (#1510): with reviewed titles kept
-              // off the display, "" is a real answer (an untitled session), not a missing one.
-              // null = the server could not resolve it: keep the row's own.
-              title: typeof r.title === "string" ? r.title : s.title,
-              ai_summary: r.ai_summary,
-              ai_title: r.ai_title,
-              intervention_required: r.intervention_required,
-              intervention_reason: r.intervention_reason,
-              reviewed_at: r.reviewed_at,
-              review_excluded: r.review_excluded,
-              // #481: keep the recap fresh too, so opening the session-brief modal right after a
-              // sidebar Review-now shows the new recap rather than a stale/missing one.
-              ai_recap: r.ai_recap,
-            }
-          : s,
-      ),
-    );
-    return r;
-  }, []);
+  const reviewRow = useCallback(
+    async (id: string) => {
+      const r = await api.reviewNow(id);
+      applyRowPatch(id, reviewPatch(r));
+      return r;
+    },
+    [applyRowPatch],
+  );
 
   // Per-session exclude-from-review toggle (#356); the row stays, only the flag flips.
   const setReviewExcluded = useCallback(
     async (id: string, excluded: boolean) => {
       const r = await api.reviewExclude(id, excluded);
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === id ? { ...s, review_excluded: r.review_excluded } : s,
-        ),
-      );
+      applyRowPatch(id, { review_excluded: r.review_excluded });
     },
-    [],
+    [applyRowPatch],
   );
 
   // Per-session Pulse-orchestration opt-out (#726). Managed-by-default, so this withdraws
@@ -405,38 +422,24 @@ export function useSessionsList() {
   const setOrchestratorExcluded = useCallback(
     async (id: string, excluded: boolean) => {
       const r = await api.setOrchestratorExcluded(id, excluded);
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, orchestrator_excluded: r.orchestrator_excluded }
-            : s,
-        ),
-      );
+      applyRowPatch(id, { orchestrator_excluded: r.orchestrator_excluded });
     },
-    [],
+    [applyRowPatch],
   );
 
   // Reassign a session to a project entity — the keyboard-accessible equivalent of the map's
   // drag-to-reassign (#424 Phase 5). `ref` is the target entity, or `null` to unassign (back to
   // the folder fallback). Writes the explicit project_id via the metadata seam, then folds the
   // new resolution into the row in place. A project filter reconciles on the next poll.
-  const setProject = useCallback(async (id: string, ref: ProjectRef | null) => {
-    const pid = ref && ref.kind === "project" ? ref.id : null;
-    await api.setSessionProject(id, pid);
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? {
-              ...s,
-              project:
-                ref && ref.kind === "project"
-                  ? ref
-                  : { kind: "folder", id: s.cwd, name: s.cwd },
-            }
-          : s,
-      ),
-    );
-  }, []);
+  const setProject = useCallback(
+    async (id: string, ref: ProjectRef | null) => {
+      const pid = ref && ref.kind === "project" ? ref.id : null;
+      await api.setSessionProject(id, pid);
+      const cwd = rowsRef.current.find((s) => s.id === id)?.cwd ?? "";
+      applyRowPatch(id, { project: projectAfterMove(ref, cwd) });
+    },
+    [applyRowPatch],
+  );
 
   // A session's mission changed from anywhere in this tab — the row menu or the pane header (#948).
   // Applied to the list's OWN rows, which the shared store mirrors, so every consumer flips at once.
@@ -480,6 +483,27 @@ export function useSessionsList() {
     window.addEventListener(CLUSTERS_CHANGED_EVENT, onChange);
     return () => window.removeEventListener(CLUSTERS_CHANGED_EVENT, onChange);
   }, []);
+
+  // A row changed from another surface in this tab (#2173: the session pane's menu). The server
+  // has already recorded it, so it is applied to the list's OWN rows exactly as the row menu's
+  // handlers apply theirs. One case a patch cannot settle: an archive flip that brings a session
+  // INTO this list's scope (Unarchive pressed in an archived session's pane) has no row here to
+  // patch, so it is the same visible replacement read as a mission change.
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const d = (e as CustomEvent<SessionRowChange>).detail;
+      if (!d) return;
+      if (applyRowPatch(d.key, d.patch)) return;
+      if (d.patch.archived === undefined || d.patch.archived !== archivedScope.current) return;
+      reconcile.current = true;
+      void fetchRef.current(0, true, {
+        limit: Math.max(PAGE, sessionsCount.current),
+        keepOnError: true,
+      });
+    };
+    window.addEventListener(SESSION_ROW_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(SESSION_ROW_CHANGED_EVENT, onChange);
+  }, [applyRowPatch]);
 
   return {
     sessions,

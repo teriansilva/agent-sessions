@@ -832,3 +832,24 @@ test("phase: a listed row is found with no request, and a placeholder has no pha
   );
   expect(screen.getByTestId("phase")).toHaveTextContent("null");
 });
+
+// #2173: the session pane's own menu changes the row of the session it shows. When the list does
+// not carry that session, the pane reads the looked-up copy, so the announced change lands there.
+test("an announced row change patches the looked-up row of a session the list does not carry", async () => {
+  const { announceSessionRowChanged } = await import("../lib/sessionRowEvents");
+  const spy = vi.spyOn(api, "session").mockResolvedValue(row("claude:ddd"));
+  render(
+    <SessionsProvider>
+      <Pane k="claude:ddd" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("a")).toHaveTextContent("title-ddd"));
+  act(() => announceSessionRowChanged("claude:ddd", { title: "renamed in the pane" }));
+  expect(screen.getByTestId("a")).toHaveTextContent("renamed in the pane");
+  // The rest of the row is untouched, and it cost no second request.
+  expect(screen.getByTestId("cwd")).toHaveTextContent("/home/u/ddd");
+  expect(spy).toHaveBeenCalledTimes(1);
+  // A key with no row is left alone: there is nothing to patch, and no row is invented.
+  act(() => announceSessionRowChanged("claude:nobody", { title: "x" }));
+  expect(screen.getByTestId("a")).toHaveTextContent("renamed in the pane");
+});

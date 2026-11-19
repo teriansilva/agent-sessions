@@ -73,10 +73,20 @@ interface MenuPopoverProps {
   onClose: (refocus: boolean) => void;
   /** A press on this element is not an outside press — the trigger toggles the menu itself. */
   ownerRef?: React.RefObject<HTMLElement | null>;
+  /** `"anchored"` keeps the menu a popover under its trigger at EVERY width (#2173): the session
+   *  pane's own menu, which docs/design.md §5 exempts from the ≤800px bottom sheet (a sheet would
+   *  cover the terminal and the compose box the menu acts on). It opens below the trigger, never
+   *  flipped, capped to the space under it (the visible space: an on-screen keyboard shrinks the
+   *  visual viewport) and scrolls inside that cap, so its last entry stays reachable on a short
+   *  viewport (#958). A resize re-places it instead of closing it. Needs an `element` anchor. */
+  placement?: "auto" | "anchored";
 }
 
 const GAP = 4; // px between trigger and menu
 const EDGE = 8; // min distance from viewport edges
+/** An anchored menu never caps below two rows (#958): on a viewport too short even for that, the
+ *  placement clamp lifts it over its trigger rather than leaving a sliver. */
+const MIN_ANCHORED_H = 88;
 
 /** The open menu itself, portaled to <body> (#384) so no scroll container or React Flow transform
  *  can clip or scale it; on narrow viewports CSS turns it into a bottom sheet (see
@@ -92,7 +102,9 @@ export function MenuPopover({
   label = "Session actions",
   onClose,
   ownerRef,
+  placement = "auto",
 }: MenuPopoverProps) {
+  const anchored = placement === "anchored";
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // The anchor is fixed at open. A pointer anchor is read once (a context menu does not chase the
@@ -105,6 +117,15 @@ export function MenuPopover({
   const place = useCallback(() => {
     const menu = menuRef.current;
     if (!menu) return;
+    const pinned = anchored && "element" in anchorRef.current ? anchorRef.current.element : null;
+    if (pinned) {
+      // The cap first, so the height read below is the capped one. The floor of the space is the
+      // VISUAL viewport's bottom edge where the browser reports one.
+      const vv = window.visualViewport;
+      const floor = vv ? Math.min(window.innerHeight, vv.offsetTop + vv.height) : window.innerHeight;
+      const below = pinned.getBoundingClientRect().bottom + GAP;
+      menu.style.setProperty("--rm-max-h", `${Math.max(MIN_ANCHORED_H, floor - below - EDGE)}px`);
+    }
     const menuH = menu.offsetHeight;
     const menuW = menu.offsetWidth;
     const a = anchorRef.current;
@@ -114,6 +135,7 @@ export function MenuPopover({
       const rect = a.element.getBoundingClientRect();
       const below = rect.bottom + GAP;
       const flip =
+        !pinned &&
         below + menuH > window.innerHeight - EDGE &&
         rect.top - GAP - menuH > EDGE;
       top = flip ? rect.top - GAP - menuH : below;
@@ -149,7 +171,7 @@ export function MenuPopover({
       "--rm-right",
       `${Math.min(maxRight, Math.max(EDGE, right))}px`,
     );
-  }, []);
+  }, [anchored]);
   useLayoutEffect(place, [place]);
 
   // Focus the first item on open (menu-button pattern). `preventScroll`: the menu is fixed, so it
@@ -167,7 +189,10 @@ export function MenuPopover({
   // that opens the sheet, firing resize (and scroll) — which would flicker the sheet shut the
   // instant you press ⋯. Gate those two on desktop only.
   useEffect(() => {
+    // An anchored menu is never the sheet: it keeps the popover's scroll handling at every
+    // width, and a resize (a phone's URL bar, a rotation, the keyboard) re-places it.
     const isSheet =
+      !anchored &&
       typeof window.matchMedia === "function" &&
       window.matchMedia("(max-width: 800px)").matches;
     const onPointerDown = (e: PointerEvent) => {
@@ -226,27 +251,47 @@ export function MenuPopover({
         if ("point" in a && a.point.x >= r.left && a.point.x <= r.right && a.point.y >= r.top && a.point.y <= r.bottom)
           onClose(false);
       };
-      const onResize = () => onClose(false);
+      const onResize = anchored ? place : () => onClose(false);
       // capture: the sidebar list scrolls its own box, not the window
       window.addEventListener("scroll", onScroll, true);
       window.addEventListener("resize", onResize);
+      // The keyboard opening or closing resizes only the VISUAL viewport.
+      const vv = anchored ? window.visualViewport : null;
+      vv?.addEventListener("resize", place);
       detachViewport = () => {
         if (pending) cancelAnimationFrame(pending);
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
+        vv?.removeEventListener("resize", place);
       };
     }
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       detachViewport();
     };
-  }, [onClose, ownerRef, place]);
+  }, [onClose, ownerRef, place, anchored]);
 
   const onMenuKeyDown = (e: React.KeyboardEvent) => {
     const focusable = itemRefs.current.filter(Boolean) as HTMLButtonElement[];
     const cur = focusable.indexOf(document.activeElement as HTMLButtonElement);
-    const focusAt = (i: number) =>
-      focusable[(i + focusable.length) % focusable.length]?.focus({ preventScroll: true });
+    // `preventScroll` keeps the PAGE still under the fixed menu; the destination is then brought
+    // into the menu's own box by hand. A menu taller than its space scrolls inside itself (a
+    // short screen, the pane's merged menu), and focus on an entry scrolled out of sight would
+    // let Enter run an action nobody can see (#2173 review).
+    const focusAt = (i: number) => {
+      const el = focusable[(i + focusable.length) % focusable.length];
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      for (let box = el.parentElement; box; box = box.parentElement) {
+        if (box.scrollHeight > box.clientHeight + 1) {
+          const outer = box.getBoundingClientRect();
+          const inner = el.getBoundingClientRect();
+          if (inner.top < outer.top) box.scrollTop -= outer.top - inner.top;
+          else if (inner.bottom > outer.bottom) box.scrollTop += inner.bottom - outer.bottom;
+        }
+        if (box === menuRef.current) break;
+      }
+    };
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -288,7 +333,7 @@ export function MenuPopover({
     <>
       {/* Mobile-only scrim behind the bottom sheet (display:none on desktop). */}
       <div
-        className={styles.scrim}
+        className={anchored ? `${styles.scrim} ${styles.anchoredScrim}` : styles.scrim}
         aria-hidden="true"
         onClick={() => onClose(false)}
       />
@@ -300,10 +345,14 @@ export function MenuPopover({
           <body>, so a modal drawer testing DOM containment sees a press here as a press
           outside itself and dismisses — taking the host of any inline editor this menu
           mounts with it. The attribute is the opt-in `useModalDrawer` looks for. */}
-      <div className={styles.sheetWrap} data-modal-inside="">
+      <div
+        className={anchored ? `${styles.sheetWrap} ${styles.anchoredWrap}` : styles.sheetWrap}
+        data-modal-inside=""
+      >
         <div
           ref={menuRef}
-          className={styles.menu}
+          className={anchored ? `${styles.menu} ${styles.anchored}` : styles.menu}
+          data-menu-placement={anchored ? "anchored" : undefined}
           role="menu"
           aria-label={label}
           onKeyDown={onMenuKeyDown}

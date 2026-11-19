@@ -73,7 +73,9 @@ test("≤800px: one Actions trigger, every action inside it with its label", asy
   ]) {
     await expect(menu.getByRole("menuitem", { name })).toBeVisible();
   }
-  await expect(menu.locator("[data-menu-group]")).toHaveText(["Share"]);
+  // #2173 P2: the Actions menu is the merged session menu. The head's actions are its Pane group
+  // (Share under it, once), after the Session group.
+  await expect(menu.locator("[data-menu-group]")).toHaveText(["Session", "Pane", "Share"]);
   // A terminal session cannot be adopted (the server refuses it), so the head does not offer it.
   await expect(menu.getByRole("menuitem", { name: /adopt/i })).toHaveCount(0);
   // Labels travel with the actions — the menu is not an icon grid.
