@@ -43,6 +43,29 @@ export interface Filters {
    *  Optional for the same reason as `mission`. */
   cluster?: string;
   archived: boolean;
+  /** The Shared scope (#2198): the list shows what peers share with this instance instead of
+   *  this instance's own sessions. Client-only: it is never part of the `/api/sessions` query,
+   *  and `archived` keeps its value under it, so entering or leaving Shared alone asks the
+   *  server nothing new. Optional because a section state saved before it does not carry it. */
+  shared?: boolean;
+  /** The Shared scope's own search (title or peer name, matched in the browser). A separate
+   *  value from `q`: neither search ever narrows the other scope's list. */
+  sharedQ?: string;
+}
+
+/** Which list the sidebar shows (#2198). */
+export type SessionScope = "active" | "archived" | "shared";
+
+export function scopeOf(filters: Filters): SessionScope {
+  return filters.shared ? "shared" : filters.archived ? "archived" : "active";
+}
+
+/** The filter patch that selects a scope. Selecting Shared leaves `archived` alone (the query
+ *  must not change); selecting Active or Archived leaves Shared and sets the server's flag. */
+export function scopePatch(scope: SessionScope): Partial<Filters> {
+  return scope === "shared"
+    ? { shared: true }
+    : { shared: false, archived: scope === "archived" };
 }
 
 const EMPTY: Filters = {
@@ -52,6 +75,8 @@ const EMPTY: Filters = {
   mission: "",
   cluster: "",
   archived: false,
+  shared: false,
+  sharedQ: "",
 };
 
 interface Facets {
@@ -310,7 +335,11 @@ export function useSessionsList() {
     (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch })),
     [setFilters],
   );
-  const clear = useCallback(() => setFilters(EMPTY), [setFilters]);
+  // Resets the LOCAL filters. The Shared scope's search is not one of them (#2198).
+  const clear = useCallback(
+    () => setFilters((f) => ({ ...EMPTY, sharedQ: f.sharedQ ?? "" })),
+    [setFilters],
+  );
 
   // The loaded rows and the list's archived scope, readable from a callback without re-creating
   // it (a row patch must know whether the row is here, and which archived-state the list shows).

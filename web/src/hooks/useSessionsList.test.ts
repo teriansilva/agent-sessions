@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { createElement, type ReactNode } from "react";
 import { ConfigCtx } from "../app/config";
 import type { AppConfig, Session, SessionsPage } from "../types/api";
-import { useSessionsList } from "./useSessionsList";
+import { scopeOf, scopePatch, useSessionsList, type Filters } from "./useSessionsList";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -622,4 +622,67 @@ test("an announced Unarchive of a session this list does not carry re-reads the 
     expect(result.current.sessions.map((s) => s.title)).toEqual(["Z", "A"]),
   );
   expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
+});
+
+// ---- the Shared scope (#2198): client-only ----
+
+test("the scope model: three scopes, and Shared leaves the server's flag alone (#2198)", () => {
+  const f = (over: Partial<Filters>): Filters => ({ q: "", project: "", engine: "", archived: false, ...over });
+  expect(scopeOf(f({}))).toBe("active");
+  expect(scopeOf(f({ archived: true }))).toBe("archived");
+  expect(scopeOf(f({ shared: true }))).toBe("shared");
+  expect(scopeOf(f({ shared: true, archived: true }))).toBe("shared");
+  expect(scopePatch("shared")).toEqual({ shared: true });
+  expect(scopePatch("active")).toEqual({ shared: false, archived: false });
+  expect(scopePatch("archived")).toEqual({ shared: false, archived: true });
+});
+
+test("entering Shared, searching it and leaving it sends no /api/sessions request (#2198)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    mockSessions.mockResolvedValue(pageOf([sess("A")]));
+    const { result } = renderHook(() => useSessionsList());
+    act(() => result.current.update({ project: "p-1", archived: true }));
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+    const sent = mockSessions.mock.calls[1][0];
+    act(() => result.current.update(scopePatch("shared")));
+    act(() => result.current.update({ sharedQ: "gpu" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS * 2);
+    });
+    expect(result.current.filters).toMatchObject({ shared: true, sharedQ: "gpu", archived: true });
+    act(() => result.current.update(scopePatch("archived")));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS * 2);
+    });
+    expect(mockSessions).toHaveBeenCalledTimes(2);
+    // The poll in the Shared scope asks exactly what the local scope asked.
+    act(() => result.current.update(scopePatch("shared")));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(mockSessions).toHaveBeenCalledTimes(3);
+    expect(mockSessions.mock.calls[2][0]).toEqual(sent);
+    expect(sent).not.toHaveProperty("shared");
+    expect(sent).not.toHaveProperty("sharedQ");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("the list's reset clears the local filters and leaves the Shared search alone (#2198)", async () => {
+  mockSessions.mockResolvedValue(pageOf([sess("A")]));
+  const { result } = renderHook(() => useSessionsList());
+  act(() => result.current.update({ q: "x", project: "p-1", engine: "e", sharedQ: "gpu" }));
+  act(() => result.current.clear());
+  expect(result.current.filters).toEqual({
+    q: "",
+    project: "",
+    engine: "",
+    mission: "",
+    cluster: "",
+    archived: false,
+    shared: false,
+    sharedQ: "gpu",
+  });
 });

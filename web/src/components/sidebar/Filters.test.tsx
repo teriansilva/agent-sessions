@@ -36,7 +36,7 @@ test("there is no project dropdown: the project tree is the project filter (#218
   const body = document.getElementById(toggle.getAttribute("aria-controls")!)!;
   const slot = screen.getByTestId("tree-slot");
   expect(body).toContainElement(slot);
-  const tabs = screen.getByRole("tablist", { name: "Archived filter" });
+  const tabs = screen.getByRole("tablist", { name: "Which sessions" });
   expect(tabs.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
@@ -137,7 +137,7 @@ test("search + archived toggle call onChange", () => {
   });
   expect(onChange).toHaveBeenCalledWith({ q: "foo" });
   fireEvent.click(screen.getByRole("tab", { name: "Archived" }));
-  expect(onChange).toHaveBeenCalledWith({ archived: true });
+  expect(onChange).toHaveBeenCalledWith({ shared: false, archived: true });
 });
 
 test("clear button appears only when a filter is active", () => {
@@ -190,4 +190,133 @@ test("the filters fold behind one header, remember it per device, and say what i
     "aria-expanded",
     "false",
   );
+});
+
+// ---- the Shared tab (#2198) ----
+
+const bar = (
+  filters: Parameters<typeof FiltersBar>[0]["filters"],
+  sharedCount: number,
+  onChange: Parameters<typeof FiltersBar>[0]["onChange"] = noop,
+  onClear: () => void = noop,
+) => (
+  <FiltersBar
+    filters={filters}
+    facets={{ ...facets, missions: [{ id: "msn_1", title: "Release", count: 2 }] }}
+    onChange={onChange}
+    onClear={onClear}
+    sharedCount={sharedCount}
+  >
+    <div data-testid="tree-slot" />
+  </FiltersBar>
+);
+const tabNames = () => screen.getAllByRole("tab").map((t) => t.textContent);
+
+test("the Shared tab is offered while a session is shared, and while it is selected (#2198)", () => {
+  const { rerender } = render(bar(base, 0));
+  expect(tabNames()).toEqual(["Active", "Archived"]);
+  rerender(bar(base, 3));
+  expect(tabNames()).toEqual(["Active", "Archived", "Shared 3"]);
+  expect(screen.getByRole("tab", { name: "Shared 3" })).toHaveAttribute("aria-selected", "false");
+  rerender(bar(base, 47));
+  expect(screen.getByTestId("shared-count")).toHaveTextContent("47");
+  // Selected at a count of 0: the tab stays, without a number.
+  rerender(bar({ ...base, shared: true }, 0));
+  expect(tabNames()).toEqual(["Active", "Archived", "Shared"]);
+  expect(screen.getByRole("tab", { name: "Shared" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.queryByTestId("shared-count")).toBeNull();
+});
+
+test("the scope model: Shared never touches the server's archived flag (#2198)", () => {
+  const onChange = vi.fn();
+  const { rerender } = render(bar({ ...base, archived: true }, 2, onChange));
+  expect(screen.getByRole("tab", { name: "Archived" })).toHaveAttribute("aria-selected", "true");
+  fireEvent.click(screen.getByRole("tab", { name: "Shared 2" }));
+  expect(onChange).toHaveBeenLastCalledWith({ shared: true });
+  rerender(bar({ ...base, archived: true, shared: true }, 2, onChange));
+  // Exactly one tab is selected: Shared, though `archived` is still set underneath.
+  expect(
+    screen.getAllByRole("tab").map((t) => t.getAttribute("aria-selected")),
+  ).toEqual(["false", "false", "true"]);
+  fireEvent.click(screen.getByRole("tab", { name: "Active" }));
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: false });
+  fireEvent.click(screen.getByRole("tab", { name: "Archived" }));
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: true });
+});
+
+test("on Shared the search is its own, and the local filters are not shown (#2198)", () => {
+  const onChange = vi.fn();
+  const onClear = vi.fn();
+  const local = { ...base, q: "deploy", project: "p-1", engine: "claude", mission: "msn_1" };
+  const { rerender } = render(bar({ ...local, shared: true }, 3, onChange, onClear));
+  expect(screen.queryByLabelText("Search sessions")).toBeNull();
+  expect(screen.queryByLabelText("Filter by agent")).toBeNull();
+  expect(screen.queryByLabelText("Filter by mission")).toBeNull();
+  expect(screen.queryByLabelText("Clear filters")).toBeNull();
+  expect(screen.queryByTestId("filters-scope")).toBeNull();
+  // The tree is kept (its open branches survive) but not shown.
+  expect(screen.getByTestId("tree-slot")).not.toBeVisible();
+  // The local search text never shows in the Shared search.
+  const search = screen.getByLabelText("Search shared sessions");
+  expect(search).toHaveValue("");
+  expect(screen.queryByLabelText("Clear search")).toBeNull();
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent(/Shared$/);
+  fireEvent.change(search, { target: { value: "gpu" } });
+  expect(onChange).toHaveBeenLastCalledWith({ sharedQ: "gpu" });
+
+  rerender(bar({ ...local, shared: true, sharedQ: "gpu" }, 3, onChange, onClear));
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent("Shared · 1 filter");
+  fireEvent.click(screen.getByLabelText("Clear search"));
+  // Only the Shared search: not the list's reset, no scope, no local filter.
+  expect(onChange).toHaveBeenLastCalledWith({ sharedQ: "" });
+  expect(onClear).not.toHaveBeenCalled();
+
+  // Back on a local scope everything is there again, with its values.
+  rerender(bar({ ...local, sharedQ: "gpu" }, 3, onChange, onClear));
+  expect(screen.getByLabelText("Search sessions")).toHaveValue("deploy");
+  expect(screen.getByLabelText("Filter by agent")).toHaveValue("claude");
+  expect(screen.getByLabelText("Filter by mission")).toHaveValue("msn_1");
+  expect(screen.getByTestId("tree-slot")).toBeVisible();
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent("Active · +2");
+});
+
+test("the tablist: one tab stop, arrows move and select, Home and End jump (#2198)", () => {
+  const onChange = vi.fn();
+  const { rerender } = render(bar(base, 3, onChange));
+  const tab = (name: string) => screen.getByRole("tab", { name });
+  expect(screen.getAllByRole("tab").map((t) => t.tabIndex)).toEqual([0, -1, -1]);
+  fireEvent.keyDown(tab("Active"), { key: "ArrowRight" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: true });
+  expect(tab("Archived")).toHaveFocus();
+  rerender(bar({ ...base, archived: true }, 3, onChange));
+  expect(screen.getAllByRole("tab").map((t) => t.tabIndex)).toEqual([-1, 0, -1]);
+  fireEvent.keyDown(tab("Archived"), { key: "ArrowRight" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: true });
+  expect(tab("Shared 3")).toHaveFocus();
+  rerender(bar({ ...base, archived: true, shared: true }, 3, onChange));
+  // It wraps, and Home / End reach the ends.
+  fireEvent.keyDown(tab("Shared 3"), { key: "ArrowRight" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: false });
+  fireEvent.keyDown(tab("Shared 3"), { key: "ArrowLeft" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: true });
+  fireEvent.keyDown(tab("Shared 3"), { key: "Home" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: false });
+  rerender(bar(base, 3, onChange));
+  fireEvent.keyDown(tab("Active"), { key: "End" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: true });
+  // Two tabs: the arrows wrap between them.
+  rerender(bar(base, 0, onChange));
+  fireEvent.keyDown(tab("Active"), { key: "ArrowLeft" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: true });
+});
+
+test("leaving the Shared tab when it then disappears puts focus on the tab now selected (#2198)", () => {
+  const onChange = vi.fn();
+  const { rerender } = render(bar({ ...base, shared: true }, 0, onChange));
+  screen.getByRole("tab", { name: "Shared" }).focus();
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Shared" }), { key: "ArrowLeft" });
+  expect(onChange).toHaveBeenLastCalledWith({ shared: false, archived: true });
+  rerender(bar({ ...base, archived: true }, 0, onChange));
+  expect(tabNames()).toEqual(["Active", "Archived"]);
+  expect(screen.getByRole("tab", { name: "Archived" })).toHaveFocus();
 });

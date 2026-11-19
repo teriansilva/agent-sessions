@@ -360,11 +360,16 @@ absolute path it resolved, after checking that nobody but you or root can replac
 directory above it. A binary you installed yourself is shown as **adopted** — BattleLab found it
 rather than installed it.
 
-An agent BattleLab installed from its catalog is **managed**. BattleLab pins its version and
-upgrades it itself, so every process it starts from a managed install has the agent's own
-updater switched off (Claude Code `DISABLE_AUTOUPDATER`, opencode `OPENCODE_DISABLE_AUTOUPDATE`,
-Antigravity `AGY_CLI_DISABLE_AUTO_UPDATE`, Copilot `--no-auto-update`). An adopted binary is
-yours and keeps updating the way its vendor ships it.
+An agent BattleLab installed from its catalog is **managed**: BattleLab pins its version and
+upgrades it itself. Every process BattleLab starts from a managed install has that agent's own
+updater switched off where the vendor offers a launch-time switch: Claude Code
+(`DISABLE_AUTOUPDATER`), opencode (`OPENCODE_DISABLE_AUTOUPDATE`), Antigravity
+(`AGY_CLI_DISABLE_AUTO_UPDATE`), Kimi Code (`KIMI_CODE_NO_AUTO_UPDATE`) and Copilot
+(`--no-auto-update`). Gemini CLI has no such switch. It reads the setting only from its own
+settings file (`general.enableAutoUpdate`), which BattleLab does not write, so a managed Gemini
+CLI can still update itself; turn it off there if you want it off. Codex only offers an update
+and never installs one unasked. An adopted binary is yours and keeps updating the way its vendor
+ships it.
 
 The API agent has no binary: it is present once its endpoint has a URL, a key and a model.
 

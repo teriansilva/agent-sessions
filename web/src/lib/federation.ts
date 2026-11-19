@@ -462,6 +462,23 @@ export function remoteRowState(r: RemoteShare): RemoteRowState {
   };
 }
 
+/** The Shared tab's search (#2198): the rows whose title or peer name, as the row shows them,
+ *  contains the text. Case-insensitive, in the browser: the list read is the whole list, and no
+ *  filter of the local session list is ever applied to these rows. */
+export function searchRemoteShares(
+  rows: readonly RemoteShare[],
+  q: string,
+): readonly RemoteShare[] {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter((r) => {
+    const row = remoteRowState(r);
+    return (
+      row.title.toLowerCase().includes(needle) || row.peer.toLowerCase().includes(needle)
+    );
+  });
+}
+
 /** The read-only pane's route. Its own route: never the local session route. */
 export const REMOTE_ROUTE = "/remote/:peerId/:grantId";
 export const remotePath = (peerId: string, grantId: string) =>

@@ -91,7 +91,7 @@ test.describe("Mobile Context Menu", () => {
     await expect(sidebar).toBeVisible();
 
     // Find the first session row.
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     await expect(firstRow).toBeVisible();
 
     // The "..." button (Session actions) should be visible even without hover.
@@ -137,7 +137,7 @@ test.describe("Mobile Context Menu", () => {
     await page.locator("header .navToggle").click();
 
     // Find the first session row.
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     await expect(firstRow).toBeVisible();
 
     const actionsTrigger = firstRow.getByRole("button", {
@@ -171,7 +171,7 @@ test.describe("Mobile Context Menu", () => {
     await page.setViewportSize({ width: 768, height: 1024 });
 
     await page.locator("header .navToggle").click();
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     await expect(firstRow).toBeVisible();
 
     const actionsTrigger = firstRow.getByRole("button", {
@@ -203,7 +203,7 @@ test.describe("Mobile Context Menu", () => {
     await page.setViewportSize({ width: 800, height: 1000 });
 
     await page.locator("header .navToggle").click();
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     const actionsTrigger = firstRow.getByRole("button", {
       name: "Session actions",
     });
@@ -239,7 +239,7 @@ test.describe("Mobile Context Menu", () => {
     await page.reload();
 
     await page.locator("header .navToggle").click();
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     await firstRow.getByRole("button", { name: "Session actions" }).click();
 
     const menu = page.getByRole("menu", { name: "Session actions" });
@@ -290,7 +290,7 @@ test.describe("Mobile Context Menu", () => {
     page,
   }) => {
     await page.locator("header .navToggle").click();
-    const firstRow = page.locator("ul[aria-label] li").first();
+    const firstRow = page.locator('ul[aria-label$=" sessions"] li').first();
     await firstRow.getByRole("button", { name: "Session actions" }).click();
 
     const menu = page.getByRole("menu", { name: "Session actions" });

@@ -160,14 +160,22 @@ button.clear {
   padding: 0 var(--sp-3);
   font-size: var(--fs-label);
 }
-/* Segmented Active/Archived on THE SEGMENT's look (nj-seg): one hairline box, square cells, the
- * selected cell carries the HUD tint and the 2px marker line (no fill, no gloss — #211). */
+/* Segmented Active/Archived/Shared on THE SEGMENT's look (nj-seg): one hairline box, square cells,
+ * the selected cell carries the HUD tint and the 2px marker line (no fill, no gloss — #211).
+ * Equal cells whatever they say (two, or three with Shared, #2198): `flex: 1 1 0` and
+ * `min-width: 0` divide the box, never the labels' widths. */
 .tabs {
   display: flex;
   border: 1px solid var(--line-strong);
 }
 .tabs button {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
   background: transparent;
   border: 0;
   color: var(--text-2);
@@ -198,6 +206,30 @@ button.clear {
   box-shadow: inset 0 -2px 0 var(--hud);
   color: var(--hud-text);
   font-weight: 600;
+}
+/* How many sessions are shared, inside the Shared tab (#2198). Tighter tracking than the label,
+ * so a two-digit count still fits a third of the narrowest sidebar. */
+.tabCount {
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-1);
+}
+.tabs button.on .tabCount {
+  color: var(--hud-text);
+}
+/* Three cells in the narrowest sidebar (220px, `sidebarWidth.ts`) are under 60px each, and
+ * ARCHIVED at the label's size and tracking is wider than that. There, and only with three tabs,
+ * the label steps down to the type scale's floor and its tracking and gap give way, so every
+ * label and a two-digit count fit their cell. */
+.tabs {
+  container-type: inline-size;
+}
+@container (max-width: 220px) {
+  .tabs.three button {
+    gap: 3px;
+    font-size: var(--fs-micro);
+    letter-spacing: 0.02em;
+  }
 }
 
 /* TOUCH FLOOR (#948 P2, docs/design.md §8). The mission rail wears these classes too, and it used to

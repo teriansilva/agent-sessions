@@ -13,11 +13,13 @@ import {
   POLL_IDLE_MS,
   pollInterval,
   reachableLabel,
+  searchRemoteShares,
   sentence,
   settledMessage,
   trackPairings,
   type FederationPairing,
   type FederationPeer,
+  type RemoteShare,
 } from "./federation";
 
 const NOW = 1_800_000_000;
@@ -261,5 +263,53 @@ describe("polling", () => {
     expect(pollInterval(false, [{ ...pairing(), gone: true }])).toBe(POLL_IDLE_MS);
     expect(POLL_ACTIVE_MS).toBe(2000);
     expect(POLL_IDLE_MS).toBe(15000);
+  });
+});
+
+describe("the Shared tab's search (#2198)", () => {
+  const share = (title: string, peer_name: string, grant_id: string): RemoteShare => ({
+    key: grant_id,
+    peer_id: "m5tr2kxwq7ahd3ny6bpev4czj2osu7fl",
+    peer_name,
+    connected: true,
+    grant_id,
+    engine: "e",
+    native_id: grant_id,
+    title,
+    level: "view",
+    expires_at: NOW + 86400,
+    revision: 1,
+    seen_at: NOW,
+  });
+  const rows = [
+    share("Migrate the billing tables", "gpu-box", "g1"),
+    share("Bench the new tokenizer", "gpu-box", "g2"),
+    share("Release notes 0.21", "Laptop", "g3"),
+    share("", "", "g4"),
+  ];
+  const found = (q: string) => searchRemoteShares(rows, q).map((r) => r.grant_id);
+
+  test("no text is the whole list, the same array", () => {
+    expect(searchRemoteShares(rows, "")).toBe(rows);
+    expect(searchRemoteShares(rows, "   ")).toBe(rows);
+  });
+  test("by title, whatever the case", () => {
+    expect(found("billing")).toEqual(["g1"]);
+    expect(found("BILLING")).toEqual(["g1"]);
+    expect(found(" tokenizer ")).toEqual(["g2"]);
+  });
+  test("by peer name, whatever the case", () => {
+    expect(found("gpu")).toEqual(["g1", "g2"]);
+    expect(found("laptop")).toEqual(["g3"]);
+    expect(found("LAPTOP")).toEqual(["g3"]);
+  });
+  test("by what the row shows for a session with no title and a peer with no name", () => {
+    expect(found("untitled")).toEqual(["g4"]);
+    expect(found("m5tr2kxw")).toEqual(["g4"]);
+  });
+  test("nothing else of a share is searched", () => {
+    expect(found("view")).toEqual([]);
+    expect(found("g1")).toEqual([]);
+    expect(found("xyz")).toEqual([]);
   });
 });

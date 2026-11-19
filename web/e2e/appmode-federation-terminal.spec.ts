@@ -119,6 +119,8 @@ test("a real terminal is shared through the dialog, watched on the other instanc
     const row = beta.getByTestId("remote-row").filter({ has: beta.getByTestId("screen-tag") });
     await expect(async () => {
       await beta.goto(`${pair.b.origin}${SESSIONS_PATH}`);
+      // Shared sessions are on the list's Shared tab (#2198), offered once one is shared.
+      await beta.getByTestId("scope-tab-shared").click({ timeout: 5_000 });
       await expect(row).toHaveCount(1, { timeout: 5_000 });
     }).toPass({ timeout: 60_000 });
     await expect(row.getByTestId("peer-badge")).toHaveText("alpha");

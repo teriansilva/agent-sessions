@@ -46,7 +46,7 @@ test("archiving the active session leaves the terminal route and disposes its so
     await page.locator("header .navToggle").click();
     await expect(page.locator("aside.sidebar")).toBeVisible();
   }
-  const row = page.locator("ul[aria-label] li").first();
+  const row = page.locator('ul[aria-label$=" sessions"] li').first();
   await row.hover();
   await row.getByRole("button", { name: "Session actions" }).click();
   await page.getByRole("menuitem", { name: /archive session/i }).click();

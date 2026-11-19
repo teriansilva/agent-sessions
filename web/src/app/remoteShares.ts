@@ -1,10 +1,11 @@
 /** What peers share with this instance (#2055): `GET /api/federation/remote`, held for the
- *  surfaces that list it (the session list, the map, Settings → Peers).
+ *  surfaces that list it (the session list's Shared tab, #2198; the map; Settings → Peers).
  *
  *  **This is deliberately not the session list.** A remote entry is never a `SessionEntry`, never
  *  enters `SessionsContext` or the map's retained list (`OverviewSessionsProvider`), and is never
  *  filtered, paged, selected or bulk-acted on with local sessions. It has its own read, its own
- *  rows and its own route.
+ *  rows, its own tab in the session list and its own route. The tab's search runs in the browser
+ *  over this list (`searchRemoteShares`).
  *
  *  **Memory only.** The list (titles and names a peer chose) is never written to local or session
  *  storage, and no turn of a remote session ever reaches this module. It is read while something
@@ -111,7 +112,8 @@ function subscribe(fn: () => void) {
 const snapshot = () => rows;
 
 /** The sessions peers share with this instance. Empty until the first read, and on an instance
- *  with no peers. */
+ *  with no peers: an empty array alone never says "nothing is shared" (`useRemoteSharesStatus`
+ *  does, and the Shared tab's fallback waits for it, #2198). */
 export function useRemoteShares(): readonly RemoteShare[] {
   useEffect(() => {
     watchers += 1;

@@ -90,7 +90,7 @@ function controls(page: Page, route: "sessions" | "missions") {
     // filter since the project dropdown became the tree (#2187).
     select: page.getByLabel(s ? "Filter by mission" : "Filter missions by project"),
     "active tab": page
-      .getByRole("tablist", { name: s ? "Archived filter" : "Mission scope" })
+      .getByRole("tablist", { name: s ? "Which sessions" : "Mission scope" })
       .getByRole("tab", { name: "Active" }),
     "row title": rows.locator("[class*='_title_']").first(),
     "row meta": rows.locator("[class*='_meta_']").first(),

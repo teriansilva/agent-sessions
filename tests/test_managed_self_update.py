@@ -1,10 +1,12 @@
-"""A managed agent never updates itself: BattleLab's catalog owns its version.
+"""A managed agent runs no self-updater BattleLab can switch off: BattleLab's catalog owns its
+version.
 
 2026-11-19: a BattleLab-launched, MANAGED claude (a pinned, digest-verified generation under the
 plugins home) ran Claude Code's own updater, which did `npm install -g @anthropic-ai/claude-code`
 per `~/.claude.json` and removed the operator's `~/.local/bin/claude`. Every process BattleLab
 starts from a managed entrypoint now carries the vendor's documented "no self-update" switch
 (`plugins.provider.self_update_off`); an adopted binary — the operator's own CLI — does not.
+gemini has no such switch (settings file only) and is the named exception.
 """
 
 from __future__ import annotations
@@ -136,6 +138,7 @@ def test_each_catalog_agents_switch_is_pinned():
         "opencode-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
         "opencode2-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
         "antigravity-cli": {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"},
+        "kimi-code": {"KIMI_CODE_NO_AUTO_UPDATE": "1"},
     }
     doc = json.loads(CATALOG.read_text())
     layouts = {
@@ -143,8 +146,9 @@ def test_each_catalog_agents_switch_is_pinned():
         for a in doc["agents"]
         if a["manifest"].get("binary")
     }
-    # codex only prompts; gemini and kimi have only a settings file in the operator's config.
-    no_env_switch = {"codex-rollouts", "gemini-tmp", "kimi-code", "copilot-sessions"}
+    # codex only prompts; gemini has only a settings file in the operator's config; copilot
+    # turns its updater off in its own manifest.
+    no_env_switch = {"codex-rollouts", "gemini-tmp", "copilot-sessions"}
     assert set(layouts) == set(kinds.SELF_UPDATE_OFF) | no_env_switch
     for layout in kinds.SELF_UPDATE_OFF:
         assert layout in kinds.STORE_LAYOUTS

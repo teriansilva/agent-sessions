@@ -37,7 +37,8 @@ import {
   painted,
   setup,
   setupTerminal,
-  showList,
+  showLocal,
+  showShared,
   snapshot,
   unchanged,
 } from "./shareFixture";
@@ -305,7 +306,7 @@ test("a shared terminal's row carries SCREEN; it opens the screen pane, an API r
     f.remote.push(f.screenRow(LAPTOP, "laptop", "n2Oc4fGhIjKlMnOpQrStUv", "Field terminal", false));
   });
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   const rows = list.getByTestId("remote-row");
   await expect(rows).toHaveCount(6);
 
@@ -349,7 +350,7 @@ test("a shared terminal's row carries SCREEN; it opens the screen pane, an API r
   expect(new URLSearchParams(frameReads(fake)[0].search).get("wait")).toBe("3");
 
   // An API row still opens the conversation pane, and asks for no frame.
-  await showList(page);
+  await showShared(page);
   await apiRow.locator("a").click();
   await expect(page).toHaveURL(new RegExp(`/remote/${GPU}/${GRANT_A}$`));
   await expect(pane.getByTestId("remote-transcript")).toBeVisible();
@@ -853,7 +854,7 @@ test("404: the share is no longer available, the frame is dropped, and the row i
   await expect(pane.getByTestId("remote-title")).toHaveText(TERM_TITLE);
   await expect(pane.getByTestId("remote-transcript")).toHaveCount(0);
   // ...the row is gone from the list...
-  const list = await showList(page);
+  const list = await showShared(page);
   await expect(list.getByTestId("remote-row").filter({ hasText: TERM_TITLE })).toHaveCount(0);
   // ...and nothing is asked again: final.
   const asked = fake.reads.length;
@@ -886,7 +887,7 @@ async function screenWithHeldFrame(page: Page) {
     };
   });
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   await list.getByTestId("remote-row").filter({ hasText: TERM_TITLE }).locator("a").click();
   const pane = page.getByTestId("remote-pane");
   await expect(pane.getByTestId("remote-screen")).toBeVisible();
@@ -898,7 +899,7 @@ async function screenWithHeldFrame(page: Page) {
 test("a slow frame that arrives after navigating away is discarded", async ({ page }) => {
   const { fake, held, aborted } = await screenWithHeldFrame(page);
   // Leave for a local session, inside the app (no reload: the same document keeps running).
-  const list = await showList(page);
+  const list = await showLocal(page);
   await list.locator(`a[href="${URL_PATH}"]`).click();
   await expect(page.getByTestId("structured-pane")).toBeVisible();
   await expect(page.getByTestId("remote-pane")).toHaveCount(0);
@@ -920,7 +921,7 @@ test("a slow frame for one shared terminal never lands in another's pane, or in 
 }) => {
   const { fake, pane, held, aborted } = await screenWithHeldFrame(page);
   // Switch to the other terminal gpu-box shares: the same route, another grant.
-  let list = await showList(page);
+  let list = await showShared(page);
   await list.getByTestId("remote-row").filter({ hasText: "Nightly build watch" }).locator("a").click();
   await expect(page).toHaveURL(new RegExp(`/remote/${GPU}/${GRANT_T2}$`));
   await expect(pane.getByTestId("remote-title")).toHaveText("Nightly build watch");
@@ -937,7 +938,7 @@ test("a slow frame for one shared terminal never lands in another's pane, or in 
   await expect(page.getByText("LATE SCREEN LINE")).toHaveCount(0);
   expect(await lines(pane)).toEqual(["$ tail -f build.log", "ok", "", ""]);
   // On to an API session on the same route: the conversation pane, with nothing of a screen.
-  list = await showList(page);
+  list = await showShared(page);
   await list.getByTestId("remote-row").filter({ hasText: "Tune the render queue" }).locator("a").click();
   await expect(pane.locator("[data-turn]")).toHaveCount(2);
   await expect(pane.getByTestId("remote-screen")).toHaveCount(0);

@@ -21,9 +21,10 @@ import { Link, NavLink, useLocation, useMatch, useNavigate } from "react-router-
 import { useConfig } from "../../app/config";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { useSessionsStore } from "../../app/sessionsStore";
-import { useRemoteShares } from "../../app/remoteShares";
+import { useRemoteShares, useRemoteSharesStatus } from "../../app/remoteShares";
+import { searchRemoteShares } from "../../lib/federation";
 import { RemoteRows } from "../federation/RemoteRow";
-import { useSessionsList } from "../../hooks/useSessionsList";
+import { scopePatch, useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
 import {
   engineBadge,
@@ -605,7 +606,25 @@ export function SessionList({
     clusterFilterUnavailable,
     counts,
   } = useSessionsList();
+  // Sessions peers share with this instance (#2055): their own read, and since #2198 their own
+  // scope. They are never `sessions`: no filter, page, selection or row action here sees one.
   const remote = useRemoteShares();
+  const remoteStatus = useRemoteSharesStatus();
+  const shared = !!filters.shared;
+  // A REMEMBERED Shared scope goes back to Active when nothing is shared, but only on what a
+  // read said: the store's array is empty before its first read, and stays empty when that read
+  // fails, and neither says "nothing is shared". Decided once per stay on the tab, by the first
+  // successful read: after it, the tab stays when the last share ends under the operator.
+  const sharedDecided = useRef(false);
+  useEffect(() => {
+    if (!shared) {
+      sharedDecided.current = false;
+      return;
+    }
+    if (sharedDecided.current || !remoteStatus.loaded) return;
+    sharedDecided.current = true;
+    if (remote.length === 0) update(scopePatch("active"));
+  }, [shared, remoteStatus.loaded, remote.length, update]);
   // Session clusters (#1997). Off (or an older server): no clusters in the project tree, no head,
   // no chip. The tree itself always shows: it is the project filter (#2187).
   const config = useConfig();
@@ -807,14 +826,42 @@ export function SessionList({
     };
   }, []);
 
-  // Sessions peers share with this instance (#2055): their own read and their own rows. They
-  // are never `sessions`: no filter, page, selection or row action above ever sees one.
-  const remoteList =
-    remote.length > 0 ? (
-      <ul className={styles.list} aria-label="Sessions shared by peers">
-        <RemoteRows remote={remote} onNavigate={onNavigate} />
-      </ul>
-    ) : null;
+  // The Shared scope's list (#2198): the shared rows and nothing else. `RemoteRows` on
+  // `RemoteShare`, narrowed only by this scope's own search.
+  const sharedMatches = searchRemoteShares(remote, filters.sharedQ ?? "");
+  const sharedList = sharedMatches.length > 0 ? (
+    <ul
+      className={styles.list}
+      aria-label={`${sharedMatches.length} session${sharedMatches.length === 1 ? "" : "s"} shared by peers`}
+      data-testid="shared-list"
+    >
+      <RemoteRows remote={sharedMatches} onNavigate={onNavigate} />
+    </ul>
+  ) : (
+    <div className={styles.empty} data-testid="shared-empty">
+      {remote.length > 0 ? (
+        <>
+          <b>No shared session matches.</b>
+          <br />
+          {`Clear the search to see all ${remote.length}.`}
+        </>
+      ) : remoteStatus.loaded ? (
+        <>
+          <b>Nothing is shared with you right now.</b>
+          <br />
+          A paired instance shares a session from that session’s Share → Peer…
+        </>
+      ) : remoteStatus.attempts > 0 ? (
+        <>
+          <b>The shared sessions could not be read.</b>
+          <br />
+          This list is read again shortly.
+        </>
+      ) : (
+        "Reading shared sessions…"
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -840,6 +887,7 @@ export function SessionList({
         onChange={update}
         onClear={clear}
         missionFilterUnavailable={missionFilterUnavailable}
+        sharedCount={remote.length}
       >
         <ProjectTree
           filters={filters}
@@ -850,7 +898,7 @@ export function SessionList({
           onChange={update}
         />
       </FiltersBar>
-      {clustersOn && selectedCluster && facets.clusters ? (
+      {!shared && clustersOn && selectedCluster && facets.clusters ? (
         <ClusterHead
           key={selectedCluster}
           clusterId={selectedCluster}
@@ -862,26 +910,24 @@ export function SessionList({
           onSelect={(id) => update({ cluster: id })}
         />
       ) : null}
-      {error ? (
-        <>
-          <div className={styles.empty}>{error}</div>
-          {remoteList}
-        </>
+      {shared ? (
+        // Shared (#2198): none of the local list is mounted here — no row, page, "Load more" or
+        // row action — so nothing that works on this instance's sessions can reach a shared one.
+        sharedList
+      ) : error ? (
+        <div className={styles.empty}>{error}</div>
       ) : sessions.length === 0 && !loading ? (
-        <>
-          <div className={styles.empty}>
-            {filters.q ||
-            filters.project ||
-            filters.engine ||
-            filters.mission ||
-            filters.cluster
-              ? "No sessions match — clear filters."
-              : filters.archived
-                ? "No archived sessions."
-                : "No sessions yet."}
-          </div>
-          {remoteList}
-        </>
+        <div className={styles.empty}>
+          {filters.q ||
+          filters.project ||
+          filters.engine ||
+          filters.mission ||
+          filters.cluster
+            ? "No sessions match — clear filters."
+            : filters.archived
+              ? "No archived sessions."
+              : "No sessions yet."}
+        </div>
       ) : (
         <ul className={styles.list} aria-label={`${total} sessions`}>
           {sessions.map((s) => (
@@ -921,8 +967,6 @@ export function SessionList({
               </button>
             </li>
           )}
-          {/* After the local rows, and outside everything that works on them (#2055). */}
-          <RemoteRows remote={remote} onNavigate={onNavigate} />
         </ul>
       )}
       {/* Always-mounted polite live region (#392): the region exists BEFORE its content

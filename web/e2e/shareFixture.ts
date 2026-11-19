@@ -462,6 +462,31 @@ export async function showList(page: Page) {
   return list;
 }
 
+/** Select one of the session list's scopes (#2198): Active, Archived, or Shared (the sessions
+ *  peers share; offered while one is shared). The scope is kept for the page's lifetime, so a test
+ *  that leaves Shared for a local row selects Active first. */
+export async function selectScope(list: Locator, scope: "active" | "archived" | "shared") {
+  const tab = list.getByTestId(`scope-tab-${scope}`);
+  await expect(tab).toBeVisible();
+  if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+}
+
+/** The session list on its Shared tab: where the remote rows are since #2198. THE one way the
+ *  sharing specs reach a remote row in the list. */
+export async function showShared(page: Page) {
+  const list = await showList(page);
+  await selectScope(list, "shared");
+  return list;
+}
+
+/** The session list on Active: this instance's own rows. */
+export async function showLocal(page: Page) {
+  const list = await showList(page);
+  await selectScope(list, "active");
+  return list;
+}
+
 /** Run a head action wherever the header put it: inline, the "…" fold, or the ≤800px menu.
  *  Returns the control that opened it (what focus must come back to). */
 export async function headAction(page: Page, aria: string): Promise<Locator> {

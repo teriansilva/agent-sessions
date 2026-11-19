@@ -47,6 +47,9 @@ import {
   FakeShare,
   setup,
   isMobile,
+  selectScope,
+  showLocal,
+  showShared,
   showList,
   SHARE_PEER,
   openDialog,
@@ -359,7 +362,7 @@ test("on a wide screen the dialog scrolls as one and its actions sit above the l
 test("remote rows: title, peer badge, view only and the end date, or offline; no menu", async ({ page }) => {
   await setup(page);
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   const remote = list.getByTestId("remote-row");
   await expect(remote).toHaveCount(3);
   await expect(remote.nth(0)).toContainText("Tune the render queue");
@@ -382,15 +385,19 @@ test("remote rows: title, peer badge, view only and the end date, or offline; no
   // A remote row is a link and nothing else: no ⋯, no LED, no button of any kind.
   await expect(remote.locator("button")).toHaveCount(0);
   await expect(remote.locator(".hud-led")).toHaveCount(0);
-  // The local rows keep theirs: the two kinds are not the same component.
-  const localRows = list.locator("li").filter({ has: page.locator(`a[href^="/s/"]`) });
-  await expect(localRows).toHaveCount(2);
   if (isMobile(page)) {
     for (let i = 0; i < 3; i++) {
       const box = (await remote.nth(i).locator("a").boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
+  // The local rows keep theirs, on their own tab (#2198): the two kinds are not the same
+  // component, and neither tab lists the other's rows.
+  const localRows = list.locator("li").filter({ has: page.locator(`a[href^="/s/"]`) });
+  await expect(localRows).toHaveCount(0);
+  await selectScope(list, "active");
+  await expect(localRows).toHaveCount(2);
+  await expect(remote).toHaveCount(0);
 });
 
 test("an expiry no browser can make a date of drops its row and breaks nothing (#2055 review)", async ({
@@ -408,10 +415,12 @@ test("an expiry no browser can make a date of drops its row and breaks nothing (
   });
   await page.goto(URL_PATH);
   await expect(page.getByTestId("structured-pane")).toBeVisible();
-  const list = await showList(page);
+  const list = await showShared(page);
   const remote = list.getByTestId("remote-row");
   await expect(remote).toHaveCount(1);
   await expect(remote).toContainText("Color pipeline notes");
+  await expect(list.getByTestId("shared-count")).toHaveText("1");
+  await selectScope(list, "active");
   await expect(list.locator("li").filter({ has: page.locator(`a[href^="/s/"]`) })).toHaveCount(2);
   expect(errors).toEqual([]);
 });
@@ -419,7 +428,7 @@ test("an expiry no browser can make a date of drops its row and breaks nothing (
 test("a remote row opens the read-only pane: no composer, no session actions", async ({ page }) => {
   const fake = await setup(page);
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   await list.getByTestId("remote-row").first().locator("a").click();
   await expect(page).toHaveURL(new RegExp(`/remote/${GPU}/${GRANT_A}$`));
   const pane = page.getByTestId("remote-pane");
@@ -510,7 +519,7 @@ test("a final 404: the neutral unavailable state, and the row is gone on the nex
       ended ? GONE : kind === "snapshot" ? { json: snapshot(RENDER_TURNS) } : QUIET;
   });
   await page.goto(URL_PATH);
-  let list = await showList(page);
+  let list = await showShared(page);
   await expect(list.getByTestId("remote-row")).toHaveCount(3);
   await list.getByTestId("remote-row").first().locator("a").click();
   const pane = page.getByTestId("remote-pane");
@@ -531,7 +540,7 @@ test("a final 404: the neutral unavailable state, and the row is gone on the nex
   await expect(pane.getByTestId("remote-view-only")).toHaveCount(0);
   // The pane asked for the list again, and the row left with that read.
   await expect.poll(() => fake.listReads).toBeGreaterThan(listReads);
-  list = await showList(page);
+  list = await showShared(page);
   await expect(list.getByTestId("remote-row")).toHaveCount(2);
   await expect(list.getByText("Tune the render queue")).toHaveCount(0);
   // Final: nothing is asked of that share again.
@@ -579,7 +588,7 @@ async function paneWithHeldSnapshot(page: Page, other?: (f: FakeShare) => void) 
     };
   });
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   await list.getByTestId("remote-row").first().locator("a").click();
   const pane = page.getByTestId("remote-pane");
   await expect(pane.locator("[data-turn]")).toHaveCount(2);
@@ -616,7 +625,7 @@ test("a slow success that arrives after the pane cleared is discarded", async ({
 test("a slow success that arrives after navigating away is discarded", async ({ page }) => {
   const { fake, held, aborted } = await paneWithHeldSnapshot(page);
   // Leave for a local session, inside the app (no reload: the same document keeps running).
-  const list = await showList(page);
+  const list = await showLocal(page);
   await list.locator(`a[href="${URL_PATH}"]`).click();
   await expect(page.getByTestId("structured-pane")).toBeVisible();
   await expect(page.getByTestId("remote-pane")).toHaveCount(0);
@@ -636,7 +645,7 @@ test("a slow success that arrives after navigating away is discarded", async ({ 
 test("a slow success for one shared session never lands in another's pane", async ({ page }) => {
   const { fake, pane, held, aborted } = await paneWithHeldSnapshot(page);
   // Switch to the other session gpu-box shares: the same route, another grant.
-  const list = await showList(page);
+  const list = await showShared(page);
   await list.getByTestId("remote-row").nth(1).locator("a").click();
   await expect(page).toHaveURL(new RegExp(`/remote/${GPU}/${GRANT_B}$`));
   await expect(pane.getByTestId("remote-title")).toHaveText("Color pipeline notes");
@@ -744,8 +753,17 @@ test("remote rows are untouched by the local list's filters and actions", async 
   const list = await showList(page);
   const remote = list.getByTestId("remote-row");
   const local = list.locator(`a[href^="/s/"]`);
-  await expect(remote).toHaveCount(3);
+  // The remote rows are on the Shared tab (#2198), the local rows on Active and Archived, and
+  // neither is ever part of the other's list.
   await expect(local).toHaveCount(2);
+  await expect(remote).toHaveCount(0);
+  const onShared = async () => {
+    await selectScope(list, "shared");
+    await expect(remote).toHaveCount(3);
+    await expect(local).toHaveCount(0);
+    await selectScope(list, "active");
+  };
+  await onShared();
 
   // A title search narrows the LOCAL list. A remote title that matches is not "found" by it and
   // one that does not is not hidden by it: the rows are simply not part of that list.
@@ -753,29 +771,35 @@ test("remote rows are untouched by the local list's filters and actions", async 
   if (!(await search.isVisible())) await list.getByRole("button", { name: /filter/i }).first().click();
   await search.fill("nightly");
   await expect(local).toHaveCount(1);
-  await expect(remote).toHaveCount(3);
+  await expect(remote).toHaveCount(0);
+  await onShared();
   await search.fill("zzzz no such session");
   await expect(local).toHaveCount(0);
   await expect(list.getByText("No sessions match — clear filters.")).toBeVisible();
-  await expect(remote).toHaveCount(3);
+  await onShared();
   await search.fill("render queue"); // matches a REMOTE title only
   await expect(local).toHaveCount(0);
-  await expect(remote).toHaveCount(3);
+  await expect(remote).toHaveCount(0);
+  await onShared();
   await search.fill("");
   await expect(local).toHaveCount(2);
 
-  // The archived tab: no remote row is ever "archived" or hidden by it.
+  // The archived tab: no remote row is ever "archived", listed or hidden by it.
   await list.getByRole("tab", { name: "Archived" }).click();
   await expect(local).toHaveCount(0);
-  await expect(remote).toHaveCount(3);
+  await expect(remote).toHaveCount(0);
+  await expect(list.getByTestId("shared-count")).toHaveText("3");
   await list.getByRole("tab", { name: "Active" }).click();
   await expect(local).toHaveCount(2);
 
   // Selection: the open session is a local row; no remote row is ever the selected one for it.
   await expect(list.locator(`a[href="${URL_PATH}"]`)).toHaveAttribute("aria-current", "page");
-  await expect(remote.locator('a[aria-current="page"]')).toHaveCount(0);
   // Row actions exist per LOCAL row only: a remote row offers none to select or to act with.
   await expect(list.getByRole("button", { name: /^Session actions/ })).toHaveCount(2);
+  await selectScope(list, "shared");
+  await expect(remote).toHaveCount(3);
+  await expect(remote.locator('a[aria-current="page"]')).toHaveCount(0);
+  await expect(list.getByRole("button", { name: /^Session actions/ })).toHaveCount(0);
   await expect(remote.getByRole("button")).toHaveCount(0);
   await expect(remote.locator("input")).toHaveCount(0);
 
@@ -867,7 +891,7 @@ test("hostile text from a peer is text: no markup, no script, no dangerous link,
   });
 
   await page.goto(URL_PATH);
-  const list = await showList(page);
+  const list = await showShared(page);
   // The list row: the title and the peer's name, as written.
   const row = list.getByTestId("remote-row").first();
   await expect(row).toContainText(TITLE_X);
@@ -953,7 +977,7 @@ test("the pane at 390 px: no sideways overflow in any state, and 44 px controls"
   await inside();
   await controlsAtLeast44(pane);
   // The list with remote rows (the drawer), at the same width.
-  const list = await showList(page);
+  const list = await showShared(page);
   await expect(list.getByTestId("remote-row")).toHaveCount(3);
   await noHorizontalOverflow(page);
   const rowWide = await list.evaluate((l) =>

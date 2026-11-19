@@ -214,6 +214,23 @@ pagination, so `total` and "load more" describe the filtered result rather than 
 one page. The dropdown facets are computed over the full set *before* filters, so they keep listing
 every option no matter how narrow the current filter is.
 
+### Active, Archived and Shared
+
+The tabs in the Filters block choose which sessions the list shows. **Active** and **Archived**
+are your own sessions. **Shared** appears once another instance you are paired with shares a
+session with you, and shows how many are shared. It lists those sessions and nothing else; they
+are not listed under Active or Archived.
+
+- A shared row shows the title, the instance that shares it, what you may do (view only, or
+  **Screen** for a terminal) and until when, or **offline** while that instance is not connected.
+  Clicking it opens the shared session.
+- Search is the only filter on this tab. It matches the title or the name of the instance. Your
+  project, agent and mission filters belong to your own sessions: they are not shown on Shared,
+  and they are in force again, unchanged, when you go back to Active or Archived.
+- When the last share ends while you are on the tab, the tab stays and says that nothing is
+  shared with you right now. It goes away when you leave it.
+- An owner shares a session from that session's **Share → Peer…**.
+
 ::: info Verified against
 Commit `218cf3a` — `docs/session-handling.md`; `docs/reference.md § Runtime / storage`; `src/agent_sessions/sessionlock.py`; `src/agent_sessions/runtime_cleanup.py`.
 :::

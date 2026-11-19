@@ -3,7 +3,7 @@ import { remotePath, remoteRowState, type RemoteShare } from "../../lib/federati
 import { PeerBadge, PeerGlyph, ScreenTag } from "./PeerBadge";
 import styles from "./Remote.module.css";
 
-/** A session another instance shares, in the session list (#2055).
+/** A session another instance shares, in the session list's Shared tab (#2055, #2198).
  *
  *  It is a separate component on purpose, and it takes a `RemoteShare`, never a `SessionEntry`:
  *  no local filter, page, selection, menu or bulk action can reach it. It shows what the list
@@ -52,8 +52,8 @@ export function RemoteRow({
   );
 }
 
-/** The remote rows of the session list, after the local ones. Renders nothing when no peer
- *  shares anything. */
+/** The rows of the session list's Shared tab (#2198): the Shared scope lists these and nothing
+ *  else, and Active and Archived never list one. Renders nothing for an empty list. */
 export function RemoteRows({
   remote,
   onNavigate,
