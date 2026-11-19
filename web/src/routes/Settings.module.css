@@ -931,6 +931,17 @@
 .aiInput {
   composes: nj-field from global;
 }
+/* A field's rule or problem, on the line under its input (the Password card): tight to the
+ * field it belongs to, red only while the value breaks the rule. */
+.fieldNote {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.fieldNoteErr {
+  color: var(--danger-text);
+}
 .aiInput:focus-visible {
   outline: none;
   border-color: var(--accent);

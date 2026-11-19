@@ -69,3 +69,91 @@ test("single-user: Security tab shows the normal cards, not the login-off card",
   // …and the login-off card is not shown.
   await expect(page.getByText(/login is off/i)).toHaveCount(0);
 });
+
+// The operator can change their own password from Settings → Security: the card posts the
+// current + new password to /api/password, refuses a short or mistyped new one before sending,
+// and says plainly when the current password was wrong.
+test.describe("single-user: Password card", () => {
+  test("changes the password with the current one and a confirmed new one", async ({
+    page,
+  }) => {
+    baseRoutes(page, "single-user");
+    const posted: unknown[] = [];
+    await page.route("**/api/password", (r) => {
+      posted.push(r.request().postDataJSON());
+      return r.fulfill({ status: 204 });
+    });
+    await page.goto(settingsPath("security"));
+
+    await expect(
+      page.getByRole("heading", { name: /^password$/i }),
+    ).toBeVisible();
+    const current = page.getByLabel("Current password");
+    const next = page.getByLabel("New password", { exact: true });
+    const confirm = page.getByLabel("Confirm new password");
+    const submit = page.getByRole("button", { name: /change password/i });
+    await expect(submit).toBeDisabled();
+
+    await current.fill("old-password-1");
+    // Too short: the button stays off and the rule is shown as the reason.
+    await next.fill("short");
+    await confirm.fill("short");
+    await expect(submit).toBeDisabled();
+    // Long enough but mistyped: still off, and the mismatch is named.
+    await next.fill("a-brand-new-password");
+    await confirm.fill("a-brand-new-passwore");
+    await expect(page.getByText(/passwords don’t match/i)).toBeVisible();
+    await expect(submit).toBeDisabled();
+
+    await confirm.fill("a-brand-new-password");
+    await expect(submit).toBeEnabled();
+    await submit.click();
+
+    await expect(page.getByRole("status")).toHaveText(/password changed/i);
+    expect(posted).toEqual([
+      {
+        current_password: "old-password-1",
+        new_password: "a-brand-new-password",
+      },
+    ]);
+    // The fields clear so the password is not left on screen.
+    await expect(current).toHaveValue("");
+    await expect(next).toHaveValue("");
+    await expect(confirm).toHaveValue("");
+  });
+
+  test("says the current password is wrong when the server refuses it", async ({
+    page,
+  }) => {
+    baseRoutes(page, "single-user");
+    await page.route("**/api/password", (r) =>
+      r.fulfill({
+        status: 403,
+        json: { detail: "current password is incorrect" },
+      }),
+    );
+    await page.goto(settingsPath("security"));
+
+    await page.getByLabel("Current password").fill("not-my-password");
+    await page
+      .getByLabel("New password", { exact: true })
+      .fill("a-brand-new-password");
+    await page.getByLabel("Confirm new password").fill("a-brand-new-password");
+    await page.getByRole("button", { name: /change password/i }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(
+      /current password is incorrect/i,
+    );
+    // A refused change is not a sign-out: the page stays on Settings → Security.
+    await expect(page).toHaveURL(/security/);
+  });
+});
+
+test("Home Free (none): no Password card", async ({ page }) => {
+  baseRoutes(page, "none");
+  await page.goto(settingsPath("security"));
+  await expect(page.getByText(/login is off/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^password$/i })).toHaveCount(
+    0,
+  );
+});

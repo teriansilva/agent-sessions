@@ -244,8 +244,10 @@ with the client's default instead.
 
 ### Security · `security`
 
-**Two-factor authentication** — enrollment, recovery codes, and turning it off, which needs a
-current code or your password — and **Account**, with **Sign out**. With login off
+**Password** — change the password you sign in with: your current password, then the new one
+(at least 12 characters) twice. Devices already signed in stay signed in. **Two-factor
+authentication** — enrollment, recovery codes, and turning it off, which needs a current code or
+your password — and **Account**, with **Sign out**. With login off
 (`AGENT_SESSIONS_AUTH_MODE=none`, as in Home Free) there is nothing to manage, and the page explains
 that instead. See [First login](/start/first-login).
 

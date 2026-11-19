@@ -9,6 +9,7 @@ import {
   Coffee,
   Copy,
   Download,
+  KeyRound,
   LogOut,
   Mail,
   RefreshCw,
@@ -1114,6 +1115,168 @@ function TwoFactorCard() {
   );
 }
 
+/** The server's floor for a new password (`_apply_password_change`): checked here first so the
+ *  button says why it is off instead of the request failing. */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/** Change password: the signed-in operator changes their own login password with the current
+ *  one and a new one typed twice (`POST /api/password`). Only ever mounted by `SecurityPanel` for a
+ *  login-on install. This session stays signed in; the new password applies from the next
+ *  sign-in, and to the 2FA card's "or your password" proof at once. */
+function PasswordCard() {
+  const config = useConfig();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [changed, setChanged] = useState(false);
+
+  const tooShort = next.length > 0 && next.length < MIN_PASSWORD_LENGTH;
+  const mismatch = confirm.length > 0 && next !== confirm;
+  const ready =
+    !busy &&
+    current.length > 0 &&
+    next.length >= MIN_PASSWORD_LENGTH &&
+    next === confirm;
+
+  const submit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    setChanged(false);
+    try {
+      await api.changePassword(current, next);
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setChanged(true);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Your current password is incorrect."
+          : e instanceof ApiError && e.status === 422
+            ? `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.`
+            : "Couldn’t change the password.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="password-h">
+      <h2 id="password-h">Password</h2>
+      <p className={styles.hint}>
+        Change the password you sign in with. Devices already signed in stay
+        signed in.
+      </p>
+      <form
+        aria-labelledby="password-h"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        {/* For password managers: which account this new password belongs to. */}
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value={config?.username ?? ""}
+          readOnly
+          hidden
+        />
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-current">
+            Current password
+          </label>
+          <input
+            id="password-current"
+            className={styles.aiInput}
+            type="password"
+            name="current-password"
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => {
+              setCurrent(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+        </div>
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-new">
+            New password
+          </label>
+          <input
+            id="password-new"
+            className={styles.aiInput}
+            type="password"
+            name="new-password"
+            autoComplete="new-password"
+            aria-describedby="password-new-rule"
+            aria-invalid={tooShort || undefined}
+            value={next}
+            onChange={(e) => {
+              setNext(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+          <span
+            id="password-new-rule"
+            className={`${styles.fieldNote} ${tooShort ? styles.fieldNoteErr : ""}`}
+          >
+            At least {MIN_PASSWORD_LENGTH} characters.
+          </span>
+        </div>
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-confirm">
+            Confirm new password
+          </label>
+          <input
+            id="password-confirm"
+            className={styles.aiInput}
+            type="password"
+            name="confirm-password"
+            autoComplete="new-password"
+            aria-describedby={mismatch ? "password-confirm-err" : undefined}
+            aria-invalid={mismatch || undefined}
+            value={confirm}
+            onChange={(e) => {
+              setConfirm(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+          {mismatch && (
+            <span
+              id="password-confirm-err"
+              className={`${styles.fieldNote} ${styles.fieldNoteErr}`}
+            >
+              The passwords don’t match.
+            </span>
+          )}
+        </div>
+        {error && (
+          <p className={styles.err} role="alert">
+            {error}
+          </p>
+        )}
+        {changed && (
+          <p className={styles.ok} role="status">
+            Password changed. Use the new one the next time you sign in.
+          </p>
+        )}
+        <button type="submit" className={styles.secBtn} disabled={!ready}>
+          <KeyRound size={15} /> {busy ? "Changing…" : "Change password"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 /** Account (#141): a Sign out button. Hidden when there's no login (auth_mode=none), like
  *  the 2FA card. Sign out clears the session server-side, then navigates to /login. */
 /** Sign out. Only ever mounted by `SecurityPanel` for a login-on install, which is what makes a
@@ -1167,6 +1330,7 @@ function SecurityPanel() {
   if (config.auth_mode === "none") return <LoginOffCard />;
   return (
     <>
+      <PasswordCard />
       <TwoFactorCard />
       <AccountCard />
     </>

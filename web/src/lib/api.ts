@@ -1631,6 +1631,13 @@ export const api = {
       whats_new_seen: version,
     }),
   /** Optional TOTP 2FA (#116). All CSRF-guarded. */
+  /** Change the operator's own password (current + new, new ≥ 12 chars). 204 on success; 403
+   *  when the current password is wrong, 422 when the new one is too short. */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    postVoid("/api/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
   enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
   confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),
   /** Disable 2FA — needs a fresh proof (current code OR password). */
