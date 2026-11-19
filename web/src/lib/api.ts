@@ -23,6 +23,7 @@ import type {
 } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
+import type { McpCheckRow, McpOperation, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate } from "../types/mcp";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type {
@@ -68,6 +69,9 @@ import {
   AUTOMATIONS_API,
   DIRECTION_PREVIEW_PATH,
   askStopTurnPath,
+  mcpInstallPath,
+  mcpOperationPath,
+  mcpReviewPath,
 } from "./apiPaths";
 import type {
   Automation,
@@ -1748,6 +1752,34 @@ export const api = {
     mutateJson<ImportResult>("POST", `/api/memory/${enc(pid)}/import`, { sources }),
   /** Shared Library (#1390): metadata and scoped values remain in the existing store. */
   variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
+  /** Library → MCP servers (#2163). Every mutation carries the CSRF header (`mutateJson`); no
+   *  answer ever holds a credential value. */
+  mcpServers: () => getJsonWithDetail<{ servers: McpServerSummary[] }>("/api/mcp/servers"),
+  mcpServer: (id: string) => getJsonWithDetail<McpServerDetail>(`/api/mcp/servers/${enc(id)}`),
+  createMcpServer: (input: McpServerInput) =>
+    mutateJson<McpServerSummary>("POST", "/api/mcp/servers", input),
+  updateMcpServer: (id: string, input: McpServerUpdate, expected: number) =>
+    mutateJson<McpServerSummary>("PATCH", `/api/mcp/servers/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  deleteMcpServer: (id: string, expected: number) =>
+    deleteVoid(`/api/mcp/servers/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
+  setMcpProjects: (id: string, projects: "all" | string[], expected: number) =>
+    mutateJson<McpServerSummary>("PUT", `/api/mcp/servers/${enc(id)}/projects`, { projects, expected_updated_at: expected }),
+  /** `scope` is `"shared"` (the library values) or a project id. */
+  checkMcpServer: (id: string, scope: string) =>
+    mutateJson<McpCheckRow>("POST", `/api/mcp/servers/${enc(id)}/check`, { scope }),
+  /** Start (or, with the same `requestId`, rejoin) resolving a package into a lock: 202 with an
+   *  operation whose result is the review facts. Poll it with `mcpOperation`. */
+  reviewMcpServer: (id: string, requestId: string) =>
+    mutateJson<McpOperation<McpReviewFacts>>("POST", mcpReviewPath(id), { request_id: requestId }),
+  /** Start (or rejoin) installing exactly the reviewed lock: 202 with an operation whose result is
+   *  the server's summary. */
+  installMcpServer: (id: string, reviewId: string, requestId: string) =>
+    mutateJson<McpOperation<McpServerSummary>>("POST", mcpInstallPath(id), { request_id: requestId, review_id: reviewId }),
+  /** A review or install operation; 404 once the app restarted and forgot it. */
+  mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
+  /** A project's OWN credential values for this server (write-only; only variables it names). */
+  setMcpOwnCredentials: (id: string, projectId: string, values: Record<string, string>) =>
+    mutateJson<McpServerDetail>("PUT", `/api/mcp/servers/${enc(id)}/projects/${enc(projectId)}/credentials`, { values }),
   enableSharedVariables: () => mutateJson<Pick<SharedVariablesResponse, "variables" | "collections">>("POST", "/api/variables/migrate", {}),
   createVariable: (input: SharedVariableInput) => mutateJson<SharedVariable>("POST", "/api/variables", input),
   updateVariable: (id: string, input: SharedVariableUpdate, expected: number) =>

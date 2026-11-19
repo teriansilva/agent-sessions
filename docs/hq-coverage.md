@@ -438,6 +438,7 @@ GET    /api/mcp/servers/{sid}                                                   
 PATCH  /api/mcp/servers/{sid}                                                     #2163
 POST   /api/mcp/servers/{sid}/check                                               #2163
 PUT    /api/mcp/servers/{sid}/projects                                            #2163
+PUT    /api/mcp/servers/{sid}/projects/{pid}/credentials                          #2163
 POST   /api/mcp/servers/{sid}/review                                              #2163
 POST   /api/mcp/servers/{sid}/install                                             #2163
 GET    /api/mcp/operations/{op_id}                                                #2163

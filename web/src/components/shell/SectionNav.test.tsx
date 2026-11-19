@@ -41,6 +41,8 @@ describe("activeSection", () => {
     ["/library/skills/my-copy", "library"],
     ["/library/galleryx", null],
     ["/library/variables", "library"],
+    ["/library/mcp", "library"],
+    ["/library/mcp/new", "library"],
   ])("%s → %s", (path, expected) => {
     expect(activeSection(path)).toBe(expected);
   });
@@ -78,6 +80,11 @@ describe("activeSection", () => {
     ["/library/skillsx", null],
     ["/library/variables", "variables"],
     ["/library/variablesx", null],
+    // #2163: MCP servers owns its subtree (the wizard and each server's page live under it).
+    ["/library/mcp", "mcp"],
+    ["/library/mcp/new", "mcp"],
+    ["/library/mcp/0123456789abcdef", "mcp"],
+    ["/library/mcpx", null],
     // #1932: Artifacts owns its subtree (one artifact's page lives under it); the hosted
     // `/artifacts/…` bytes are the server's, not a Library page.
     ["/library/artifacts", "artifacts"],
@@ -193,6 +200,8 @@ describe("SectionNav", () => {
     expect(items.map((i) => [i.textContent, i.getAttribute("href")])).toEqual([
       ["Prompt Templates", "/templates"],
       ["Variables", "/library/variables"],
+      // #2163: third-party MCP servers, beside the Variables their credentials live in.
+      ["MCP servers", "/library/mcp"],
       ["Memory", "/library/memory"],
       // #1932: what agents published, after Memory.
       ["Artifacts", "/library/artifacts"],
@@ -202,7 +211,7 @@ describe("SectionNav", () => {
       ["Playbooks", "/library/playbooks"],
       ["Mission plans", "/library/mission-plans"],
     ]);
-    expect(items[5]).toHaveAttribute("aria-current", "page");
+    expect(items[6]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

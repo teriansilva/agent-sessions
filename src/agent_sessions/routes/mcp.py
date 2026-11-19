@@ -13,7 +13,7 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import mcp_check, mcp_install, mcp_jobs, mcp_registry, projects
+from .. import mcp_check, mcp_install, mcp_jobs, mcp_registry, projects, template_vars
 from .templates import _err, _expected, _json, _json_object
 from .upload import NO_STORE
 
@@ -232,3 +232,47 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         return (
             result if isinstance(result, Response) else Response(status_code=204, headers=NO_STORE)
         )
+
+    @app.put("/api/mcp/servers/{sid}/projects/{pid}/credentials")
+    async def put_own_credentials(
+        sid: str,
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """A project's OWN values for credentials server ``sid`` names (#2163 P1c, the server
+        page's "Use own credentials"). Each is stored as that project's secret under the
+        variable's name (`template_vars.bind_project`), which resolution prefers over a shared
+        value. Only variables the server names are accepted, so this route cannot write any other
+        variable. Write-only: the answer is the server's detail, never a value."""
+        payload = await _json_object(request)
+        values = payload.get("values")
+        if (
+            set(payload) != {"values"}
+            or not isinstance(values, dict)
+            or not values
+            or not all(isinstance(v, str) for v in values.values())
+        ):
+            raise _err(422, 'send {"values": {<variable name>: <value>}}')
+
+        def run():
+            rec = mcp_registry.get(sid)
+            if pid not in _project_ids():
+                raise mcp_registry.RegistryError("no such project")
+            named = {s["variable"] for s in rec["settings"] if s["kind"] == "credential"}
+            if not set(values) <= named:
+                raise mcp_registry.RegistryError(
+                    "only the credentials this server names can be set here"
+                )
+            try:
+                template_vars.bind_project(
+                    pid,
+                    [{"name": n, "kind": "secret", "value": v} for n, v in sorted(values.items())],
+                )
+            except template_vars.VariableError as e:
+                raise mcp_registry.RegistryError(str(e)) from None
+            return _detail(sid)
+
+        result = await _run(run)
+        return result if isinstance(result, Response) else _json(result)

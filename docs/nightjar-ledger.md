@@ -63,6 +63,7 @@ the same list.
 | `components/gallery/viewTabs.module.css` | css | 10 | done | route:playbooks route:skills | the current tab underlines in the chrome on a short colour fade (no sliding marker: the tabs are links) |
 | `components/library/library.module.css` | css | 10 | done | route:playbooks route:playbook-detail route:gallery-browse popup:library-more popup:playbook-delete | library cards arrive once (slide + tint flash, Full; at rest in Reduced/Off); hover and focus light the card edge and the dashed tiles on a short colour fade; no other motion |
 | `components/missionPlans/missionPlans.module.css` | css | 10 | todo |  |  |
+| `components/mcp/mcp.module.css` | css | 10 | todo |  |  |
 | `components/missionPlans/SaveAsPlanDialog.tsx` | popup | 10 | todo |  |  |
 | `components/share/share.module.css` | css | 10 | done | popup:share-export popup:share-import | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a sheet; no motion of its own |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |

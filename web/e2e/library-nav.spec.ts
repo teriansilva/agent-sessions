@@ -51,6 +51,7 @@ test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills
   await expect(menu.locator("a[data-subsection]")).toHaveText([
     "Prompt Templates",
     "Variables",
+    "MCP servers",
     "Memory",
     "Artifacts",
     "Automations",

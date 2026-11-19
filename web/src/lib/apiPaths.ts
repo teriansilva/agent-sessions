@@ -17,3 +17,11 @@ export const AUTOMATION_ORIGINS_API = `${AUTOMATIONS_API}/origins`;
 /** `POST` — stop one running HQ turn (#2076). It names the turn, so it can never end another. */
 export const askStopTurnPath = (cid: string, turnId: string) =>
   `/api/ask/conversations/${encodeURIComponent(cid)}/turns/${encodeURIComponent(turnId)}/stop`;
+
+/** Project MCP servers (#2163). A review and an install are operations (P1b): the POST names the
+ *  operation (`request_id`) and answers 202; the client polls `mcpOperationPath` until it ends. */
+export const MCP_SERVERS_API = "/api/mcp/servers";
+export const mcpReviewPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/review`;
+export const mcpInstallPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/install`;
+export const MCP_OPERATIONS_API = "/api/mcp/operations";
+export const mcpOperationPath = (requestId: string) => `${MCP_OPERATIONS_API}/${encodeURIComponent(requestId)}`;

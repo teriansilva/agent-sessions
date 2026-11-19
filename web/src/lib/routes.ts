@@ -60,6 +60,15 @@ export const TEMPLATES_PATH = "/templates";
 /** Library → shared variable definitions, values and collections (#1390). */
 export const VARIABLES_PATH = "/library/variables";
 
+/** Library → MCP servers (#2163): third-party MCP servers registered once, checked, and enabled
+ *  per project. `MCP_NEW_PATH` is the setup wizard; one server's page is `mcpServerPath(id)`. */
+export const MCP_PATH = "/library/mcp";
+export const MCP_NEW_PATH = `${MCP_PATH}/new`;
+export const MCP_SERVER_ROUTE = `${MCP_PATH}/:serverId`;
+export const mcpServerPath = (id: string) => `${MCP_PATH}/${encodeURIComponent(id)}`;
+/** A server id as the registry mints it (`mcp_registry.ID_RE`): checked before any API call. */
+export const MCP_ID_RE = /^[0-9a-f]{16}$/;
+
 /** Library → Memory: each project's shared notebook that agent sessions read and add to (#1441). */
 export const MEMORY_PATH = "/library/memory";
 

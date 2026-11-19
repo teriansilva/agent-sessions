@@ -165,6 +165,7 @@ export default defineConfig({
           { text: "Prompt Templates", link: "/guide/templates" },
           { text: "Shared memory", link: "/guide/memory" },
           { text: "Secrets for agents", link: "/guide/secrets" },
+          { text: "MCP servers", link: "/guide/mcp-servers" },
           { text: "Playbook & skill gallery", link: "/guide/gallery" },
           { text: "Sharing specialists, skills & playbooks", link: "/guide/sharing" },
           { text: "AI review", link: "/guide/ai-review" },

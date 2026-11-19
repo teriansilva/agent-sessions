@@ -103,6 +103,9 @@ import {
   MISSION_PLANS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
+  MCP_PATH,
+  MCP_NEW_PATH,
+  MCP_SERVER_ROUTE,
   MEMORY_PATH,
   ARTIFACTS_PATH,
   ARTIFACT_ROUTE,
@@ -168,6 +171,9 @@ const LegacyGalleryRedirect = lazyWithReload(
 const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "skills-library");
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
 const Memory = lazyWithReload(() => import("../routes/Memory"), "memory");
+const McpServers = lazyWithReload(() => import("../routes/McpServers"), "mcp-servers");
+const McpWizard = lazyWithReload(() => import("../routes/McpWizard"), "mcp-wizard");
+const McpServer = lazyWithReload(() => import("../routes/McpServer"), "mcp-server");
 const Artifacts = lazyWithReload(() => import("../routes/Artifacts"), "artifacts");
 const ArtifactDetail = lazyWithReload(() => import("../routes/ArtifactDetail"), "artifact-detail");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
@@ -416,6 +422,8 @@ function Layout() {
     location.pathname === GALLERY_PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
+    location.pathname === MCP_PATH ||
+    location.pathname.startsWith(`${MCP_PATH}/`) ||
     location.pathname === MEMORY_PATH ||
     location.pathname === ARTIFACTS_PATH ||
     location.pathname.startsWith(`${ARTIFACTS_PATH}/`) ||
@@ -928,6 +936,9 @@ function Layout() {
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />
+                  <Route path={MCP_PATH} element={<McpServers />} />
+                  <Route path={MCP_NEW_PATH} element={<McpWizard />} />
+                  <Route path={MCP_SERVER_ROUTE} element={<McpServer />} />
                   <Route path={MEMORY_PATH} element={<Memory />} />
                   <Route path={ARTIFACTS_PATH} element={<Artifacts />} />
                   <Route path={ARTIFACT_ROUTE} element={<ArtifactDetail />} />

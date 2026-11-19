@@ -31,6 +31,7 @@ import {
   LayoutDashboard,
   Library,
   Package,
+  Plug,
   TerminalSquare,
   Network,
   Workflow,
@@ -47,6 +48,7 @@ import {
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MAP_PATH,
+  MCP_PATH,
   MEMORY_PATH,
   MISSION_PATH,
   MISSION_PLANS_PATH,
@@ -75,6 +77,7 @@ export type SubsectionId =
   | "map"
   | "templates"
   | "variables"
+  | "mcp"
   | "memory"
   | "artifacts"
   | "automations"
@@ -145,6 +148,8 @@ export const SECTIONS: Section[] = [
     children: [
       { id: "templates", label: "Prompt Templates", Icon: BookMarked, to: TEMPLATES_PATH },
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
+      // #2163: third-party MCP servers; their credentials live in Variables, just above.
+      { id: "mcp", label: "MCP servers", Icon: Plug, to: MCP_PATH },
       { id: "memory", label: "Memory", Icon: Brain, to: MEMORY_PATH },
       // What agents PUBLISHED (#1932): files and static sites at a stable link.
       { id: "artifacts", label: "Artifacts", Icon: Package, to: ARTIFACTS_PATH },
@@ -189,6 +194,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
+  // MCP servers OWNS its subtree: the wizard is `/library/mcp/new`, a server `/library/mcp/<id>`.
+  if (pathname === MCP_PATH || pathname.startsWith(`${MCP_PATH}/`)) return "mcp";
   if (pathname === MEMORY_PATH) return "memory";
   // Artifacts OWNS its subtree: one artifact's page is `/library/artifacts/<id>`.
   if (pathname === ARTIFACTS_PATH || pathname.startsWith(`${ARTIFACTS_PATH}/`)) return "artifacts";
