@@ -366,8 +366,6 @@ SHAPES = {
     "ai_review": {"section", "enabled", "endpoint_configured"},
     "pulse": {
         "section",
-        "background_scan",
-        "scan_interval_minutes",
         "window_days",
         "session_review_notify",
         "session_review_recognise_prompts",

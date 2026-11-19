@@ -100,6 +100,8 @@ export const CONFIG = {
   pulse: { configured: true },
   mission_probes: PROBES,
   orchestrator: ORCH,
+  // The SPA reads autonomy from `automation` only (#2179), as the server sends it.
+  automation: { version: 1, session: { ...ORCH, revision: "session-1" }, mission: { ...ORCH, revision: "mission-1" } },
 };
 
 /** A stand-in for `POST /api/mission-directions/preview`. */

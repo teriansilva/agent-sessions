@@ -174,7 +174,7 @@ async def ask(
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """One chat turn. Raises :class:`review.NotConfiguredError` (→409) /
-    :class:`review.ReviewError` (→502), matching ``/api/pulse/ask``.
+    :class:`review.ReviewError` (→502).
 
     ``turn_id`` and ``reserve_write`` exist for the mission console's `/message` route (#852) and
     are both optional, so every existing caller is unchanged.

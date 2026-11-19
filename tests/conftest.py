@@ -88,7 +88,6 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_ACCOUNTS_DIR": ".config/agent-sessions/agent-accounts",  # #1820 login homes
     "AGENT_SESSIONS_SECRETS_RUNTIME": "srt",  # #1786 agents' secret copies (never the host's)
     "AGENT_SESSIONS_ASK_DIR": ".config/agent-sessions/ask",  # #1443 Ask conversations
-    "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
     "AGENT_SESSIONS_AGENT_REPORTS": ".config/agent-sessions/agent-reports.json",  # #1882
@@ -459,13 +458,12 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         str(tmp_path / ".config" / "agent-sessions" / "template-suggestions.json"),
     )
     # The session sidecar (#1054's leak: authfence, maintenance-prune, kimi and nudge-harness
-    # tests wrote the operator's real metadata.json), the projects store, the pulse cache and the
+    # tests wrote the operator's real metadata.json), the projects store and the
     # VAPID identity all default under the real `$HOME` too, and `tmp_home` is opt-in. Same
     # canonical sub-path `tmp_home` uses, so a test that opts in still lines up.
     for var, name in (
         ("AGENT_SESSIONS_METADATA", "metadata.json"),
         ("AGENT_SESSIONS_PROJECTS", "projects.json"),
-        ("AGENT_SESSIONS_PULSE_CACHE", "pulse-cache.json"),
         ("AGENT_SESSIONS_VAPID_KEYS", "vapid.json"),
         # #1750: connector tokens join the redaction set, so EVERY AI call reads this store.
         ("AGENT_SESSIONS_CONNECTORS_STORE", "connectors.json"),

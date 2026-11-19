@@ -1,4 +1,4 @@
-/** ASK — `find` / `history` against `/api/pulse/ask/stream` (#878, streamed since #1171). Since
+/** ASK — HQ's conversation, streamed (#878, #1171; durable since #1443). Since
  * #1294 it lives in the right-hand sidebar (`AskSidebar`) that the corner icon opens on every route;
  * before that it was a page under Dashboard (#1058, #1171).
  *
@@ -15,8 +15,8 @@
  * created on its first question; the head's switcher (`AskSwitcher`) opens a kept one, and New
  * conversation returns to an empty thread. Delete removes the conversation on screen, after a
  * confirm (the server refuses while it is still answering or a session from it is starting);
- * otherwise retention (30 days, 50 conversations) is the server's. `/api/pulse/ask[/stream]` stays the transient,
- * read-only seam for its other callers (#1397).
+ * otherwise retention (30 days, 50 conversations) is the server's. (The transient
+ * `/api/pulse/ask[/stream]` seam was retired in #2179.)
  *
  * Every late result is checked against the conversation it belongs to (`cidRef`), so an answer
  * for a conversation the operator has switched away from never lands in the one on screen. `live`

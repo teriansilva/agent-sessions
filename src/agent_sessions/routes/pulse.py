@@ -1,22 +1,9 @@
-"""Pulse routes (#441 Phase 2): the cached recent-work overview + manual scan.
+"""Pulse routes: the recent-work cards, the decision surfaces and the ledger they share.
 
-* ``GET  /api/pulse`` — the cached overview artifact, served instantly; it NEVER triggers a
-  scan. Returns the "never scanned" empty overview (at the configured window/depth) before the
-  first scan (or on a cache miss).
-* ``POST /api/pulse/scan`` — run one scan now and return the fresh artifact. Uses the configured
-  ``pulse`` window/depth (#441 Phase 3), overridable per-request by an optional JSON body
-  ``{"depth": …, "window_days": …}`` (the page's depth control). The single ``409`` case is
-  "a mission control scan is already running" (single-flight, #441 Phase 1) — its body carries
-  the live AI-activity snapshot so the UI shows the running scan, not an error. An **unconfigured AI
-  gateway never 409s here**: a ``slow`` scan degrades to ``fast`` curation and returns **200**
-  with ``synthesis_skipped: true`` (the page always works).
-* ``POST /api/pulse/ask`` (#522) — one natural-language question over past sessions
-  (``pulse_chat.ask``). Its own single-flight kind ``pulse-chat`` (an ask never blocks a
-  scan, or vice-versa; concurrent asks 409 with the activity snapshot). Deliberate contrast
-  with ``/scan``: an **unconfigured endpoint is a 409** (``configured: false``) and an
-  endpoint failure a **502** — a chat has no useful non-LLM fallback, so it surfaces the
-  condition instead of returning an empty "answer". The UI pre-gates on ``configured``;
-  these are backstops.
+* ``GET  /api/pulse`` — the in-window session cards, built live per request (``pulse.overview``,
+  #2179) with the ledger overlay (``_attach_pending``) on top. It replaced a scan cache that a
+  background loop refreshed; the scan, its ``POST /api/pulse/scan`` and the uncalled
+  ``POST /api/pulse/ask[/stream]`` routes were retired with it (#2179).
 
 The shared ``GET /api/ai/activity`` surface lives in ``routes/system.py``.
 """
@@ -31,7 +18,7 @@ import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from .. import (
     actuator,
@@ -210,16 +197,15 @@ def _attach_pending(overview: dict) -> dict:
     was a strict subset — every action's session already appeared in "Needs you", and nothing
     was exclusive to it — so the operator read the same session twice, in two visual languages,
     with two different affordances. Merging them needs the action ON the card, and the card
-    comes from the pulse cache while the action lives in the ledger.
+    comes from the session cards while the action lives in the ledger.
 
-    Server-side and read-only, for the same reason `_with_pending` is: the ledger states what is
-    pending, never the model. Only LIVE states count — a delivered, expired or rejected action
-    is history, not an errand.
+    Server-side and read-only: the ledger states what is pending, never the model. Only LIVE
+    states count — a delivered, expired or rejected action is history, not an errand.
     """
     cards = overview.get("cards")
     if not isinstance(cards, list):
         # An overview with no cards at all still has to surface live actions — that is exactly
-        # the "no Pulse cache yet" case where they would otherwise be unreachable.
+        # the "no card for it" case where they would otherwise be unreachable.
         cards = []
         overview["cards"] = cards
     # Which action ids the bell has ALREADY raised (#852/#840 §16). This cannot be computed from
@@ -311,8 +297,8 @@ def _attach_pending(overview: dict) -> dict:
         c.pop("mission_id", None)
         if memberships_known:
             c["mission_id"] = owner.get(cid)
-        # Strip BEFORE consulting the ledger, and unconditionally. The cache is written by a
-        # scan and outlives the actions it saw, so a stale `pending_action` would otherwise
+        # Strip BEFORE consulting the ledger, and unconditionally. A card is built from session
+        # state, never the ledger, so a stray `pending_action` would otherwise
         # survive precisely when the ledger holds nothing live — the case where a card would
         # show decision controls for an action that no longer exists.
         c.pop("pending_action", None)
@@ -344,9 +330,9 @@ def _attach_pending(overview: dict) -> dict:
 
     # An action with NO card would be unreachable now that the standalone queue is gone, and
     # that is not a hypothetical: `eligible_cards` builds with `window_days=None`, so the
-    # orchestrator can act on a session outside Pulse's cached window — or before any scan has
-    # produced a cache at all. The measured "every action's session already has a card" was
-    # true of one moment, not an invariant, and the queue used to be the thing covering the gap.
+    # orchestrator can act on a session outside the recent window (#2179 pins this case). The
+    # measured "every action's session already has a card" was true of one moment, not an
+    # invariant, and the queue used to be the thing covering the gap.
     #
     # So synthesize a card from the action's own identity fields. It is the same information the
     # queue row carried, in the one place the operator now looks.
@@ -389,49 +375,11 @@ def _attach_pending(overview: dict) -> dict:
                 "intervention_required": False,
                 "intervention_reason": "",
                 "ai_summary": "",
-                "synthesis": "",
                 "pending_action": a,
                 **({"mission_id": owner.get(sid)} if memberships_known else {}),
             }
         )
     return overview
-
-
-def _with_pending(result: dict) -> dict:
-    """Annotate each Ask match with the live orchestrator action on that session, if any.
-
-    Server-supplied, never model-asserted — the same asymmetry `evidence_for` is built on: the
-    model names a session, the server states the facts about it. A model asked "does this
-    session need me?" can answer yes about one that needs nothing, and a false "something is
-    waiting for you" is worse than silence: it sends the operator in to find nothing and teaches
-    them to stop trusting the flag.
-
-    Only LIVE states count. An expired, delivered or rejected action is history, not an errand.
-    """
-    matches = result.get("matches")
-    if not isinstance(matches, list) or not matches:
-        return result
-    live: dict[str, dict] = {}
-    with contextlib.suppress(Exception):
-        for a in orchestrator_ledger.live_actions():
-            sid = str(a.get("session_id") or "")
-            # `live_actions` is newest-first, so the first row seen per session is the current
-            # one; later rows are older and must not overwrite it.
-            if sid and sid not in live:
-                live[sid] = a
-    for m in matches:
-        if not isinstance(m, dict):
-            continue
-        # Overwrite unconditionally: whatever the model may have put here is discarded.
-        m.pop("pending", None)
-        a = live.get(str(m.get("id") or ""))
-        if a:
-            m["pending"] = {
-                "action_id": str(a.get("id") or ""),
-                "state": str(a.get("state") or ""),
-                "verb": str(a.get("verb") or ""),
-            }
-    return result
 
 
 def pending_checked() -> list[dict]:
@@ -1211,170 +1159,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     @app.get("/api/pulse")
     async def get_pulse(_: str = Depends(logged_in)) -> JSONResponse:
-        cached = pulse.load_cache()
-        if cached is not None:
-            return JSONResponse(await asyncio.to_thread(_attach_pending, cached))
-        cfg = prefs.get_pulse()
-        # The cache MISS branch needs the overlay just as much — more, in fact: before the first
-        # scan there are no cards at all, so a live action has nothing to attach to and would be
-        # unreachable. My earlier regression mocked an empty cached artifact rather than a miss,
-        # so it never exercised this path.
-        empty = pulse.empty_overview(cfg["window_days"], cfg["scan_depth"])
-        return JSONResponse(await asyncio.to_thread(_attach_pending, empty))
-
-    @app.post("/api/pulse/scan")
-    async def scan_pulse(
-        request: Request,
-        _user: str = Depends(logged_in),
-        _csrf: None = Depends(csrf_guard),
-    ) -> JSONResponse:
-        # Configured window/depth, overridable by an optional body (the page depth control).
-        # A bad/absent body falls back to prefs — the scan is never blocked on a parse error.
-        cfg = prefs.get_pulse()
-        window_days, depth = cfg["window_days"], cfg["scan_depth"]
-        with contextlib.suppress(Exception):
-            body = await request.json()
-            if isinstance(body, dict):
-                if "depth" in body:
-                    depth = pulse.coerce_depth(body["depth"])
-                if "window_days" in body:
-                    window_days = pulse.coerce_window_days(body["window_days"])
-        working = _working_keys()
-        try:
-            async with aitasks.single_flight("pulse-scan", "manual"):
-                artifact = await pulse.run_scan(
-                    window_days=window_days, depth=depth, working_keys=working
-                )
-        except aitasks.AlreadyRunning:
-            # The only 409: another Pulse scan holds the single-flight. Hand back the live
-            # activity so the page renders "scan already running", not a broken state.
-            return JSONResponse(
-                {"detail": "a mission control scan is already running", **aitasks.snapshot()},
-                status_code=409,
-            )
-        # The same live overlay `GET /api/pulse` applies. A scan writes the CACHE, which has no
-        # business holding ledger state — but the response the client swaps in must still carry
-        # the pending actions, or running a scan silently strips every Approve/Dismiss control
-        # from the page while the ledger still says they are pending.
-        return JSONResponse(await asyncio.to_thread(_attach_pending, artifact))
-
-    async def _ask_body(request: Request) -> tuple[str, object] | JSONResponse:
-        """The ask's body, or the 422 that refuses it. Shared by both ask routes so their bounds
-        cannot drift apart."""
-        # Hand-rolled body parsing (like /scan): the bounds are the contract (#522) —
-        # a missing/empty/oversized query is a 422 with a plain detail.
-        body: object = None
-        with contextlib.suppress(Exception):
-            body = await request.json()
-        query = body.get("query") if isinstance(body, dict) else None
-        if not isinstance(query, str) or not query.strip():
-            return JSONResponse({"detail": "query (string) is required"}, status_code=422)
-        query = query.strip()
-        if len(query) > pulse_chat.QUERY_MAX:
-            return JSONResponse(
-                {"detail": f"query too long (max {pulse_chat.QUERY_MAX} chars)"},
-                status_code=422,
-            )
-        history = body.get("history") if isinstance(body, dict) else None
-        return query, history
-
-    def _ask_busy() -> JSONResponse:
-        return JSONResponse(
-            {"detail": "a question is already running", **aitasks.snapshot()},
-            status_code=409,
-        )
-
-    def _ask_unconfigured() -> JSONResponse:
-        # Contrast with /scan (which degrades to 200/fast): a chat has no non-LLM
-        # fallback, so an unconfigured endpoint surfaces as a 409 the UI pre-gates on.
-        return JSONResponse(
-            {"detail": "AI endpoint is not configured", "configured": False},
-            status_code=409,
-        )
-
-    @app.post("/api/pulse/ask")
-    async def ask_pulse(
-        request: Request,
-        _user: str = Depends(logged_in),
-        _csrf: None = Depends(csrf_guard),
-    ) -> JSONResponse:
-        parsed = await _ask_body(request)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        query, history = parsed
-        try:
-            # Separate kind from "pulse-scan" ON PURPOSE: an ask never blocks a scan (or
-            # vice-versa); only concurrent ASKS serialize.
-            async with aitasks.single_flight("pulse-chat", "ask"):
-                result = await pulse_chat.ask(query, history, working_keys=_working_keys())
-        except aitasks.AlreadyRunning:
-            return _ask_busy()
-        except review.NotConfiguredError:
-            return _ask_unconfigured()
-        except review.ReviewError as e:
-            return JSONResponse({"detail": str(e)}, status_code=502)
-        return JSONResponse(await asyncio.to_thread(_with_pending, result))
-
-    @app.post("/api/pulse/ask/stream", response_model=None)
-    async def ask_pulse_stream(
-        request: Request,
-        _user: str = Depends(logged_in),
-        _csrf: None = Depends(csrf_guard),
-    ) -> JSONResponse | StreamingResponse:
-        """The same ask, as NDJSON events while it runs (#1171) — see ``pulse_chat.ask_events``.
-
-        Everything that can be refused before any work is still an HTTP status: 422 for the body,
-        409 when unconfigured or another question is running. Once the stream has started, a
-        failure arrives as ONE final ``{"type": "error", "status", "detail"}`` line, since the
-        200 is already on the wire.
-
-        The single-flight lives INSIDE the generator, so its lifetime is exactly the stream's: a
-        client that goes away cancels the generator and the ``finally`` releases it, and a stream
-        that never starts never took it. The check here is what keeps the ordinary busy case a
-        409; the one inside settles the race between two streams that both passed it.
-        """
-        parsed = await _ask_body(request)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        query, history = parsed
-        try:
-            review._require_config()
-        except review.NotConfiguredError:
-            return _ask_unconfigured()
-        if aitasks.is_running("pulse-chat"):
-            return _ask_busy()
+        """The recent-work cards, built now (#2179) — no cache, no model call. Public fields only
+        (``pulse.overview`` strips every ``_``-prefixed field), with the ledger overlay on top so a
+        live action outside the window is still reachable (``_attach_pending`` synthesizes its
+        card). Off the event loop: an engine walk, the metadata, the ledger and the bell."""
+        window_days = prefs.get_pulse()["window_days"]
         working = _working_keys()
 
-        async def events():
-            try:
-                async with aitasks.single_flight("pulse-chat", "ask"):
-                    async for ev in pulse_chat.ask_events(query, history, working_keys=working):
-                        if ev["type"] == "answer":
-                            ev = await asyncio.to_thread(_with_pending, ev)
-                        yield json.dumps(ev) + "\n"
-            except aitasks.AlreadyRunning:
-                yield (
-                    json.dumps(
-                        {"type": "error", "status": 409, "detail": "a question is already running"}
-                    )
-                    + "\n"
-                )
-            except review.NotConfiguredError:
-                yield (
-                    json.dumps(
-                        {"type": "error", "status": 409, "detail": "AI endpoint is not configured"}
-                    )
-                    + "\n"
-                )
-            except review.ReviewError as e:
-                yield json.dumps({"type": "error", "status": 502, "detail": str(e)}) + "\n"
+        def _build() -> dict:
+            return _attach_pending(pulse.overview(window_days=window_days, working_keys=working))
 
-        return StreamingResponse(
-            events(),
-            media_type="application/x-ndjson",
-            # Nothing between here and the browser may hold the lines back.
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
+        return JSONResponse(await asyncio.to_thread(_build))
 
     # --- orchestrator (#726 Phase 1) ---------------------------------------------------
     # Pulse gains agency. These join the `/api/pulse/*` family on purpose rather than opening
@@ -1384,7 +1179,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     @app.get("/api/pulse/orchestrator")
     async def get_orchestrator_state(_: str = Depends(logged_in)) -> JSONResponse:
         """Cached state: config, pending actions, and the activity feed. NEVER runs a pass —
-        same contract as `GET /api/pulse` (cache-only, instant)."""
+        a read, never a model call (the same contract `GET /api/pulse` keeps)."""
         cfg = prefs.public_orchestrator()
         # Retiring rides with the read: a proposal whose session moved on leaves here on the next
         # poll, not at its TTL (#969). One helper for every retiring site. The session pane's

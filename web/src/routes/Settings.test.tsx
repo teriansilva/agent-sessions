@@ -85,7 +85,6 @@ vi.mock("../lib/api", async () => {
       fsMkdir: vi.fn(),
       // #441: the AI Review tab now also mounts the AI-activity panel + Pulse section.
       aiActivity: vi.fn().mockResolvedValue({ running: [], last: {} }),
-      pulseScan: vi.fn(),
       // #956: the Prompts page renders the catalog (a deep link lands there).
       prompts: vi.fn().mockResolvedValue({ prompts: [] }),
       // #956: the Endpoint & model page checks a draft through this route.
@@ -455,7 +454,7 @@ test.each([
   ["ai-endpoint", ["Connection", "Model"]],
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
-  ["ai-hq", ["Question routing", "Memory search", "Session assistance", "Mission orchestration", "Session reports", "Session scan", "Forge connection", "HQ connectors"]],
+  ["ai-hq", ["Question routing", "Memory search", "Session assistance", "Mission orchestration", "Session reports", "Recent window", "Forge connection", "HQ connectors"]],
   ["ai-hq-connectors", ["HQ connectors"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],

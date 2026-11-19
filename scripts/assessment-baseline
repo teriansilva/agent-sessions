@@ -51,7 +51,6 @@ for _var, _name in (
     ("AGENT_SESSIONS_PREFS", "prefs.json"),
     ("AGENT_SESSIONS_METADATA", "metadata.json"),
     ("AGENT_SESSIONS_PROJECTS", "projects.json"),
-    ("AGENT_SESSIONS_PULSE_CACHE", "pulse-cache.json"),
     ("AGENT_SESSIONS_TEMPLATES", "templates.json"),
     ("AGENT_SESSIONS_TEMPLATE_VARS", "template-variables.json"),
     ("AGENT_SESSIONS_LOCK_DIR", "locks"),

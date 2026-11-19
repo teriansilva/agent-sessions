@@ -11,7 +11,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { SESSION, T, missionConsole, missionControlSettings } from "./mission-directions";
+import { CONFIG, ORCH, SESSION, T, missionConsole, missionControlSettings } from "./mission-directions";
 import { openMissionConversation } from "./mission-console";
 
 const TYPED =
@@ -75,17 +75,61 @@ function draftAction(over: Record<string, unknown> = {}) {
   };
 }
 
-/** Record every prefs save the page makes, winning over any route registered earlier. */
-async function recordPrefs(page: Page) {
-  const saves: Record<string, unknown>[] = [];
+/** A console whose mission policy has AI-written directions ON, served the way the real routes do:
+ *  `/api/config` carries both scopes with their revisions, and `PATCH /api/automation/{scope}`
+ *  refuses a stale revision with 409 and otherwise merges and bumps it. Records every policy write
+ *  and every `POST /api/prefs` (which Turn off must never use). */
+async function turnOffServer(page: Page) {
+  const session = { ...ORCH, revision: "session-1" };
+  const state = {
+    patches: [] as { url: string; body: { revision: string; policy: Record<string, unknown> } }[],
+    legacy: [] as unknown[],
+    unreadable: false,
+    sessionBefore: { ...session },
+    policies: {
+      session,
+      mission: {
+        ...ORCH,
+        autonomy: "yolo",
+        auto_ai_directions: true,
+        ai_direction_confidence_min: 0.95,
+        revision: "mission-1",
+      } as Record<string, unknown>,
+    },
+  };
+  // The first config read happens inside `missionConsole` (it navigates), so the mission policy
+  // it serves is this one, revision included.
+  await missionConsole(page, {
+    events: [autoEvent()],
+    orchestrator: state.policies.mission,
+  });
+  // Registered after `missionConsole`, so these win for every later read and write.
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: {
+        ...CONFIG,
+        automation: { version: 1, legacy_compatible: false, ...state.policies },
+      },
+    }),
+  );
   await page.route("**/api/prefs", (r) => {
-    const body = r.request().postDataJSON() as {
-      orchestrator?: Record<string, unknown>;
-    } | null;
-    saves.push(body?.orchestrator ?? {});
+    state.legacy.push(r.request().postDataJSON());
     return r.fulfill({ json: {} });
   });
-  return saves;
+  await page.route("**/api/automation/*", (r) => {
+    const url = new URL(r.request().url()).pathname;
+    const scope = url.split("/").at(-1) as "session" | "mission";
+    const body = r.request().postDataJSON();
+    state.patches.push({ url, body });
+    if (state.unreadable)
+      return r.fulfill({ status: 503, json: { detail: "Policy unreadable" } });
+    if (body.revision !== state.policies[scope].revision)
+      return r.fulfill({ status: 409, json: { detail: "automation policy changed; reload before saving" } });
+    const next = { ...state.policies[scope], ...body.policy, revision: `${scope}-${state.patches.length + 1}` };
+    (state.policies as Record<string, unknown>)[scope] = next;
+    return r.fulfill({ json: { version: 1, scope, policy: next } });
+  });
+  return state;
 }
 
 test.describe("the settings toggle", () => {
@@ -180,16 +224,57 @@ test.describe("an autonomously sent direction in the thread", () => {
     await expect(page.getByTestId("thread-nudged-text")).toHaveText(TYPED);
   });
 
-  test("Turn off posts the pref that switches the mode off", async ({ page }) => {
-    await missionConsole(page, {
-      events: [autoEvent()],
-      orchestrator: { autonomy: "yolo", auto_ai_directions: true },
-    });
-    const saves = await recordPrefs(page);
+  // #2179: Turn off writes the MISSION scope through the revisioned `PATCH /api/automation/mission`
+  // — never the retired `POST /api/prefs {orchestrator}` bridge — with only the one field it turns
+  // off, and the row keeps offering it until the server has accepted the write.
+  test("Turn off patches the mission policy with the revision it read", async ({ page }) => {
+    const f = await turnOffServer(page);
     await openMissionConversation(page);
     await page.getByTestId("thread-turn-off-auto").click();
-    await expect.poll(() => saves.length).toBeGreaterThan(0);
-    expect(saves.at(-1)).toEqual({ auto_ai_directions: false });
+    await expect.poll(() => f.patches.length).toBe(1);
+    expect(f.patches[0]).toEqual({
+      url: "/api/automation/mission",
+      body: { revision: "mission-1", policy: { auto_ai_directions: false } },
+    });
+    // Accepted → the config is re-read and the mode is off, so the offer goes away.
+    await expect(page.getByTestId("thread-turn-off-auto")).toHaveCount(0);
+    expect(f.policies.mission.auto_ai_directions).toBe(false);
+    expect(f.policies.mission.ai_direction_confidence_min).toBe(0.95); // other fields untouched
+    expect(f.policies.session).toEqual(f.sessionBefore); // the session policy untouched
+    expect(f.legacy).toEqual([]);
+  });
+
+  test("a policy changed elsewhere reloads, says so, and is not retried", async ({ page }) => {
+    const f = await turnOffServer(page);
+    await openMissionConversation(page);
+    // Another tab raised the threshold after this page read the policy.
+    f.policies.mission = { ...f.policies.mission, ai_direction_confidence_min: 0.97, revision: "mission-2" };
+    await page.getByTestId("thread-turn-off-auto").click();
+    await expect(page.getByTestId("thread-turn-off-error")).toContainText(
+      "The mission policy changed elsewhere. Latest values loaded; review them and turn it off again.",
+    );
+    expect(f.patches).toHaveLength(1);
+    expect(f.patches[0].body.revision).toBe("mission-1");
+    // Still on, and still offered: nothing claims it is off before an accepted write.
+    await expect(page.getByTestId("thread-turn-off-auto")).toBeEnabled();
+    expect(f.policies.mission.auto_ai_directions).toBe(true);
+    // A second tap uses the reloaded revision.
+    await page.getByTestId("thread-turn-off-auto").click();
+    await expect.poll(() => f.patches.length).toBe(2);
+    expect(f.patches[1].body.revision).toBe("mission-2");
+    await expect(page.getByTestId("thread-turn-off-auto")).toHaveCount(0);
+    expect(f.legacy).toEqual([]);
+  });
+
+  test("a failed or unreadable policy write is visible and leaves the offer in place", async ({ page }) => {
+    const f = await turnOffServer(page);
+    await openMissionConversation(page);
+    f.unreadable = true;
+    await page.getByTestId("thread-turn-off-auto").click();
+    await expect(page.getByTestId("thread-turn-off-error")).toContainText("Policy unreadable");
+    await expect(page.getByTestId("thread-turn-off-auto")).toBeEnabled();
+    expect(f.policies.mission.auto_ai_directions).toBe(true);
+    expect(f.legacy).toEqual([]);
   });
 
   test("a row from a mode already switched off offers no Turn off", async ({ page }) => {

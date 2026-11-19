@@ -420,21 +420,14 @@ export interface AutoSortReport {
   skipped?: string;
 }
 
-/** Pulse recent-work overview config (#441 Phase 3) — the PUBLIC view from /api/config. Opt-in
- *  background scan + the window/depth scans use; reuses the ai_review endpoint for synthesis
- *  (depth ≥ medium), so it holds no secret of its own. */
+/** The `pulse` block of /api/config: the recent window (#1086) — the scan's auto/interval/depth
+ *  were retired with it (#2179) — plus `configured`, the ai_review endpoint readiness HQ and the
+ *  mission views read. */
 export interface PulseConfig {
-  auto_enabled: boolean;
-  interval_minutes: number;
   window_days: number;
-  scan_depth: PulseDepth;
-  /** The reused ai_review endpoint is usable (base URL + key). Slow synthesis degrades to
-   *  fast when this is false; fast scans never need it. */
+  /** The ai_review endpoint is usable (base URL + key). */
   configured: boolean;
 }
-
-/** `medium` was removed in #956 (it only added a banner nothing rendered). */
-export type PulseDepth = "fast" | "slow";
 
 /** A session state bucket on the Pulse overview, ranked needs-you → in-flight → recent → idle. */
 export type PulseState = "needs_you" | "in_flight" | "recently_active" | "idle";
@@ -458,9 +451,6 @@ export interface PulseCard {
   /** Live overlay from the registry at scan time (working/attached) → state "in_flight". */
   live: boolean;
   state: PulseState;
-  /** Per-session "state + next step" line from a `slow` scan (#441 Phase 4); null otherwise.
-   *  When set the card shows it instead of `ai_summary`. */
-  synthesis: string | null;
   /** Which mission holds this session, stamped server-side by `routes/pulse._attach_pending`
    *  over EVERY mission — loaded or not (#878).
    *
@@ -487,17 +477,11 @@ export interface PulseCard {
   synthesized_for_action?: boolean;
 }
 
-/** The cached Pulse overview artifact from GET /api/pulse / POST /api/pulse/scan (#441).
- *  `generated_at` is null before the first scan (the "never scanned" empty overview). */
+/** GET /api/pulse (#441): the in-window cards, built for the request (#2179). */
 export interface PulseOverview {
-  cache_version: number;
-  generated_at: number | null;
+  /** When the server built these cards (seconds). */
+  generated_at: number;
   window_days: number;
-  scan_depth: PulseDepth;
-  input_fingerprint: string | null;
-  /** True when a slow scan ran against an unconfigured endpoint and degraded to fast curation
-   *  (no per-session synthesis). */
-  synthesis_skipped: boolean;
   cards: PulseCard[];
 }
 
@@ -1015,17 +999,11 @@ export interface RecentWorkPayload {
   entries: RecentWorkEntry[];
 }
 
+/** A session HQ's find names (#522): the card plus the model's one-line reason. */
 export interface PulseAskMatch extends PulseCard {
   why: string;
-  /** The live orchestrator action on this session, if there is one — server-supplied, never
-   *  model-asserted (`routes/pulse._with_pending`). Absent when nothing is waiting. */
-  pending?: { action_id: string; state: string; verb: string };
 }
 
-/** POST /api/pulse/ask (#522). `stage`: `catalog` = ranked from session metadata only;
- *  `content` = confirmed against transcript tails; `empty` = no sessions at all (no AI
- *  call was made). Errors: 409 unconfigured (`configured: false` in the body) or a
- *  question already running; 502 endpoint failure. */
 /** A mission an Ask answer is about (#1069). `id` is the bare mission id — what `missionLink`
  *  takes. Server-built from the missions store; only `why` is model text. */
 export interface PulseAskMissionMatch {
@@ -1035,33 +1013,6 @@ export interface PulseAskMissionMatch {
   project_id: string;
   why: string;
 }
-
-export interface PulseAskResult {
-  answer: string;
-  matches: PulseAskMatch[];
-  /** Missions the answer names (#1069). Optional: a server before #1069 does not send it. */
-  mission_matches?: PulseAskMissionMatch[];
-  stage: "catalog" | "content" | "empty";
-  configured: boolean;
-}
-
-/** One line of `POST /api/pulse/ask/stream` (#1171). `progress` names the step the ask is on;
- *  `answer` carries a result — `final: false` is the Stage-1 answer, shown while Stage 2 confirms
- *  it against the transcripts; `error` is a failure after the stream had started. */
-export type PulseAskEvent =
-  | {
-      type: "progress";
-      step: "catalog";
-      sessions: number;
-      missions: number;
-      /** Keyword hits among `sessions` / `missions` (#2028); the rest is recency padding.
-       *  Absent on older servers. */
-      hits?: number;
-      mission_hits?: number;
-    }
-  | { type: "progress"; step: "content"; candidates: number }
-  | ({ type: "answer"; final: boolean } & PulseAskResult)
-  | { type: "error"; status: number; detail: string };
 
 /** Ask's durable conversations (#1443). The switcher's row: the first question is the title. */
 export interface AskConversationSummary {
@@ -1473,7 +1424,7 @@ export interface AiActivityLast {
 }
 
 /** GET /api/ai/activity (#441 Phase 1): what AI work is running now + the last run per kind.
- *  Also the body of POST /api/pulse/scan's 409 (a Pulse scan already running), with `detail`. */
+ *  Also the body of a single-flight 409 (that kind of task already running), with `detail`. */
 export interface AiActivity {
   running: AiActivityTask[];
   last: Record<string, AiActivityLast>;
@@ -1835,15 +1786,14 @@ export interface AppConfig {
   ai_review?: AiReviewConfig;
   /** AI auto-sort (#424 Phase 6): opt-in; reuses the ai_review endpoint (no secret). */
   auto_sort?: AutoSortConfig;
-  /** Pulse recent-work overview (#441 Phase 3): opt-in background scan + window/depth;
-   *  reuses the ai_review endpoint for synthesis (no secret). */
+  /** The recent window + ai_review endpoint readiness (#1086, #2179). No secret. */
   pulse?: PulseConfig;
   /** How deeply a session is read before a decision (#1086 Phase 2). No secret. */
   session_review?: SessionReviewConfig;
   /** Session clusters (#1997). Absent on older servers, which have no clusters. */
   clusters?: ClustersConfig;
-  orchestrator?: OrchestratorConfig;
-  /** #1019: feature-detected scoped grants; legacy projections may conservatively be off. */
+  /** #1019: feature-detected scoped grants; legacy projections may conservatively be off. The SPA
+   *  reads autonomy ONLY from here: the server's legacy `orchestrator` block is not read (#2179). */
   automation?: {
     version: 1;
     legacy_compatible: boolean;

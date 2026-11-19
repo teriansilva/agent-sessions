@@ -146,7 +146,6 @@ import type {
   LaunchDefaults,
   ProjectEntity,
   PromptEntry,
-  PulseAskEvent,
   AskConversation,
   AskSessionDecision,
   AskLibraryContent,
@@ -156,8 +155,6 @@ import type {
   AskConversationTurn,
   AskAttachment,
   AskTurnEvent,
-  PulseAskResult,
-  PulseDepth,
   PulseOverview,
   PushSubscriptionInfo,
   Session,
@@ -500,58 +497,8 @@ async function uploadAvatar(image: Blob): Promise<{ version: string }> {
   return postForm<{ version: string }>("/api/profile/avatar", form);
 }
 
-/** `POST /api/pulse/ask/stream`, read line by line (#1171). A fetch whose body cannot be read as
- *  a stream (the Home Free tunnel may buffer it) still works: the lines are simply all there at
- *  once, and the caller sees the same events, only later. */
-async function streamAsk(
-  query: string,
-  history: { role: "user" | "assistant"; content: string }[],
-  onEvent: (ev: PulseAskEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const path = "/api/pulse/ask/stream";
-  const r = await apiFetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-    body: JSON.stringify({ query, history }),
-    ...(signal ? { signal } : {}),
-  });
-  if (r.status === 401 || r.status === 403) await authGate(r);
-  if (!r.ok) {
-    let parsed: unknown;
-    try {
-      parsed = await r.json();
-    } catch {
-      /* non-JSON body */
-    }
-    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
-    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
-  }
-  // A stream that ends without its final answer — the connection dropped, a proxy cut it — is a
-  // failure, never a turn left spinning, and a half-written last line is the same failure rather
-  // than a JSON parse error.
-  let final = false;
-  const cut = () =>
-    new ApiError(502, "The answer was cut off before it finished — ask again.");
-  const emit = (line: string) => {
-    if (!line.trim()) return;
-    let ev: PulseAskEvent;
-    try {
-      ev = JSON.parse(line) as PulseAskEvent;
-    } catch {
-      throw cut();
-    }
-    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
-    if (ev.type === "answer" && ev.final) final = true;
-    onEvent(ev);
-  };
-  await readLines(r, emit);
-  if (!final) throw cut();
-}
-
 /** Hand each NDJSON line of `r` to `emit` as it arrives — or all at once, when the body cannot be
- *  read as a stream (the Home Free tunnel may buffer it). Shared by both streamed chats. */
+ *  read as a stream (the Home Free tunnel may buffer it). Shared by the streamed chats. */
 async function readLines(r: Response, emit: (line: string) => void): Promise<void> {
   const reader = r.body?.getReader();
   if (!reader) {
@@ -2270,36 +2217,9 @@ export const api = {
       `/api/sessions/${enc(id)}/review-exclude`,
       excluded === undefined ? undefined : { excluded },
     ),
-  /** Pulse recent-work overview (#441): the cached artifact, served instantly (never scans).
-   *  `generated_at` null = never scanned (the empty overview). */
+  /** Pulse recent-work cards (#441): the in-window sessions, built live per request with the
+   *  ledger overlay on top (#2179 — the scan, its cache and Scan now are gone). Never a model call. */
   pulse: () => getJson<PulseOverview>("/api/pulse"),
-  /** Pulse "Scan now" (#441): run one scan and return the fresh artifact. Uses the configured
-   *  window/depth; `depth`/`window_days` override per-request (the page's depth control). The
-   *  only 409 is "a Pulse scan is already running" — its body carries the AI-activity snapshot
-   *  (`mutateJson` surfaces the `detail`). An unconfigured endpoint never 409s: depth ≥ medium
-   *  returns 200 with `synthesis_skipped`. CSRF-guarded. */
-  pulseScan: (opts?: { depth?: PulseDepth; window_days?: number }) =>
-    mutateJson<PulseOverview>("POST", "/api/pulse/scan", opts ?? {}),
-  /** Pulse "Ask" (#522): one natural-language question over past sessions. `history` is
-   *  the replayed conversation tail (the server clamps it again). 409 = endpoint
-   *  unconfigured or a question already running; 502 = endpoint failure — `mutateJson`
-   *  surfaces the server `detail` either way. CSRF-guarded. */
-  pulseAsk: (
-    query: string,
-    history: { role: "user" | "assistant"; content: string }[],
-  ) => mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
-  /** The same ask, streamed (#1171): `onEvent` sees each NDJSON event as the server sends it —
-   *  the step it is on, the Stage-1 answer (`final: false`) the moment it exists, then the final
-   *  one. Resolves after the last event. A refusal before the stream (422 / 409) throws like
-   *  `pulseAsk`; a failure after it started arrives as `{type: "error"}` and throws the same way,
-   *  so a caller has one error path either way. Aborting `signal` closes the connection, which
-   *  ends the server's run and frees its one-question gate. */
-  pulseAskStream: (
-    query: string,
-    history: { role: "user" | "assistant"; content: string }[],
-    onEvent: (ev: PulseAskEvent) => void,
-    signal?: AbortSignal,
-  ) => streamAsk(query, history, onEvent, signal),
   /** Ask's durable conversations (#1443): the switcher's list, latest first. */
   askConversations: () =>
     getJson<{ conversations: AskConversationSummary[]; configured: boolean }>(
@@ -2410,13 +2330,12 @@ export const api = {
       `/api/ask/proposals/${enc(id)}/decide`,
       { decision, bypass },
     ),
-  /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
-   *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
+  /** Pulse orchestrator state (#726): config + pending actions + the activity feed. A read: like
+   *  `pulse()` it never runs a pass or calls a model. */
   orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),
   /** Run one orchestrator pass now (#726). 409 = unconfigured endpoint or a pass already
-   *  running; 502 = endpoint failure. Deliberately unlike `pulseScan`, which degrades to a
-   *  200: a decision has no useful non-LLM fallback, so it says so rather than returning an
-   *  empty action list that reads as "nothing needs you". CSRF-guarded. */
+   *  running; 502 = endpoint failure. A decision has no useful non-LLM fallback, so it says so
+   *  rather than returning an empty action list that reads as "nothing needs you". CSRF-guarded. */
   orchestrate: () =>
     mutateJson<OrchestratorState_ & { assessment: string }>(
       "POST",

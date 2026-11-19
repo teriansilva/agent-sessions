@@ -38,10 +38,12 @@ def test_the_service_worker_fallback_title_is_not_pulse():
     assert "Mission control" in sw
 
 
-def test_the_scan_refusal_names_mission_control():
+def test_no_scan_refusal_survives_the_retired_scan_route():
+    """The scan route's 409 once said "a Pulse scan is already running" (renamed to mission
+    control). The route went with the scan (#2179), so neither wording may come back."""
     src = (ROOT / "src" / "agent_sessions" / "routes" / "pulse.py").read_text()
     assert "a Pulse scan is already running" not in src
-    assert "a mission control scan is already running" in src
+    assert "scan is already running" not in src
 
 
 def test_no_prompt_is_catalogued_under_a_pulse_group():

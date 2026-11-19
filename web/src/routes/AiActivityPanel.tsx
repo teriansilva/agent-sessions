@@ -10,9 +10,8 @@ import styles from "./Settings.module.css";
 // list used to stop at the first three, so the orchestrator and every mission task showed only
 // while running, under their raw id, and their last run was never shown at all (#956).
 const KINDS: { kind: string; label: string }[] = [
-  // The KIND is the server-owned task id and stays `pulse-scan`; only the label an
-  // operator reads is renamed (#935).
-  { kind: "pulse-scan", label: "HQ session scan" },
+  // `pulse-scan` (the session scan) was retired with the scan (#2179). A server older than that
+  // that reports one running still shows it, under its raw id, like any unknown kind.
   { kind: "ai-review", label: "AI review" },
   { kind: "auto-sort", label: "Auto-sort" },
   { kind: "orchestrator", label: "Orchestrator pass" },

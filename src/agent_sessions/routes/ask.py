@@ -36,8 +36,8 @@ contact who answers (#1525), the client's resolved choice: a contact id or ``"of
 unknown or not a string is ``"off"`` (plain HQ). It is stored on the turn, and every turn in the
 conversation body carries its own ``contact``. A repeat of a settled ``turn_id`` returns
 it without running the model again; a repeat while it runs watches the same turn. Leaving never
-cancels a turn (``ask_orchestrator``'s module note). ``/api/pulse/ask[/stream]`` is unchanged: the
-transient, read-only Ask seam stays for its other callers (#1397).
+cancels a turn (``ask_orchestrator``'s module note). The transient ``/api/pulse/ask[/stream]`` seam
+was retired in #2179: nothing called it once voice (#1397) ran on HQ's engine.
 """
 
 from __future__ import annotations

@@ -3855,7 +3855,7 @@ TOOLS: dict[str, Tool] = {
                 "One section of the operator's settings, read-only: usage (alert threshold, "
                 "token limits), agents (defaults, which agents start new sessions), automation "
                 "(session assistance and mission orchestration), ai_review (on/off, whether an "
-                "endpoint is configured), pulse (background scan, session review), appearance. "
+                "endpoint is configured), pulse (recent window, session review), appearance. "
                 "You cannot change settings: say where in Settings the operator changes them.",
                 {"section": {"type": "string", "enum": list(ask_settings.SECTIONS)}},
                 ["section"],

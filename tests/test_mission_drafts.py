@@ -696,7 +696,7 @@ def test_both_decision_producers_name_a_drafts_objective_and_offer_approve(api, 
     from agent_sessions import pulse
 
     c, hdr, _ = api
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     mid = _mission()
     missions.patch_objectives(
         mid,

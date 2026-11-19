@@ -22,7 +22,7 @@ vi.mock("../app/config", () => ({
 vi.mock("../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { pulseAskStream: vi.fn() } };
+  return { ...actual, api: { askMessageStream: vi.fn() } };
 });
 
 import { AskPanelContext } from "../components/ask/askPanel";
@@ -96,7 +96,7 @@ test("the primary HQ contact is one button that opens the HQ panel and asks noth
   expect(openAsk).toHaveBeenCalledTimes(1);
   // It stays on the dashboard: HQ is the sidebar, not a page.
   expect(screen.getByTestId("where")).toHaveTextContent(DASHBOARD_PATH);
-  expect(api.pulseAskStream).not.toHaveBeenCalled();
+  expect(api.askMessageStream).not.toHaveBeenCalled();
 });
 
 test("Off: a placeholder with Open HQ and Select contact, no face and no media (#1525)", async () => {

@@ -489,6 +489,192 @@ def test_a_pool_change_between_the_two_staging_reads_is_refused_not_bound(live, 
     assert _revisions(mid) == 1, "nothing was written"
 
 
+# ---- the route checks the team the card bound (#2129) -------------------------------------------
+
+
+def _plan_ops(mid: str) -> int:
+    """The successful team operations the ledger recorded for `mid`."""
+    con = missions._ready(None)
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM mission_plan_ops WHERE mission_id=?", (mid,)
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _staged_assemble(live, ai, title: str):
+    """A second, unassembled mission and HQ's `assemble` card for it: (mid, cid, card, result)."""
+    mid = _unassembled(title)
+    script = ai(
+        calls(("list_missions", {})),
+        calls(("read_plan", {"mission_id": mid})),
+        call("assemble", {"mission_id": mid, "reason": "go"}),
+        answer("done"),
+    )
+    cid = live.new()
+    assert live.ask(cid, "assemble").status_code == 200
+    result = json.loads(script.tool_results(3)[-1]["content"])
+    assert result.get("proposed") is True, result
+    (card,) = [p for t in live.get(cid)["turns"] for p in t["proposals"]]
+    assert card["op"] == "team.assemble"
+    return mid, cid, card, result
+
+
+def test_a_pool_change_inside_the_confirm_request_is_stale_and_writes_nothing(
+    live, ai, monkeypatch
+):
+    """THE #2129 REGRESSION. The tap's facts check runs the dry run again and passes; a pick then
+    leaves the pool before the route loads its own context. The route compares the team it would
+    write with the one the card bound and refuses (409 `team_changed`): the card is `stale`, the
+    plan stays at its revision and the ledger records no operation. Without the route's check it
+    commits a team the card never showed and this test is red."""
+    from agent_sessions import ask_team
+
+    mid, cid, card, result = _staged_assemble(live, ai, "Apply inside the confirm")
+    doc_before = missions.plan_revision(mid)["document"]
+    gone = next(p["specialist"] for p in result["team"]["assembled"] if p["step"] == "o1.record")
+    real_facts = ask_team.facts
+    checked: list[dict] = []
+
+    async def then_the_pool_moves(target, fields, app, operator):
+        out = await real_facts(target, fields, app, operator)
+        checked.append(out)
+        # The tap's facts check has just read the team the card bound, so it passes. Only now,
+        # before the route loads its context, does the pick leave the pool.
+        monkeypatch.setattr(
+            team, "snapshot", lambda: context(specs=pool(**{gone.replace("-", "_"): None}))
+        )
+        return out
+
+    monkeypatch.setattr(ask_team, "facts", then_the_pool_moves)
+    d = live.decide(card["action_id"], {"decision": "confirm"})
+    assert d.status_code in (200, 202), d.text
+    settled = live.settled(cid)
+    assert checked, "the tap's facts check ran"
+    assert settled["state"] == "stale", settled
+    assert "the team it would assemble changed" in settled["reason"], settled
+    latest = missions.plan_revision(mid)
+    assert latest["revision"] == 1 and latest["document"] == doc_before
+    assert _revisions(mid) == 1, "nothing was written"
+    assert _plan_ops(mid) == 0, "no successful operation was recorded"
+
+
+def test_a_pool_emptied_inside_the_confirm_request_is_stale_not_failed(live, ai, monkeypatch):
+    """The same window, but the pool loses every qualifying specialist: the route's assemble
+    refuses (`nothing_assignable`) before any team exists to compare. For a digest-bound card
+    that is still the team changing: 409 `team_changed`, the card `stale`, nothing written."""
+    from agent_sessions import ask_team
+
+    mid, cid, card, _ = _staged_assemble(live, ai, "Empty the pool inside the confirm")
+    doc_before = missions.plan_revision(mid)["document"]
+    real_facts = ask_team.facts
+
+    async def then_the_pool_empties(target, fields, app, operator):
+        out = await real_facts(target, fields, app, operator)
+        monkeypatch.setattr(team, "snapshot", lambda: context(specs=[]))
+        return out
+
+    monkeypatch.setattr(ask_team, "facts", then_the_pool_empties)
+    d = live.decide(card["action_id"], {"decision": "confirm"})
+    assert d.status_code in (200, 202), d.text
+    settled = live.settled(cid)
+    assert settled["state"] == "stale", settled
+    latest = missions.plan_revision(mid)
+    assert latest["revision"] == 1 and latest["document"] == doc_before
+    assert _revisions(mid) == 1 and _plan_ops(mid) == 0
+
+
+def _spy_plan_ops(monkeypatch) -> list[dict]:
+    """The bodies the card's tap sends to `POST …/plan/ops`."""
+    from agent_sessions import asgi_call
+
+    sent: list[dict] = []
+    real = asgi_call.call
+
+    async def spy(app, operator, method, path, body, **kw):
+        if method == "POST" and path.endswith("/plan/ops"):
+            sent.append(dict(body or {}))
+        return await real(app, operator, method, path, body, **kw)
+
+    monkeypatch.setattr(asgi_call, "call", spy)
+    return sent
+
+
+def test_a_bound_card_sends_the_team_it_staged_and_writes_it(live, ai, monkeypatch):
+    from agent_sessions import ask_team
+
+    mid, cid, card, result = _staged_assemble(live, ai, "Apply bound")
+    sent = _spy_plan_ops(monkeypatch)
+    d = live.decide(card["action_id"], {"decision": "confirm"})
+    assert d.status_code in (200, 202), d.text
+    assert live.settled(cid)["state"] == "done"
+    (body,) = sent
+    assert body["expected_team"] == ask_team.team_digest(result["team"])
+    assert _revisions(mid) == 2 and _plan_ops(mid) == 1
+
+
+def test_a_card_staged_without_a_bound_team_confirms_as_before(live, ai, monkeypatch):
+    """A card staged before #2129 has no team digest in its facts. Its tap sends none, though the
+    facts re-read at the tap now carry one (Hermes on #2129: the request is built from the STAGED
+    facts), so the upgrade neither makes it stale nor changes what it does."""
+    from agent_sessions import ask_orchestrator, ask_team
+
+    legacy = {"on": True}
+    real_facts, real_stage = ask_team.facts, ask_orchestrator._stage
+
+    async def old_facts(target, fields, app, operator):
+        out = await real_facts(target, fields, app, operator)
+        if legacy["on"] and out is not None:
+            out.pop("team", None)
+            out.pop("picks", None)
+        return out
+
+    async def old_stage(*a, expected=None, **kw):  # staged as before #2126: nothing bound
+        return await real_stage(*a, **kw)
+
+    monkeypatch.setattr(ask_team, "facts", old_facts)
+    monkeypatch.setattr(ask_orchestrator, "_stage", old_stage)
+    mid, cid, card, _ = _staged_assemble(live, ai, "Apply legacy")
+    legacy["on"] = False  # the upgrade: facts read at the tap carry the team again
+    sent = _spy_plan_ops(monkeypatch)
+    d = live.decide(card["action_id"], {"decision": "confirm"})
+    assert d.status_code in (200, 202), d.text
+    settled = live.settled(cid)
+    assert settled["state"] == "done", settled
+    (body,) = sent
+    assert "expected_team" not in body
+    assert _revisions(mid) == 2 and _plan_ops(mid) == 1
+
+
+def test_only_team_changed_makes_a_team_card_stale():
+    """The route's `team_changed` is `stale`; any other refusal, a 409 included, stays `failed`."""
+    for op in ("team.assemble", "team.assign"):
+        outcome = ask_operations.CATALOG[op].outcome
+        changed = {"detail": "the pool changed", "code": "team_changed"}
+        state, said = outcome(409, changed, {})
+        assert state == ask_operations.STALE and "nothing ran" in said
+        for status, body in (
+            (409, {"detail": "the plan changed", "latest_revision": 3}),
+            (409, {"detail": "the list changed", "code": "listing_changed"}),
+            (409, {"detail": "already used for another request"}),
+            (422, {"detail": "x", "code": "team_changed"}),
+            (409, None),
+        ):
+            assert outcome(status, body, {})[0] == ask_operations.FAILED, (status, body)
+        assert outcome(200, {"revision": 4}, {})[0] == ask_operations.DONE
+    # The request names the bound team only for an `assemble` whose staged facts hold one.
+    route = ask_operations.CATALOG["team.assemble"].route
+    f = {"op": "assemble", "operation_id": "x", "expected_revision": 1, "reason": "r"}
+    assert route("m1", f, {"team": "0123456789abcdef"})[2]["expected_team"] == "0123456789abcdef"
+    assert "expected_team" not in route("m1", f, {"revision": 1})[2]
+    assert "expected_team" not in route("m1", f, {"team": None})[2]
+    assign = {**f, "op": "assign", "step": "o1.cv", "index": 0, "listing": "l"}
+    body = ask_operations.CATALOG["team.assign"].route("m1", assign, {"team": "0123456789abcdef"})
+    assert "expected_team" not in body[2]
+    assert all(o.staged_facts for o in ask_operations.CATALOG.values() if o.group == "team")
+
+
 def test_the_assemble_sentence_names_as_many_picks_as_fit_and_counts_the_rest():
     from agent_sessions import ask_store, ask_team
 

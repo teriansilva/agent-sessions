@@ -26,7 +26,7 @@ async function fixture(page: Page) {
   let failRead = false;
   let unavailable = false;
   const preferences: Record<string, unknown> = {
-    pulse: { configured: true, auto_enabled: false, interval_minutes: 30, window_days: 3, scan_depth: "fast" },
+    pulse: { configured: true, window_days: 3 },
     hq_contact: "off", hq_contact_rev: 0, hq_reports: false,
     hq_route: { enabled: true, model: "", thinking: "off" },
   };
@@ -215,7 +215,7 @@ test("every settings group is reachable and moved controls keep their existing s
   for (const [name, id] of [
     ["Contact", "hq-contact"], ["HQ models", "hq-models-h"], ["Question routing", "hq-route-h"],
     ["Memory search", "memory-search-h"], ["Autonomy", "orch-h"],
-    ["Reports", "hq-reports-h"], ["Session scan", "pulse-h"], ["Mission checks", "hq-forge"],
+    ["Reports", "hq-reports-h"], ["Recent window", "pulse-h"], ["Mission checks", "hq-forge"],
     ["Calls", "hq-calls"], ["Connectors", "hq-connectors"],
   ]) {
     const link = groups.getByRole("link", { name, exact: true });
@@ -229,8 +229,14 @@ test("every settings group is reachable and moved controls keep their existing s
   await expect.poll(() => f.preferences.hq_route).toEqual({ enabled: true, model: "model-a", thinking: "off" });
   await page.getByTestId("hq-reports-toggle").click();
   await expect.poll(() => f.preferences.hq_reports).toBe(true);
-  await page.getByLabel("Scan depth").selectOption("slow");
-  await expect.poll(() => (f.preferences.pulse as { scan_depth: string }).scan_depth).toBe("slow");
+  // The reports save above refreshes the config, which re-seeds this field's draft; retry the
+  // edit until it lands on a settled field rather than racing that refresh.
+  const recent = page.getByLabel("How far back to look");
+  await expect(async () => {
+    await recent.fill("2");
+    await recent.press("Enter");
+    expect((f.preferences.pulse as { window_days: number }).window_days).toBe(2);
+  }).toPass();
   await page.getByTestId("forge-base-url").fill("https://forge.example");
   await page.locator("#hq-forge").getByRole("button", { name: "Save connection", exact: true }).click();
   await expect.poll(() => (f.preferences.forge as { base_url: string })?.base_url).toBe("https://forge.example");
@@ -240,6 +246,45 @@ test("every settings group is reachable and moved controls keep their existing s
   expect(f.saves).toEqual([]);
   expect(f.legacy.some((patch) => "orchestrator" in (patch as object))).toBe(false);
 });
+
+// #2179: the session scan is retired. Its card shrinks in place to the one setting that is still
+// read — the recent window — and the `#pulse-h` anchor (deep links, #2180's redirect map) still
+// lands on it. Red before the change: the card was "Session scan" with four more controls.
+for (const theme of ["dark", "light"]) {
+  test(`${theme}: the Recent window card is the scan card's only survivor and saves just the window`, async ({ page, isMobile }, info) => {
+    const f = await fixture(page);
+    await page.addInitScript((choice) => localStorage.setItem("tr-theme", choice), theme);
+    await page.goto("/settings/ai-hq#pulse-h");
+    const card = page.getByRole("region", { name: "Recent window", exact: true });
+    // The anchor still names this card (deep links, #2180's redirect map). That a group link
+    // scrolls it into view is pinned by "every settings group is reachable" above.
+    await expect(card).toBeVisible();
+    await card.scrollIntoViewIfNeeded();
+    await expect(card.locator("h2#pulse-h")).toHaveText("Recent window");
+    const input = card.getByLabel("How far back to look");
+    await expect(input).toHaveValue("3");
+    await expect(card).toContainText("The Needs you list, the work recap and HQ look this many days back (1–3).");
+    for (const gone of [/Scan now/i, /Scan automatically/i, /Scan every/i, /Scan depth/i, /Sessions without a mission/i]) {
+      await expect(card.getByText(gone)).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: /Scan now/i })).toHaveCount(0);
+    if (isMobile) expect((await input.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    await page.evaluate(() => document.fonts.ready);
+    await card.screenshot({ path: info.outputPath(`recent-window-${theme}.png`) });
+    await input.fill("2");
+    await input.press("Enter");
+    await expect(card.getByText("Saved.")).toBeVisible();
+    const pulseSaves = f.legacy.filter((patch) => "pulse" in (patch as object));
+    expect(pulseSaves).toEqual([{ pulse: { window_days: 2 } }]);
+    // Out of range reverts with a reason, and writes nothing.
+    await input.fill("9");
+    await input.press("Enter");
+    await expect(card.getByText(/between 1 and 3 days/)).toBeVisible();
+    await expect(input).toHaveValue("2");
+    expect(f.legacy.filter((patch) => "pulse" in (patch as object))).toHaveLength(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
 
 for (const theme of ["dark", "light"]) {
   test(`${theme} HQ settings and Missions fit desktop and phone`, async ({ page, isMobile }, info) => {

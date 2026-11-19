@@ -177,7 +177,8 @@ link, `/settings/appearance#hq-contact`, also redirects here.
   mission-specific permissions still apply. Mission agents never skip tool prompts; the agent
   default for sessions you start cannot grant bypass to missions.
 - **Session reports** — whether sessions may report their status to HQ.
-- **Session scan** — the scan interval, history window, Fast / Slow depth and **Scan now**.
+- **Recent window** — how far back the Needs you list, the work recap and HQ look (1–3 days).
+  The background session scan, its depth and **Scan now** were retired; nothing showed what it wrote.
 - **Mission checks** — the existing **Forge connection** for reading PRs, checks and reviews.
   Its token stays server-side. An unavailable reading is unknown, not failed.
 - **Calls** — speech services, local speech runtime, each General's voice, language, turn-taking,

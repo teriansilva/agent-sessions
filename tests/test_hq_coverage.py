@@ -41,7 +41,6 @@ CODES = {
 #: The prefs blocks whose ledger rows split by field, and where their fields are defined.
 NESTED = {
     "ai_review": lambda: set(prefs._AI_REVIEW_DEFAULTS),
-    "orchestrator": lambda: set(prefs._ORCH_DEFAULTS),
     "agent_defaults": lambda: set(prefs.AGENT_DEFAULTS_KEYS),
     "forge": lambda: set(prefs._FORGE_DEFAULTS),
 }

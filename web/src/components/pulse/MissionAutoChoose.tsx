@@ -25,7 +25,7 @@ export function MissionAutoChoose({
   const automationConfig = useConfig();
   const orch = automationConfig?.automation?.version === 1
     ? automationConfig.automation.mission
-    : automationConfig?.orchestrator;
+    : undefined;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const server = mission.auto_choose === true;

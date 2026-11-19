@@ -163,7 +163,7 @@ def _client(cfg):
     return TestClient(create_app(cfg), base_url="https://testserver")
 
 
-def test_the_prefs_route_refuses_a_threshold_under_the_floor(auth_cfg, fake_jsonl):  # noqa: ARG001
+def test_the_automation_route_refuses_a_threshold_under_the_floor(auth_cfg, fake_jsonl):  # noqa: ARG001
     c = _client(auth_cfg)
     r = c.post(
         "/login",
@@ -174,16 +174,18 @@ def test_the_prefs_route_refuses_a_threshold_under_the_floor(auth_cfg, fake_json
     assert r.status_code == 303
     csrf = c.get("/api/config").json()["csrf"]
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    assert (
-        c.post(
-            "/api/prefs", json={"orchestrator": {"judge_confidence_min": 0.89}}, headers=hdr
-        ).status_code
-        == 422
-    )
-    r = c.post("/api/prefs", json={"orchestrator": {"judge_confidence_min": 0.93}}, headers=hdr)
+
+    def patch(policy):
+        revision = c.get("/api/config").json()["automation"]["mission"]["revision"]
+        return c.patch(
+            "/api/automation/mission", json={"revision": revision, "policy": policy}, headers=hdr
+        )
+
+    assert patch({"judge_confidence_min": 0.89}).status_code == 422
+    r = patch({"judge_confidence_min": 0.93})
     assert r.status_code == 200
-    assert r.json()["orchestrator"]["judge_confidence_min"] == 0.93
-    assert c.get("/api/config").json()["orchestrator"]["judge_confidence_min"] == 0.93
+    assert r.json()["policy"]["judge_confidence_min"] == 0.93
+    assert c.get("/api/config").json()["automation"]["mission"]["judge_confidence_min"] == 0.93
 
 
 # =====================================================================================

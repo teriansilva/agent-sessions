@@ -439,31 +439,19 @@ Archiving a mission stops its agents and frees their terminals. It is **destruct
 never of history**: every transcript is kept, and UNARCHIVE brings the mission back. A live mission
 has to be abandoned first, and the console says so before you confirm.
 
-## What the session scan costs
+## The recent window
 
-HQ keeps session scan results current with a session scan. The scan
-is configured under Settings → AI → HQ → **Session scan**, and it has two depths that
-differ in how much model work they do — not in how much they see.
+The session titles mission control shows come from cards built for each request, from your
+sessions and their AI-review results. Building them makes **no model call** and nothing is cached
+or scanned in the background.
 
-| Depth | Model calls | What you get |
-|---|---|---|
-| **`fast`** (default) | **none** | Ranking and flags from the per-session AI-review results already on the sidecar. Free. |
-| **`slow`** | one per session, at most **12** per scan | Adds a one-line "state + next step" per session. |
+**How far back to look** (Settings → AI → HQ → **Recent window**) sets the window the Needs you
+list, the work recap and HQ use: 1–3 days, default **1**. Anything active in the last 24 hours
+counts as recent. A pending decision on an older session still shows: it gets a card of its own.
 
-`fast` does no LLM work at all — it re-uses what [AI review](/guide/ai-review) already produced. If
-you have not configured an AI endpoint, stay on it; it is the default for exactly that reason.
-There used to be a `medium` depth; it was removed, and a stored `medium` now reads as `fast`.
-
-At `slow`, an unconfigured endpoint makes the scan **degrade to `fast` curation** with an explicit
-`synthesis_skipped` marker rather than failing the page, and a session whose own call fails keeps
-its AI-review summary line. The `slow` pass is bounded and serialized — at most **12 sessions** per
-scan, 1 second apart — a deliberate ceiling on what one scan can cost you against a metered
-endpoint or a slow local model. Where a session has a recap, the `slow` pass hands the model the
-recap rather than the one-line summary.
-
-`window_days` controls how far back it looks (default **3**, allowed 1–30); anything active in the
-last 24 hours counts as recent. Results are cached, so the page opens instantly and the scan runs
-behind it.
+There used to be a background session scan with a Fast / Slow depth and a **Scan now** button.
+Nothing the scan wrote was shown anywhere except those titles, so it was retired. Its settings are
+ignored if you still have them stored.
 
 ## Without an AI endpoint
 
@@ -506,6 +494,6 @@ Commit `f5611f0` — `src/agent_sessions/missions.py § STATES, _ALLOWED, PROBE_
 `web/src/lib/routes.ts § ASK_PATH`; `web/src/components/shell/sections.ts`;
 `web/src/components/pulse/{NewMissionForm,MissionConsole,MissionRail,MissionObjectives,MissionThreadEvent}.tsx`;
 `web/src/routes/OrchestratorSettings.tsx`; `web/src/routes/settingsTabs.ts`;
-`src/agent_sessions/pulse.py § SCAN_DEPTHS, DEFAULT_DEPTH, coerce_depth, WINDOW_DAYS_*, RECENT_ACTIVE_S, SLOW_SESSION_CAP, SYNTH_CALL_SPACING_S, run_scan`;
+`src/agent_sessions/pulse.py § WINDOW_DAYS_*, RECENT_ACTIVE_S, build_cards, overview`; `src/agent_sessions/routes/pulse.py § get_pulse, _attach_pending`;
 `web/src/routes/Pulse.tsx`, `web/src/routes/PulseSettings.tsx`, `web/src/components/pulse/`.
 :::

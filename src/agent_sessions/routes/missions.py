@@ -2644,6 +2644,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     # ---- the team (#1950, #1613 P5): HQ plans with the Commander ------------------------------
 
+    def _team_changed(why: str) -> Exception:
+        """The 409 a digest-bound assemble gets when the route's team is not the card's (#2129)."""
+        from .. import mission_team
+
+        return mission_team.TeamRefused(
+            "team_changed",
+            f"the team this would assemble is not the one expected: the pool changed{why}; "
+            "read the plan again. Nothing was written",
+            status=409,
+        )
+
     def _team_fail(e: Exception) -> JSONResponse:
         from .. import mission_team
 
@@ -2733,8 +2744,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
         The same function decides for both authors (the operator here, HQ through its card, which
         runs this route as the operator). A refusal writes nothing. A stale revision is 409 with
-        the latest number; a repeated `operation_id` returns its first result."""
-        from .. import mission_team
+        the latest number; a repeated `operation_id` returns its first result.
+
+        An `assemble` with `expected_team` (#2129: the digest HQ's card bound) commits only that
+        team: the team the exact document to commit writes, over the same context, is compared
+        right before the commit, and another team is 409 `team_changed`."""
+        from .. import ask_team, mission_team
 
         try:
             body = await _bounded_body(request, TEAM_OP_BODY_MAX)
@@ -2760,11 +2775,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     raise err
                 doc = latest["document"]
                 ctx = await asyncio.to_thread(mission_team.load_context, doc)
-                new = await asyncio.to_thread(
-                    lambda: mission_team.apply_op(
-                        doc, op, ctx, mission_id=mission_id, revision=latest["revision"]
-                    )
-                )
+
+                def build() -> dict:
+                    # The card's team, checked on THIS document and context (#2129): no reload
+                    # between here and the commit, whose revision fence still decides a race.
+                    expected = op.get("expected_team")
+                    try:
+                        new = mission_team.apply_op(
+                            doc, op, ctx, mission_id=mission_id, revision=latest["revision"]
+                        )
+                    except mission_team.TeamRefused as e:
+                        # The card's dry run assembled a team on this same revision, so an
+                        # assemble refused here (say, the pool emptied) is the team changing.
+                        if expected is None:
+                            raise
+                        raise _team_changed(f" ({e.text})") from e
+                    if expected is not None and ask_team.written_team(doc, new, ctx) != expected:
+                        raise _team_changed("")
+                    return new
+
+                new = await asyncio.to_thread(build)
                 done = await missions.run_admitted(
                     lambda: missions.commit_plan_op(
                         mission_id,

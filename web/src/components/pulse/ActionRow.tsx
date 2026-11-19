@@ -175,7 +175,7 @@ export function ActionRow({
   const automationConfig = useConfig();
   const orch = automationConfig?.automation?.version === 1
     ? automationConfig.automation.mission
-    : automationConfig?.orchestrator;
+    : undefined;
   // WHICH CONTROLS ARE OFFERED IS THE SERVER'S ANSWER, not ours (#852/#840 §16).
   //
   // This used to derive it from `state`, treating `proposed` and `approved` alike — so an

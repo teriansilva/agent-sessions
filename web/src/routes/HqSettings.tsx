@@ -18,7 +18,7 @@ import styles from "./Settings.module.css";
 const GROUPS = [
   ["hq-contact", "Contact"], ["hq-models-h", "HQ models"], ["hq-route-h", "Question routing"],
   ["memory-search-h", "Memory search"], ["orch-h", "Autonomy"],
-  ["hq-reports-h", "Reports"], ["pulse-h", "Session scan"], ["hq-forge", "Mission checks"],
+  ["hq-reports-h", "Reports"], ["pulse-h", "Recent window"], ["hq-forge", "Mission checks"],
   ["hq-calls", "Calls"], ["hq-connectors", "Connectors"],
 ] as const;
 

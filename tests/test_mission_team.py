@@ -9,6 +9,7 @@ context snapshot (the pool, grades and client facts) replaced by the same fixtur
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import random
 import sqlite3
@@ -643,6 +644,170 @@ def test_a_repeated_operation_id_replays_and_a_reused_one_conflicts(app):
     store_plan(other, document())
     r = _post(app, mid=other, op="assemble", expected_revision=1, operation_id=oid)
     assert r.status_code == 409
+
+
+# ---- an assemble's expected team (#2129) ---------------------------------------------------------
+
+
+def _plan_ops(mid):
+    con = missions._ready(None)
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM mission_plan_ops WHERE mission_id=?", (mid,)
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _expected_team(app) -> tuple[str, str]:
+    """The digest of the team an assemble writes now, computed the card's way (`ask_team`), and
+    the specialist it puts on o1.record."""
+    from agent_sessions import ask_team
+
+    doc = missions.plan_revision(app["mid"])["document"]
+    ctx = team.load_context(doc)
+    new = team.apply_op(doc, _op("assemble"), ctx, mission_id=app["mid"], revision=1)
+    rec = next(s for s in new["steps"] if s["id"] == "o1.record")
+    return ask_team.written_team(doc, new, ctx), rec["envelope"]["assignment"]["specialist"]["id"]
+
+
+def _without(app, specialist: str) -> None:
+    app["state"]["ctx"] = context(specs=pool(**{specialist.replace("-", "_"): None}))
+
+
+def test_expected_team_is_parsed_for_assemble_only_and_bound_into_the_request_digest():
+    digest = "0123456789abcdef"
+    plain = _op("assemble")
+    bound = team.parse_op({**plain, "expected_team": digest})
+    assert bound["expected_team"] == digest and "expected_team" not in plain
+    # A digest-less request digests exactly as before; the expected team is part of the request.
+    core = {k: v for k, v in plain.items() if k not in ("operation_id", "author")}
+    raw = json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    assert team.request_digest(plain) == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert team.request_digest(bound) != team.request_digest({**bound, "expected_team": "f" * 16})
+    assert team.request_digest(bound) != team.request_digest(plain)
+    # The card's own digest is one the parser takes.
+    from agent_sessions import ask_team
+
+    card = ask_team.team_digest({"assembled": [], "kept": [], "unassigned": []})
+    assert team.parse_op({**plain, "expected_team": card})["expected_team"] == card
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"op": "assemble", "expected_team": "0123456789ABCDEF"},
+        {"op": "assemble", "expected_team": "0123456789abcde"},
+        {"op": "assemble", "expected_team": "0123456789abcdef0"},
+        {"op": "assemble", "expected_team": 1234567890123456},
+        {"op": "assemble", "expected_team": None},
+        {"op": "assemble", "expected_team": "sha256:0123456789abcdef"},
+        {"op": "clear_override", "step": "o1.cv", "expected_team": "0123456789abcdef"},
+        {
+            "op": "assign",
+            "step": "o1.cv",
+            "index": 0,
+            "listing": "sha256:" + "0" * 32,
+            "expected_team": "0123456789abcdef",
+        },
+        {
+            "op": "set_override",
+            "step": "o1.cv",
+            "index": 0,
+            "listing": "sha256:" + "0" * 32,
+            "expected_team": "0123456789abcdef",
+        },
+    ],
+)
+def test_a_malformed_or_misplaced_expected_team_is_refused(body):
+    full = {"operation_id": str(uuid.uuid4()), "expected_revision": 1, "reason": "r", **body}
+    with pytest.raises(team.TeamRefused) as e:
+        team.parse_op(full)
+    assert e.value.status == 422 and e.value.code == "invalid_request"
+
+
+def test_an_assemble_with_the_team_it_writes_commits(app):
+    expected, _ = _expected_team(app)
+    r = _post(app, op="assemble", expected_revision=1, expected_team=expected)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"revision": 2, "replayed": False}
+    assert _plan_ops(app["mid"]) == 1
+
+
+def test_an_assemble_whose_team_changed_is_409_team_changed_and_writes_nothing(app):
+    """The pool moved after the card's team was read: the route's team is another one."""
+    expected, record = _expected_team(app)
+    _without(app, record)
+    oid = str(uuid.uuid4())
+    r = _post(app, op="assemble", expected_revision=1, operation_id=oid, expected_team=expected)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "team_changed"
+    latest = missions.plan_revision(app["mid"])
+    assert latest["revision"] == 1 and latest["document"] == document()
+    assert _revisions(app["mid"]) == 1 and _plan_ops(app["mid"]) == 0
+    # The same operation id, retried once the pool is back, commits: the refusal recorded nothing.
+    app["state"]["ctx"] = context()
+    r = _post(app, op="assemble", expected_revision=1, operation_id=oid, expected_team=expected)
+    assert r.status_code == 200 and r.json() == {"revision": 2, "replayed": False}, r.text
+
+
+def test_the_team_is_compared_on_the_context_the_route_commits_not_a_reread(app, monkeypatch):
+    """The route reads the pool once: if the card's pick is gone at that read, a pool that comes
+    back before the compare must not let the route commit a team the card never showed."""
+    expected, record = _expected_team(app)
+    reads = []
+    gone = context(specs=pool(**{record.replace("-", "_"): None}))
+    full = context()
+
+    def snapshot():
+        reads.append(1)
+        return gone if len(reads) == 1 else full
+
+    monkeypatch.setattr(team, "snapshot", snapshot)
+    r = _post(app, op="assemble", expected_revision=1, expected_team=expected)
+    assert r.status_code == 409 and r.json()["code"] == "team_changed", r.text
+    assert _revisions(app["mid"]) == 1 and _plan_ops(app["mid"]) == 0
+
+
+def test_an_assemble_the_emptied_pool_refuses_is_team_changed_only_with_a_digest(app):
+    """No team can be assembled any more: with the card's digest that is `team_changed` (409);
+    without one the operator's route answers as before (422 `nothing_assignable`)."""
+    expected, _ = _expected_team(app)
+    app["state"]["ctx"] = context(specs=[])
+    r = _post(app, op="assemble", expected_revision=1, expected_team=expected)
+    assert r.status_code == 409 and r.json()["code"] == "team_changed", r.text
+    assert _revisions(app["mid"]) == 1 and _plan_ops(app["mid"]) == 0
+    r = _post(app, op="assemble", expected_revision=1)
+    assert r.status_code == 422 and r.json()["code"] == "nothing_assignable", r.text
+    assert _revisions(app["mid"]) == 1 and _plan_ops(app["mid"]) == 0
+
+
+def test_without_an_expected_team_the_operator_route_is_unchanged(app):
+    """The operator's Team card sends no digest: the route assembles from the pool as it stands."""
+    _, record = _expected_team(app)
+    _without(app, record)
+    r = _post(app, op="assemble", expected_revision=1)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"revision": 2, "replayed": False}
+    steps = missions.plan_revision(app["mid"])["document"]["steps"]
+    rec = next(s for s in steps if s["id"] == "o1.record")["envelope"].get("assignment")
+    assert rec is None or rec["specialist"]["id"] != record
+
+
+def test_an_identical_retry_replays_after_a_pool_change_and_another_digest_conflicts(app):
+    expected, record = _expected_team(app)
+    oid = str(uuid.uuid4())
+    first = _post(app, op="assemble", expected_revision=1, operation_id=oid, expected_team=expected)
+    assert first.json() == {"revision": 2, "replayed": False}
+    _without(app, record)
+    again = _post(app, op="assemble", expected_revision=1, operation_id=oid, expected_team=expected)
+    assert again.status_code == 200 and again.json() == {"revision": 2, "replayed": True}
+    # The same id with another digest, or with none: another request, a conflict, never a replay.
+    other = _post(app, op="assemble", expected_revision=1, operation_id=oid, expected_team="0" * 16)
+    assert other.status_code == 409 and other.json().get("code") != "team_changed"
+    bare = _post(app, op="assemble", expected_revision=1, operation_id=oid)
+    assert bare.status_code == 409
+    assert _revisions(app["mid"]) == 2 and _plan_ops(app["mid"]) == 1
 
 
 def test_assign_by_index_and_a_refused_candidate_is_refused(app):

@@ -488,7 +488,7 @@ async def ask_events(
     turns_max: int | None = HISTORY_TURNS_MAX,
     chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> AsyncIterator[dict]:
-    """One ask, as the events it passes through (#1171) — what ``/api/pulse/ask/stream`` sends.
+    """One ask, as the events it passes through (#1171); :func:`ask` is its last event.
 
     ``{"type": "progress", "step": "catalog", "sessions": N, "missions": M}`` before Stage 1,
     ``{"type": "answer", "final": False, **result}`` with the Stage-1 answer the moment it exists

@@ -69,7 +69,8 @@ def test_registry_covers_every_system_prompt():
     # #2136 hq_turn_watch (a second model judges whether an HQ turn converges, guarded) and
     # hq_turn_notes (what HQ read becomes its notes before it is dropped for room, guarded).
     # #2137 P2 hq_conversation_compact (the background summary of a long conversation, guarded).
-    assert len(prompts.REGISTRY) == 51
+    # #2179 removed pulse_session_line with the session scan.
+    assert len(prompts.REGISTRY) == 50
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -151,7 +152,6 @@ EXPECTED_DEFAULT_SHA = {
     "chat_agent": "21d3108b920e805c",  # #1209: the API agent (no tools)
     "chat_agent_edits": "6166ce4f34051115",  # #1230: file proposals
     "chat_agent_tools": "1fcc0475343bb699",  # #1222: the API agent with read tools
-    "pulse_session_line": "2c5ed998d9df3d00",
     "pulse_recap": "9be97db184a142c7",  # #1086
     # #1069: Ask covers missions too — both stages name the mission kind and its content.
     # #2016: an empty list beats a weak match; a match is about what the question asks, not
@@ -285,9 +285,9 @@ def test_editable_falls_back_to_default_and_survives_a_blank(tmp_home):
 
 
 def test_unguarded_effective_is_the_editable_text(tmp_home):
-    prompts.set_value("pulse_session_line", "One line, no markdown.")
-    assert prompts.effective("pulse_session_line") == "One line, no markdown."
-    assert prompts.guard_suffix("pulse_session_line") is None
+    prompts.set_value("pulse_recap", "One line, no markdown.")
+    assert prompts.effective("pulse_recap") == "One line, no markdown."
+    assert prompts.guard_suffix("pulse_recap") is None
 
 
 # ---- the guard invariant -------------------------------------------------------------
@@ -572,5 +572,5 @@ def test_the_tail_review_always_asks_for_the_structured_assessment(tmp_home):
 
 
 def test_unlocked_prompts_are_unchanged(tmp_home):
-    assert prompts.guard_suffix("pulse_session_line") is None
-    assert prompts.INSUFFICIENT_CLAUSE not in prompts.effective("pulse_session_line")
+    assert prompts.guard_suffix("pulse_recap") is None
+    assert prompts.INSUFFICIENT_CLAUSE not in prompts.effective("pulse_recap")

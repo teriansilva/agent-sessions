@@ -33,6 +33,12 @@ function config(autonomy: string) {
       allowed_verbs: ["continue"],
       auto_verbs_ceiling: ["continue"],
     },
+    // The SPA reads autonomy from `automation` only (#2179), as the server sends it.
+    automation: {
+      version: 1, legacy_compatible: true,
+      session: { enabled: true, autonomy, revision: "session-1" },
+      mission: { enabled: true, autonomy, revision: "mission-1" },
+    },
   };
 }
 

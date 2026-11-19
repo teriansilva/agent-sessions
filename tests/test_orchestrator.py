@@ -37,7 +37,6 @@ from agent_sessions import (
     orchestrator_loop,
     prefs,
     pulse,
-    pulse_chat,
     review,
 )
 from agent_sessions import (
@@ -755,19 +754,23 @@ def test_evidence_rejects_bad_kind_and_unknown_id(auth_cfg, fake_jsonl):  # noqa
     assert body["kind"] == "screen" and body["available"] is False
 
 
-def test_prefs_route_rejects_a_verb_above_the_ceiling(auth_cfg, fake_jsonl):  # noqa: ARG001
+def test_automation_route_rejects_a_verb_above_the_ceiling(auth_cfg, fake_jsonl):  # noqa: ARG001
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    r = c.post(
-        "/api/prefs", json={"orchestrator": {"allowed_verbs": ["continue", "answer"]}}, headers=hdr
-    )
-    assert r.status_code == 422
-    r = c.post("/api/prefs", json={"orchestrator": {"autonomy": "yolo"}}, headers=hdr)
+
+    def patch(policy):
+        revision = c.get("/api/config").json()["automation"]["session"]["revision"]
+        return c.patch(
+            "/api/automation/session", json={"revision": revision, "policy": policy}, headers=hdr
+        )
+
+    assert patch({"allowed_verbs": ["continue", "answer"]}).status_code == 422
+    r = patch({"autonomy": "yolo"})
     assert r.status_code == 200
-    assert r.json()["orchestrator"]["autonomy"] == "yolo"
+    assert r.json()["policy"]["autonomy"] == "yolo"
     # unknown key is a 422, never a silent no-op
-    assert c.post("/api/prefs", json={"orchestrator": {"nope": 1}}, headers=hdr).status_code == 422
+    assert patch({"nope": 1}).status_code == 422
 
 
 def test_orchestrator_exclude_toggle_does_not_touch_review_exclude(auth_cfg, fake_jsonl):  # noqa: ARG001
@@ -1687,72 +1690,6 @@ def test_a_failed_approval_never_retires_the_alert(auth_cfg, fake_jsonl, tmp_pat
     assert len(notifications.listing()["notifications"]) == 2
 
 
-# --- Ask matches name what is waiting on the session ---------------------------------------
-
-
-def _async_ret(value):
-    async def _f(*_a, **_k):
-        return value
-
-    return _f
-
-
-def _ask(c, csrf, cfg):
-    return c.post(
-        "/api/pulse/ask",
-        json={"query": "where was I"},
-        headers={"Origin": cfg.origin, "X-CSRF-Token": csrf},
-    ).json()
-
-
-def _matches(*ids):
-    return {
-        "answer": "found",
-        "stage": "catalog",
-        "configured": True,
-        "matches": [{"id": i, "why": "w"} for i in ids],
-    }
-
-
-def test_ask_matches_are_annotated_with_the_live_action(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """Finding the session is half an answer; "and something is waiting there" is the rest."""
-    _append_action(
-        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
-    )
-    monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa", "codex:bbb")))
-    c = _client(auth_cfg)
-    a, b = _ask(c, _login(c, auth_cfg), auth_cfg)["matches"]
-    assert a["pending"] == {"action_id": "act-1", "state": "escalated", "verb": "escalate"}
-    assert "pending" not in b, "a session with nothing waiting must carry no flag"
-
-
-def test_a_finished_action_is_history_not_an_errand(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """Flagging a delivered or expired action sends the operator somewhere nothing waits —
-    the fastest way to make them stop trusting the flag."""
-    for i, state in enumerate(("delivered", "expired", "rejected")):
-        _append_action(
-            {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
-        )
-    monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa")))
-    c = _client(auth_cfg)
-    assert "pending" not in _ask(c, _login(c, auth_cfg), auth_cfg)["matches"][0]
-
-
-def test_the_model_cannot_invent_a_pending_action(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """The whole reason this is computed server-side.
-
-    A model that can name a session can claim one needs attention. A false "something is waiting
-    for you" costs a wasted trip AND the credibility of every true flag, so whatever the model
-    says here is discarded and replaced by what the ledger actually holds.
-    """
-    payload = _matches("claude:aaa")
-    payload["matches"][0]["pending"] = {"action_id": "made-up", "state": "escalated", "verb": "x"}
-    monkeypatch.setattr(pulse_chat, "ask", _async_ret(payload))
-    c = _client(auth_cfg)
-    got = _ask(c, _login(c, auth_cfg), auth_cfg)["matches"][0]
-    assert "pending" not in got, "a model-authored flag survived to the client"
-
-
 # --- the queue merged into the cards (#754) --------------------------------------------------
 
 
@@ -1766,7 +1703,7 @@ def test_cards_carry_their_live_action_and_are_banded_as_needing_you(
     )
     monkeypatch.setattr(
         pulse,
-        "load_cache",
+        "overview",
         lambda *a, **k: {
             "cards": [
                 {"id": "claude:aaa", "engine": "claude", "state": "idle"},
@@ -1794,7 +1731,7 @@ def test_a_finished_action_never_reaches_a_card(auth_cfg, fake_jsonl, monkeypatc
             {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
         )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -1816,7 +1753,7 @@ def test_a_claimed_action_never_puts_controls_on_a_card(auth_cfg, fake_jsonl, mo
         {"id": "act-1", "state": "claimed", "verb": "continue", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -1842,7 +1779,7 @@ def test_the_operator_pending_set_is_the_one_the_queue_uses(auth_cfg, fake_jsonl
                 "ts": 1000 + i,
             }
         )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     cards = c.get("/api/pulse").json()["cards"]
@@ -1869,7 +1806,7 @@ def test_the_pending_list_carries_the_operator_projection(auth_cfg, fake_jsonl, 
         _append_action(
             {"id": aid, "state": state, "verb": verb, "session_id": f"claude:s{i}", "ts": 1000 + i}
         )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     pending = {x["id"]: x for x in c.get("/api/pulse/orchestrator").json()["pending"]}
@@ -1899,7 +1836,7 @@ def test_the_overlay_records_the_band_it_replaced(auth_cfg, fake_jsonl, monkeypa
         {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -1922,7 +1859,7 @@ def test_a_synthesized_card_says_that_is_all_it_is(auth_cfg, fake_jsonl, monkeyp
             "title": "Relay cap",
         }
     )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     card = c.get("/api/pulse").json()["cards"][0]
@@ -1934,7 +1871,7 @@ def test_a_stale_cached_pending_action_is_never_trusted(auth_cfg, fake_jsonl, mo
     """The cache is written by a scan and can outlive the action it saw. The ledger decides."""
     monkeypatch.setattr(
         pulse,
-        "load_cache",
+        "overview",
         lambda *a, **k: {
             "cards": [
                 {
@@ -1950,39 +1887,12 @@ def test_a_stale_cached_pending_action_is_never_trusted(auth_cfg, fake_jsonl, mo
     assert "pending_action" not in c.get("/api/pulse").json()["cards"][0]
 
 
-def test_scanning_does_not_strip_the_inline_actions(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """`POST /api/pulse/scan` returns the fresh artifact and the client swaps it in wholesale.
-
-    Without the same live overlay `GET` applies, running a scan silently removed every
-    Approve/Dismiss control from the page while the ledger still said they were pending — the
-    overlay was wired on one route and missing on its sibling.
-    """
-    _append_action(
-        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
-    )
-
-    async def _scan(*_a, **_k):
-        return {"cards": [{"id": "claude:aaa", "engine": "claude", "state": "idle"}]}
-
-    monkeypatch.setattr(pulse, "run_scan", _scan)
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    body = c.post(
-        "/api/pulse/scan",
-        json={},
-        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
-    ).json()
-    card = body["cards"][0]
-    assert card["pending_action"]["id"] == "act-1"
-    assert card["state"] == "needs_you"
-
-
 def test_a_live_action_with_no_card_is_still_reachable(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """No Pulse cache yet — the case the removed queue used to cover.
+    """No card for the session — the case the removed queue used to cover.
 
-    `eligible_cards` builds with `window_days=None`, so the orchestrator can act before any
-    scan has run. With the queue gone and no card to host the controls, the action would be
-    impossible to approve or reject from anywhere.
+    `eligible_cards` builds with `window_days=None`, so the orchestrator can act on a session
+    the recent-window cards do not hold. With the queue gone and no card to host the controls,
+    the action would be impossible to approve or reject from anywhere.
     """
     _append_action(
         {
@@ -1996,20 +1906,20 @@ def test_a_live_action_with_no_card_is_still_reachable(auth_cfg, fake_jsonl, mon
             "project_id": "p1",
         }
     )
-    # The REAL cache miss returns None and takes a different branch. My first version
-    # mocked an empty cached artifact, which never exercised it.
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: None)
+    # Unpatched (#2179): the live card build, which has no card for this session.
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    cards = c.get("/api/pulse").json()["cards"]
+    cards = {x["id"]: x for x in c.get("/api/pulse").json()["cards"]}
 
-    assert len(cards) == 1
-    assert cards[0]["id"] == "claude:aaa"
-    assert cards[0]["pending_action"]["id"] == "act-1"
-    assert cards[0]["state"] == "needs_you"
+    card = cards["claude:aaa"]
+    assert card["synthesized_for_action"] is True
+    assert card["pending_action"]["id"] == "act-1"
+    assert card["state"] == "needs_you"
     # Identity comes from the action, so the synthesized card is not anonymous.
-    assert cards[0]["title"] == "Awaiting a decision"
-    assert cards[0]["project"]["name"] == "infra"
+    assert card["title"] == "Awaiting a decision"
+    assert card["project"]["name"] == "infra"
+    # …and only the action's session got one: the live in-window cards are ordinary.
+    assert [i for i, x in cards.items() if x.get("synthesized_for_action")] == ["claude:aaa"]
 
 
 def test_a_session_outside_the_cached_window_still_gets_its_controls(
@@ -2029,7 +1939,7 @@ def test_a_session_outside_the_cached_window_still_gets_its_controls(
     )
     monkeypatch.setattr(
         pulse,
-        "load_cache",
+        "overview",
         lambda *a, **k: {"cards": [{"id": "claude:recent", "engine": "claude", "state": "idle"}]},
     )
     c = _client(auth_cfg)
@@ -2063,7 +1973,7 @@ def test_an_overdue_proposal_is_never_offered_as_actionable(auth_cfg, fake_jsonl
         }
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2429,7 +2339,7 @@ def test_the_route_ships_the_health_record(auth_cfg, fake_jsonl, monkeypatch):  
                 raise RuntimeError("endpoint returned HTTP 500")
 
     asyncio.run(fail())
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     body = c.get("/api/pulse/orchestrator").json()
@@ -2486,7 +2396,7 @@ def test_the_feed_collapses_repeats_of_one_session(auth_cfg, fake_jsonl, monkeyp
                 "ts": 1000 + i,
             }
         )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     feed = _feed_of(c)
@@ -2503,7 +2413,7 @@ def test_a_session_with_one_action_says_repeats_one(auth_cfg, fake_jsonl, monkey
     """The client shows the count only above 1, so the field must always be present and honest
     rather than absent-meaning-one."""
     _append_action({"id": "a0", "state": "observed", "verb": "observe", "session_id": "claude:aaa"})
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     assert _feed_of(c)[0]["repeats"] == 1
@@ -2520,7 +2430,7 @@ def test_collapsing_keeps_sessions_apart_and_newest_first(auth_cfg, fake_jsonl, 
                 "ts": 1000 + i,
             }
         )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     feed = _feed_of(c)
@@ -2538,7 +2448,7 @@ def test_a_pending_action_is_still_excluded_from_the_feed(auth_cfg, fake_jsonl, 
     _append_action(
         {"id": "live", "state": "proposed", "verb": "continue", "session_id": sid, "ts": 2000}
     )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     body = c.get("/api/pulse/orchestrator").json()
@@ -2551,7 +2461,7 @@ def test_a_row_with_no_session_id_stands_alone(auth_cfg, fake_jsonl, monkeypatch
     """Keying them all to "" would merge unrelated actions into a single row."""
     for i in range(3):
         _append_action({"id": f"a{i}", "state": "observed", "verb": "observe", "ts": 1000 + i})
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     feed = _feed_of(c)
@@ -2591,7 +2501,7 @@ def test_a_busy_session_cannot_push_older_sessions_out_of_the_feed(
                 "ts": 1000 + i,
             }
         )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     feed = c.get("/api/pulse/orchestrator").json()["feed"]
@@ -2719,7 +2629,7 @@ def test_a_settled_action_rides_its_card(auth_cfg, fake_jsonl, monkeypatch):  # 
         }
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2746,7 +2656,7 @@ def test_a_live_action_wins_over_history_on_the_same_card(auth_cfg, fake_jsonl, 
         }
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2765,7 +2675,7 @@ def test_a_synthesized_history_card_is_not_duplicated_by_its_own_session(
         {"id": "a1", "state": "observed", "verb": "observe", "session_id": "claude:aaa", "ts": 1}
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2787,7 +2697,7 @@ def test_the_repeat_count_reaches_the_card(auth_cfg, fake_jsonl, monkeypatch):  
             }
         )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2819,7 +2729,7 @@ def test_settled_history_for_a_session_with_no_card_makes_no_card(
             "ts": 1000,
         }
     )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     assert c.get("/api/pulse").json()["cards"] == []
@@ -2839,7 +2749,7 @@ def test_a_LIVE_action_with_no_card_is_still_synthesized(auth_cfg, fake_jsonl, m
             "ts": 2000,
         }
     )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     cards = c.get("/api/pulse").json()["cards"]
@@ -2862,7 +2772,7 @@ def test_a_settled_action_still_rides_a_card_that_exists(auth_cfg, fake_jsonl, m
         }
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
     )
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2885,7 +2795,7 @@ def test_the_card_count_tracks_sessions_not_ledger_history(auth_cfg, fake_jsonl,
         )
     monkeypatch.setattr(
         pulse,
-        "load_cache",
+        "overview",
         lambda *a, **k: {"cards": [{"id": "claude:aaa"}, {"id": "claude:bbb"}]},
     )
     c = _client(auth_cfg)
@@ -3043,7 +2953,7 @@ def test_only_the_low_confidence_kind_reaches_the_card_with_an_approve(
     }
     for state, sid in sids.items():
         _append_action(_rec(state, aid=f"act-{state}", sid=sid))
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
 
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -3296,7 +3206,7 @@ def test_969_every_retiring_surface_withdraws_a_proposal_that_can_no_longer_be_d
         if surface == "state read":
             assert c.get("/api/pulse/orchestrator").json()["pending"] == []
         else:
-            monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+            monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
             cards = c.get("/api/pulse").json()["cards"]
             assert not any(x.get("pending_action") for x in cards)
 

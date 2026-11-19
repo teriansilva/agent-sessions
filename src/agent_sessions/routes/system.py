@@ -97,8 +97,6 @@ def _preflight_prefs(payload: dict) -> None:
     def bad(detail: str) -> HTTPException:
         return HTTPException(status_code=422, detail=detail)
 
-    if "orchestrator" in payload and len(payload) != 1:
-        raise bad("save automation policy separately from other preferences")
     # Session defaults can be refused LATE — the cap is re-checked under the prefs lock (#1407) —
     # so they are saved on their own: a lock-held refusal then leaves nothing else half-written.
     ad = payload.get("agent_defaults")
@@ -147,6 +145,14 @@ def _preflight_prefs(payload: dict) -> None:
             raise bad(err)
     if "hq_contact" in payload and not _known_hq_contact(payload["hq_contact"]):
         raise bad("unknown hq_contact")
+    if "orchestrator" in payload:
+        # The legacy combined orchestrator write was retired (#2179). Autonomy is written per
+        # scope through `PATCH /api/automation/{scope}`, which checks the policy's revision.
+        # Refused in the preflight, so a mixed payload persists nothing.
+        raise bad(
+            "orchestrator settings are saved with PATCH /api/automation/{scope}, "
+            "and its prompt with PATCH /api/prompts/orchestrator_pass"
+        )
     if "mission_playbooks" in payload:
         # Checklists were removed completely (#1653). Refused in the preflight, so a mixed payload
         # persists nothing; the block already in `prefs.json` stays there, unread.
@@ -172,7 +178,6 @@ def _preflight_prefs(payload: dict) -> None:
         ("pulse", prefs.validate_pulse_patch),
         ("session_review", prefs.validate_session_review_patch),
         ("clusters", prefs.validate_clusters_patch),
-        ("orchestrator", prefs.validate_orchestrator_patch),
     ):
         if key in payload:
             err = validator(payload[key])
@@ -831,9 +836,8 @@ def register(
                 # AI auto-sort config (#424 Phase 6) — opt-in; holds no secret of its own,
                 # `configured` mirrors the reused ai_review endpoint readiness.
                 "auto_sort": prefs.public_auto_sort(),
-                # Pulse recent-work overview config (#441 Phase 3) — opt-in background scan +
-                # window/depth; holds no secret of its own, `configured` mirrors the reused
-                # ai_review endpoint readiness (depth ≥ medium synthesis needs it).
+                # The recent-work window (#1086; the scan's other settings retired, #2179) plus
+                # `configured`, the ai_review endpoint readiness HQ and the mission views read.
                 "pulse": prefs.public_pulse(),
                 "session_review": prefs.get_session_review(),
                 # Session clusters (#1997): on/off, the agent tool, the sweep interval; no secret.
@@ -1140,9 +1144,8 @@ def register(
             prefs.set_auto_sort(payload["auto_sort"])
             out["auto_sort"] = prefs.public_auto_sort()
         if "pulse" in payload:
-            # Pulse overview config (#441 Phase 3): auto_enabled + interval + window + depth,
-            # server-validated (unknown-key rejection, bounds, known depth). Holds no secret —
-            # it reuses the ai_review endpoint. The echo is the PUBLIC view (adds `configured`).
+            # The recent window (#1086), server-validated: unknown keys — the retired scan
+            # fields included (#2179) — are a 422. The echo is the PUBLIC view (adds `configured`).
             err = prefs.validate_pulse_patch(payload["pulse"])
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
@@ -1162,33 +1165,6 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_clusters(payload["clusters"])
             out["clusters"] = prefs.public_clusters()
-        if "orchestrator" in payload:
-            # Pulse orchestrator config (#726): tier + threshold + cadence + prompts,
-            # server-validated. `allowed_verbs` is checked against the AUTO_VERBS_V1 ceiling
-            # — a patch naming `answer`/`choose`/`dispatch` is a 422, because a shipped
-            # setting that can add them means they ARE autonomous whatever the docs say.
-            err = prefs.validate_orchestrator_patch(payload["orchestrator"])
-            if err is not None:
-                raise HTTPException(status_code=422, detail=err)
-            # OFF THE LOOP, like the mission routes and the per-session opt-out. An orchestrator
-            # patch withdraws authority (a tier drop, a narrowed verb set), so `set_orchestrator`
-            # commits inside the cross-process fence — and that fence is a synchronous `flock`
-            # poll with a budget measured in seconds. Entering it on the event loop stalls every
-            # other request while a sibling instance holds it (#888 review, finding 2).
-            try:
-                await asyncio.to_thread(prefs.set_orchestrator, payload["orchestrator"])
-            except prefs.PolicyConflict as e:
-                raise HTTPException(status_code=409, detail=str(e)) from None
-            except prefs.PolicyStoreError as e:
-                raise HTTPException(status_code=503, detail=str(e)) from None
-            except ValueError as e:
-                raise HTTPException(status_code=422, detail=str(e)) from None
-            except session_input.AuthorityFenceBusy:
-                raise HTTPException(
-                    status_code=503,
-                    detail="the authorization fence is busy; retry",
-                ) from None
-            out["orchestrator"] = prefs.public_orchestrator()
         if "project_names" in payload:
             v = payload["project_names"]
             if not isinstance(v, dict) or not all(

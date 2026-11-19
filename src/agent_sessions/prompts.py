@@ -155,14 +155,6 @@ _HANDOFF = (
     "at most 8 items per list; use an empty list when there are none."
 )
 
-_PULSE_LINE = (
-    "You summarize ONE coding-agent session in a single line: its current state and the "
-    "most useful next step for the user. You are given the session's title, state, "
-    "last-activity age, and a summary \u2014 which may be a short chronological recap of what "
-    "happened, one step per line. Be specific and concise \u2014 no preamble, no markdown. "
-    'Reply with ONLY a JSON object: {"line": "<one line, max 140 chars>"}.'
-)
-
 _WORK_RECAP = (
     "You write a short chronological account of what a developer did across their AI-coding "
     "sessions over the last day or few days. You are given the window and a list of sessions, "
@@ -959,20 +951,8 @@ REGISTRY: tuple[Prompt, ...] = (
         block=BLOCK,
         field="template_write",
     ),
-    Prompt(
-        id="pulse_session_line",
-        group="Mission control",
-        label="Session line",
-        description=(
-            "One line per session in the Sessions-without-a-mission list: current state plus the "
-            "most useful next step. Written only by a slow scan."
-        ),
-        contract='{"line": str}',
-        default=_PULSE_LINE,
-        max_chars=2000,
-        block=BLOCK,
-        field="pulse_session_line",
-    ),
+    # `pulse_session_line` (the slow scan's one line per session) was retired with the scan
+    # (#2179). A stored override for it stays in `ai_prompts`, unread.
     Prompt(
         id="pulse_recap",
         group="Mission control",

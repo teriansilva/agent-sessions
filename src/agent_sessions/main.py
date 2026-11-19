@@ -66,7 +66,6 @@ from . import (
     owner,
     prefs,
     projects,
-    pulse_loop,
     reaper,
     runtime_freeze,
     scrollback,
@@ -426,10 +425,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # HQ's session clustering (#1997): same reaper pattern, gated on the `clusters` prefs and
         # a configured endpoint, re-read per sweep.
         clusters_task = asyncio.create_task(clusters_loop.run())
-        # Periodic Pulse overview scan (#441 Phase 3): same reaper pattern, gated on the
-        # `pulse.auto_enabled` opt-in + the env kill-switch + change-detection, re-read per
-        # sweep. Skips when a manual scan holds the single-flight; an unchanged set is a no-op.
-        pulse_task = asyncio.create_task(pulse_loop.run(registry))
+        # No Pulse scan loop: the session scan was retired (#2179). `GET /api/pulse` builds its
+        # cards live, and nothing else read the scan's cache.
         # Periodic Pulse orchestrator pass (#726 Phase 1): same reaper pattern, gated on the
         # `orchestrator.enabled` opt-in + the env kill-switch + change-detection, re-read per
         # sweep. Also performs one startup recovery of any action left mid-delivery by a
@@ -624,7 +621,6 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 review_task,
                 autosort_task,
                 clusters_task,
-                pulse_task,
                 orchestrator_task,
                 supervisor_task,
                 update_task,

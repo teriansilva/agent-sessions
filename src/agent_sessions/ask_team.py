@@ -11,7 +11,8 @@ approvals (D8: no bypass on the planner):
 * **Confirmed on a card.** One that passes is an `ask_operations` card. The operator's tap runs
   `POST /api/missions/{id}/plan/ops` AS the operator (`asgi_call`), with `author: "hq"`, a
   provenance label only. The route checks everything again; a plan that moved since HQ read it is
-  `stale` (facts bind the revision) or the route's own 409.
+  `stale` (facts bind the revision) or the route's own 409. An `assemble` sends the team its card
+  bound (`expected_team`, #2129) and the route commits only that team.
 * **No approve, start or launch.** These four operations are the only team writes HQ has.
 """
 
@@ -60,6 +61,10 @@ def _body(target: str, f: dict, facts: dict) -> tuple[str, str, dict]:
         body["step"] = f["step"]
     if f["op"] in ("assign", "set_override"):
         body["index"], body["listing"] = f["index"], f["listing"]
+    # The team the card bound (#2129): `facts` are the card's STAGED facts (`staged_facts`), so
+    # a card staged without a digest (before #2126) sends none and confirms as it did.
+    if f["op"] == "assemble" and isinstance(facts.get("team"), str):
+        body["expected_team"] = facts["team"]
     return "POST", f"/api/missions/{target}/plan/ops", body
 
 
@@ -111,9 +116,16 @@ def _describe(f: dict, facts: dict) -> str:
     )
 
 
-def _outcome(status: int, body: object, facts: dict) -> tuple[str, str]:
-    from .ask_operations import DONE, FAILED
+#: The route's refusal of an `assemble` whose team is not the card's (#2129): the card is `stale`.
+TEAM_CHANGED = "team_changed"
 
+
+def _outcome(status: int, body: object, facts: dict) -> tuple[str, str]:
+    from .ask_operations import DONE, FAILED, STALE
+
+    if status == 409 and isinstance(body, dict) and body.get("code") == TEAM_CHANGED:
+        # Only this code (#2129): another 409 (a moved revision, a reused id) stays `failed`.
+        return STALE, "the team it would assemble changed since this was proposed; nothing ran"
     if not 200 <= status < 300 or not isinstance(body, dict):
         return FAILED, ""
     return DONE, f"Saved as plan revision {body.get('revision')}."
@@ -140,6 +152,7 @@ def team_ops() -> tuple:
             _describe,
             _outcome,
             _failure,
+            staged_facts=True,
         )
         for op in ("assemble", "assign", "set_override", "clear_override")
     )
@@ -151,8 +164,11 @@ async def facts(target: str, fields: dict, app, operator) -> dict | None:
     (`ask_operations.changed`: `revision`); so does a team that would come out differently
     (`team`): a plan revision does not freeze the pool, so the tap runs the dry run again over the
     context as it stands, and a pick gone or changed means nothing is written. A change inside
-    the confirm request itself, after this check, is not caught (the route reloads its own context).
-    A dry run the route would now refuse leaves no team."""
+    the confirm request itself, after this check, is the route's to catch (#2129): the tap sends
+    this digest as `expected_team` and the route commits only that team, else 409 `team_changed`
+    and the card is `stale`. That holds for a card whose facts bound a digest; one staged before
+    #2126 sends none, and the operator's own Team card never sends one. A dry run the route would
+    now refuse leaves no team."""
     from . import asgi_call, mission_team
 
     r = await asgi_call.call(app, operator, "GET", f"/api/missions/{target}/plan/team", None)
@@ -180,6 +196,13 @@ def team_digest(team: dict) -> str:
     """One team as a short, comparable string (#2126): the same picks give the same digest."""
     canon = json.dumps(team, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(canon).hexdigest()[:16]
+
+
+def written_team(before: dict, after: dict, ctx) -> str:
+    """The digest of the team `after` writes over `before` (#2129): THE one comparison, made the
+    same way for the card (`facts`, through `dry_run`) and for the route, which checks an
+    `assemble`'s `expected_team` against the exact document it is about to commit."""
+    return team_digest(_preview(before, after, ctx))
 
 
 def operation_id(nonce: str) -> str:

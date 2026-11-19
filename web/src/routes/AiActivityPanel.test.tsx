@@ -32,16 +32,16 @@ test("lists the known AI kinds, idle until they run (#441 P6)", async () => {
   vi.mocked(api.aiActivity).mockResolvedValue({ running: [], last: {} });
   render(<AiActivityPanel />);
   await flush();
-  expect(screen.getByText("HQ session scan")).toBeInTheDocument();
+  expect(screen.queryByText("HQ session scan")).toBeNull(); // retired with the scan (#2179)
   expect(screen.getByText("AI review")).toBeInTheDocument();
   expect(screen.getByText("Auto-sort")).toBeInTheDocument();
   expect(screen.getAllByText("idle").length).toBeGreaterThanOrEqual(3);
 });
 
-test("shows a running scan + a last-run summary (#441 P6)", async () => {
+test("shows a running task + a last-run summary (#441 P6)", async () => {
   const now = Math.floor(Date.now() / 1000);
   const activity: AiActivity = {
-    running: [{ kind: "pulse-scan", detail: "manual", started_at: now - 6 }],
+    running: [{ kind: "auto-sort", detail: "manual", started_at: now - 6 }],
     last: {
       "ai-review": {
         finished_at: now - 120,
@@ -54,7 +54,7 @@ test("shows a running scan + a last-run summary (#441 P6)", async () => {
   vi.mocked(api.aiActivity).mockResolvedValue(activity);
   render(<AiActivityPanel />);
   await flush();
-  // The running pulse scan reports its elapsed time + detail; ai-review shows its last run.
+  // The running task reports its elapsed time + detail; ai-review shows its last run.
   expect(screen.getByText(/running .* manual/i)).toBeInTheDocument();
   expect(screen.getByText(/ran .*ago/i)).toBeInTheDocument();
 });

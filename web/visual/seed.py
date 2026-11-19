@@ -231,116 +231,22 @@ def seed_opencode(home: Path) -> None:
         con.close()
 
 
-# Keep in sync with pulse.CACHE_VERSION (a mismatch makes load_cache treat this as a miss and
-# /mission renders the empty state — the populated `pulse` capture would silently go blank).
-_PULSE_CACHE_VERSION = 1
-
-
 def seed_pulse(home: Path) -> None:
-    """Write a representative cached Pulse overview (#441 Phase 5) so the `/mission` capture renders
-    POPULATED: a depth-medium banner + cards across every state bucket (needs-you ⚠ / in-flight /
-    recently-active / idle). The page serves this cache verbatim (GET never scans), so the
-    screenshot is deterministic without driving a live scan."""
+    """One operator-pending ledger action (#781), so the `/mission` capture shows a decision.
+
+    The cards themselves are built live from the seeded sessions (#2179): `GET /api/pulse` reads
+    no cache any more. (The `pulse-cache.json` this seeder used to write carried a stale
+    `cache_version` and was already ignored.)"""
     now = int(time.time())
-
-    def _folder(cwd: str, name: str) -> dict:
-        return {"kind": "folder", "id": cwd, "name": name}
-
-    def _card(sid, engine, title, cwd, proj, summary, state, *, age_s, live=False, reason=""):
-        return {
-            "id": f"{engine}:{sid}",
-            "engine": engine,
-            "title": title,
-            "cwd": cwd,
-            "project": proj,
-            "last_activity": now - age_s,
-            "ai_summary": summary,
-            "intervention_required": bool(reason),
-            "intervention_reason": reason,
-            "reviewed_at": now - age_s,
-            "live": live,
-            "state": state,
-            "synthesis": None,
-        }
-
-    cards = [
-        _card(
-            "019e2ba1-1590-7003-8e4a-51ab62cec902",
-            "codex",
-            "Wire up the deploy step",
-            "/seed/alpha",
-            _folder("/seed/alpha", "alpha"),
-            "Deploy step is ready — waiting on your go-ahead to push.",
-            "needs_you",
-            age_s=240,
-            reason="Confirm before it pushes to production",
-        ),
-        _card(
-            "019e2ba1-1590-7003-8e4a-51ab62cec900",
-            "claude",
-            "Investigate the failing build",
-            "/seed/alpha",
-            _folder("/seed/alpha", "alpha"),
-            "Bisecting the CI failure — narrowed to the last three commits.",
-            "in_flight",
-            age_s=30,
-            live=True,
-        ),
-        _card(
-            "019e2ba1-1590-7003-8e4a-51ab62cec901",
-            "claude",
-            "Refactor the auth module",
-            "/seed/beta",
-            _folder("/seed/beta", "beta"),
-            "Split the token logic into its own module; tests green.",
-            "recently_active",
-            age_s=5400,
-        ),
-        _card(
-            "ses_seed00000001",
-            "opencode",
-            "Port the scanner",
-            "/seed/alpha",
-            _folder("/seed/alpha", "alpha"),
-            "Porting the directory scanner to the new engine API.",
-            "recently_active",
-            age_s=9000,
-        ),
-        _card(
-            "96fb77fc-9c1a-4453-b27b-d78d8012dd2c",
-            "gemini",
-            "Tag the open issues",
-            "/seed/beta",
-            _folder("/seed/beta", "beta"),
-            "Triaged 12 issues and applied area labels.",
-            "idle",
-            age_s=2 * 86400,
-        ),
-    ]
-    artifact = {
-        "cache_version": _PULSE_CACHE_VERSION,
-        "generated_at": now - 90,
-        "window_days": 3,
-        "scan_depth": "medium",
-        "input_fingerprint": "seed-fingerprint",
-        "synthesis_skipped": False,
-        "banner": (
-            "1 session needs you — the deploy step is waiting on your go-ahead. The build "
-            "investigation is in flight; auth refactor and scanner port are recently active."
-        ),
-        "cards": cards,
-    }
     d = home / ".config" / "agent-sessions"
     d.mkdir(parents=True, exist_ok=True)
-    (d / "pulse-cache.json").write_text(json.dumps(artifact, indent=2, sort_keys=True))
 
     # One operator-pending ledger action, on the SAME session as the needs-you card (#781).
     #
     # Without this the `/mission` capture only ever rendered cards with no `pending_action`, which
     # is the branch #781 leaves untouched — so the snapshots could not show the change at all.
-    # It has to be a real ledger row rather than a `pending_action` baked into the cache above:
-    # `_attach_pending` pops any cached overlay unconditionally and re-reads the ledger, exactly
-    # so a stale cache cannot resurrect decision controls for an action that no longer exists.
+    # It has to be a real ledger row: `_attach_pending` reads pending actions from the ledger
+    # only, never from a card.
     #
     # `session_id` is the card's engine-qualified id, which is what the overlay matches on.
     # `expires_at` is a year out because `_attach_pending` runs `expire_due()` FIRST — a
@@ -487,5 +393,5 @@ if __name__ == "__main__":
     )
     print(
         f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) "
-        "+ kimi(1) + opencode(1) + pulse-cache + 1 project entity + chat edit approval"
+        "+ kimi(1) + opencode(1) + a ledger action + 1 project entity + chat edit approval"
     )

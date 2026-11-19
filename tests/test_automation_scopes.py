@@ -347,8 +347,10 @@ def test_scoped_api_returns_accepted_revision_and_rejects_ambiguous_legacy_atomi
     assert accepted["scope"] == "session" and accepted["policy"]["enabled"] is True
     assert accepted["policy"]["revision"] != initial["session"]["revision"]
     original = prefs._default_path().read_bytes()
+    # The legacy combined write is retired (#2179): refused outright, whatever the scopes hold.
     rejected = client.post("/api/prefs", headers=headers, json={"orchestrator": {"enabled": True}})
-    assert rejected.status_code == 409
+    assert rejected.status_code == 422
+    assert "PATCH /api/automation" in rejected.json()["detail"]
     assert prefs._default_path().read_bytes() == original
     mixed = client.post(
         "/api/prefs", headers=headers, json={"theme": "light", "orchestrator": {"enabled": True}}
@@ -784,12 +786,26 @@ def test_post_claim_failure_settles_without_replay(monkeypatch, failure):
         os.close(slave)
 
 
-def test_legacy_mission_only_route_uses_mission_policy_and_rechecks_locked_save(
-    auth_cfg, monkeypatch
-):
+def test_legacy_mission_only_write_uses_mission_policy_and_the_route_is_retired(auth_cfg):
+    """`prefs.set_orchestrator` (the legacy combined writer, kept for in-process callers) still
+    writes mission-only fields to the mission scope alone and re-checks under its lock. Its HTTP
+    bridge, `POST /api/prefs {orchestrator}`, is retired (#2179): a 422 that persists nothing."""
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     prefs.set_automation_policy("session", {"enabled": False, "autonomy": "off"})
     standalone = prefs.get_session_assistance()
+    prefs.set_orchestrator({"auto_ai_directions": True})
+    assert prefs.get_mission_orchestration()["auto_ai_directions"] is True
+    assert prefs.get_session_assistance() == standalone
+    assert prefs.get_orchestrator()["autonomy"] == "off"
+    with pytest.raises(prefs.PolicyConflict):
+        prefs.set_orchestrator({"enabled": True})
+
+    prefs.set_automation_policy("mission", {"auto_ai_directions": False, "autonomy": "suggest"})
+    with pytest.raises(ValueError):
+        prefs.set_orchestrator({"auto_ai_directions": True})  # not on suggest
+    assert prefs.get_mission_orchestration()["auto_ai_directions"] is False
+    assert prefs.get_session_assistance() == standalone
+
     client = TestClient(create_app(auth_cfg), base_url="https://testserver")
     client.post(
         "/login",
@@ -798,26 +814,8 @@ def test_legacy_mission_only_route_uses_mission_policy_and_rechecks_locked_save(
         follow_redirects=False,
     )
     headers = {"Origin": auth_cfg.origin, "X-CSRF-Token": client.get("/api/config").json()["csrf"]}
-    patch = {"orchestrator": {"auto_ai_directions": True}}
-    assert client.post("/api/prefs", headers=headers, json=patch).status_code == 200
-    assert prefs.get_mission_orchestration()["auto_ai_directions"] is True
-    assert prefs.get_session_assistance() == standalone
-    assert prefs.get_orchestrator()["autonomy"] == "off"
-    assert (
-        client.post(
-            "/api/prefs", headers=headers, json={"orchestrator": {"enabled": True}}
-        ).status_code
-        == 409
-    )
-
-    prefs.set_automation_policy("mission", {"auto_ai_directions": False})
-    save = prefs.set_orchestrator
-
-    def race(part):
-        prefs.set_automation_policy("mission", {"autonomy": "suggest"})
-        return save(part)
-
-    monkeypatch.setattr(prefs, "set_orchestrator", race)
-    assert client.post("/api/prefs", headers=headers, json=patch).status_code == 422
-    assert prefs.get_mission_orchestration()["auto_ai_directions"] is False
-    assert prefs.get_session_assistance() == standalone
+    before = prefs._default_path().read_bytes()
+    for block in ({"auto_ai_directions": False}, {"enabled": False}):
+        r = client.post("/api/prefs", headers=headers, json={"orchestrator": block})
+        assert r.status_code == 422, block
+    assert prefs._default_path().read_bytes() == before

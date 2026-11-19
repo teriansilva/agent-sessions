@@ -1040,6 +1040,13 @@
 .aiIntervalInput {
   width: 90px;
 }
+/* The recent window (#2179) is the only field on its card, and on a phone it is a touch target:
+   ≥44px (docs/design.md §8). Scoped to this card so no other Settings form re-lays-out. */
+@media (pointer: coarse), (max-width: 800px) {
+  [data-testid="recent-window"] input {
+    min-height: 44px;
+  }
+}
 .aiPrompt {
   width: 100%;
   min-height: 140px;

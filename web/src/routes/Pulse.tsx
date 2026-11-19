@@ -13,7 +13,7 @@ import action from "../components/ui/actionButton.module.css";
 import styles from "./Pulse.module.css";
 
 // DEPTHS lived here for the route's FAST/MED/SLOW selector, removed with the scan chrome
-// (#929). Scan depth is configured in Settings → Pulse, which still owns it.
+// (#929). The scan itself, and its depth, were retired later (#2179).
 
 /** One curated session card. ALL model-derived text (`synthesis`, `ai_summary`, the page
  *  banner, an Ask `why`) is rendered as plain text via React's default escaping — never
@@ -44,7 +44,7 @@ export default function Pulse() {
     overviewGen.current = gen;
     setOverview(o);
   }, []);
-  // Re-fetch the cached overview. Deciding an action on a card removes it from the ledger's
+  // Re-fetch the overview. Deciding an action on a card removes it from the ledger's
   // live set, so the card must lose its controls without a reload (#754).
   const reloadOverview = useCallback(
     (settled?: OrchestratorAction) => {
@@ -112,8 +112,7 @@ export default function Pulse() {
   }, [applyOverview, attempt]);
 
   // `changeDepth` and `scanNow` were the route's scan controls and went with the header
-  // (#929). `routes/PulseSettings.tsx` retains both the depth/window configuration and the
-  // manual scan path, so nothing here is orphaned — only unreachable from this page.
+  // (#929); the scan itself was retired in #2179, and the cards are built live per GET.
 
 
   return (
@@ -121,9 +120,8 @@ export default function Pulse() {
       {/* ONE HEADER, AND NO SCAN VOCABULARY (#929).
           The window selector, the FAST/MED/SLOW depth and "Scan now" were Pulse's
           operator-triggered scan model, left behind when the dashboard was replaced. They are
-          removed from the ROUTE only: `routes/PulseSettings.tsx` still owns `window_days`,
-          `scan_depth` and the manual scan path, so the capability is untouched and this is a
-          chrome removal rather than a feature retirement.
+          removed from the ROUTE here; #2179 later retired the scan itself (the cards are built
+          live per request), leaving `window_days` as the one setting, in Settings → HQ.
 
           The live-session count replaces the scan window as orientation. The MISSION count is
           deliberately not here: the console owns the mission list, and reaching into it from the

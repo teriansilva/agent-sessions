@@ -123,7 +123,6 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Notifications: list, mark read (all or some), dismiss one / all, clear settled | GET/POST /api/pulse/notifications/* | have to list (`notifications`, #2137); P2 W the rest |
 | Recent work recap (read, refresh) | GET/POST /api/pulse/recap | P2 R/W |
 | Pulse overview cards; orchestrator health | GET /api/pulse, GET /api/pulse/orchestrator | P2 R |
-| Pulse scan now | POST /api/pulse/scan | P2 W (external: AI) |
 | Run one orchestrator pass now | POST /api/pulse/orchestrate | P2 W (it acts only within the configured autonomy) |
 | Dashboard tiles (running, recent, missions, quota) | GET /api/dashboard/sessions, /api/missions, /api/agents/usage | P2 R / #1554 |
 | Refresh usage now | POST /api/agents/usage/refresh | P2 W (external: agent CLIs) |
@@ -153,9 +152,11 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
 | Session clusters: on/off, the agent tool, the re-cluster interval (#1997) | POST /api/prefs `clusters` | P2 W, both directions (none widens autonomy or bypass: the agent tool reads its own group and posts notes, it cannot act on a session) |
-| Orchestrator: thresholds, interval, notify, stale hours, nudge text | POST /api/prefs `orchestrator.*` | P2 W |
-| Orchestrator **on**, autonomy **up**, AI directions auto-send **on**, allowed verbs widened | POST /api/prefs `orchestrator`, PATCH /api/automation/{scope} | **never** (widens autonomy); turning any of them **down or off** is P2 W |
-| Pulse: auto scan, interval, window, depth | POST /api/prefs `pulse` | P2 W |
+| Orchestrator (session assistance / mission orchestration): interval, notify, stale hours, proposal lifetime | PATCH /api/automation/{scope} (revision-checked; Settings › HQ › Autonomy and the mission thread's *turn off AI-written directions*) | P2 W |
+| Orchestrator thresholds (`confidence_min`, `ai_direction_confidence_min`, `judge_confidence_min`), `max_actions_per_pass` | PATCH /api/automation/{scope} | P2 W to raise a threshold or lower the cap only; the other direction widens autonomy and is **never** |
+| Orchestrator **on**, autonomy **up**, AI directions auto-send **on**, allowed verbs widened | PATCH /api/automation/{scope} | **never** (widens autonomy); turning any of them **down or off** is P2 W |
+| Orchestrator nudge text; orchestrator prompt | PATCH /api/automation/{scope} `nudge_template`; PATCH /api/prompts/{id} | **never** (text automation types into sessions; prompt text) |
+| Pulse: the recent window (how far back needs-you, the recap and HQ look) | POST /api/prefs `pulse` | P2 W |
 | Forge connection: URL, owner, token; clear token | POST /api/prefs `forge` | **never** (credential) |
 | Prompts: read the catalog | GET /api/prompts | P2 R |
 | Prompts: edit / reset | PATCH /api/prompts/{id} | **never** (the guarded `ask_orchestrator` prompt is HQ's own fence; others shape every model call) |
@@ -259,8 +260,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Route | HQ |
 |---|---|
 | POST /api/missions/{id}/message, POST /api/ask/conversations/{cid}/message | n/a (non-streaming twins of UI routes) |
-| POST /api/pulse/ask[/stream], POST /api/pulse/chat | n/a (HQ is their successor; #1443 retires `pulse/chat`) |
-| PATCH /api/automation/{scope} | see Settings › orchestrator (down/off only) |
+| POST /api/pulse/chat | n/a (HQ is its successor; #1443 retires `pulse/chat`) |
 | GET /api/agents/catalog, POST /api/agents/catalog/refresh | P6 (aliases of `/api/plugins`) |
 | GET /api/perf, GET /api/system/sessions, GET /healthz, GET /api/auth-check | n/a (diagnostics / infrastructure) |
 | POST /api/folders/mkdir | P1 (same as /api/fs/mkdir) |
@@ -590,8 +590,6 @@ GET    /api/pulse                                                               
 POST   /api/pulse/actions/{action_id}/approve                                     never  # a tap approving a tap
 POST   /api/pulse/actions/{action_id}/choose                                      never  # a tap approving a tap
 POST   /api/pulse/actions/{action_id}/reject                                      P2
-POST   /api/pulse/ask                                                             n/a  # HQ's predecessors
-POST   /api/pulse/ask/stream                                                      n/a  # HQ's predecessors
 POST   /api/pulse/chat                                                            n/a  # HQ's predecessors
 GET    /api/pulse/evidence/{session_id:path}                                      P2
 GET    /api/pulse/needs-you                                                       have
@@ -608,7 +606,6 @@ POST   /api/pulse/push/subscribe                                                
 POST   /api/pulse/push/unsubscribe                                                P2
 GET    /api/pulse/recap                                                           P2
 POST   /api/pulse/recap                                                           P2
-POST   /api/pulse/scan                                                            P2
 GET    /api/scrollback                                                            P6
 POST   /api/scrollback/clear                                                      P6
 GET    /api/sessions                                                              P1
@@ -813,21 +810,6 @@ hq_route                        P2  # question routing (#2028): on/off, model fr
 model_grades                    P2  # which grade a model is; specialists derive theirs from it
 onboarded                       n/a  # onboarding flag
 operator_name                   n/a  # a name the operator types in Settings › Profile (#1942)
-orchestrator                    nested
-orchestrator.ai_direction_confidence_min P2  # raise only; lowering widens autonomy
-orchestrator.allowed_verbs      P2  # narrow only
-orchestrator.auto_ai_directions P2  # off only
-orchestrator.autonomy           P2  # down only
-orchestrator.confidence_min     P2  # raise only
-orchestrator.enabled            P2  # off only
-orchestrator.interval_minutes   P2
-orchestrator.judge_confidence_min P2  # raise only
-orchestrator.max_actions_per_pass P2  # lower only
-orchestrator.notify             P2
-orchestrator.nudge_template     never  # text automation types into sessions
-orchestrator.prompt             never  # prompt text
-orchestrator.proposal_ttl_minutes P2
-orchestrator.stale_hours        P2
 overview_expanded               n/a  # map cluster layout state
 pool_max_instances              P2  # how many specialist instances may run at once
 project_names                   P2

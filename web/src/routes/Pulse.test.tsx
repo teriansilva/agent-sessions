@@ -43,8 +43,7 @@ vi.mock("../lib/api", async () => {
     api: {
       projectEntities: vi.fn().mockResolvedValue({ projects: [] }),
       pulse: vi.fn(),
-      pulseScan: vi.fn(),
-      pulseAsk: vi.fn(),
+      missionMessageStream: vi.fn(),
       setPrefs: vi.fn(),
       orchestrator: vi.fn(),
       orchestrate: vi.fn(),
@@ -92,7 +91,6 @@ function card(
     intervention_reason: "",
     reviewed_at: null,
     live: true,
-    synthesis: null,
     ...over,
   };
 }
@@ -118,12 +116,8 @@ function pact(over: Partial<OrchestratorAction> = {}): OrchestratorAction {
 
 function overview(over: Partial<PulseOverview> = {}): PulseOverview {
   return {
-    cache_version: 1,
     generated_at: Math.floor(Date.now() / 1000) - 60,
     window_days: 3,
-    scan_depth: "fast",
-    input_fingerprint: "fp",
-    synthesis_skipped: false,
     cards: [],
     ...over,
   };
@@ -200,7 +194,6 @@ async function openFromRail(title: string) {
 
 beforeEach(() => {
   vi.mocked(api.pulse).mockReset().mockResolvedValue(overview());
-  vi.mocked(api.pulseScan).mockReset();
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
   vi.mocked(api.orchestrator).mockReset().mockRejectedValue(new Error("off"));
   vi.mocked(api.missions)
@@ -343,7 +336,7 @@ test("with no AI endpoint the composer is disabled and the notice says what is o
   expect(screen.getByTestId("composer-input")).toBeDisabled();
   expect(screen.getByTestId("composer-send")).toBeDisabled();
   // The original Ask test asserted "makes no call". Still true, and still the point.
-  expect(api.pulseAsk).not.toHaveBeenCalled();
+  expect(api.missionMessageStream).not.toHaveBeenCalled();
 });
 
 test("switching missions starts a clean composer — the console KEYS the mission body (#878)", async () => {
@@ -568,8 +561,9 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
  * model, left behind when MISSION CONTROL replaced the dashboard.
  *
  * They are NOT replaced by weaker assertions here, because the behaviour they covered did not
- * move to this page: `routes/PulseSettings.tsx` owns `scan_depth`, `window_days` and the manual
- * scan path, and `PulseSettings.test.tsx` is where that surface is pinned. Deleting a test whose
+ * move to this page: `routes/PulseSettings.tsx` owned `scan_depth`, `window_days` and the manual
+ * scan path, and `PulseSettings.test.tsx` pinned that surface. (#2179 then retired the scan
+ * itself; the window is the card's one remaining setting.) Deleting a test whose
  * subject moved is right; quietly re-asserting a shadow of it here would be worse than nothing.
  *
  * What this file DOES still pin about the removal is below: the chrome is gone from the route.

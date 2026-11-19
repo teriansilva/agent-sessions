@@ -2,8 +2,8 @@
 
 Two removals, each pinned from both sides:
 
-* the ``medium`` scan depth (and the banner prompt it existed for): a stored value still READS,
-  as ``fast``; a WRITE of it is refused.
+* the ``medium`` scan depth (and the banner prompt it existed for) — and since #2179 the whole
+  depth, with the scan: a stored value is not read and stays in the file; a WRITE is refused.
 * prompt writes through ``/api/prefs``: the three prompts that predate the registry still store in
   their feature blocks, but only ``PATCH /api/prompts/{id}`` may write them, and the public
   config views no longer carry copies nobody read.
@@ -47,25 +47,47 @@ def _write_raw_prefs(doc: dict) -> None:
     path.write_text(json.dumps(doc))
 
 
-# ---- the medium depth ------------------------------------------------------------------
+# ---- the scan depth (medium #956; the whole depth, with the scan, #2179) ----------------
 
 
-def test_a_stored_medium_depth_reads_as_fast_and_keeps_the_rest_of_the_block():
+def test_a_stored_depth_is_no_longer_read_and_stays_in_the_file():
     _write_raw_prefs({"pulse": {"scan_depth": "medium", "auto_enabled": True, "window_days": 2}})
-    got = prefs.get_pulse()
-    # Same visible output: medium only ever added a banner nothing rendered.
-    assert got["scan_depth"] == "fast"
-    assert got["auto_enabled"] is True
-    assert got["window_days"] == 2
+    assert prefs.get_pulse() == {"window_days": 2}
+    assert json.loads(prefs._default_path().read_text())["pulse"]["scan_depth"] == "medium"
 
 
-def test_writing_medium_is_refused_not_coerced(auth_cfg, fake_jsonl):
-    assert "fast" in (prefs.validate_pulse_patch({"scan_depth": "medium"}) or "")
+def test_writing_a_depth_is_refused_not_coerced(auth_cfg, fake_jsonl):  # noqa: ARG001
+    assert prefs.validate_pulse_patch({"scan_depth": "medium"}) is not None
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post("/api/prefs", json={"pulse": {"scan_depth": "medium"}}, headers=hdr)
-    assert r.status_code == 422
-    assert c.get("/api/config").json()["pulse"]["scan_depth"] == "fast"
+    for depth in ("medium", "fast", "slow"):
+        r = c.post("/api/prefs", json={"pulse": {"scan_depth": depth}}, headers=hdr)
+        assert r.status_code == 422, depth
+    assert "scan_depth" not in c.get("/api/config").json()["pulse"]
+
+
+def test_a_stored_override_for_the_retired_session_line_prompt_is_ignored_and_left_alone():
+    """#2179: `pulse_session_line` went with the scan; an override an operator saved for it is
+    operator data — never read again, never deleted."""
+    _write_raw_prefs(
+        {"ai_prompts": {"pulse_session_line": "OLD LINE TEXT", "session_recap": "Write three."}}
+    )
+    assert "pulse_session_line" not in [e["id"] for e in prompts.catalog()]
+    assert "OLD LINE TEXT" not in prompts.effective_set()
+    with pytest.raises(prompts.UnknownPromptError):
+        prompts.get("pulse_session_line")
+    assert prompts.editable("session_recap") == "Write three."
+    stored = json.loads(prefs._default_path().read_text())
+    assert stored["ai_prompts"]["pulse_session_line"] == "OLD LINE TEXT"
+
+
+def test_the_orchestrator_prompt_still_resolves_from_its_block():
+    """#2179 removed `POST /api/prefs {orchestrator}`, not the stored field it shared: the prompt
+    registry still reads `orchestrator.prompt` (and appends the guard, the prompt is guarded)."""
+    _write_raw_prefs({"orchestrator": {"prompt": "Operator-written pass prompt."}})
+    assert prompts.editable("orchestrator_pass") == "Operator-written pass prompt."
+    assert prompts.effective("orchestrator_pass").startswith("Operator-written pass prompt.")
+    assert prompts.guard_suffix("orchestrator_pass") is not None
 
 
 def test_a_stored_override_for_the_removed_banner_prompt_is_ignored_and_left_alone():

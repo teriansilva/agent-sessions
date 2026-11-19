@@ -85,9 +85,9 @@ export function NewMissionForm({
   /** Whether the objectives are AI-written and supervisor-judged (#1088; every mission since
    *  checklists were removed, #1653) — true only with an AI endpoint; without one, none are written. */
   const aiBuilt = config?.ai_review?.configured === true;
-  const missionPolicy = config?.automation?.version === 1
-    ? config.automation.mission
-    : config?.orchestrator;
+  // The mission scope's policy (#2037); the legacy `config.orchestrator` block is no longer read
+  // (#2179). An older server with no `automation` block leaves the judge at its floor.
+  const missionPolicy = config?.automation?.version === 1 ? config.automation.mission : undefined;
   const judgeAt = (
     missionPolicy?.judge_confidence_min ??
     missionPolicy?.judge_confidence_floor ??

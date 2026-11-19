@@ -2,9 +2,9 @@
  *
  * #871 built the route — one model execution per `turn_id` across crashes and retries, each
  * produced action delivered at most once, settled forward on every failure path — and nothing
- * called it. The composer kept posting to `/api/pulse/ask`, which stores nothing, so a mission's
- * timeline carried no operator conversation and an operator who asked a question and reloaded
- * lost the answer.
+ * called it. The composer kept posting to the transient Pulse ask route (retired, #2179), which
+ * stored nothing, so a mission's timeline carried no operator conversation and an operator who
+ * asked a question and reloaded lost the answer.
  *
  * **The transcript is the mission timeline, not this component.** The thread renders
  * `operator_msg` / `assistant_msg` events, which the route writes inside its own transactions —

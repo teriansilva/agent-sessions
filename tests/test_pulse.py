@@ -1,27 +1,27 @@
-"""Pulse recent-work overview — scan engine, cache, and routes (#441 Phase 2).
+"""Pulse cards and ``GET /api/pulse`` (#441, live since #2179).
 
-The scan engine is tested against a monkeypatched session scan + metadata (no real ``$HOME``);
-the routes are tested through the real app (TestClient) over the ``fake_jsonl`` fixture. Pinned:
-the window filter, archived/excluded exclusion, state classification + ordering, fingerprint
-stability + change-detection, the ``cache_version`` miss, and the route contract (instant GET,
-manual scan, single-flight 409, CSRF gate, shared activity endpoint).
+The card builder is tested against a monkeypatched session scan + metadata (no real ``$HOME``);
+the routes through the real app (TestClient) over the ``fake_jsonl`` fixture. Pinned: the window
+filter, archived/excluded exclusion, state classification + ordering, the public card boundary,
+the live GET (no scan, no cache, no model call), the out-of-window pending action, the retired
+routes, the trimmed `pulse` prefs block, and that no scan loop starts.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
+import os
+import time
 from dataclasses import dataclass
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_sessions import aitasks, metadata, prefs, prompts, pulse, review
+from agent_sessions import aitasks, automation, metadata, prefs, pulse, review
+from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
-
-SECRET = "sk-pulse-test"  # noqa: S105 — test fixture value
-BASE = "https://ai.test/v1"
 
 
 @dataclass
@@ -38,12 +38,6 @@ class FakeSession:
         return self.uuid[:8]
 
 
-@pytest.fixture
-def pulse_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_SESSIONS_PULSE_CACHE", str(tmp_path / "pulse-cache.json"))
-    return tmp_path / "pulse-cache.json"
-
-
 @pytest.fixture(autouse=True)
 def _reset_activity():
     aitasks.reset()
@@ -58,10 +52,10 @@ def _setup(monkeypatch, sessions, meta=None):
     monkeypatch.setattr(pulse.projects, "load", lambda *a, **k: {})
 
 
-# ---- scan engine --------------------------------------------------------------
+# ---- card builder -------------------------------------------------------------
 
 
-def test_window_filter(pulse_cache, monkeypatch):
+def test_window_filter(monkeypatch):
     now = 1_000_000.0
     recent = FakeSession("claude", "u-recent", "/a", now - 3600)
     old = FakeSession("claude", "u-old", "/a", now - 10 * 86400)
@@ -70,7 +64,7 @@ def test_window_filter(pulse_cache, monkeypatch):
     assert [c["id"] for c in cards] == ["claude:u-recent"]
 
 
-def test_card_title_follows_the_keep_session_titles_choice(pulse_cache, monkeypatch, tmp_path):
+def test_card_title_follows_the_keep_session_titles_choice(monkeypatch, tmp_path):
     """#1510: the card title is what a needs-you notification and Ask show, so it skips the AI
     title exactly when the session list does."""
     now = 1_000_000.0
@@ -82,29 +76,7 @@ def test_card_title_follows_the_keep_session_titles_choice(pulse_cache, monkeypa
     assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "fix the parser"
 
 
-def test_flipping_rename_sessions_moves_the_fingerprint_with_no_activity(
-    pulse_cache, monkeypatch, tmp_path
-):
-    """#1510 (Hermes): the loop skips a sweep whose fingerprint is unchanged and the cached
-    artifact keeps its card titles, so a flip with no session or review activity must still count
-    as a change — both ways."""
-    now = 1_000_000.0
-    s = FakeSession("claude", "u-t", "/a", now - 3600, first_user_message="fix the parser")
-    _setup(monkeypatch, [s], {"claude:u-t": metadata.SessionMeta(ai_title="Refactor parser")})
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
-
-    def fingerprint():
-        return asyncio.run(pulse.fingerprint_for(window_days=3, depth="fast", now=now))
-
-    on = fingerprint()
-    prefs.set_session_review({"rename_sessions": False})
-    off = fingerprint()
-    assert off != on
-    prefs.set_session_review({"rename_sessions": True})
-    assert fingerprint() == on
-
-
-def test_excludes_archived_and_review_excluded(pulse_cache, monkeypatch):
+def test_excludes_archived_and_review_excluded(monkeypatch):
     now = 1_000_000.0
     native_arch = FakeSession("claude", "u-arch", "/a", now - 3600, archived=True)
     sidecar_arch = FakeSession("claude", "u-sarch", "/a", now - 3600)
@@ -119,7 +91,7 @@ def test_excludes_archived_and_review_excluded(pulse_cache, monkeypatch):
     assert [c["id"] for c in cards] == ["claude:u-ok"]
 
 
-def test_state_classification_and_order(pulse_cache, monkeypatch):
+def test_state_classification_and_order(monkeypatch):
     now = 1_000_000.0
     needs = FakeSession("claude", "u-need", "/a", now - 100)
     inflight = FakeSession("claude", "u-live", "/a", now - 200)
@@ -142,201 +114,33 @@ def test_state_classification_and_order(pulse_cache, monkeypatch):
     assert cards[1]["live"] is True
 
 
-def test_fingerprint_stable_then_changes(pulse_cache, monkeypatch):
+def test_overview_strips_every_internal_field(monkeypatch):
+    """The public card boundary (#2179): `build_cards` carries the recap, the assessment and the
+    fingerprints for server-side callers; none of them may leave in a response."""
     now = 1_000_000.0
-    s = FakeSession("claude", "u", "/a", now - 100)
-    _setup(monkeypatch, [s], {"claude:u": metadata.SessionMeta(review_fingerprint="fp1")})
-    a1 = asyncio.run(pulse.run_scan(now=now))
-    a2 = asyncio.run(pulse.run_scan(now=now))
-    assert a1["input_fingerprint"] == a2["input_fingerprint"]  # nothing changed → stable
-    # A new review result on the same session changes the fingerprint (loop would re-scan).
-    _setup(monkeypatch, [s], {"claude:u": metadata.SessionMeta(review_fingerprint="fp2")})
-    a3 = asyncio.run(pulse.run_scan(now=now))
-    assert a3["input_fingerprint"] != a1["input_fingerprint"]
-
-
-def test_cache_roundtrip_and_version_miss(pulse_cache, monkeypatch):
-    now = 1_000_000.0
-    _setup(monkeypatch, [FakeSession("claude", "u", "/a", now - 100)])
-    art = asyncio.run(pulse.run_scan(now=now))
-    loaded = pulse.load_cache()
-    assert loaded["generated_at"] == now
-    assert loaded["input_fingerprint"] == art["input_fingerprint"]
-    # A future shape bump invalidates the old artifact → treated as a miss (never mis-rendered).
-    data = json.loads(pulse_cache.read_text())
-    data["cache_version"] = pulse.CACHE_VERSION + 999
-    pulse_cache.write_text(json.dumps(data))
-    assert pulse.load_cache() is None
-
-
-def test_fast_artifact_shape_and_strips_internal(pulse_cache, monkeypatch):
-    now = 1_000_000.0
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {"claude:u": metadata.SessionMeta(ai_summary="did a thing", review_fingerprint="fp")},
-    )
-    art = asyncio.run(pulse.run_scan(now=now))
-    assert art["cache_version"] == pulse.CACHE_VERSION
-    assert art["scan_depth"] == "fast"
-    assert "banner" not in art  # the banner field was removed (#956)
-    assert art["synthesis_skipped"] is False  # nothing requested to skip
-    card = art["cards"][0]
-    assert "_review_fingerprint" not in card  # internal fingerprint input is stripped
-    assert card["ai_summary"] == "did a thing"
-    assert {
-        "id",
-        "engine",
-        "title",
-        "cwd",
-        "project",
-        "last_activity",
-        "ai_summary",
-        "intervention_required",
-        "intervention_reason",
-        "reviewed_at",
-        "live",
-        "state",
-    } <= set(card)
-
-
-def test_empty_overview_shape():
-    empty = pulse.empty_overview()
-    assert empty["generated_at"] is None
-    assert empty["cards"] == []
-    assert empty["cache_version"] == pulse.CACHE_VERSION
-    assert empty["window_days"] == pulse.WINDOW_DAYS_DEFAULT
-
-
-# ---- synthesis depths (medium / slow, #441 Phase 4) ----------------------------
-
-
-@pytest.fixture
-def configured_ai(tmp_path, monkeypatch):
-    """Point prefs at tmp with a configured + enabled ai_review block (the reused gateway), and
-    zero the synthesis call-spacing so the per-session pass doesn't sleep in tests."""
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
-    monkeypatch.setattr(review, "_TRANSPORT", None)
-    monkeypatch.setattr(pulse, "SYNTH_CALL_SPACING_S", 0)
-    prefs.set_ai_review(
-        {
-            "egress_acknowledged": True,
-            "enabled": True,
-            "base_url": BASE,
-            "api_key": SECRET,
-            "model": "m",
-        }
-    )
-    return tmp_path
-
-
-def _json_transport(payload: dict, calls: list | None = None):
-    """A MockTransport returning the SAME JSON object for every completion (the per-session
-    ``slow`` calls read its ``line`` key)."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if calls is not None:
-            calls.append(json.loads(request.content))
-        return httpx.Response(
-            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+    s = FakeSession("claude", "u-1", "/a", now - 60)
+    meta = {
+        "claude:u-1": metadata.SessionMeta(
+            ai_recap="private recap", review_fingerprint="fp", recap_fingerprint="rfp"
         )
-
-    return httpx.MockTransport(handler)
-
-
-def test_medium_is_no_longer_a_depth(pulse_cache, configured_ai, monkeypatch):
-    """#956: `medium` only added a banner that nothing rendered. It now coerces like any unknown
-    depth — to `fast`, which makes no model call at all."""
-    now = 1_000_000.0
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
-    )
-    calls: list = []
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "x"}, calls))
-    art = asyncio.run(pulse.run_scan(depth="medium", now=now))
-    assert calls == []
-    assert art["scan_depth"] == "fast"
-    assert "banner" not in art
-    assert pulse.coerce_depth("medium") == "fast"
-    assert pulse.SCAN_DEPTHS == ("fast", "slow")
-
-
-def test_slow_synthesizes_each_session_and_makes_no_banner_call(
-    pulse_cache, configured_ai, monkeypatch
-):
-    now = 1_000_000.0
-    sessions = [FakeSession("claude", f"u{i}", "/a", now - 100 * (i + 1)) for i in range(3)]
-    meta = {
-        f"claude:u{i}": metadata.SessionMeta(ai_summary=f"s{i}", review_fingerprint=f"fp{i}")
-        for i in range(3)
     }
-    _setup(monkeypatch, sessions, meta)
-    calls: list = []
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "continue here"}, calls))
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-    assert len(calls) == 3  # one per in-window session — and nothing else (#956)
-    # Every call carries the session-line prompt: there is no second, banner-shaped call.
-    line_prompt = prompts.effective("pulse_session_line")
-    assert all(call["messages"][0]["content"] == line_prompt for call in calls)
-    assert "banner" not in art
-    assert all(c["synthesis"] == "continue here" for c in art["cards"])
-    assert art["synthesis_skipped"] is False
+    _setup(monkeypatch, [s], meta)
+    internal = {k for k in pulse.build_cards(window_days=1, now=now)[0] if k.startswith("_")}
+    assert {"_ai_recap", "_review_fingerprint", "_recap_fingerprint"} <= internal
+    ov = pulse.overview(window_days=1, now=now)
+    assert ov["window_days"] == 1 and ov["generated_at"] == now
+    assert [c["id"] for c in ov["cards"]] == ["claude:u-1"]
+    assert not [k for c in ov["cards"] for k in c if k.startswith("_")]
+    assert "synthesis" not in ov["cards"][0]  # the slow scan's line went with the scan
 
 
-def test_slow_caps_per_session_calls(pulse_cache, configured_ai, monkeypatch):
+def test_overview_coerces_the_window(monkeypatch):
     now = 1_000_000.0
-    n = pulse.SLOW_SESSION_CAP + 3
-    sessions = [FakeSession("claude", f"u{i:02d}", "/a", now - 100 * (i + 1)) for i in range(n)]
-    meta = {
-        f"claude:u{i:02d}": metadata.SessionMeta(ai_summary=f"s{i}", review_fingerprint=f"fp{i}")
-        for i in range(n)
-    }
-    _setup(monkeypatch, sessions, meta)
-    calls: list = []
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "go"}, calls))
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-    # Bounded: SLOW_SESSION_CAP per-session calls — the rest keep their ai_summary.
-    assert len(calls) == pulse.SLOW_SESSION_CAP
-    synthesized = [c for c in art["cards"] if c["synthesis"] is not None]
-    assert len(synthesized) == pulse.SLOW_SESSION_CAP
-
-
-def test_unconfigured_endpoint_degrades_to_fast(pulse_cache, tmp_path, monkeypatch):
-    # The single unconfigured contract: a slow scan degrades to fast curation, flagged
-    # `synthesis_skipped`, NEVER raising — the cards keep their existing ai_summary lines.
-    now = 1_000_000.0
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))  # ai_review unset
-    monkeypatch.setattr(review, "_TRANSPORT", None)
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
-    )
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-    assert "banner" not in art
-    assert art["synthesis_skipped"] is True
-    assert art["scan_depth"] == "slow"  # records what was requested
-    assert art["cards"][0]["synthesis"] is None
-    assert art["cards"][0]["ai_summary"] == "did x"
-
-
-def test_synthesis_output_is_bounded_plain_data(pulse_cache, configured_ai, monkeypatch):
-    # Model output is DATA: whitespace collapsed, length-capped (rendered as plain text in UI).
-    now = 1_000_000.0
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {"claude:u": metadata.SessionMeta(review_fingerprint="fp")},
-    )
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "  multi   space  "}))
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-    assert art["cards"][0]["synthesis"] == "multi space"
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "a\n\nb " + "x" * 5000}))
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-    line = art["cards"][0]["synthesis"]
-    assert len(line) <= pulse.SESSION_LINE_MAX and "\n" not in line
+    _setup(monkeypatch, [FakeSession("claude", "u-old", "/a", now - 2.5 * 86400)])
+    assert pulse.overview(window_days=1, now=now)["cards"] == []
+    # 99 reads as the 3-day ceiling (the one read rule, #1086), so a 2.5-day-old card is in.
+    wide = pulse.overview(window_days=99, now=now)
+    assert wide["window_days"] == 3 and len(wide["cards"]) == 1
 
 
 # ---- routes -------------------------------------------------------------------
@@ -357,53 +161,103 @@ def _login(c, cfg):
     return c.get("/api/config").json()["csrf"]
 
 
-def test_get_pulse_empty_before_first_scan(auth_cfg, fake_jsonl):
+def _no_model_calls(monkeypatch) -> list:
+    """Record every model call: `review._post_chat` is the only transport (prompt registry)."""
+    calls: list = []
+
+    async def _record(*a, **k):
+        calls.append((a, k))
+        raise AssertionError("no model call is expected here")
+
+    monkeypatch.setattr(review, "_post_chat", _record)
+    return calls
+
+
+def _append_action(rec):
+    if rec.get("session_id") and rec.get("state") in ledger.OPERATOR_PENDING_STATES:
+        rec = {**rec, "authority": automation.capture(rec["session_id"], rec.get("mission_id"))}
+    return ledger.append(rec)
+
+
+def test_get_pulse_builds_live_cards_with_no_scan(auth_cfg, fake_jsonl, monkeypatch):
+    """#2179: the Missions shelf's titles come from cards built for the request. No scan has run,
+    the scan is not even configurable any more, nothing is written to a cache and no model is
+    called — and the session titles are there."""
+    calls = _no_model_calls(monkeypatch)
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/pulse").json()
-    assert d["generated_at"] is None
-    assert d["cards"] == []
-    assert d["cache_version"] == pulse.CACHE_VERSION
+    titles = {card["id"]: card["title"] for card in d["cards"]}
+    assert titles["claude:11111111-1111-1111-1111-111111111111"] == "first message on repo-a"
+    assert titles["claude:33333333-3333-3333-3333-333333333333"] == "hello tmp"
+    assert "claude:44444444-4444-4444-4444-444444444444" not in titles  # archived
+    assert d["window_days"] == prefs.get_pulse()["window_days"]
+    assert isinstance(d["generated_at"], float)
+    for gone in ("cache_version", "scan_depth", "input_fingerprint", "synthesis_skipped"):
+        assert gone not in d
+    assert calls == []
+    assert not list(fake_jsonl.rglob("pulse-cache.json"))
 
 
-def test_scan_then_cached_get(auth_cfg, fake_jsonl):
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    art = c.post("/api/pulse/scan", headers=hdr).json()
-    assert art["generated_at"] is not None
-    assert len(art["cards"]) >= 1  # the fake_jsonl live sessions land in the window
-    assert all("_review_fingerprint" not in card for card in art["cards"])
-    # GET now serves the cached artifact verbatim (same generated_at + fingerprint).
-    g = c.get("/api/pulse").json()
-    assert g["generated_at"] == art["generated_at"]
-    assert g["input_fingerprint"] == art["input_fingerprint"]
-
-
-def test_scan_requires_csrf(auth_cfg, fake_jsonl):
+def test_get_pulse_sends_no_internal_field(auth_cfg, fake_jsonl, monkeypatch):
+    """The `_`-prefixed fields `build_cards` carries (recap, assessment, fingerprints) are server
+    inputs: stripped on the live path exactly as the cache artifact used to strip them."""
+    key = "claude:11111111-1111-1111-1111-111111111111"
+    metadata.patch(key, ai_recap="a private recap", review_fingerprint="fp")
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    r = c.post("/api/pulse/scan")  # no CSRF / Origin
-    assert r.status_code in (401, 403)
+    raw = c.get("/api/pulse").text
+    assert "a private recap" not in raw
+    cards = json.loads(raw)["cards"]
+    assert key in {card["id"] for card in cards}
+    assert not [k for card in cards for k in card if k.startswith("_")]
 
 
-def test_scan_409_when_already_running(auth_cfg, fake_jsonl, monkeypatch):
+def test_an_out_of_window_pending_action_is_still_projected(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The live path keeps the ledger overlay's reach: a pending action on a session OUTSIDE the
+    recent window has no card of its own, so `_attach_pending` synthesizes one for it."""
+    old = fake_jsonl / ".claude" / "projects" / "-tmp-other"
+    old_file = old / "33333333-3333-3333-3333-333333333333.jsonl"
+    ten_days_ago = time.time() - 10 * 86400
+    os.utime(old_file, (ten_days_ago, ten_days_ago))
+    sid = "claude:33333333-3333-3333-3333-333333333333"
+    _append_action(
+        {
+            "id": "act-old",
+            "state": "escalated",
+            "verb": "escalate",
+            "session_id": sid,
+            "engine": "claude",
+            "title": "An old session",
+            "project": "other",
+        }
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = {card["id"]: card for card in c.get("/api/pulse").json()["cards"]}
+    assert sid in cards
+    card = cards[sid]
+    assert card["synthesized_for_action"] is True
+    assert card["pending_action"]["id"] == "act-old"
+    assert (
+        card["pending_action"]["projection"]
+        == ledger.project_for_operator("escalated")["projection"]
+    )
+    assert card["state"] == "needs_you"
+    # …while the in-window sessions still get their ordinary cards.
+    assert "claude:11111111-1111-1111-1111-111111111111" in cards
+
+
+@pytest.mark.parametrize("path", ["/api/pulse/scan", "/api/pulse/ask", "/api/pulse/ask/stream"])
+def test_the_retired_pulse_routes_are_gone(auth_cfg, fake_jsonl, path):  # noqa: ARG001
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-
-    def _busy(*a, **k):
-        raise aitasks.AlreadyRunning("pulse-scan")
-
-    monkeypatch.setattr(aitasks, "single_flight", _busy)
-    r = c.post("/api/pulse/scan", headers=hdr)
-    assert r.status_code == 409
-    body = r.json()
-    assert body["detail"]
-    assert "running" in body and "last" in body  # the activity snapshot rides along
+    r = c.post(path, json={"query": "anything", "depth": "slow"}, headers=hdr)
+    assert r.status_code in (404, 405), (path, r.status_code)
 
 
-def test_ai_activity_endpoint(auth_cfg, fake_jsonl):
+def test_ai_activity_endpoint(auth_cfg, fake_jsonl):  # noqa: ARG001
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     r = c.get("/api/ai/activity")
@@ -411,125 +265,85 @@ def test_ai_activity_endpoint(auth_cfg, fake_jsonl):
     assert set(r.json()) == {"running", "last"}
 
 
-def test_config_exposes_pulse_and_prefs_roundtrip(auth_cfg, fake_jsonl):
-    # /api/config carries the public pulse block (#441 Phase 3); POST /api/prefs validates +
-    # persists a partial patch, and a bad depth is a 422 (never silently coerced on write).
+def test_config_exposes_the_recent_window_and_refuses_the_retired_fields(auth_cfg, fake_jsonl):  # noqa: ARG001
+    """/api/config's `pulse` block is the recent window plus `configured` (#2179); a write of
+    a retired scan field is a 422 and persists nothing."""
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    cfg = c.get("/api/config").json()
-    assert cfg["pulse"]["scan_depth"] == "fast"
-    assert cfg["pulse"]["auto_enabled"] is False
-    assert cfg["pulse"]["configured"] is False  # no ai_review endpoint → synthesis would degrade
-    r = c.post(
-        "/api/prefs",
-        json={"pulse": {"auto_enabled": True, "scan_depth": "slow", "window_days": 3}},
-        headers=hdr,
-    )
+    assert c.get("/api/config").json()["pulse"] == {"window_days": 1, "configured": False}
+    r = c.post("/api/prefs", json={"pulse": {"window_days": 3}}, headers=hdr)
     assert r.status_code == 200
-    assert r.json()["pulse"]["auto_enabled"] is True
-    after = c.get("/api/config").json()["pulse"]
-    assert after["scan_depth"] == "slow" and after["window_days"] == 3
+    assert r.json()["pulse"] == {"window_days": 3, "configured": False}
+    assert c.get("/api/config").json()["pulse"]["window_days"] == 3
     over = c.post("/api/prefs", json={"pulse": {"window_days": 7}}, headers=hdr)
     assert over.status_code == 422  # #1086: the window is 1–3 days, and a write is strict
-    bad = c.post("/api/prefs", json={"pulse": {"scan_depth": "turbo"}}, headers=hdr)
-    assert bad.status_code == 422
-    # `medium` was removed (#956): writing it is refused, never coerced.
-    gone = c.post("/api/prefs", json={"pulse": {"scan_depth": "medium"}}, headers=hdr)
-    assert gone.status_code == 422
-    assert c.get("/api/config").json()["pulse"]["scan_depth"] == "slow"
+    for retired in ({"auto_enabled": True}, {"interval_minutes": 15}, {"scan_depth": "slow"}):
+        r = c.post("/api/prefs", json={"pulse": {**retired, "window_days": 2}}, headers=hdr)
+        assert r.status_code == 422, retired
+    assert c.get("/api/config").json()["pulse"]["window_days"] == 3
 
 
-def test_scan_honors_body_depth_override(auth_cfg, fake_jsonl):
-    # The page's depth control can request a one-off depth via the POST body; with no ai_review
-    # endpoint a slow scan degrades to fast (200 + synthesis_skipped), never 409.
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    art = c.post("/api/pulse/scan", json={"depth": "slow"}, headers=hdr).json()
-    assert art["scan_depth"] == "slow"
-    assert art["synthesis_skipped"] is True
-    assert "banner" not in art
+# ---- prefs block ---------------------------------------------------------------------
 
 
-# ---- #611: the slow per-session pass prefers the recap over the distilled summary --------
+def test_pulse_prefs_are_the_window_only_and_leave_retired_values_in_place(tmp_path):
+    path = tmp_path / "prefs.json"
+    stored = {"auto_enabled": True, "interval_minutes": 15, "scan_depth": "slow", "window_days": 2}
+    path.write_text(json.dumps({"pulse": stored}))
+    # Read: the window only; the retired values are not read…
+    assert prefs.get_pulse(path) == {"window_days": 2}
+    assert prefs.validate_pulse_patch({"window_days": 3}) is None
+    assert prefs.validate_pulse_patch({"window_days": 4}) is not None  # #1086: ceiling is 3
+    assert prefs.validate_pulse_patch({"bogus": 1}) is not None
+    for retired in ("auto_enabled", "interval_minutes", "scan_depth"):
+        assert prefs.validate_pulse_patch({retired: stored[retired]}) is not None, retired
+    # …and a write leaves them in the file, untouched (no migration, nothing to roll back).
+    assert prefs.set_pulse({"window_days": 3}, path) == {"window_days": 3}
+    assert json.loads(path.read_text())["pulse"] == {**stored, "window_days": 3}
 
 
-def test_slow_pass_sends_the_recap_when_one_exists(pulse_cache, configured_ai, monkeypatch):
-    """`ai_recap` (#481) is a ≤1500-char chronological brief on the same sidecar; `ai_summary`
-    is one ≤200-char line distilled from it. Same call, same cost — hand the model the fuller
-    input rather than re-summarizing a summary."""
-    now = 1_000_000.0
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {
-            "claude:u": metadata.SessionMeta(
-                ai_summary="did x",
-                ai_recap="Cloned repo.\nRan the suite.\nTwo tests fail.",
-                review_fingerprint="fp",
-            )
-        },
-    )
-    calls: list = []
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "fix them"}, calls))
-    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
-
-    session_call = json.loads(calls[0]["messages"][1]["content"])
-    assert session_call["summary"] == "Cloned repo.\nRan the suite.\nTwo tests fail."
-    assert art["cards"][0]["synthesis"] == "fix them"
-    # The internal field never leaks into the public artifact.
-    assert "_ai_recap" not in art["cards"][0]
+def test_pulse_window_constants_in_sync(tmp_path):
+    # prefs.py owns the PULSE_* bounds and pulse.py mirrors them (pulse imports prefs; prefs never
+    # imports pulse, so there is no cycle) — this guard fails if one drifts.
+    assert prefs.PULSE_WINDOW_MIN == pulse.WINDOW_DAYS_MIN
+    assert prefs.PULSE_WINDOW_MAX == pulse.WINDOW_DAYS_MAX
+    assert prefs.get_pulse(tmp_path / "nope.json")["window_days"] == pulse.WINDOW_DAYS_DEFAULT
 
 
-def test_slow_pass_falls_back_to_the_summary_without_a_recap(
-    pulse_cache, configured_ai, monkeypatch
+# ---- startup: no scan loop -----------------------------------------------------------
+
+
+def test_no_pulse_scan_loop_starts_and_no_scan_model_call_is_made(
+    auth_cfg, fake_jsonl, monkeypatch
 ):
-    now = 1_000_000.0
-    _setup(
-        monkeypatch,
-        [FakeSession("claude", "u", "/a", now - 100)],
-        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
-    )
-    calls: list = []
-    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "go on"}, calls))
-    asyncio.run(pulse.run_scan(depth="slow", now=now))
-    assert json.loads(calls[0]["messages"][1]["content"])["summary"] == "did x"
+    """#2179: the app starts no Pulse scan task. Every task the lifespan creates is recorded by
+    the module its coroutine lives in; the AI review, clustering and orchestration loops are
+    intentionally kept (and disabled here by their kill-switches), so with them off nothing at
+    startup or on a few card reads reaches the model transport."""
+    assert importlib.util.find_spec("agent_sessions.pulse_loop") is None
+    for var in (
+        "AGENT_SESSIONS_AI_REVIEW_LOOP",
+        "AGENT_SESSIONS_AUTO_SORT_LOOP",
+        "AGENT_SESSIONS_CLUSTERS_LOOP",
+        "AGENT_SESSIONS_ORCHESTRATOR_LOOP",
+    ):
+        monkeypatch.setenv(var, "0")
+    calls = _no_model_calls(monkeypatch)
+    started: list[str] = []
+    real_create_task = asyncio.create_task
 
+    def _recording_create_task(coro, *a, **k):
+        frame = getattr(coro, "cr_frame", None)
+        started.append(frame.f_globals.get("__name__", "") if frame else "")
+        return real_create_task(coro, *a, **k)
 
-def test_recap_change_moves_the_scan_input_fingerprint(pulse_cache, configured_ai, monkeypatch):
-    """Hermes on PR #618: the `slow` pass now feeds `_ai_recap` into synthesis, so the recap is a
-    scan INPUT. If the input fingerprint still hashed only `_review_fingerprint`, a recap that
-    arrived later (summary fingerprint unchanged — a failed recap call finally succeeding, or a
-    legacy session backfilled) would leave `fingerprint_for()` identical and the Phase-3 loop
-    would skip the scan as unchanged, stranding the pre-recap synthesis forever."""
-    now = 1_000_000.0
-    session = FakeSession("claude", "u", "/a", now - 100)
-
-    _setup(
-        monkeypatch,
-        [session],
-        {
-            "claude:u": metadata.SessionMeta(
-                ai_summary="did x", review_fingerprint="fp", recap_fingerprint=""
-            )
-        },
-    )
-    before = asyncio.run(pulse.fingerprint_for(window_days=3, depth="slow", now=now))
-
-    # Same summary + same review fingerprint; only the recap landed.
-    _setup(
-        monkeypatch,
-        [session],
-        {
-            "claude:u": metadata.SessionMeta(
-                ai_summary="did x",
-                review_fingerprint="fp",
-                ai_recap="Cloned repo.\nRan the suite.",
-                recap_fingerprint="rfp",
-            )
-        },
-    )
-    after = asyncio.run(pulse.fingerprint_for(window_days=3, depth="slow", now=now))
-
-    assert before != after
+    monkeypatch.setattr(asyncio, "create_task", _recording_create_task)
+    with TestClient(create_app(auth_cfg), base_url="https://testserver") as c:
+        _login(c, auth_cfg)
+        for _ in range(3):
+            assert c.get("/api/pulse").status_code == 200
+    # The recorder saw the lifespan's tasks (a kept loop proves it was wired), and none is a scan.
+    assert "agent_sessions.orchestrator_loop" in started
+    assert not [m for m in started if m in ("agent_sessions.pulse_loop", "agent_sessions.pulse")]
+    assert calls == []

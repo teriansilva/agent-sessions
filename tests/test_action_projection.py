@@ -129,7 +129,7 @@ def test_both_pulse_producers_emit_the_projection(auth_cfg, fake_jsonl, monkeypa
         {"id": "act-2", "state": "proposed", "verb": "continue", "session_id": "claude:missing"}
     )
     monkeypatch.setattr(
-        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:known", "state": "idle"}]}
+        pulse, "overview", lambda *a, **k: {"cards": [{"id": "claude:known", "state": "idle"}]}
     )
 
     c = TestClient(create_app(auth_cfg), base_url="https://testserver")
@@ -167,7 +167,7 @@ def _pulse_cards(auth_cfg, state, *, cached):
     _append_action({"id": "act-1", "state": state, "verb": "continue", "session_id": "claude:s1"})
     cards = [{"id": "claude:s1", "state": "idle"}] if cached else []
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(pulse, "load_cache", lambda *a, **k: {"cards": cards})
+        mp.setattr(pulse, "overview", lambda *a, **k: {"cards": cards})
         c = TestClient(create_app(auth_cfg), base_url="https://testserver")
         c.post(
             "/login",
@@ -534,7 +534,7 @@ def _cards_with_missions(auth_cfg, *, cached_ids, membership):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             pulse,
-            "load_cache",
+            "overview",
             lambda *a, **k: {"cards": [{"id": i, "state": "idle"} for i in cached_ids]},
         )
         if isinstance(membership, Exception):
@@ -624,7 +624,7 @@ def test_a_stale_cached_stamp_never_survives_a_store_that_will_not_answer(auth_c
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             pulse,
-            "load_cache",
+            "overview",
             lambda *a, **k: {
                 "cards": [{"id": "claude:s1", "state": "idle", "mission_id": "msn_stale"}]
             },

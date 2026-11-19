@@ -12,7 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { useConfig, useConfigRefresh } from "../../app/config";
+import { useConfig, useConfigRefresh, useConfigReload } from "../../app/config";
 import { useDashboardRetention } from "../../app/dashboardRetentionStore";
 import { useSectionState } from "../../app/sectionState";
 import { MissionFilters, type MissionFiltersValue } from "./MissionFilters";
@@ -219,25 +219,47 @@ function MissionBody({
   );
   const viewIds = useId();
   // THE OPT-IN AND ITS ONE-TAP EXIT (#983 P4). The thread is where an autonomous send becomes
-  // visible, so the turn-off is offered on the row that proves why you might want it. It is a
-  // pref write, and `refreshConfig` is what makes the thread row and the draft card stop claiming
-  // the mode is on the moment it is not.
+  // visible, so the turn-off is offered on the row that proves why you might want it.
+  //
+  // It writes the MISSION scope through `PATCH /api/automation/mission` with the revision this
+  // page read (#2179; the legacy `POST /api/prefs {orchestrator}` bridge is gone), carrying only
+  // the one field it turns off, so the session policy and every other mission field stay as they
+  // are. A conflict follows `OrchestratorSettings`' rule: reload, say so, never replay — the
+  // operator taps again against what they can now see. The row keeps offering the control until
+  // the server has accepted the write and the refreshed config says the mode is off.
   const automationConfig = useConfig();
   const orchBlock = automationConfig?.automation?.version === 1
     ? automationConfig.automation.mission
-    : automationConfig?.orchestrator;
+    : undefined;
   const refreshConfig = useConfigRefresh();
+  const reloadConfig = useConfigReload();
   const [turnOffBusy, setTurnOffBusy] = useState(false);
   const [turnOffError, setTurnOffError] = useState<string | null>(null);
+  const missionRevision = orchBlock?.revision;
   const turnOffAuto = useCallback(() => {
+    if (!missionRevision || missionRevision === "invalid") {
+      setTurnOffError(
+        "HQ could not read the mission policy. Reload settings, then turn it off again.",
+      );
+      return;
+    }
     setTurnOffBusy(true);
     setTurnOffError(null);
     void api
-      .setPrefs({ orchestrator: { auto_ai_directions: false } })
+      .setAutomationPolicy("mission", missionRevision, { auto_ai_directions: false })
       .then(() => {
         refreshConfig();
       })
-      .catch((e: unknown) => {
+      .catch(async (e: unknown) => {
+        if (e instanceof ApiError && e.status === 409) {
+          const loaded = await reloadConfig().catch(() => false);
+          setTurnOffError(
+            loaded
+              ? "The mission policy changed elsewhere. Latest values loaded; review them and turn it off again."
+              : "The mission policy changed elsewhere, but HQ could not read the latest values. Reload settings, then turn it off again.",
+          );
+          return;
+        }
         // A SWALLOWED FAILURE HERE IS THE WORST KIND (#983 P4 review). This is the control that
         // stops unreviewed sending, and a save that quietly failed is indistinguishable from one
         // that worked — the operator walks away believing the mode is off while it is still on.
@@ -248,7 +270,7 @@ function MissionBody({
         );
       })
       .finally(() => setTurnOffBusy(false));
-  }, [refreshConfig]);
+  }, [missionRevision, refreshConfig, reloadConfig]);
   const [revealObjectives, setRevealObjectives] = useState(0);
   // The plan-approval card re-reads after every team write (#1951).
   const [approvalReads, setApprovalReads] = useState(0);

@@ -26,13 +26,8 @@ const AUTO_SORT = {
 };
 
 test.beforeEach(async ({ page }) => {
-  const pulse = {
-    auto_enabled: false,
-    interval_minutes: 30,
-    window_days: 3,
-    scan_depth: "fast",
-    configured: true,
-  };
+  // The recent window is the block's one setting since the scan was retired (#2179).
+  const pulse = { window_days: 3, configured: true };
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -106,19 +101,20 @@ async function openSection(page: Page, label: string) {
   }
 }
 
-test("a saved scan setting flashes Saved. and survives leaving + reopening the page", async ({
+test("a saved recent window flashes Saved. and survives leaving + reopening the page", async ({
   page,
 }) => {
   await page.goto(settingsPath("ai-mission-control"));
-  const depth = page.getByLabel("Scan depth");
-  await expect(depth).toHaveValue("fast");
+  const recent = page.getByLabel("How far back to look");
+  await expect(recent).toHaveValue("3");
 
-  await depth.selectOption("slow");
+  await recent.fill("2");
+  await recent.press("Enter");
   // Immediate feedback — the section says so instead of leaving the user hunting for a Save button.
   await expect(page.getByText("Saved.")).toBeVisible();
 
   // Leaving the page unmounts the panel; coming back re-seeds it from the config context.
   await openSection(page, "Interface");
   await openSection(page, "HQ");
-  await expect(page.getByLabel("Scan depth")).toHaveValue("slow");
+  await expect(page.getByLabel("How far back to look")).toHaveValue("2");
 });

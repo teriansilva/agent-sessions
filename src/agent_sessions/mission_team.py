@@ -984,6 +984,9 @@ _COMMON = {"op", "operation_id", "expected_revision", "reason"}
 _UUID_RE = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 STEP_ID_RE = re.compile(r"\Ao[1-9][0-9]?\.[a-z][a-z0-9_-]{0,31}\Z")
 _LISTING_RE = re.compile(r"\Asha256:[0-9a-f]{32}\Z")
+#: An `assemble`'s optional `expected_team` (#2129): the team digest an HQ card bound
+#: (`ask_team.team_digest`, 16 hex characters). Only `assemble` takes it.
+EXPECTED_TEAM_RE = re.compile(r"\A[0-9a-f]{16}\Z")
 
 
 def _bad(text: str, status: int = 422) -> TeamRefused:
@@ -993,17 +996,23 @@ def _bad(text: str, status: int = 422) -> TeamRefused:
 def parse_op(body: object) -> dict:
     """The operation, checked to the letter, or `TeamRefused` (422). An index is the ONLY way to
     name a specialist or a model: a string where an index belongs, an extra key or a missing one
-    is refused, so no model-written text becomes an engine, model or effort (#883/#893)."""
+    is refused, so no model-written text becomes an engine, model or effort (#883/#893).
+
+    An `assemble` may carry `expected_team` (#2129): the team digest the card showed. It is kept
+    in the result, so `request_digest` binds it, and the route commits only that team."""
     if not isinstance(body, dict):
         raise _bad("the operation must be an object")
     op = body.get("op")
     if op not in OPS:
         raise _bad(f"op must be one of {', '.join(OPS)}")
     keys = _COMMON | _OP_KEYS[op]
-    extra = set(body) - keys - {"author"}
+    if "expected_team" in body and op != "assemble":
+        raise _bad("expected_team is only for assemble")
+    extra = set(body) - keys - {"author", "expected_team"}
     missing = keys - set(body)
     if extra or missing:
-        raise _bad(f"{op} takes exactly {', '.join(sorted(keys))} (and optionally author)")
+        optional = "author, expected_team" if op == "assemble" else "author"
+        raise _bad(f"{op} takes exactly {', '.join(sorted(keys))} (and optionally {optional})")
     author = body.get("author", "operator")
     if author not in AUTHORS:
         raise _bad("author must be operator or hq")
@@ -1042,6 +1051,11 @@ def parse_op(body: object) -> dict:
         if not isinstance(body["listing"], str) or not _LISTING_RE.fullmatch(body["listing"]):
             raise _bad("listing must be the digest of the list the server offered")
         out["index"], out["listing"] = idx, body["listing"]
+    if "expected_team" in body:
+        expected = body["expected_team"]
+        if not isinstance(expected, str) or not EXPECTED_TEAM_RE.fullmatch(expected):
+            raise _bad("expected_team must be the team digest the card showed")
+        out["expected_team"] = expected
     return out
 
 

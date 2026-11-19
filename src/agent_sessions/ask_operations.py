@@ -376,6 +376,10 @@ class Operation:
     #: A ``done`` card starts ONE continuation turn in its conversation (#1950: HQ continues after
     #: the draft-mission card, `ask_orchestrator.continue_after_card`). Off for every other card.
     follow_up: bool = False
+    #: ``route`` builds the request from the facts the card was STAGED with (what it showed and
+    #: bound), not the ones re-read at the tap (#2129: a team card sends the team digest it bound,
+    #: and a card staged without one sends none). The re-read still decides ``stale`` first.
+    staged_facts: bool = False
 
 
 class _Moved(Exception):
@@ -1457,7 +1461,8 @@ async def _route_once(op: Operation, row: dict, fields: dict, now, app, operator
     """The catalog's one route call for ``op``, and the outcome it settles to."""
     try:
         # Off the loop: a folder change reads the project store (its flock, #974).
-        method, path, body = await asyncio.to_thread(op.route, row["target"], fields, now or {})
+        basis = row["facts"] if op.staged_facts else now
+        method, path, body = await asyncio.to_thread(op.route, row["target"], fields, basis or {})
     except _Moved as e:
         return {"state": STALE, "reason": f"{e} since this was proposed; nothing ran"}
     resp = await asgi_call.call(app, operator, method, path, body)
@@ -1467,6 +1472,8 @@ async def _route_once(op: Operation, row: dict, fields: dict, now, app, operator
         state, said = op.outcome(resp.status, resp.body, row["facts"])
     if state == FAILED:
         said = op.failure(resp.status, resp.detail, row["facts"])
+    if state == STALE:  # the route refused what moved (#2129): said like the re-read's `stale`
+        return {"state": STALE, "reason": said[:SUMMARY_MAX]}
     return {"state": state, "outcome": said[:SUMMARY_MAX]}
 
 

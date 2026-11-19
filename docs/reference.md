@@ -166,7 +166,7 @@ and the actions that operate on what is on screen (#929).
 |---|---|---|
 | Autonomy tier, confidence threshold, interval, default nudge | **Settings → AI → Mission control** (Orchestrator) | The tier's copy says what YOLO can type on its own: only text you wrote, so "YOLO" never implies more than it grants. |
 | **Run now** — one orchestrator pass immediately | **Settings → AI → Mission control** (Orchestrator) | Also the retry after a failed pass. |
-| Scan depth, look-back window, **Scan now** | **Settings → AI → Mission control** (Session scan) | A scan refreshes the Sessions-without-a-mission list; it is not an orchestrator pass. |
+| Look-back window | **Settings → AI → HQ** (Recent window) | How far back the Needs you list, the work recap and HQ look (1–3 days). The session cards are built per request; there is no scan (#2179). |
 | Forge connection for objective probes | **Settings → AI → Mission control** (Forge connection) | Without one, forge objectives read as *unknown*, never as failed. |
 | Degraded-endpoint warning | On the route, read-only | Shown once the server reports **two consecutive failures**; a single failure stays silent, because a badge that shouts at every blip is one people learn to ignore. It renders nothing when healthy — a calm page and an unwatched page look identical otherwise, which is the point. It links to **Settings → AI → Endpoint & model**. |
 | Mission search, project and state filters | In the mission rail | These narrow the mission list, so they stay with the list. |
@@ -183,7 +183,6 @@ for; it never changes *where* the request goes (that is **Settings → AI → En
 | Session recap | The chronological brief you read when you come back to a session. |
 | Handoff brief | The state / open items / next steps document seeded into a handoff target. |
 | Project classifier | Auto-sort's session → project assignment. |
-| Session line | The one line per session in mission control's Sessions-without-a-mission list — state plus next step. Written only by a `slow` scan. |
 | HQ — search catalog · HQ — search verify | The session finder's two retrieval stages: pick candidate sessions from the catalog, then re-rank them against their real transcripts. |
 | Scheduled pass | The orchestrator's continue / choose / answer / escalate decision. |
 | Chat router · Chat instruct | Mission chat: whether a message is a find, an instruction or a history question, and turning an instruction into actions on the sessions it names. |

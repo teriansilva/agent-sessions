@@ -25,7 +25,7 @@ beforeEach(() => {
 
 function mount(autonomy: string, on: boolean, onChanged = vi.fn()) {
   const cfg = {
-    orchestrator: { enabled: true, autonomy },
+    automation: { version: 1, mission: { enabled: true, autonomy } },
   } as unknown as AppConfig;
   render(
     <ConfigCtx.Provider value={cfg}>
@@ -92,7 +92,7 @@ test("after a successful save the box follows the server again, whoever changes 
     auto_choose: false,
   });
   const cfg = {
-    orchestrator: { enabled: true, autonomy: "yolo" },
+    automation: { version: 1, mission: { enabled: true, autonomy: "yolo" } },
   } as unknown as AppConfig;
   const view = (on: boolean) => (
     <ConfigCtx.Provider value={cfg}>
@@ -124,7 +124,7 @@ test("ON → saved → another tab turns it OFF is shown off", async () => {
     auto_choose: true,
   });
   const cfg = {
-    orchestrator: { enabled: true, autonomy: "yolo" },
+    automation: { version: 1, mission: { enabled: true, autonomy: "yolo" } },
   } as unknown as AppConfig;
   const view = (on: boolean) => (
     <ConfigCtx.Provider value={cfg}>
@@ -154,7 +154,7 @@ test("a refetch that skips the intermediate value still ends the override (revie
     auto_choose: false,
   });
   const cfg = {
-    orchestrator: { enabled: true, autonomy: "yolo" },
+    automation: { version: 1, mission: { enabled: true, autonomy: "yolo" } },
   } as unknown as AppConfig;
   const view = (on: boolean) => (
     <ConfigCtx.Provider value={cfg}>
@@ -181,7 +181,7 @@ test("…and the inverse: seen OFF, save ON, a fresh OFF snapshot shows OFF", as
     auto_choose: true,
   });
   const cfg = {
-    orchestrator: { enabled: true, autonomy: "yolo" },
+    automation: { version: 1, mission: { enabled: true, autonomy: "yolo" } },
   } as unknown as AppConfig;
   const view = (on: boolean) => (
     <ConfigCtx.Provider value={cfg}>
@@ -208,7 +208,7 @@ test("a snapshot that lands WHILE the save is in flight does not undo the click"
     () => new Promise((r) => (release = r)),
   );
   const cfg = {
-    orchestrator: { enabled: true, autonomy: "yolo" },
+    automation: { version: 1, mission: { enabled: true, autonomy: "yolo" } },
   } as unknown as AppConfig;
   const view = (on: boolean) => (
     <ConfigCtx.Provider value={cfg}>
@@ -253,4 +253,12 @@ test.each([true, false])("mission grant wins over a divergent legacy projection:
     expect(box).toBeDisabled();
     expect(api.setMissionAutoChoose).not.toHaveBeenCalled();
   }
+});
+
+test("the legacy `orchestrator` block alone grants nothing — only `automation.mission` is read (#2179)", () => {
+  const cfg = { orchestrator: { enabled: true, autonomy: "yolo" } } as unknown as AppConfig;
+  render(<ConfigCtx.Provider value={cfg}>
+    <MissionAutoChoose mission={{ id: "m", auto_choose: false } as Mission} onChanged={vi.fn()} />
+  </ConfigCtx.Provider>);
+  expect(screen.getByTestId("mission-auto-choose-toggle")).toBeDisabled();
 });

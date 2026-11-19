@@ -238,14 +238,19 @@ def test_the_string_false_does_not_enable_the_opt_in(env):
     assert prefs.get_orchestrator(p)["auto_ai_directions"] is False
 
 
-def test_the_prefs_route_enforces_the_grant(env, auth_cfg, fake_jsonl):  # noqa: ARG001
-    """The same rules over HTTP, where an operator (or a stale client) actually reaches them."""
+def test_the_automation_route_enforces_the_grant(env, auth_cfg, fake_jsonl):  # noqa: ARG001
+    """The same rules over HTTP, where an operator actually reaches them: the mission scope's
+    revisioned `PATCH /api/automation/mission` (the legacy `POST /api/prefs {orchestrator}`
+    bridge was retired, #2179)."""
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
 
     def post(block):
-        return c.post("/api/prefs", json={"orchestrator": block}, headers=hdr)
+        revision = c.get("/api/config").json()["automation"]["mission"]["revision"]
+        return c.patch(
+            "/api/automation/mission", json={"revision": revision, "policy": block}, headers=hdr
+        )
 
     assert post({"auto_ai_directions": True}).status_code == 422  # not on suggest
     assert post({"ai_direction_confidence_min": 0.89}).status_code == 422
@@ -253,18 +258,16 @@ def test_the_prefs_route_enforces_the_grant(env, auth_cfg, fake_jsonl):  # noqa:
     assert post({"allowed_verbs": ["continue", sup.DRAFT_VERB]}).status_code == 422
     r = post({"autonomy": "yolo", "auto_ai_directions": True})
     assert r.status_code == 200
-    body = r.json()["orchestrator"]
+    body = r.json()["policy"]
     assert body["auto_ai_directions"] is True
     assert body["ai_direction_confidence_min"] == 0.9
     assert sup.DRAFT_VERB in body["auto_verbs_ceiling"], "the UI is not told the ceiling widened"
     assert (
-        post({"ai_direction_confidence_min": 0.95}).json()["orchestrator"][
-            "ai_direction_confidence_min"
-        ]
+        post({"ai_direction_confidence_min": 0.95}).json()["policy"]["ai_direction_confidence_min"]
         == 0.95
     )
     # …and dropping out of yolo through the route clears it, like every other path.
-    assert post({"autonomy": "suggest"}).json()["orchestrator"]["auto_ai_directions"] is False
+    assert post({"autonomy": "suggest"}).json()["policy"]["auto_ai_directions"] is False
 
 
 def test_a_hand_edited_prefs_file_cannot_put_the_draft_verb_in_the_ceiling(env, monkeypatch):

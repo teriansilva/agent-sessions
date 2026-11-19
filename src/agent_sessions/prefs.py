@@ -1909,14 +1909,13 @@ def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
     return _mutate("auto_sort", merge, path)
 
 
-# --- Pulse recent-work overview (#441 Phase 3) -----------------------------------------
-# Opt-in background scan loop + the window/depth the manual + background scans use. Reuses the
-# `ai_review` gateway for synthesis (depth >= medium), so it holds no endpoint config / secret
-# of its own — `configured` mirrors the ai_review readiness. These window/depth bounds are the
-# source of truth; pulse.py mirrors them and delegates its window rule here (pulse imports prefs,
-# prefs never imports pulse — no cycle). tests/test_pulse_loop.py asserts they stay in sync.
-PULSE_INTERVAL_MIN = 5
-PULSE_INTERVAL_MAX = 24 * 60
+# --- Pulse: the recent-work window (#441 Phase 3, #1086, #2179) ---------------------------------
+# One setting is left: how far back needs-you, the work recap and HQ look. The background scan's
+# `auto_enabled`, `interval_minutes` and `scan_depth` were retired with the scan (#2179): a stored
+# value stays in the file, is never read, and a write naming one is a 422 (an unknown field).
+# These bounds are the source of truth; pulse.py mirrors them and delegates its window rule here
+# (pulse imports prefs, prefs never imports pulse — no cycle). tests/test_pulse.py asserts they
+# stay in sync.
 PULSE_WINDOW_MIN = 1
 PULSE_WINDOW_MAX = 3
 # The Ask page's "recent work" window (#1086): 1–3 days, default 1 ("throughout the day"). It was
@@ -1925,16 +1924,9 @@ PULSE_WINDOW_MAX = 3
 # stay strict. Rule shared with `pulse.coerce_window_days` and web/src/lib/recentWindow.ts through
 # tests/fixtures/pulse_window_days_cases.json.
 PULSE_WINDOW_DEFAULT = 1
-# `medium` was removed (#956): all it added was a banner nothing rendered. A stored `medium` reads
-# as `fast` (same visible output) via the membership check in `get_pulse`; a WRITE of it is a 422.
-PULSE_DEPTHS: tuple[str, ...] = ("fast", "slow")
-PULSE_DEFAULT_DEPTH = "fast"
 
 _PULSE_DEFAULTS: dict[str, object] = {
-    "auto_enabled": False,  # background scan loop on/off
-    "interval_minutes": 30,
     "window_days": PULSE_WINDOW_DEFAULT,  # rolling recency window (#1086: 1–3 days)
-    "scan_depth": PULSE_DEFAULT_DEPTH,  # fast | medium | slow
 }
 
 
@@ -1969,74 +1961,52 @@ def is_valid_pulse_window_days(value: object) -> bool:
 
 
 def get_pulse(path: Path | None = None) -> dict:
-    """The stored `pulse` block with defaults applied + types coerced (#441 Phase 3)."""
+    """The stored `pulse` block with defaults applied + types coerced: the recent window only."""
     raw = _load(path or _default_path()).get("pulse")
     out = dict(_PULSE_DEFAULTS)
     if isinstance(raw, dict):
-        if isinstance(raw.get("auto_enabled"), bool):
-            out["auto_enabled"] = raw["auto_enabled"]
-        v = raw.get("interval_minutes")
-        if (
-            isinstance(v, int)
-            and not isinstance(v, bool)
-            and PULSE_INTERVAL_MIN <= v <= PULSE_INTERVAL_MAX
-        ):
-            out["interval_minutes"] = v
         out["window_days"] = coerce_pulse_window_days(raw.get("window_days"))
-        d = raw.get("scan_depth")
-        if isinstance(d, str) and d in PULSE_DEPTHS:
-            out["scan_depth"] = d
     return out
 
 
 def public_pulse(path: Path | None = None) -> dict:
-    """Client-safe view (#441 Phase 3). `pulse` holds no secret of its own; `configured`
-    mirrors the reused ai_review endpoint readiness so the UI can explain when `slow` synthesis
-    would degrade to fast."""
+    """Client-safe view. `pulse` holds no secret of its own; `configured` mirrors the ai_review
+    endpoint readiness, which HQ and the mission views read from here."""
     out = dict(get_pulse(path))
     out["configured"] = bool(public_ai_review(path)["configured"])
     return out
 
 
 def validate_pulse_patch(patch: object) -> str | None:
-    """Server-side schema validation for a partial `pulse` write (#441 Phase 3): returns a
-    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op."""
+    """Server-side schema validation for a partial `pulse` write: returns a human-readable error
+    (→ 422) or None. Unknown keys — the retired scan fields included (#2179) — are rejected so a
+    typo, or a stale client, can't no-op."""
     if not isinstance(patch, dict):
         return "pulse must be an object"
     unknown = set(patch) - set(_PULSE_DEFAULTS)
     if unknown:
         return f"unknown pulse fields: {sorted(unknown)}"
-    if "auto_enabled" in patch and not isinstance(patch["auto_enabled"], bool):
-        return "pulse.auto_enabled must be a boolean"
-    if "interval_minutes" in patch:
-        v = patch["interval_minutes"]
-        if (
-            not isinstance(v, int)
-            or isinstance(v, bool)
-            or not (PULSE_INTERVAL_MIN <= v <= PULSE_INTERVAL_MAX)
-        ):
-            return (
-                f"pulse.interval_minutes must be an integer between "
-                f"{PULSE_INTERVAL_MIN} and {PULSE_INTERVAL_MAX}"
-            )
     if "window_days" in patch and not is_valid_pulse_window_days(patch["window_days"]):
         return (
             f"pulse.window_days must be an integer between "
             f"{PULSE_WINDOW_MIN} and {PULSE_WINDOW_MAX}"
         )
-    if "scan_depth" in patch and patch["scan_depth"] not in PULSE_DEPTHS:
-        return f"pulse.scan_depth must be one of {list(PULSE_DEPTHS)}"
     return None
 
 
 def set_pulse(patch: dict, path: Path | None = None) -> dict:
-    """Merge a VALIDATED partial block into the stored one and persist (#441 Phase 3)."""
-    new = dict(get_pulse(path))
-    for k in ("auto_enabled", "interval_minutes", "window_days", "scan_depth"):
-        if k in patch:
-            new[k] = patch[k]
-    _set("pulse", new, path)
-    return new
+    """Merge a VALIDATED partial block into the stored one and persist. Merges into the RAW block,
+    so a retired field an older release stored is left in place (#2179: no migration)."""
+
+    def _apply(raw: object) -> dict:
+        block = dict(raw) if isinstance(raw, dict) else {}
+        for k in _PULSE_DEFAULTS:
+            if k in patch:
+                block[k] = patch[k]
+        return block
+
+    _mutate("pulse", _apply, path)
+    return get_pulse(path)
 
 
 # --- Session review: how deeply a session is read before a decision (#1086 Phase 2) ------------

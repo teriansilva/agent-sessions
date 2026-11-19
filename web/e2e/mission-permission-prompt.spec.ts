@@ -97,6 +97,8 @@ async function openMission(page: Page, settled: () => boolean) {
           configured: true,
         },
         orchestrator: ORCH_CONFIG,
+        // The SPA reads autonomy from `automation` only (#2179), as the server sends it.
+        automation: { version: 1, session: { ...ORCH_CONFIG, revision: "session-1" }, mission: { ...ORCH_CONFIG, revision: "mission-1" } },
       },
     }),
   );

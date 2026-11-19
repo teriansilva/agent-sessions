@@ -230,8 +230,6 @@ def _pulse() -> dict:
     pulse, review = prefs.get_pulse(), prefs.get_session_review()
     return _clean(
         {
-            "background_scan": _bool(pulse.get("auto_enabled")),
-            "scan_interval_minutes": _int(pulse.get("interval_minutes"), 1, 24 * 60),
             "window_days": _int(pulse.get("window_days"), 1, 365),
             "session_review_notify": _bool(review.get("notify")),
             "session_review_recognise_prompts": _bool(review.get("recognise_prompts")),

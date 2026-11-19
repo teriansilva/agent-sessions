@@ -1307,7 +1307,7 @@ async def test_a_forge_save_waits_for_the_fence_OFF_the_event_loop(
     assert max(gaps) < 0.5, f"the event loop stalled {max(gaps):.2f}s behind a forge save"
 
 
-def test_a_busy_fence_answers_a_forge_save_503_like_an_orchestrator_save(
+def test_a_busy_fence_answers_a_forge_save_503_like_an_automation_save(
     auth_cfg, tmp_home, tmp_path, monkeypatch
 ):
     """A SIBLING PROCESS holds the fence file: the save refuses retryably and persists nothing."""
@@ -1331,6 +1331,7 @@ def test_a_busy_fence_answers_a_forge_save_503_like_an_orchestrator_save(
     assert r.status_code == 303
     hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
     before, revision = prefs.public_forge(), missions.forge_revision()
+    policy_revision = c.get("/api/config").json()["automation"]["session"]["revision"]
     holder = (
         "import fcntl, os, sys\n"
         "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
@@ -1349,7 +1350,11 @@ def test_a_busy_fence_answers_a_forge_save_503_like_an_orchestrator_save(
         forge_r = c.post(
             "/api/prefs", json={"forge": {"base_url": "https://forge-b.example/"}}, headers=hdr
         )
-        orch_r = c.post("/api/prefs", json={"orchestrator": {"enabled": True}}, headers=hdr)
+        orch_r = c.patch(
+            "/api/automation/session",
+            json={"revision": policy_revision, "policy": {"enabled": True}},
+            headers=hdr,
+        )
     finally:
         sibling.stdin.close()
         try:
@@ -1358,7 +1363,7 @@ def test_a_busy_fence_answers_a_forge_save_503_like_an_orchestrator_save(
             sibling.kill()
             sibling.wait(timeout=10)
     assert (forge_r.status_code, orch_r.status_code) == (503, 503), (forge_r.text, orch_r.text)
-    assert forge_r.json() == orch_r.json()
+    assert forge_r.json()["detail"] and orch_r.json()["detail"]
     assert prefs.public_forge() == before and missions.forge_revision() == revision
 
 
@@ -1823,7 +1828,7 @@ def test_both_decision_producers_project_render_status_and_withdraw_approve(
         title="Checks are green on the PR",
     )
     _observe(mid, "checks", state="failure")
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    monkeypatch.setattr(pulse, "overview", lambda *a, **k: {"cards": []})
     c, _ = _login_client(auth_cfg)
 
     with _live(monkeypatch):
