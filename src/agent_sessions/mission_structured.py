@@ -356,10 +356,19 @@ async def automation_start(
     brief: str,
     on_key: Callable[[str], None],
     check: Callable[[], tuple[bool, str]],
+    model: str | None = None,
+    effort: str | None = None,
+    specialist: tuple[str, int] | None = None,
 ) -> headless_dispatch.Dispatch:
     """An automation's new API session: one structured create and one guarded first turn, the
-    same facts `headless_dispatch.dispatch` returns. Raises `DispatchError` only when nothing was
-    attempted. Never permission-bypassed (#1897 refuses guarded work in such a session anyway).
+    same facts `headless_dispatch.dispatch` returns.
+
+    A review loop's reviewer (#2202) names its ``specialist`` ``(id, version)`` with that version's
+    ``model`` and ``effort``: the create reserves the specialist's capacity and bundles its skills
+    exactly as a mission step's does (`specialist_launch.check_api`).
+
+    Raises `DispatchError` only when nothing was attempted. Never permission-bypassed (#1897
+    refuses guarded work in such a session anyway).
 
     A worker left without its first turn — a create that never became ready, or a first turn
     refused before any claim — is CONTAINED and ``out.teardown`` says how that went: nothing is
@@ -389,6 +398,9 @@ async def automation_start(
         brief_id=brief_id,
         admission=admission,
         context={"reservation_id": run_id},
+        model=model,
+        effort=effort,
+        specialist=specialist,
     )
     if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
         from . import runtime_cleanup  # at call time, like `mission_fence`

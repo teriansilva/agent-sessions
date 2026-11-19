@@ -395,6 +395,59 @@ class ForgeClient:
             merged=bool(data.get("merged")),
         )
 
+    def review_pull(self, repo: str, number: int) -> Fact:
+        """A pull request's CURRENT head for the review loop (#2202): one `GET …/pulls/{number}`.
+
+        Unlike `pull_by_number` (a mission objective's own branch), the head may come from ANY
+        repository — a contributor's fork is reviewed like any other PR. What identifies the PR is
+        its TARGET: ``base.repo.full_name`` must be ``repo``, or the answer is `unknown`. A missing
+        base repository is a refusal, never a fallback."""
+        try:
+            data = self._get(f"{self._api}{self._repo_path(repo)}/pulls/{int(number)}")
+        except (ForgeError, ValueError) as e:
+            return Fact.unknown(str(e) if isinstance(e, ForgeError) else "bad PR number")
+        except httpx.HTTPError as e:
+            return Fact.unknown(_why(e))
+        if not isinstance(data, dict):
+            return Fact.unknown("forge answered an unexpected shape")
+        base = data.get("base") if isinstance(data.get("base"), dict) else {}
+        brepo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        want = repo if "/" in repo else f"{self.owner}/{repo}"
+        if str(brepo.get("full_name") or "").lower() != want.strip("/").lower():
+            return Fact.unknown(f"PR #{int(number)} does not target {want}")
+        head = data.get("head") if isinstance(data.get("head"), dict) else {}
+        sha = head.get("sha")
+        if not isinstance(sha, str) or not sha:
+            return Fact.unknown(f"PR #{int(number)} has no head commit")
+        state = str(data.get("state") or "").lower()
+        return Fact.seen(state == "open", f"PR #{int(number)} is {state}", head_sha=sha)
+
+    def issue_by_number(self, repo: str, number: int) -> Fact:
+        """An issue's CURRENT revision for the review loop (#2202): one `GET …/issues/{number}`
+        through `_get`. ``revision`` is ``forge_hook.issue_revision(title, body)``; the title and
+        body themselves never leave this method. A PR answered at the issues path is `unknown`
+        (Forgejo serves both there): it is not this issue."""
+        from .forge_hook import issue_revision
+
+        try:
+            data = self._get(f"{self._api}{self._repo_path(repo)}/issues/{int(number)}")
+        except (ForgeError, ValueError) as e:
+            return Fact.unknown(str(e) if isinstance(e, ForgeError) else "bad issue number")
+        except httpx.HTTPError as e:
+            return Fact.unknown(_why(e))
+        if not isinstance(data, dict) or isinstance(data.get("pull_request"), dict):
+            return Fact.unknown(f"#{int(number)} is not an issue of this repository")
+        title, body = data.get("title"), data.get("body")
+        if not isinstance(title, str) or not isinstance(body, str | None):
+            return Fact.unknown("forge answered an unexpected shape")
+        state = str(data.get("state") or "").lower()
+        return Fact.seen(
+            state == "open",
+            f"issue #{int(number)} is {state}",
+            number=int(number),
+            revision=issue_revision(title, body or ""),
+        )
+
     def pull_request(
         self,
         repo: str,

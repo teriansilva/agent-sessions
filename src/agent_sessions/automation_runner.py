@@ -243,6 +243,10 @@ def check_save(config: dict) -> None:
         cwd = getattr(row, "cwd", None) if row is not None else None
         if cwd and not scope_ok(cwd):
             raise model.AutomationError("that session is outside your project folders")
+    elif action["kind"] == "forge_review_loop":
+        from . import review_loop_runner
+
+        review_loop_runner.check_save(config)
     elif action["kind"] == "start_mission":
         from .routes import missions as mroutes
 
@@ -810,10 +814,18 @@ async def _send_to_session(run: dict, config: dict, pins: dict, *, registry) -> 
     return await asyncio.to_thread(_send, run, config, pins)
 
 
+async def _review_loop(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
+    # At call time: the review loop's runtime imports this module (#2202).
+    from . import review_loop_runner
+
+    return await review_loop_runner.launch_review(run, config, pins, registry=registry)
+
+
 _ACTIONS = {
     "start_mission": _start_mission,
     "start_session": _start_session,
     "send_to_session": _send_to_session,
+    "forge_review_loop": _review_loop,
 }
 
 
@@ -954,6 +966,13 @@ async def run_now(aid: str, *, registry) -> dict:
     resuming, after the same consent, expiry and daily-cap checks as every other trigger."""
     if not loop_enabled():
         raise RunRefused(409, "automations are switched off on this server")
+    kind = None
+    with contextlib.suppress(Exception):  # unreadable here: begin_run below says why
+        row = await asyncio.to_thread(store.get, aid)
+        kind = ((row.get("config") or {}).get("trigger") or {}).get("kind")
+    if kind == "webhook":
+        # A review loop acts on an item's revision, which only a delivery names (#2202).
+        raise RunRefused(409, "a review loop runs only when its webhook delivers an event")
     res = await asyncio.to_thread(
         store.begin_run, aid, trigger="manual", slot=f"manual:{uuid.uuid4().hex}", fire_at=None
     )

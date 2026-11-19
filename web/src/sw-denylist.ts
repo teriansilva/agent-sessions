@@ -37,6 +37,9 @@ export const NAVIGATE_FALLBACK_DENYLIST: RegExp[] = [
   // shell answering one would boot the operator app where the artifact should be, and a cached
   // copy keyed by a view-token URL must not exist at all.
   /^\/artifacts(?:\/|$|\?)/,
+  // The review loop's Forgejo webhook (#2202): a server route the forge POSTs to. Never a page,
+  // so no navigation to it may be answered with the SPA shell.
+  /^\/hooks\//,
   /^\/healthz/,
   // The standalone Home Free connect page is its own precached shell — the SPA index.html
   // fallback must not shadow it for browsers already controlled by the app's SW (#27/#558).
@@ -58,6 +61,7 @@ export const SERVER_RENDERED_PATHS: string[] = [
   "/logout",
   "/change-password",
   "/link/approve",
+  "/hooks/a/abc123",
   "/p/k3Jx9aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-",
   "/r/Q3J9AAAAAAAAAAAAAAAAAA",
   "/artifacts/5449-5592-2107-4372/",

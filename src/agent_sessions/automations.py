@@ -22,7 +22,9 @@ does not. Content (the instruction, the template's pinned revision) is part of t
 changed instruction is a different grant. A record approved before checklists were removed (#1653)
 keeps its checklist fields in its scope, inert, so its receipt still matches.
 
-Loop and webhook triggers are Phases 2–3: they are reserved names here, and saving one is refused.
+The loop trigger is Phase 2: a reserved name here, and saving one is refused. The webhook trigger
+lands narrowed (#2202): the `forgejo` scheme only, and only with the `forge_review_loop` action —
+there is no generic payload-to-variable mapping. Read `docs/invariants/forge-review-loop.md`.
 """
 
 from __future__ import annotations
@@ -52,10 +54,15 @@ PAUSE_AFTER_FAILURES_MAX = 20
 MAX_CONCURRENT_MAX = 3  # "allow up to a small cap"
 EXPIRES_MAX = 253402300799  # 9999-12-31T23:59:59Z
 
-TRIGGER_KINDS = ("once", "schedule", "manual")
+TRIGGER_KINDS = ("once", "schedule", "manual", "webhook")
 #: Reserved for later phases. Accepted as a NAME so the refusal can say why; never stored.
-RESERVED_TRIGGERS = {"loop": "Phase 2", "webhook": "Phase 3"}
-ACTION_KINDS = ("start_mission", "start_session", "send_to_session")
+RESERVED_TRIGGERS = {"loop": "Phase 2"}
+ACTION_KINDS = ("start_mission", "start_session", "send_to_session", "forge_review_loop")
+#: The webhook signature schemes. Only Forgejo's for now (#2202); `github`/`battlelab` are #1201's.
+WEBHOOK_SCHEMES = ("forgejo",)
+#: A forge repository ``owner/name`` and a forge login (Forgejo's alphabets, bounded).
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 #: Mission autonomy, ranked. `propose` creates the mission and its plan and stops for the operator
 #: to dispatch; `dispatch` dispatches the plan through the manual dispatch route's own fences;
 #: `dispatch_auto_choose` also turns on the per-mission menu-answer opt-in (#1060), which the
@@ -216,7 +223,7 @@ def _hhmm(raw: object) -> str:
 
 
 def validate_trigger(raw: object, *, now: float | None = None) -> dict:
-    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence"}, {"kind"})
+    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence", "scheme"}, {"kind"})
     kind = _word(t["kind"], "trigger kind")
     if kind in RESERVED_TRIGGERS:
         raise AutomationError(
@@ -225,6 +232,12 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
     if kind == "manual":
         _obj(t, "a manual trigger", {"kind"})
         return {"kind": "manual"}
+    if kind == "webhook":
+        _obj(t, "a webhook trigger", {"kind", "scheme"}, {"scheme"})
+        scheme = _word(t["scheme"], "webhook scheme")
+        if scheme not in WEBHOOK_SCHEMES:
+            raise AutomationError(f"webhook scheme must be one of {list(WEBHOOK_SCHEMES)}")
+        return {"kind": "webhook", "scheme": scheme}
     if kind == "once":
         _obj(t, "a once trigger", {"kind", "at", "tz"}, {"at"})
         at = t["at"]
@@ -241,7 +254,7 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
     if kind == "schedule":
         _obj(t, "a schedule trigger", {"kind", "cadence", "tz"}, {"cadence"})
         return {"kind": "schedule", "cadence": _cadence(t["cadence"]), "tz": _tz(t.get("tz"))}
-    raise AutomationError("trigger kind must be once, schedule or manual")
+    raise AutomationError("trigger kind must be once, schedule, manual or webhook")
 
 
 # ---- action -------------------------------------------------------------------------------------
@@ -288,10 +301,18 @@ def validate_action(raw: object) -> dict:
             "bypass",
             "message",
             "session_key",
+            "repo",
+            "reviewer",
+            "reviewer_login",
+            "legs",
+            "max_rounds",
+            "return_to_origin",
         },
         {"kind"},
     )
     kind = _word(a["kind"], "action kind")
+    if kind == "forge_review_loop":
+        return _review_loop_action(a)
     if kind == "start_mission":
         _obj(
             a,
@@ -364,6 +385,69 @@ def validate_action(raw: object) -> dict:
     raise AutomationError(f"action kind must be one of {list(ACTION_KINDS)}")
 
 
+def _review_loop_action(a: dict) -> dict:
+    """The review loop (#2202): one repo, one pinned reviewer specialist version, one reviewer
+    login, inside one project. Strict; every field is part of the consent scope."""
+    from .review_loop import ROUNDS_DEFAULT, ROUNDS_MAX, ROUNDS_MIN
+
+    _obj(
+        a,
+        "a forge_review_loop action",
+        {
+            "kind",
+            "project_id",
+            "repo",
+            "reviewer",
+            "reviewer_login",
+            "legs",
+            "max_rounds",
+            "return_to_origin",
+        },
+        {"project_id", "repo", "reviewer", "reviewer_login"},
+    )
+    pid = a["project_id"]
+    if not isinstance(pid, str) or not pid or len(pid) > 200:
+        raise AutomationError("project_id must be a project id")
+    repo = a["repo"]
+    if not isinstance(repo, str) or not _REPO_RE.match(repo):
+        raise AutomationError("repo must be owner/name")
+    login = a["reviewer_login"]
+    if not isinstance(login, str) or not _LOGIN_RE.match(login):
+        raise AutomationError("reviewer_login must be a forge login")
+    r = _obj(a["reviewer"], "reviewer", {"specialist_id", "version"}, {"specialist_id", "version"})
+    sid = r["specialist_id"]
+    if not isinstance(sid, str) or not _ID_RE.match(sid):
+        raise AutomationError("reviewer.specialist_id must be a specialist id")
+    version = _int(r["version"], "reviewer.version", 1, 999_999)
+    legs = _obj(a.get("legs", {}), "legs", {"issues", "pulls"})
+    out_legs = {}
+    for leg in ("issues", "pulls"):
+        v = legs.get(leg, True)
+        if not isinstance(v, bool):
+            raise AutomationError(f"legs.{leg} must be true or false")
+        out_legs[leg] = v
+    if not any(out_legs.values()):
+        raise AutomationError("a review loop reviews issues, pull requests or both")
+    caps = _obj(a.get("max_rounds", {}), "max_rounds", {"issue", "pr"})
+    out_caps = {
+        k: _int(caps.get(k, ROUNDS_DEFAULT[k]), f"max_rounds.{k}", ROUNDS_MIN, ROUNDS_MAX)
+        for k in ("issue", "pr")
+    }
+    ret = a.get("return_to_origin", True)
+    if not isinstance(ret, bool):
+        raise AutomationError("return_to_origin must be true or false")
+    return {
+        "kind": "forge_review_loop",
+        "project_id": pid,
+        "repo": repo,
+        "reviewer": {"specialist_id": sid, "version": version},
+        "reviewer_login": login,
+        "legs": out_legs,
+        "max_rounds": out_caps,
+        "return_to_origin": ret,
+    }
+
+
 def validate_policy(raw: object) -> dict:
     p = _obj(
         {} if raw is None else raw,
@@ -421,12 +505,32 @@ _CONFIG = {"name", "trigger", "action"}
 def validate_config(raw: object, *, now: float | None = None) -> dict:
     """A whole automation from a create body (or a patch merged onto the stored one). STRICT."""
     c = _obj(raw, "automation", {*_CONFIG, "policy"}, _CONFIG)
-    return {
+    policy = c.get("policy")
+    if (
+        isinstance(c.get("action"), dict)
+        and c["action"].get("kind") == "forge_review_loop"
+        and (policy is None or (isinstance(policy, dict) and "concurrency" not in policy))
+    ):
+        # A review loop's deliveries arrive together (a push and an issue edit); each effect is
+        # short and the effect lock serialises them, so by default they all run (#2202).
+        policy = {**(policy or {}), "concurrency": "allow", "max_concurrent": MAX_CONCURRENT_MAX}
+    c = {**c, "policy": policy}
+    out = {
         "name": validate_name(c["name"]),
         "trigger": validate_trigger(c["trigger"], now=now),
         "action": validate_action(c["action"]),
         "policy": validate_policy(c.get("policy")),
     }
+    # The webhook trigger and the review loop come together, and only together (#2202): a webhook
+    # cannot fill a generic action (no variable mapping exists), and a review loop has no schedule.
+    hook = out["trigger"]["kind"] == "webhook"
+    loop = out["action"]["kind"] == "forge_review_loop"
+    if hook != loop:
+        raise AutomationError(
+            "a Forgejo webhook starts a review loop, and a review loop is started by a Forgejo "
+            "webhook"
+        )
+    return out
 
 
 def coerce_config(raw: object) -> dict | None:
@@ -622,6 +726,9 @@ def _library_kinds(template: dict) -> dict[str, str]:
 
 
 def message_of(action: dict) -> dict:
+    """The action's message, or ``{}`` for a review loop, whose briefs are BattleLab's own text."""
+    if action["kind"] == "forge_review_loop":
+        return {}
     return action.get("instruction") if action["kind"] == "start_mission" else action["message"]
 
 
@@ -650,11 +757,45 @@ def compute_pins(config: dict) -> dict:
     # keeps its stored pin, read as-is by `scope_of`, and nothing compares it (`pins_drift`).
     if action["kind"] == "start_mission":
         pins["cwd"] = resolve_mission_cwd(action["project_id"])
+    elif action["kind"] == "forge_review_loop":
+        pins["cwd"] = resolve_mission_cwd(action["project_id"])
+        pins["specialist"] = specialist_pin(action["reviewer"])
     elif action["kind"] == "start_session":
         # The folder's IDENTITY, not its spelling: a symlink repointed after consent is a drift,
         # and the launch uses `real` (#1201 review).
         pins["cwd"] = folder_identity(action["folder"])
     return pins
+
+
+def specialist_pin(reviewer: dict) -> dict:
+    """The reviewer specialist VERSION as it is now: what it runs on, and whether it can launch.
+    A specialist edited to a newer version, archived or deleted is a drift (re-approval)."""
+    from . import specialists_store as sstore
+
+    sid, n = reviewer["specialist_id"], int(reviewer["version"])
+    try:
+        v = sstore.version(sid, n)
+    except sstore.NotFound:
+        return {"id": sid, "version": n, "missing": "that specialist version no longer exists"}
+    except sstore.StoreError as e:
+        raise PinsUnavailable(f"the specialist could not be read ({e})") from None
+    try:
+        current = sstore.get(sid)
+    except sstore.StoreError as e:
+        raise PinsUnavailable(f"the specialist could not be read ({e})") from None
+    out = {
+        "id": sid,
+        "version": n,
+        "name": v.get("title") or sid,
+        "engine": v.get("engine"),
+        "model": v.get("model"),
+        "effort": v.get("effort"),
+    }
+    if current.get("archived"):
+        out["missing"] = "that specialist is archived"
+    elif int((current.get("current") or {}).get("version") or n) != n:
+        out["missing"] = "that specialist was edited to a newer version"
+    return out
 
 
 class PinsUnavailable(RuntimeError):
@@ -716,6 +857,9 @@ def pins_drift(stored: dict, current: dict) -> str:
     # the current pins never carry one, and the run no longer uses it.
     if stored.get("cwd") != current.get("cwd"):
         return "the working folder changed since you approved this automation"
+    if stored.get("specialist") != current.get("specialist"):
+        why = (current.get("specialist") or {}).get("missing")
+        return why or "the reviewer specialist changed since you approved this automation"
     return ""
 
 
@@ -795,14 +939,38 @@ def scope_of(config: dict, pins: dict) -> dict:
         }
     elif action["kind"] == "start_session":
         target = {"folder": action["folder"], "cwd": (pins.get("cwd") or {}).get("real")}
+    elif action["kind"] == "forge_review_loop":
+        spec = pins.get("specialist") or {}
+        # EVERY field of a review loop is an equality field of the target: a different repo,
+        # reviewer, round cap or leg is a different grant (stricter than a ladder, #2202).
+        target = {
+            "project_id": action["project_id"],
+            "cwd": (pins.get("cwd") or {}).get("real"),
+            "repo": action["repo"],
+            "reviewer_login": action["reviewer_login"],
+            "specialist": {
+                "id": spec.get("id"),
+                "version": spec.get("version"),
+                "name": spec.get("name"),
+                "effort": spec.get("effort"),
+            },
+            "legs": action["legs"],
+            "max_rounds": action["max_rounds"],
+            "return_to_origin": action["return_to_origin"],
+        }
     else:
         target = {"session_key": action["session_key"]}
+    if action["kind"] == "forge_review_loop":
+        engine = (pins.get("specialist") or {}).get("engine")
+        model_id = (pins.get("specialist") or {}).get("model")
+    else:
+        engine, model_id = action.get("engine"), action.get("model")
     return {
         "version": 1,
         "action": action["kind"],
         "target": target,
-        "engine": action.get("engine"),
-        "model": action.get("model"),
+        "engine": engine,
+        "model": model_id,
         # An automated mission NEVER launches with bypass (Phase 1): the dispatch is called with
         # `bypass_ceiling=False`, so the receipt's `False` is enforced, not merely recorded.
         "bypass": bool(action.get("bypass", False)) if action["kind"] == "start_session" else False,
@@ -828,7 +996,7 @@ def scope_of(config: dict, pins: dict) -> dict:
         or (pins.get("checklist") or {}).get("id"),
         "checklist_default": bool((pins.get("checklist") or {}).get("default")),
         # Phase 3 fields, fixed here so a later phase widens against a real baseline.
-        "webhook": False,
+        "webhook": trigger["kind"] == "webhook",
         "mapped": [],
     }
 
@@ -1060,6 +1228,40 @@ def _message_lines(scope: dict, preview: str | None = None) -> list[str]:
     return out
 
 
+def _review_loop_lines(scope: dict, t: dict) -> list[str]:
+    """A review loop's target, every field of it (#2202)."""
+    spec = t.get("specialist") or {}
+    legs = t.get("legs") or {}
+    caps = t.get("max_rounds") or {}
+    what = []
+    if legs.get("issues"):
+        what.append("issues (opened, reopened, edited)")
+    if legs.get("pulls"):
+        what.append("pull requests (opened, reopened, pushed; drafts skipped)")
+    effort = f" · effort {spec.get('effort')}" if spec.get("effort") else ""
+    lines = [
+        f"Reviews {' and '.join(what) or 'nothing'} in {t.get('repo')}",
+        f"Starts {spec.get('name')} ({spec.get('id')} v{spec.get('version')}{effort}) as an API "
+        f"session in project {t.get('project_id')}, in {t.get('cwd')}",
+        f"Trusts verdicts only from {t.get('reviewer_login')}, and only for a review it started, "
+        "once, for the revision it reviewed",
+    ]
+    if t.get("return_to_origin"):
+        lines.append(
+            "Sends the verdict to the API session that opened the item, if it is in project "
+            f"{t.get('project_id')} (and on the pull request's branch); a terminal session gets "
+            "nothing and you are notified"
+        )
+    else:
+        lines.append("Does not send verdicts to any session")
+    lines.append(
+        f"At most {caps.get('pr')} rounds per pull request and {caps.get('issue')} per issue; "
+        "then one notification"
+    )
+    lines.append("Never posts, merges or labels anything on the forge")
+    return lines
+
+
 def message_preview(config: dict | None) -> str | None:
     """A template action's message, rendered for the consent lines: the body with the automation's
     values and the library's TEXT values filled in, and every secret — typed or from the library —
@@ -1115,15 +1317,27 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
     elif action == "send_to_session":
         lines.append(f"Types into the live session {t.get('session_key')}")
         lines.append("If that session isn't running, the run is refused; nothing is started")
+    elif action == "forge_review_loop":
+        lines.extend(_review_loop_lines(scope, t))
     else:
         lines.append(f"Action: {action} · target {json.dumps(t, sort_keys=True)}")
-    if mission and not scope.get("engine"):
+    review_loop = action == "forge_review_loop"
+    if review_loop:
+        pass  # the specialist's agent and model are in its own lines
+    elif mission and not scope.get("engine"):
         lines.append("The agent is chosen by the mission planner")
     elif action != "start_session" and scope.get("engine"):
         lines.append(f"Agent: {scope['engine']}")
-    if action == "start_session" or scope.get("model"):
+    if review_loop:
+        lines.append(
+            f"Reviewer runs on: {scope.get('engine')} · "
+            f"{scope.get('model') or 'the agent’s default model'}"
+        )
+    elif action == "start_session" or scope.get("model"):
         lines.append(f"Model: {scope.get('model') or 'the agent’s default'}")
-    if scope.get("bypass"):
+    if review_loop and not scope.get("bypass"):
+        lines.append("Permission bypass: off (an API session, never bypassed)")
+    elif scope.get("bypass"):
         lines.append("Permission bypass: ON — unattended, with tool prompts suppressed")
     elif mission:
         lines.append("Permission bypass: off (automated missions never bypass)")
@@ -1163,10 +1377,13 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
                 ),
             }.get(str(scope.get("autonomy")), f"Autonomy: {scope.get('autonomy')}")
         )
-    lines.extend(_message_lines(scope, preview))
+    if not review_loop or scope.get("message"):
+        lines.extend(_message_lines(scope, preview))
     trig = scope.get("trigger")
     if trig in ("schedule", "once"):
         lines.append(_cadence_words(scope.get("cadence"), scope.get("tz")))
+    elif trig == "webhook":
+        lines.append(f"Starts when Forgejo sends a signed event for {t.get('repo')}")
     elif trig == "manual":
         lines.append("Only when you press Run now")
     else:
@@ -1202,7 +1419,7 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         if isinstance(exp, int | float) and not isinstance(exp, bool)
         else ("Runs until you turn it off" if exp is None else f"Stops at {exp!r}")
     )
-    if scope.get("webhook"):
+    if scope.get("webhook") and trig != "webhook":
         lines.append("A webhook can start it")
     if scope.get("mapped"):
         lines.append(f"A webhook can fill: {', '.join(map(str, scope['mapped']))}")

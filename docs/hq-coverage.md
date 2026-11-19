@@ -240,6 +240,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: runs, run detail, origins | GET /api/automations/{aid}/runs, …/runs/{run_id}, …/origins | P4 R |
 | Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
+| Automations: a review loop's webhook secret (make or rotate, shown once) (#2202) | POST /api/automations/{aid}/webhook-secret | **never** (a credential) |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
 | Specialists (#1693): list | GET /api/specialists | have (`list_specialists`, #1910) |
@@ -356,6 +357,7 @@ POST   /api/automations/{aid}/enable                                            
 POST   /api/automations/{aid}/pause                                               P4
 POST   /api/automations/{aid}/resume                                              P4
 POST   /api/automations/{aid}/run                                                 P4
+POST   /api/automations/{aid}/webhook-secret                                      never  # a credential, shown once (#2202)
 GET    /api/automations/{aid}/runs                                                P4
 POST   /api/chat/new                                                              P7
 GET    /api/chat/{sid}                                                            P7
@@ -713,6 +715,7 @@ GET    /api/version                                                             
 GET    /change-password                                                           never  # identity
 POST   /change-password                                                           never  # identity
 GET    /healthz                                                                   n/a  # diagnostics
+POST   /hooks/a/{aid}                                                             n/a  # the forge's signed webhook, not an operator action (#2202)
 GET    /link/approve                                                              never  # identity
 POST   /link/approve                                                              never  # identity
 POST   /link/deny                                                                 never  # identity

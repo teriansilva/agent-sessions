@@ -61,6 +61,8 @@ def test_the_adapter_has_no_write_method_at_all():
         "pull_request",
         "open_pull_heads",  # #1777 S1d: a read (GET …/pulls?state=open), through `_get`
         "pull_by_number",  # #1777 S1d: a read (GET …/pulls/{n}), through `_get`
+        "issue_by_number",  # #2202: a read (GET …/issues/{n}), through `_get`
+        "review_pull",  # #2202: a read (GET …/pulls/{n}), through `_get`; any head repo
         "checks",
         "review",
         "merged",

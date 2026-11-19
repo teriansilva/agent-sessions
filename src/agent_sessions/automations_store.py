@@ -32,7 +32,7 @@ from pathlib import Path
 
 from . import automations as model
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: The claim's refusal when the consent receipt no longer equals the config's scope (a receipt from
 #: before a scope field existed, or a hand edit). Never run; the due check and Run now both flag it
@@ -65,6 +65,10 @@ OUTCOME_CLASS = {
     # Text was typed into the session but not submitted (#1201 review): shown as a failure, but
     # it pauses the automation at once instead of counting toward pause_after_failures.
     "partial": "failed",
+    # A review loop's deliveries (#2202): a verdict or delivery that is stale, unknown or a
+    # duplicate, and a revision past the item's lifetime review cap. Neither is a failure.
+    "ignored": "skipped",
+    "capped": "skipped",
 }
 PARTIAL_REASON = "text was typed but not submitted — check the terminal"
 #: Outcomes that count toward `pause_after_failures` and open a failure episode. `interrupted` is
@@ -160,9 +164,57 @@ CREATE TABLE automation_origins (
 );
 """
 
-#: ``{from_version: step}`` — each step brings a file from that version to the next. Empty at v1;
-#: the backup-then-migrate machinery below is exercised by the tests with a synthetic step.
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+#: The review loop's tables (#2202, schema v2). A fresh file creates them with the v1 schema and
+#: then runs the v1 → v2 step like an existing one, so both paths are the same SQL.
+_SCHEMA_V2 = """
+CREATE TABLE automation_hook_secrets (
+  automation_id TEXT NOT NULL,
+  gen INTEGER NOT NULL,
+  envelope TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  retire_at REAL,
+  PRIMARY KEY (automation_id, gen)
+);
+CREATE TABLE automation_hook_stats (
+  automation_id TEXT PRIMARY KEY,
+  last_at REAL,
+  last_event TEXT NOT NULL DEFAULT '',
+  last_note TEXT NOT NULL DEFAULT '',
+  unsigned_count INTEGER NOT NULL DEFAULT 0,
+  unsigned_since REAL
+);
+CREATE TABLE automation_review_items (
+  automation_id TEXT NOT NULL,
+  item TEXT NOT NULL,
+  reviews INTEGER NOT NULL DEFAULT 0,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY (automation_id, item)
+);
+CREATE TABLE automation_review_records (
+  id TEXT PRIMARY KEY,
+  automation_id TEXT NOT NULL,
+  item TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  run_id TEXT NOT NULL,
+  session_key TEXT,
+  state TEXT NOT NULL,
+  verdict TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  accepted_at REAL
+);
+CREATE INDEX automation_review_records_by_item ON automation_review_records(automation_id, item);
+"""
+
+
+def _to_v2(con: sqlite3.Connection) -> None:
+    for stmt in _SCHEMA_V2.split(";"):
+        if stmt.strip():
+            con.execute(stmt)
+
+
+#: ``{from_version: step}`` — each step brings a file from that version to the next.
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2}
 
 
 class StoreError(RuntimeError):
@@ -280,9 +332,9 @@ def _migrate(p: Path) -> None:
                 for stmt in _SCHEMA.split(";"):
                     if stmt.strip():
                         con.execute(stmt)
-            else:
-                for v in range(now_v, SCHEMA_VERSION):
-                    _MIGRATIONS[v](con)
+                now_v = 1
+            for v in range(now_v, SCHEMA_VERSION):
+                _MIGRATIONS[v](con)
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             con.execute("COMMIT")
         except BaseException:
@@ -534,7 +586,15 @@ def delete(aid: str, *, expect_revision: int | None = None) -> None:
             "(SELECT id FROM automation_runs WHERE automation_id=?)",
             (aid,),
         )
-        for table in ("automation_runs", "automation_claims", "automation_watermarks"):
+        for table in (
+            "automation_runs",
+            "automation_claims",
+            "automation_watermarks",
+            "automation_hook_secrets",
+            "automation_hook_stats",
+            "automation_review_items",
+            "automation_review_records",
+        ):
             con.execute(f"DELETE FROM {table} WHERE automation_id=?", (aid,))  # noqa: S608
         con.execute("DELETE FROM automations WHERE id=?", (aid,))
 
@@ -1054,3 +1114,354 @@ def prune_runs(
             con.execute("DELETE FROM automation_run_steps WHERE run_id=?", (rid,))
             con.execute("DELETE FROM automation_runs WHERE id=?", (rid,))
         return len(doomed)
+
+
+# ---- the review loop's webhook (#2202) -----------------------------------------------------------
+#
+# Read `docs/invariants/forge-review-loop.md`. The webhook secret is stored ONLY as an AES-GCM
+# envelope (`template_secrets.encrypt`, AAD = ``automation-webhook:<id>:<gen>``); its plaintext is
+# returned once, by the call that made it, and decrypted again only to verify a delivery.
+
+#: How long a rotated-out secret keeps verifying deliveries, so the forge can be updated.
+SECRET_OVERLAP_S = 24 * 3600
+#: The unsigned-delivery counter's window.
+UNSIGNED_WINDOW_S = 24 * 3600
+
+
+def _secret_aad(aid: str, gen: int) -> str:
+    return f"automation-webhook:{aid}:{gen}"
+
+
+def new_hook_secret(aid: str, *, now: float | None = None) -> str:
+    """Make a new webhook secret for ``aid`` and return its plaintext — the ONLY time it is shown.
+
+    An existing current secret is retired with a `SECRET_OVERLAP_S` grace (rotation); secrets
+    already past their grace are deleted."""
+    import secrets as _secrets
+
+    from . import template_secrets
+
+    ts = time.time() if now is None else now
+    plaintext = _secrets.token_hex(32)
+    with _tx() as con:
+        row = _get(con, aid)
+        if (row["config"] or {}).get("trigger", {}).get("kind") != "webhook":
+            raise StoreError("only a webhook automation has a webhook secret", 409)
+        con.execute(
+            "DELETE FROM automation_hook_secrets WHERE automation_id=? AND retire_at IS NOT NULL "
+            "AND retire_at<=?",
+            (aid, ts),
+        )
+        con.execute(
+            "UPDATE automation_hook_secrets SET retire_at=? WHERE automation_id=? AND "
+            "retire_at IS NULL",
+            (ts + SECRET_OVERLAP_S, aid),
+        )
+        gen = int(
+            con.execute(
+                "SELECT COALESCE(MAX(gen), 0) + 1 FROM automation_hook_secrets WHERE "
+                "automation_id=?",
+                (aid,),
+            ).fetchone()[0]
+        )
+        try:
+            env = template_secrets.encrypt(_secret_aad(aid, gen), plaintext)
+        except template_secrets.SecretKeyUnavailable as e:
+            raise StoreError(f"the secret could not be stored ({e})", 503) from None
+        con.execute(
+            "INSERT INTO automation_hook_secrets (automation_id, gen, envelope, created_at, "
+            "retire_at) VALUES (?,?,?,?,NULL)",
+            (aid, gen, json.dumps(env), ts),
+        )
+    return plaintext
+
+
+def hook_secrets(aid: str, *, now: float | None = None) -> list[str]:
+    """Every secret that verifies a delivery for ``aid`` right now: the current one, and a rotated
+    one inside its grace. An envelope that no longer decrypts (a lost key) verifies nothing."""
+    from . import template_secrets
+
+    ts = time.time() if now is None else now
+    with _read() as con:
+        rows = con.execute(
+            "SELECT gen, envelope FROM automation_hook_secrets WHERE automation_id=? AND "
+            "(retire_at IS NULL OR retire_at>?) ORDER BY gen",
+            (aid, ts),
+        ).fetchall()
+    out = []
+    for r in rows:
+        env = _loads(r["envelope"], None)
+        if not isinstance(env, dict):
+            continue
+        value = template_secrets.decrypt(_secret_aad(aid, int(r["gen"])), env)
+        if value:
+            out.append(value)
+    return out
+
+
+def hook_state(aid: str, *, now: float | None = None) -> dict:
+    """What the setup panel shows: whether a secret exists, a rotation's grace, the last signed
+    delivery and the unsigned counter. Never a secret."""
+    ts = time.time() if now is None else now
+    with _read() as con:
+        cur = con.execute(
+            "SELECT created_at FROM automation_hook_secrets WHERE automation_id=? AND "
+            "retire_at IS NULL",
+            (aid,),
+        ).fetchone()
+        old = con.execute(
+            "SELECT MAX(retire_at) FROM automation_hook_secrets WHERE automation_id=? AND "
+            "retire_at>?",
+            (aid, ts),
+        ).fetchone()[0]
+        st = con.execute(
+            "SELECT * FROM automation_hook_stats WHERE automation_id=?", (aid,)
+        ).fetchone()
+    unsigned = 0
+    if st is not None and st["unsigned_since"] is not None:
+        if ts - float(st["unsigned_since"]) < UNSIGNED_WINDOW_S:
+            unsigned = int(st["unsigned_count"])
+    return {
+        "secret_set": cur is not None,
+        "secret_created_at": cur["created_at"] if cur else None,
+        "previous_valid_until": old,
+        "last_delivery_at": st["last_at"] if st else None,
+        "last_event": st["last_event"] if st else "",
+        "last_note": st["last_note"] if st else "",
+        "unsigned_24h": unsigned,
+    }
+
+
+def note_delivery(aid: str, event: str, note: str, *, now: float | None = None) -> None:
+    """A signed delivery arrived (whether or not it became a run)."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        con.execute(
+            "INSERT INTO automation_hook_stats (automation_id, last_at, last_event, last_note) "
+            "VALUES (?,?,?,?) ON CONFLICT(automation_id) DO UPDATE SET last_at=excluded.last_at, "
+            "last_event=excluded.last_event, last_note=excluded.last_note",
+            (aid, ts, event[:64], note[:300]),
+        )
+
+
+def note_unsigned(aid: str, *, now: float | None = None) -> int:
+    """An unsigned or badly signed delivery for an EXISTING webhook automation: counted in a
+    rolling window. Returns the count in the current window."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        st = con.execute(
+            "SELECT unsigned_count, unsigned_since FROM automation_hook_stats WHERE "
+            "automation_id=?",
+            (aid,),
+        ).fetchone()
+        if (
+            st is None
+            or st["unsigned_since"] is None
+            or ts - st["unsigned_since"] >= (UNSIGNED_WINDOW_S)
+        ):
+            count, since = 1, ts
+        else:
+            count, since = int(st["unsigned_count"]) + 1, float(st["unsigned_since"])
+        con.execute(
+            "INSERT INTO automation_hook_stats (automation_id, unsigned_count, unsigned_since) "
+            "VALUES (?,?,?) ON CONFLICT(automation_id) DO UPDATE SET "
+            "unsigned_count=excluded.unsigned_count, unsigned_since=excluded.unsigned_since",
+            (aid, count, since),
+        )
+    return count
+
+
+def record_delivery(
+    aid: str, *, slot: str, outcome: str, reason: str, inputs: dict, now: float | None = None
+) -> dict | None:
+    """A signed delivery that becomes a FINISHED run without an effect (``rejected`` → refused,
+    ``ignored``): claimed under ``slot`` when one is given, so a re-sent delivery records nothing
+    twice. Returns the run, or None when the slot was already claimed or the automation can't run.
+    """
+    res = begin_run(aid, trigger="webhook", slot=slot, fire_at=None, now=now, force_skip=reason)
+    run = res.get("run")
+    if not res["claimed"] or run is None:
+        return None
+    with _tx() as con:
+        con.execute(
+            "UPDATE automation_runs SET outcome=?, reason=?, inputs=?, counts=? WHERE id=?",
+            (outcome, reason[:1000], json.dumps(inputs), 0, run["id"]),
+        )
+        if outcome in FAILURE_OUTCOMES:
+            _settle(con, aid, run["id"], outcome)
+        _step(con, run["id"], outcome, reason)
+        return _run(
+            con.execute("SELECT * FROM automation_runs WHERE id=?", (run["id"],)).fetchone()
+        )
+
+
+def begin_review(
+    aid: str,
+    *,
+    slot: str,
+    repo: str,
+    item: str,
+    revision: str,
+    expect_revision: int,
+    inputs: dict,
+    now: float | None = None,
+) -> dict:
+    """The review leg's dispatch admission (#2202) — ONE transaction, before any launch.
+
+    **Bound to the configuration the delivery was classified against**: ``expect_revision`` is the
+    automation revision the caller read before its forge check. If the automation changed since
+    (another repo, leg or cap, even with fresh consent), nothing is claimed and the answer carries
+    ``stale_config`` so the caller classifies the delivery again against the current one. The cap
+    is read from THIS transaction's configuration, never passed in.
+
+    Then it claims ``slot``, re-reads the consent / pause / expiry / daily cap / concurrency like
+    every run (`_eligibility`), and:
+
+    * the item's lifetime review count (keyed by repository AND item) is below the cap → the count
+      is incremented, older open records of the item are superseded, a ``dispatched`` review record
+      is written and the run is recorded ``dispatching`` with that record in its inputs;
+    * at the cap → the run is recorded ``capped`` (finished, not counted) and nothing launches.
+
+    A daily-cap or concurrency SKIP records the run WITHOUT consuming the claim, so the forge's
+    redeliver can still deliver it. Returns ``{"run", "claimed", "reason", "record", "round"}``."""
+    from .review_loop import item_key
+
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        row = _get(con, aid)
+        config = row["config"] or {}
+        action = config.get("action") or {}
+        if (
+            row["revision"] != expect_revision
+            or action.get("kind") != "forge_review_loop"
+            or str(action.get("repo", "")).lower() != repo.lower()
+        ):
+            return {
+                "run": None,
+                "claimed": False,
+                "stale_config": True,
+                "reason": "the automation changed while the delivery was being checked",
+            }
+        kind = item.partition("#")[0]
+        cap = int((action.get("max_rounds") or {}).get(kind) or 0)
+        key = item_key(repo, item)
+        if con.execute(
+            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
+        ).fetchone():
+            return {"run": None, "claimed": False, "reason": "this revision was already reviewed"}
+        verdict, reason = _eligibility(con, row, manual=False, now=ts)
+        if verdict == "no":
+            return {"run": None, "claimed": False, "reason": reason}
+        run_id = uuid.uuid4().hex
+        scope = {
+            "config": row["config"],
+            "pins": row["pins"],
+            "consented_scope": row["consented_scope"],
+            "consented_at": row["consented_at"],
+            "revision": row["revision"],
+        }
+
+        def insert(state: str, outcome: str, why: str, counts: int, run_inputs: dict) -> dict:
+            con.execute(
+                "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, "
+                "catch_up, covered, state, outcome, reason, scope, inputs, counts, owner, "
+                "created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    run_id,
+                    aid,
+                    "webhook",
+                    slot,
+                    None,
+                    0,
+                    1,
+                    state,
+                    outcome,
+                    why,
+                    json.dumps(scope),
+                    json.dumps(run_inputs),
+                    counts,
+                    owner_token() if state == "dispatching" else "",
+                    ts,
+                    None if state == "dispatching" else ts,
+                ),
+            )
+            _step(con, run_id, outcome or "claimed", why or f"{item} at {revision}")
+            got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+            return _run(got)
+
+        if verdict == "skip":
+            # Recorded, NOT claimed: the delivery may come again (redeliver) and then run.
+            run = insert("done", "skipped", reason, 0, inputs)
+            return {"run": run, "claimed": False, "reason": reason}
+        con.execute(
+            "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
+            "VALUES (?,?,?,?,?)",
+            (aid, slot, None, ts, run_id),
+        )
+        done = con.execute(
+            "SELECT reviews FROM automation_review_items WHERE automation_id=? AND item=?",
+            (aid, key),
+        ).fetchone()
+        reviews = int(done["reviews"]) if done else 0
+        if reviews >= cap:
+            why = f"{item} has had {reviews} of {cap} reviews; no review started for {revision}"
+            run = insert("done", "capped", why, 0, {**inputs, "reviews": reviews, "cap": cap})
+            return {"run": run, "claimed": True, "reason": why, "capped": True}
+        n = reviews + 1
+        con.execute(
+            "INSERT INTO automation_review_items (automation_id, item, reviews, updated_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(automation_id, item) DO UPDATE SET "
+            "reviews=excluded.reviews, updated_at=excluded.updated_at",
+            (aid, key, n, ts),
+        )
+        con.execute(
+            "UPDATE automation_review_records SET state='superseded' WHERE automation_id=? AND "
+            "item=? AND state='dispatched'",
+            (aid, key),
+        )
+        record = uuid.uuid4().hex[:24]
+        con.execute(
+            "INSERT INTO automation_review_records (id, automation_id, item, revision, round, "
+            "run_id, session_key, state, created_at) VALUES (?,?,?,?,?,?,NULL,'dispatched',?)",
+            (record, aid, key, revision, n, run_id, ts),
+        )
+        run = insert(
+            "dispatching",
+            "",
+            "",
+            1,
+            {**inputs, "record": record, "round": n, "cap": cap},
+        )
+        return {"run": run, "claimed": True, "reason": "", "record": record, "round": n}
+
+
+def set_review_session(record: str, key: str) -> None:
+    with _tx() as con:
+        con.execute("UPDATE automation_review_records SET session_key=? WHERE id=?", (key, record))
+
+
+def review_records(aid: str, item: str | None = None) -> list[dict]:
+    """``item`` is the durable key (`review_loop.item_key`), or None for every record."""
+    with _read() as con:
+        if item is None:
+            rows = con.execute(
+                "SELECT * FROM automation_review_records WHERE automation_id=? ORDER BY "
+                "created_at",
+                (aid,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM automation_review_records WHERE automation_id=? AND item=? "
+                "ORDER BY created_at",
+                (aid, item),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def review_count(aid: str, item: str) -> int:
+    with _read() as con:
+        r = con.execute(
+            "SELECT reviews FROM automation_review_items WHERE automation_id=? AND item=?",
+            (aid, item),
+        ).fetchone()
+    return int(r["reviews"]) if r else 0

@@ -104,6 +104,7 @@ from .routes import federation as federation_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
+from .routes import hooks as hooks_routes
 from .routes import hq_dispatches as hq_dispatches_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
@@ -578,6 +579,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # Automations stop FIRING first, then drain the runs already started (their outcome is
             # recorded honestly, `interrupted` when it cannot be known), while their paths are up.
             with contextlib.suppress(Exception):
+                await hooks_routes.drain()
+            with contextlib.suppress(Exception):
                 await automation_loop.stop()
             # FIRST: a streamed mission turn whose reader has left belongs to no request, so the
             # server's wait for requests in flight does not cover it (#1224). Let it settle while
@@ -900,6 +903,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
     )
+    # The review loop's Forgejo webhook (#2202): NO cookie, CSRF or Origin — it authenticates
+    # itself by the delivery's HMAC signature and answers one uniform 404 otherwise.
+    hooks_routes.register(app, registry=registry)
     # The specialist pool (#1693, #1613 P3): same auth surface; grades derived at read.
     specialists_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Federation (#1246): the operator's pairing API, and `WS /ws/fed`, which authenticates

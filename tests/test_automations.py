@@ -233,9 +233,13 @@ def test_cadence_vocabulary_is_closed():
         )
     with pytest.raises(model.AutomationError, match="no cron"):
         model.validate_trigger({"kind": "schedule", "cadence": {"kind": "*/5 * * * *"}})
-    for reserved in ("loop", "webhook"):
-        with pytest.raises(model.AutomationError, match="not available yet"):
-            model.validate_trigger({"kind": reserved})
+    with pytest.raises(model.AutomationError, match="not available yet"):
+        model.validate_trigger({"kind": "loop"})
+    # The webhook trigger landed narrowed (#2202): Forgejo's scheme only.
+    with pytest.raises(model.AutomationError, match="needs scheme"):
+        model.validate_trigger({"kind": "webhook"})
+    with pytest.raises(model.AutomationError, match="scheme must be one of"):
+        model.validate_trigger({"kind": "webhook", "scheme": "github"})
     with pytest.raises(model.AutomationError, match="IANA"):
         model.validate_trigger(
             {"kind": "schedule", "cadence": {"kind": "daily", "time": "03:00"}, "tz": "Mars/Base"}
@@ -294,14 +298,15 @@ def test_an_existing_store_is_backed_up_before_its_first_migration(monkeypatch):
         applied.append(1)
         con.execute("ALTER TABLE automations ADD COLUMN future TEXT")
 
-    monkeypatch.setattr(store, "SCHEMA_VERSION", 2)
-    monkeypatch.setitem(store._MIGRATIONS, 1, step)
+    current = store.SCHEMA_VERSION
+    monkeypatch.setattr(store, "SCHEMA_VERSION", current + 1)
+    monkeypatch.setitem(store._MIGRATIONS, current, step)
     assert store.get(aid)["id"] == aid
     assert applied == [1]
-    backups = list(store.db_path().parent.glob("automations.db.bak-v1-*"))
+    backups = list(store.db_path().parent.glob(f"automations.db.bak-v{current}-*"))
     assert len(backups) == 1
     con = sqlite3.connect(backups[0])
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert con.execute("PRAGMA user_version").fetchone()[0] == current
     assert con.execute("SELECT id FROM automations").fetchone()[0] == aid
     con.close()
 
@@ -1665,7 +1670,8 @@ def test_no_automation_route_exposes_a_parameter_as_request_input(auth_cfg):
         ]
         assert exposed == [], (route.path, exposed)
         assert {p.name for p in flat.path_params} <= {"aid", "run_id"}, route.path
-    assert seen == 13  # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs
+    # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs, webhook-secret
+    assert seen == 14
 
 
 def test_a_repointed_session_folder_is_refused_and_needs_reapproval(session_env):

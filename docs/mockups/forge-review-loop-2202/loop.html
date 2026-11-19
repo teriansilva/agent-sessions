@@ -1,0 +1,113 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#2202 · Forgejo review loop</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#2202 · Forgejo review loop</h1>
+<p class="sub">Missions → Automations. Frames 1–4: the editor with the new trigger and action, the webhook setup panel, the consent lines, and the run history with every outcome a delivery can have. Example repo, logins and sessions are synthetic.</p>
+<div class="board">
+
+<div><div class="label">1 · EDITOR — TRIGGER "FORGEJO WEBHOOK", ACTION "REVIEW LOOP"</div>
+<section class="frame">
+ <div class="mhead"><b>Review loop · example-org/shop</b><span class="tag">draft</span></div>
+ <div class="body">
+  <div class="sec">When</div>
+  <div class="seg"><b>Once</b><b>Schedule</b><b>Manual</b><b class="on">Forgejo webhook</b></div>
+  <div class="sec">Do</div>
+  <div class="seg"><b>Start mission</b><b>Start session</b><b>Send</b><b class="on">Review loop</b></div>
+  <div class="row"><span>Project</span><div class="in sel">shop</div></div>
+  <div class="row"><span>Repository</span><div class="in">example-org/shop</div></div>
+  <div class="row"><span>Reviewer specialist</span><div class="in sel">Shop Reviewer v3 · opencode API · Senior</div></div>
+  <div class="row"><span>Reviewer account</span><div class="in">shop-reviewer-bot</div></div>
+  <p class="hint">Only specialists on an API client are offered: nothing unattended drives a terminal. The specialist posts its verdict with its own forge credentials; BattleLab only starts it and never writes to the forge.</p>
+  <div class="sec">Review</div>
+  <div class="chk"><span class="box on">✓</span>Issues — when opened or edited</div>
+  <div class="chk"><span class="box on">✓</span>Pull requests — when opened, reopened or pushed (drafts skipped)</div>
+  <div class="sec">Return the verdict</div>
+  <div class="chk"><span class="box on">✓</span>Send the verdict to the API session that opened the issue or pull request</div>
+  <p class="hint">A terminal session gets nothing: you are notified instead, with a link to it.</p>
+  <div class="row"><span>Reviews per pull request</span><div class="in sel">4</div></div>
+  <div class="row"><span>Reviews per issue</span><div class="in sel">5</div></div>
+  <p class="hint">Counted over the item's whole life. After the last one, no review starts and you get one notification. Each review first checks the item's current revision on your forge (Settings → Forge).</p>
+  <div class="acts"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Save</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">2 · WEBHOOK SETUP — SECRET SHOWN ONCE, EVENTS TO ENABLE ON THE FORGE</div>
+<section class="frame">
+ <div class="mhead"><b>Connect Forgejo</b><span class="tag">waiting for first delivery</span></div>
+ <div class="body">
+  <div class="row"><span>Payload URL</span><div class="in">https://battlelab.example.com/hooks/a/rvloop01</div></div>
+  <div class="row"><span>Content type</span><div class="in">application/json</div></div>
+  <div class="secret">
+   <span class="warn">Shown once — copy it now</span>
+   <span class="mono">Secret: 7f3c…(64 hex characters)…e19a</span>
+   <div class="acts"><button class="nj-plate btn ghost">Copy secret</button></div>
+  </div>
+  <div class="sec">Tick these events in the repository's webhook settings</div>
+  <div class="chk"><span class="box on">✓</span>Issues</div>
+  <div class="chk"><span class="box on">✓</span>Issue comment</div>
+  <div class="chk"><span class="box on">✓</span>Pull request</div>
+  <div class="chk"><span class="box on">✓</span>Pull request reviewed</div>
+  <p class="hint">Branch filter: leave empty. If a proxy in front of BattleLab checks logins, let <span class="mono">/hooks/</span> through: the signature is what authenticates a delivery.</p>
+  <div class="sec">Last delivery</div>
+  <div class="rl"><span class="dot d-unk"></span><span class="why">No delivery yet. Use “Test delivery” on the forge: a ping updates this line (it is not a run).</span></div>
+  <div class="acts"><button class="nj-plate btn ghost">Rotate secret</button><button class="nj-plate btn primary">Done</button></div>
+  <p class="ann">After a rotation the old secret keeps working for 24 h, so the forge can be updated without missed deliveries.</p>
+ </div>
+</section></div>
+
+<div><div class="label">3 · CONSENT — SERVER LINES, ONE PER SCOPE FIELD</div>
+<section class="frame">
+ <div class="mhead"><b>Turn on “Review loop · example-org/shop”?</b></div>
+ <div class="body">
+  <ul class="lines">
+   <li>Starts when Forgejo sends a signed event for <b>example-org/shop</b></li>
+   <li>Reviews issues (opened, edited) and pull requests (opened, reopened, pushed; drafts skipped)</li>
+   <li>Starts <b>Shop Reviewer v3</b> (opencode · mimo-v2.6-pro · effort high) in project <b>shop</b> (/srv/work/shop)</li>
+   <li>Trusts verdicts only from <b>shop-reviewer-bot</b></li>
+   <li class="w">Sends the verdict to the API session that opened the item, if it is in project shop and on the pull request's branch; a terminal session gets nothing and you are notified</li>
+   <li>Accepts one verdict per review it started, for the revision it reviewed; anything else is ignored and recorded</li>
+   <li>At most 4 reviews per pull request, 5 per issue, over its whole life; then one notification</li>
+   <li>Reads each item's current revision from your forge (Settings → Forge) before it starts a review or accepts a verdict; if it can't, nothing happens</li>
+   <li>Never posts, merges or labels on the forge</li>
+   <li>At most 48 runs a day · pause after 3 failures · no expiry</li>
+  </ul>
+  <div class="chk"><span class="box on">✓</span>I understand what this automation does unattended</div>
+  <div class="acts"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Turn on</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">4 · RUN HISTORY — EVERY SIGNED DELIVERY ABOUT AN ITEM IS A RUN, WITH ITS REASON</div>
+<section class="frame">
+ <div class="mhead"><b>Runs</b><span class="tag">on</span></div>
+ <div class="body">
+  <ul class="runs">
+   <li class="run"><div class="rl"><span class="dot d-up"></span><span class="o ok">delivered</span><span class="leg">return</span><span class="rd">review 2 / 4</span><span class="t">14:32</span></div>
+    <p class="why">Changes requested on PR #41 at 9c1e2f0 → sent to the session that opened it.</p>
+    <a class="lnk">claude-api · Fix checkout totals</a>
+    <p class="facts">pull_request_review_rejected · delivery 8d2…(recorded, untrusted)</p></li>
+   <li class="run"><div class="rl"><span class="dot d-up"></span><span class="o ok">started</span><span class="leg">review</span><span class="rd">review 2 / 4</span><span class="t">14:21</span></div>
+    <p class="why">PR #41 pushed (head 9c1e2f0, confirmed current on the forge) → Shop Reviewer v3 started.</p>
+    <a class="lnk">opencode · Review PR #41</a></li>
+   <li class="run"><div class="rl"><span class="dot d-unk"></span><span class="o mut">skipped</span><span class="t">14:21</span></div>
+    <p class="why">Already reviewed: PR #41 at 9c1e2f0 (the forge sent the same event twice).</p></li>
+   <li class="run"><div class="rl"><span class="dot d-unk"></span><span class="o mut">ignored</span><span class="leg">return</span><span class="t">14:19</span></div>
+    <p class="why">Stale verdict: it is for PR #41 at 51ab7d3, but the forge says the head is now 9c1e2f0.</p></li>
+   <li class="run"><div class="rl"><span class="dot d-deg"></span><span class="o warn">refused</span><span class="leg">return</span><span class="t">14:05</span></div>
+    <p class="why">The session that opened PR #44 is a terminal session: nothing sent. You were notified with a link to it.</p></li>
+   <li class="run"><div class="rl"><span class="dot d-deg"></span><span class="o warn">refused</span><span class="leg">return</span><span class="t">13:58</span></div>
+    <p class="why">No originating session: issue #39 has no session record, and issues have no branch to match.</p></li>
+   <li class="run"><div class="rl"><span class="dot d-deg"></span><span class="o warn">capped</span><span class="leg">return</span><span class="rd">4 / 4 reviews</span><span class="t">12:10</span></div>
+    <p class="why">PR #37 was pushed again after 4 reviews. No review started; you were notified.</p></li>
+   <li class="run"><div class="rl"><span class="dot d-up"></span><span class="o ok">approved</span><span class="leg">return</span><span class="t">11:47</span></div>
+    <p class="why">Approved on PR #36 at 51ab7d3 → told the session; the loop for that revision ended.</p></li>
+   <li class="run"><div class="rl"><span class="dot d-down"></span><span class="o bad">rejected</span><span class="t">11:02</span></div>
+    <p class="why">The payload names example-org/other, not example-org/shop. Nothing started.</p></li>
+  </ul>
+  <p class="ann">Not runs: deliveries with a missing or wrong signature (same 404 as an unknown URL; counted: “3 unsigned deliveries refused in the last 24 h”) and signed chatter such as a human's comment or a label change (it only updates Last delivery).</p>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>
