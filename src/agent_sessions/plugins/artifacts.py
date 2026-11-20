@@ -23,7 +23,13 @@ from . import budget, feed, storage
 
 MAX_DOWNLOAD = 256 * 1024 * 1024
 MAX_EXPANDED = 512 * 1024 * 1024
-MAX_FILE = 320 * 1024 * 1024  # pinned native Codex is 287,086,056 bytes (#1266)
+# One archive member (#1886). Sized from the largest real member, claude-code-linux-x64's single
+# `package/claude`: 331,362,672 bytes at 2.1.317, 337,814,032 at 2.1.318 (first refused by the old
+# 320 MiB cap), 377,545,232 at 2.1.329 (2026-11-20), roughly +46 MB in two weeks. 480 MiB leaves
+# ~33% over 2.1.329, so expect the next breach around 2026-12; raise it then with fresh numbers.
+# It stays under MAX_EXPANDED, and the 256 MiB download cap binds near ~555 MiB expanded at claude's
+# observed 0.46 compression ratio, so lifting this past ~512 MiB needs MAX_DOWNLOAD to move too.
+MAX_FILE = 480 * 1024 * 1024
 MAX_MEMBERS = 50000
 MAX_METADATA = 16384
 # The download's own ceiling, inside the shared install deadline (`manager.MAX_INSTALL_SECONDS`).

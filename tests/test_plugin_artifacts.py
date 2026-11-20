@@ -204,3 +204,31 @@ def test_total_download_deadline_cancels_every_network_phase(monkeypatch, phase)
         assert closed == [True]
     if phase == "redirects":
         assert 1 < len(calls) < 5
+
+
+def _declared(size):
+    """A tar stream whose only member DECLARES ``size`` bytes but carries no payload."""
+    info = tarfile.TarInfo("package/claude")
+    info.size = size
+    return info.tobuf(format=tarfile.GNU_FORMAT)
+
+
+# claude-code-linux-x64's `package/claude`: 337,814,032 bytes at 2.1.318 (the first release the old
+# 320 MiB cap refused, #1886) and 377,545,232 at 2.1.329.
+@pytest.mark.parametrize("size", [320 * 1024 * 1024 + 1, 337_814_032, 377_545_232])
+def test_real_claude_member_sizes_pass_the_member_cap(size):
+    # Only the missing payload is refused: the declared size cleared the member check first.
+    with pytest.raises(artifacts.ArtifactError, match="truncated"):
+        artifacts._preflight(_declared(size))
+
+
+def test_a_member_over_the_cap_is_still_refused_from_its_header():
+    with pytest.raises(artifacts.ArtifactError, match="member limits"):
+        artifacts._preflight(_declared(artifacts.MAX_FILE + 1))
+
+
+def test_member_cap_keeps_headroom_and_stays_inside_the_archive_caps():
+    largest_seen = 377_545_232  # claude 2.1.329, 2026-11-20 (#1886)
+    assert artifacts.MAX_FILE >= largest_seen * 1.25
+    assert artifacts.MAX_FILE < artifacts.MAX_EXPANDED
+    assert artifacts.MAX_DOWNLOAD < artifacts.MAX_EXPANDED
