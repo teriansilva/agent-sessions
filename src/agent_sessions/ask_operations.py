@@ -914,7 +914,8 @@ async def facts_for(
         from . import ask_secrets
 
         return await ask_secrets.facts(op, target, app, operator)
-    if op.group == "team":  # a mission's team (#1950): title, plan revision, the picks (#2126)
+    if op.group == "team":  # a mission's team (#1950): title, plan revision, the bound team and
+        # its rows (#2126, #2130)
         from . import ask_team
 
         return await ask_team.facts(target, fields, app, operator)
@@ -923,6 +924,17 @@ async def facts_for(
 
         return await asyncio.to_thread(ask_secrets.attachment_facts, cid, target)
     return {}
+
+
+def lift_display(facts: dict | None) -> tuple[dict | None, dict | None]:
+    """`(facts, display)`: an operation's display-only payload (#2130: an `assemble` card's team
+    rows) split off its facts. It is stored on the entry beside them, never in them, so it never
+    binds, is never compared at the tap (`changed`) and is never sent with the request."""
+    if not isinstance(facts, dict) or "display" not in facts:
+        return facts, None
+    facts = dict(facts)
+    display = facts.pop("display")
+    return facts, display if isinstance(display, dict) else None
 
 
 def binding(op_id: str, target: str, fields: dict, facts: dict, draft: str = "") -> str:
@@ -1103,19 +1115,67 @@ def folder_choices(pid: str) -> list[str]:
     return _folder_choices(row)
 
 
+def shown_display(row: dict) -> dict | None:
+    """The card's stored display as it may be SHOWN NOW (#2130, Hermes on #2226): re-admitted at
+    READ time against the secrets registered now (`ask_store._admit_display`, the store boundary's
+    own check), so a secret registered after staging is withheld on the very next read, not at
+    the conversation's next write. None when there is none, when it must be withheld, or when the
+    secret set cannot be established (fail closed: the rows are not shown)."""
+    display = row.get("display")
+    if not isinstance(display, dict):
+        return None
+    from . import ask_store, template_secrets
+
+    try:
+        secrets = template_secrets.redaction_values()
+        return ask_store._admit_display(display, secrets, fresh=False)
+    except (template_secrets.RedactionUnavailable, ask_store.StoreRefused, ValueError):
+        return None
+
+
+def team_hidden(row: dict, shown: object = ...) -> bool:
+    """An `assemble` card whose team it can no longer show (#2130): it binds a team digest
+    (staged after #2126), names no picks in its sentence (staged after #2130) and its rows are
+    withheld (`shown_display`: a secret registered since, on this read or a stored withholding).
+    Such a card would confirm a team the operator cannot see, so it offers no Confirm and its tap
+    settles it stale. A card staged before #2126 (no digest) or #2130 (its stored sentence names
+    the picks) is unaffected. `shown`: the caller's `shown_display(row)`, when it has it."""
+    facts = row.get("facts") or {}
+    if not (
+        row.get("op") == "team.assemble"
+        and isinstance(facts.get("team"), str)
+        and not facts.get("picks")
+    ):
+        return False
+    return (shown_display(row) if shown is ... else shown) is None
+
+
+TEAM_HIDDEN = "its team can no longer be shown on the card; ask HQ to propose it again"
+
+
 def view(row: dict) -> dict:
     """What the card may show and offer — nothing the decide route would refuse."""
     state = row.get("state")
+    shown = shown_display(row)  # re-admitted on THIS read (Hermes on #2226)
+    hidden = team_hidden(row, shown)
     out = {
         "state": state,
         "summary": row.get("outcome") or "",
         "reason": row.get("reason") or "",
-        "can_confirm": state == PENDING or _resumable(row),
+        "can_confirm": (state == PENDING or _resumable(row)) and not hidden,
         "can_dismiss": state == PENDING,
     }
+    if state == PENDING and hidden:
+        out["reason"] = TEAM_HIDDEN  # why Confirm is gone, before anyone taps
     if state == PENDING and row.get("op") in _PICK_FROM_PROJECT:
         out["choices"] = {"folder": _folder_choices(row)}
     op = CATALOG.get(row.get("op") or "")
+    if shown is not None and isinstance(shown.get("team"), list):
+        # An `assemble` card's team as it was STAGED (#2130), whatever the card's state: a stale
+        # card keeps these rows and is not confirmable; today's team is never shown here. Only
+        # what passes the store boundary NOW is shown.
+        out["team"] = shown["team"]
+        out["team_revision"] = shown.get("revision")
     if op is not None and op.draft:
         # The card fetches what it shows from the content route (#1611), never from this poll.
         out["content"] = True
@@ -1228,7 +1288,7 @@ async def stage(
             raise Refused(
                 f"refused: the {k} contains a secret or looks like a credential", "credential"
             )
-    facts = await facts_for(op, target, fields, app, operator, cid=cid)
+    facts, display = lift_display(await facts_for(op, target, fields, app, operator, cid=cid))
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
     if expected is not None and changed(expected, facts):
@@ -1324,6 +1384,8 @@ async def stage(
         "facts": facts,
         "title": shown,
     }
+    if display is not None:
+        entry["display"] = display
     try:
         await asyncio.to_thread(ask_proposals.add, cid, entry)
     except ask_store.Withheld:
@@ -1532,11 +1594,16 @@ async def _run(
     outcome: dict
     try:
         try:
-            now = await facts_for(op, row["target"], row["fields"], app, operator, cid=cid)
+            now, _ = lift_display(
+                await facts_for(op, row["target"], row["fields"], app, operator, cid=cid)
+            )
             why = changed(row["facts"], now)
             if why and (extras or {}).get("_resumed"):
                 why, now = "", row["facts"]
-            if why:
+            if not why and team_hidden(row):
+                # Never confirm a team the card cannot show (#2130).
+                outcome = {"state": STALE, "reason": f"{TEAM_HIDDEN}; nothing ran"}
+            elif why:
                 outcome = {"state": STALE, "reason": f"{why} since this was proposed; nothing ran"}
             else:
                 fields = {**row["fields"], **(extras or {})}

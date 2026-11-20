@@ -1342,6 +1342,104 @@ def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
     return out
 
 
+#: An `assemble` card's display rows (#2130): at most one per step a plan can hold —
+#: `mission_plan_document.MAX_OBJECTIVES` × `playbooks.schema.MAX_STEPS` (pinned by a test).
+TEAM_ROWS_MAX = 600
+TEAM_ROW_STATES = frozenset({"assembled", "kept", "unassigned"})
+_TEAM_STEP_RE = re.compile(r"\Ao[1-9][0-9]?\.[a-z][a-z0-9_-]{0,31}\Z")  # mission_team.STEP_ID_RE
+_TEAM_SPEC_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,47}\Z")  # specialists_store.ID_RE
+_TEAM_ENGINE_RE = re.compile(r"\A[a-z][a-z0-9_-]{0,63}\Z")
+_TEAM_MODEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}\Z")  # manifest._MODEL_ID_RE
+_TEAM_REASON_MAX = 200  # mission_team.REASON_MAX
+
+
+def _admit_display(raw: object, secrets: list[str], *, fresh: bool) -> dict | None:
+    """An operation's display-only payload (#2130): `{revision, team: [row…]}` — the rows of the
+    team an `assemble` card was STAGED with, in plan order. Its own validator, so the scalar
+    facts stay scalar. Never executable: the tap builds its request from fields and facts only.
+
+    EVERY string in it goes through the store boundary after its own shape check (Hermes on
+    #2226: an identifier grammar does not exclude a registered secret's value). The identifiers
+    are checked against the REGISTERED secrets (`template_secrets.redact_text`, the boundary's
+    first half): they are server-validated against strict grammars, and the boundary's
+    credential-SHAPE heuristic, meant for free text, flags real ids (`claude-opus-4-5-20251101`).
+    An unassigned step's `reason`, free text, gets the whole boundary (`guard_text`). A NEW card
+    whose display the boundary would change is refused (`Withheld`), never stored altered. A
+    STORED one (a secret registered after staging) is WITHHELD whole: None, so the card shows its
+    sentence and no rows — never the value, and never an identifier rewritten into another — and,
+    its team hidden, offers no Confirm (`ask_operations.team_hidden`). That happens at the
+    conversation's next sidecar write AND on every read before it: the view re-admits the stored
+    display through this function (`ask_operations.shown_display`, Hermes on #2226)."""
+    if not isinstance(raw, dict) or set(raw) != {"revision", "team"}:
+        raise ValueError("malformed operation display")
+    rev, team = raw["revision"], raw["team"]
+    if not (type(rev) is int and 0 < rev < 10**9):
+        raise ValueError("malformed operation display revision")
+    if not isinstance(team, list) or len(team) > TEAM_ROWS_MAX:
+        raise ValueError("malformed operation display team")
+    changed = False
+
+    def flag(out: str, value: str) -> str:
+        nonlocal changed
+        if out != value:
+            if fresh:
+                raise Withheld("the team contains a secret or looks like a credential")
+            changed = True
+        return out
+
+    def ident(value: str) -> str:
+        try:
+            return flag(template_secrets.redact_text(value, secrets), value)
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+
+    def text(value: str, cap: int) -> str:
+        return flag(guard_text(value, cap, secrets=secrets), value)
+
+    rows: list[dict] = []
+    for r in team:
+        if not isinstance(r, dict) or r.get("state") not in TEAM_ROW_STATES:
+            raise ValueError("malformed team row")
+        step = r.get("step")
+        if not (isinstance(step, str) and _TEAM_STEP_RE.match(step)):
+            raise ValueError("malformed team row step")
+        if r["state"] == "unassigned":
+            if set(r) != {"step", "state", "reason"} or not isinstance(r["reason"], str):
+                raise ValueError("malformed unassigned team row")
+            rows.append(
+                {
+                    "step": ident(step),
+                    "state": "unassigned",
+                    "reason": text(r["reason"], _TEAM_REASON_MAX),
+                }
+            )
+            continue
+        keys = {"step", "state", "specialist", "version", "engine", "model"}
+        if (
+            set(r) != keys
+            or not (isinstance(r["specialist"], str) and _TEAM_SPEC_RE.match(r["specialist"]))
+            or not (type(r["version"]) is int and 0 < r["version"] < 10**9)
+            # Empty when the pick's specialist version is gone (an archived kept pick).
+            or not (
+                isinstance(r["engine"], str)
+                and (r["engine"] == "" or _TEAM_ENGINE_RE.match(r["engine"]))
+            )
+            or not (isinstance(r["model"], str) and _TEAM_MODEL_RE.match(r["model"]))
+        ):
+            raise ValueError("malformed team row pick")
+        rows.append(
+            {
+                "step": ident(step),
+                "state": r["state"],
+                "specialist": ident(r["specialist"]),
+                "version": r["version"],
+                "engine": ident(r["engine"]) if r["engine"] else "",
+                "model": ident(r["model"]),
+            }
+        )
+    return None if changed else {"revision": rev, "team": rows}
+
+
 def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: bool) -> dict:
     """One HQ operation entry (#1559). Method, path and body are never stored: the catalog rebuilds
     them at the tap, so this shape cannot name a route."""
@@ -1379,6 +1477,10 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         "outcome": guard_text(e.get("outcome") or "", OP_SUMMARY_MAX, secrets=secrets),
         "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
     }
+    if e.get("display") is not None:
+        display = _admit_display(e["display"], secrets, fresh=fresh)
+        if display is not None:
+            out["display"] = display
     for k in ("ts", "decided_at", "settled_at"):
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):

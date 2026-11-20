@@ -452,10 +452,13 @@ def test_the_assemble_card_quotes_the_assemblers_team_and_the_tap_writes_exactly
     assert all(p["model"].startswith("claude-api · ") for p in result["team"]["assembled"])
     (card,) = [p for t in live.get(cid)["turns"] for p in t["proposals"]]
     assert card["op"] == "team.assemble"
-    for p in result["team"]["assembled"][:2]:
-        assert f"{p['step']} → {p['specialist']}" in card["text"]
+    # #2130: the card lists the same team as rows (the sentence no longer names picks).
+    rows = {r["step"]: r for r in card["team"]}
+    for p in result["team"]["assembled"]:
+        assert rows[p["step"]]["state"] == "assembled"
+        assert rows[p["step"]]["specialist"] == p["specialist"]
+    assert rows["o1.posting"]["state"] == "kept" and rows["o1.posting"]["specialist"] == kept_id
     assert "the plan or these picks changed" in card["text"]
-    assert "1 already assigned stay" in card["text"]
     assert _revisions(mid) == 2, "staging writes nothing"
     d = live.c.post(
         f"/api/ask/proposals/{card['action_id']}/decide",
@@ -509,21 +512,23 @@ def test_a_pool_change_between_the_two_staging_reads_is_refused_not_bound(live, 
     from agent_sessions import ask_team
 
     mid = _unassembled("Apply between reads")
-    orig = ask_team._dry_run
+    # Both reads go through the one dry run, `_staged` (the tool's via `_dry_run`; the card's
+    # facts directly, for its rows too, #2130).
+    orig = ask_team._staged
     seen: list[dict] = []
 
     def between_reads(mission_id, op):
         out = orig(mission_id, op)
         if op.get("op") == "assemble":
-            seen.append(out)
+            seen.append(out[0])
             if len(seen) == 1:  # the tool's own dry run has run; the staging re-read is next
-                gone = out["assembled"][0]["specialist"]
+                gone = out[0]["assembled"][0]["specialist"]
                 monkeypatch.setattr(
                     team, "snapshot", lambda: context(specs=pool(**{gone.replace("-", "_"): None}))
                 )
         return out
 
-    monkeypatch.setattr(ask_team, "_dry_run", between_reads)
+    monkeypatch.setattr(ask_team, "_staged", between_reads)
     script = ai(
         calls(("list_missions", {})),
         calls(("read_plan", {"mission_id": mid})),
@@ -728,80 +733,37 @@ def test_only_team_changed_makes_a_team_card_stale():
     assert all(o.staged_facts for o in ask_operations.CATALOG.values() if o.group == "team")
 
 
-def test_the_assemble_sentence_names_as_many_picks_as_fit_and_counts_the_rest():
-    from agent_sessions import ask_store, ask_team
+def test_the_assemble_sentence_names_no_picks_the_rows_do():
+    """#2130: the card lists every pick as a row, so its sentence drops the picks clause. A card
+    staged before #2130 keeps its STORED sentence, which `_describe` reproduces from its stored
+    `picks` fact verbatim; nothing is recomputed."""
+    from agent_sessions import ask_team
 
     f = {"op": "assemble", "expected_revision": 1}
-    picks = [
-        {
-            "step": f"o{i}.cover_letter",
-            "specialist": "career-archivist-senior",
-            "version": 1,
-            "model": "m",
-        }
-        for i in range(1, 13)
-    ]
-    big = {
-        "assembled": picks,
-        "kept": [{"step": "o0.intake", "specialist": "s", "version": 1, "model": "m"}],
-        "unassigned": [{"step": "o9.review", "why": "none qualifies"}],
+    small = {
+        "assembled": [
+            {"step": f"o{i}.cover_letter", "specialist": "s", "version": 1, "model": "m"}
+            for i in (1, 2)
+        ],
+        "kept": [],
+        "unassigned": [],
     }
-
-    def facts_of(team: dict) -> dict:
-        return {
-            "title": "Apply",
-            "revision": 1,
-            "team": ask_team.team_digest(team),
-            "picks": ask_team._team_clause(team),
-        }
-
-    text = ask_team._describe(f, facts_of(big))
-    assert len(text) <= ask_operations.SUMMARY_MAX
-    assert len(facts_of(big)["picks"]) <= ask_store.OP_SUMMARY_MAX  # a fact the store admits
-    assert "o1.cover_letter → career-archivist-senior" in text and " more" in text
-    assert "1 already assigned stay" in text and "1 cannot be filled" in text
-    assert "plan revision 1" in text
-    # Few picks: all named, nothing counted.
-    small = {"assembled": picks[:2], "kept": [], "unassigned": []}
-    short = ask_team._describe(f, facts_of(small))
-    assert " more" not in short and "o2.cover_letter → career-archivist-senior" in short
+    text = ask_team._describe(f, {"title": "A", "revision": 1, "team": "0123456789abcdef"})
+    assert text.startswith(
+        "Picks the cheapest qualifying specialist for every agent step that has none (plan "
+        "revision 1)."
+    ), text
+    assert "→" not in text and len(text) <= ask_operations.SUMMARY_MAX
+    legacy = {"title": "A", "revision": 1, "picks": ": o1.cv → s and 3 more"}
+    assert ": o1.cv → s and 3 more (plan revision 1)" in ask_team._describe(f, legacy)
     # The digest is the team: the same picks in another order or a changed pick differ or not.
     assert ask_team.team_digest(small) == ask_team.team_digest(json.loads(json.dumps(small)))
-    other = {**small, "assembled": [{**picks[0], "specialist": "cv-writer"}, picks[1]]}
+    other = {**small, "assembled": [{**small["assembled"][0], "specialist": "cv-writer"}]}
     assert ask_team.team_digest(other) != ask_team.team_digest(small)
     # No team (a dry run the route refused at the tap): the sentence still stands.
     assert ask_team._describe(f, {"title": "A", "revision": 1, "team": None}).startswith(
         "Picks the cheapest"
     )
-    # The worst case stays under the card's cap too: long ids, many kept and unfillable steps.
-    long_picks = [
-        {
-            "step": f"o{i}.cover_letter_for_a_long_step",
-            "specialist": "career-archivist-senior-v9",
-            "version": 1,
-            "model": "m",
-        }
-        for i in range(12)
-    ]
-    worst = {
-        "assembled": long_picks,
-        "kept": [
-            {"step": f"k{i}.intake_step_x", "specialist": "s", "version": 1, "model": "m"}
-            for i in range(10)
-        ],
-        "unassigned": [{"step": f"u{i}.review_step_x", "why": "none"} for i in range(10)],
-    }
-    # One first pick longer than the whole budget is cut, never over it, and says so with "…".
-    huge = {
-        "assembled": [{"step": "o" * 120, "specialist": "s" * 48, "version": 1, "model": "m"}],
-        "kept": [],
-        "unassigned": [],
-    }
-    cut = ask_team._team_clause(huge)
-    assert cut.endswith("…") and len(cut) <= ask_team.TEAM_SHOWN_CHARS + 2, cut
-    worst_text = ask_team._describe(f, facts_of(worst))
-    assert len(worst_text) <= ask_operations.SUMMARY_MAX, len(worst_text)
-    assert "10 already assigned stay" in worst_text and "10 cannot be filled" in worst_text
     # A plan revision that moved before the tap says so, not that the team changed.
     moved = ask_operations.changed({"revision": 1, "team": "a"}, {"revision": 2, "team": "b"})
     assert moved == "it was saved elsewhere after HQ read it", moved

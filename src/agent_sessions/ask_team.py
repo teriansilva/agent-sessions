@@ -41,10 +41,6 @@ _VERB = {
     "set_override": "Use this model",
     "clear_override": "Clear override",
 }
-#: How much of an `assemble` card's sentence its picks may take (#2126): `step → specialist` for
-#: as many as fit, the rest counted — the sentence stays under `ask_operations.SUMMARY_MAX`.
-TEAM_SHOWN_CHARS = 120
-_MORE_RESERVE = 16  # room for " and N more"
 #: The fields of a team operation its dry run takes (`mission_team.parse_op` refuses the rest).
 _PROBE_KEYS = ("op", "operation_id", "expected_revision", "reason", "step", "index", "listing")
 
@@ -68,40 +64,11 @@ def _body(target: str, f: dict, facts: dict) -> tuple[str, str, dict]:
     return "POST", f"/api/missions/{target}/plan/ops", body
 
 
-def _team_clause(team: dict | None) -> str:
-    """The picks an `assemble` card names (#2126): `step → specialist` for each step the server's
-    dry run fills, as many as fit, the rest counted; then what stays and what it cannot fill."""
-    if not team:
-        return ""
-    tail = []
-    if team["kept"]:
-        tail.append(f"{len(team['kept'])} already assigned stay")
-    if team["unassigned"]:
-        tail.append(f"{len(team['unassigned'])} cannot be filled")
-    tail_text = f" ({'; '.join(tail)})" if tail else ""
-    # The picks and the tail share one budget, so the clause stays bounded however many steps.
-    # The "and N more" suffix is reserved too, so the whole clause is at most TEAM_SHOWN_CHARS + 2.
-    budget = TEAM_SHOWN_CHARS - len(tail_text) - _MORE_RESERVE
-    picks = [f"{p['step']} → {p['specialist']}" for p in team["assembled"]]
-    shown: list[str] = []
-    used = 0
-    for pick in picks:
-        if not shown and len(pick) > budget:
-            shown.append(pick[: budget - 1] + "…")  # the first pick is cut, never over budget
-            break
-        if shown and used + len(pick) > budget:
-            break
-        shown.append(pick)
-        used += len(pick) + 2
-    more = len(picks) - len(shown)
-    text = ", ".join(shown) + (f" and {more} more" if more else "")
-    return f": {text}{tail_text}"
-
-
 def _describe(f: dict, facts: dict) -> str:
     rev = f["expected_revision"]
     if f["op"] == "assemble":
         what = "Picks the cheapest qualifying specialist for every agent step that has none"
+        # A card staged before #2130 named its picks here; one that lists them as rows does not.
         what += str(facts.get("picks") or "")
     elif f["op"] == "assign":
         what = f"Puts {f['shown']} on step {f['step']}"
@@ -181,14 +148,19 @@ async def facts(target: str, fields: dict, app, operator) -> dict | None:
         title = str(mission.get("title") or "")[:120]
     out: dict = {"title": title or target, "revision": int(r.body["revision"])}
     if fields.get("op") == "assemble":
-        # Facts hold scalars (`ask_store._admit_values`): the team as its digest (what binds)
-        # and the picks as the card's clause (what shows).
+        # Facts hold scalars (`ask_store._admit_values`): the team as its digest (what binds).
+        # What shows is one row per specialist-eligible step (#2130), from the SAME dry run,
+        # under `display`: lifted out of the facts by `ask_operations.stage` onto the entry, so
+        # it never binds and is never re-read from today's team.
         try:
-            team = await dry_run(target, {k: fields[k] for k in _PROBE_KEYS[:4]})
+            team, rows = await asyncio.to_thread(
+                _staged, target, {k: fields[k] for k in _PROBE_KEYS[:4]}
+            )
         except mission_team.TeamRefused:
             out["team"] = None
         else:
-            out["team"], out["picks"] = team_digest(team), _team_clause(team)
+            out["team"] = team_digest(team)
+            out["display"] = {"revision": out["revision"], "team": rows}
     return out
 
 
@@ -215,19 +187,31 @@ def _preview(before: dict, after: dict, ctx) -> dict:
     that keep their specialist (`kept`) and the agent steps left without one (`unassigned`, with
     the server's own summary). Identifiers and server text only — the card binds it (`facts`) and
     HQ quotes it, so what HQ says is what the tap writes, never its own reading of `read_pool`."""
+    return _preview_rows(before, after, ctx)[0]
+
+
+def _preview_rows(before: dict, after: dict, ctx) -> tuple[dict, list[dict]]:
+    """`_preview`, and from the SAME pass the card's rows (#2130): one per specialist-eligible
+    step (`mission_team.assignable`), in plan order, `{step, state, specialist?, version?,
+    engine?, model?, reason?}` — `state` is `assembled`, `kept` or `unassigned`, and `reason` is
+    the unassigned step's own server summary. The preview itself is unchanged, so the digest a
+    card binds (`team_digest`) is the same as before."""
     from . import mission_team
 
     was = mission_team.assignments_of(before)
     assembled: list[dict] = []
     kept: list[dict] = []
     unassigned: list[dict] = []
+    rows: list[dict] = []
     for row in mission_team.view(after, ctx)["steps"]:
         sid = row["id"]
         a = row.get("assignment")
         if a is None:
             if row.get("unassigned"):
                 why = str(row["unassigned"].get("summary") or "no specialist qualifies")
-                unassigned.append({"step": sid, "why": why[: mission_team.REASON_MAX]})
+                why = why[: mission_team.REASON_MAX]
+                unassigned.append({"step": sid, "why": why})
+                rows.append({"step": sid, "state": "unassigned", "reason": why})
             continue
         eff = (row.get("derived") or {}).get("effective") or {}
         entry = {
@@ -236,12 +220,28 @@ def _preview(before: dict, after: dict, ctx) -> dict:
             "version": a["specialist"]["version"],
             "model": f"{eff.get('engine')} · {eff.get('model') or 'default'}",
         }
-        (kept if was.get(sid) is not None else assembled).append(entry)
-    return {"assembled": assembled, "kept": kept, "unassigned": unassigned}
+        state = "kept" if was.get(sid) is not None else "assembled"
+        (kept if state == "kept" else assembled).append(entry)
+        rows.append(
+            {
+                "step": sid,
+                "state": state,
+                "specialist": entry["specialist"],
+                "version": entry["version"],
+                "engine": str(eff.get("engine") or ""),
+                "model": str(eff.get("model") or "default"),
+            }
+        )
+    return {"assembled": assembled, "kept": kept, "unassigned": unassigned}, rows
 
 
 def _dry_run(mission_id: str, op: dict) -> dict:
     """`dry_run`, blocking."""
+    return _staged(mission_id, op)[0]
+
+
+def _staged(mission_id: str, op: dict) -> tuple[dict, list[dict]]:
+    """ONE dry run: the team it writes (`_preview`) and the card's rows (#2130). Blocking."""
     from . import mission_team, missions
 
     latest = missions.plan_revision(mission_id)
@@ -261,7 +261,7 @@ def _dry_run(mission_id: str, op: dict) -> dict:
     new = mission_team.apply_op(
         doc, parsed, ctx, mission_id=mission_id, revision=latest["revision"]
     )
-    return _preview(doc, new, ctx)
+    return _preview_rows(doc, new, ctx)
 
 
 async def dry_run(mission_id: str, op: dict) -> dict:

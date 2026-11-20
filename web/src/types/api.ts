@@ -1137,6 +1137,21 @@ export type AskSessionDecision = Pick<
   | "can_dismiss"
 >;
 
+/** One step of the team an `assemble` card was STAGED with (#2130): a specialist-eligible agent
+ *  step, in plan order. `assembled`: the pick this tap writes; `kept`: it keeps its specialist;
+ *  `unassigned`: nobody qualifies, with the server's own reason. */
+export type AskTeamRow =
+  | {
+      step: string;
+      state: "assembled" | "kept";
+      specialist: string;
+      version: number;
+      /** Empty when the pick's specialist version is gone. */
+      engine: string;
+      model: string;
+    }
+  | { step: string; state: "unassigned"; reason: string };
+
 /** A change HQ proposed to a session or project (#1559): the server's own wording. What a tap runs
  *  is the server's catalog entry, bound to this card — never anything the client sends but the
  *  decision and the inputs the card asks the OPERATOR for (`needs`, e.g. a folder). */
@@ -1181,6 +1196,11 @@ export interface AskOperationCard {
   choices?: { folder?: string[] };
   /** A Library save (#1611): what it saves is fetched from `askProposalContent`, never polled. */
   content?: boolean;
+  /** An `assemble` card's team as STAGED (#2130), one row per eligible step; absent on a card
+   *  staged before rows (it shows its stored sentence). A stale card keeps these rows. */
+  team?: AskTeamRow[];
+  /** The plan revision the team was staged at. */
+  team_revision?: number | null;
   /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
    *  empty id (a new automation, whose id the route chose) opens the list. */
   library?: { kind: "playbook" | "skill" | "automation" | "secret"; id: string };
@@ -1251,7 +1271,15 @@ export type AskFlowStep = {
 
 export type AskOperationDecision = Pick<
   AskOperationCard,
-  "state" | "summary" | "reason" | "can_confirm" | "can_dismiss" | "choices" | "library"
+  | "state"
+  | "summary"
+  | "reason"
+  | "can_confirm"
+  | "can_dismiss"
+  | "choices"
+  | "library"
+  | "team"
+  | "team_revision"
 >;
 
 /** A message HQ proposes through a messenger connector (#1833): the exact text a tap sends.

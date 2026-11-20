@@ -1358,7 +1358,8 @@ async def _team_propose(turn: _Turn, mid: str, fields: dict) -> tuple[dict, dict
     if fields["op"] == "assemble":
         # The team the card writes, the server's own dry run (#2126): HQ quotes THIS, never its
         # reading of read_pool — on 2026-11-17 its table named another specialist than the
-        # assembler then wrote. The card's sentence names the same picks and binds them.
+        # assembler then wrote. The card binds this team's digest and lists the same team as
+        # rows (#2130).
         content = {**content, "team": team, "team_note": TEAM_NOTE}
     return content, meta
 

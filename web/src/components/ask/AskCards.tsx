@@ -22,6 +22,7 @@ import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
 import type { AskMessageCard } from "../../types/api";
 import type {
+  AskTeamRow,
   AskNudgeCard,
   AskOperationCard,
   AskQuestionCard,
@@ -722,6 +723,9 @@ export function OperationCard({
         <p className={c.lead} data-testid="ask-operation-text">
           {p.text}
         </p>
+        {p.team ? (
+          <TeamRows rows={p.team} stale={p.state === "stale"} revision={p.team_revision ?? null} />
+        ) : null}
         {p.content ? <LibraryContent id={p.action_id} onShown={onShown} /> : null}
         {needsFile && !out ? (
           <div className={c.secretField}>
@@ -1091,6 +1095,108 @@ export function MessageCard({
           <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
           <span className={c.od}>{out.detail}</span>
         </div>
+      )}
+    </div>
+  );
+}
+
+const TEAM_WORD: Record<AskTeamRow["state"], string> = {
+  assembled: "Picked",
+  kept: "Kept",
+  unassigned: "Unassigned",
+};
+/** Past this many rows the list scrolls inside the card, so its actions never move down. */
+const TEAM_SCROLL_AT = 8;
+
+/** An `assemble` card's team (#2130): a count line, then one row per eligible step in plan order,
+ *  as the card was STAGED — never today's team. The state is a marker plus a word, never colour
+ *  alone. Rows are text, not controls; a long list scrolls inside one focusable region that wraps
+ *  the list (the list keeps its own semantics). A STALE card says whose rows these are: the team
+ *  it would write changed, so nothing ran and these are the staged picks, not today's. */
+function TeamRows({
+  rows,
+  stale,
+  revision,
+}: {
+  rows: AskTeamRow[];
+  stale: boolean;
+  revision: number | null;
+}) {
+  const count = (s: AskTeamRow["state"]) => rows.filter((r) => r.state === s).length;
+  const scroll = rows.length > TEAM_SCROLL_AT;
+  const label = stale ? "Staged team" : "Team";
+  const list = (
+    <ol className={c.team} data-testid="ask-team-rows">
+      {rows.map((r, i) => (
+        <li key={r.step} className={c.teamRow} data-testid="ask-team-row" data-state={r.state}>
+          <span className={c.teamN}>{String(i + 1).padStart(2, "0")}</span>
+          <span className={`${c.teamState} ${c[`teamS_${r.state}`] ?? ""}`}>
+            {r.state === "unassigned" ? (
+              <Led tone="att" />
+            ) : (
+              <span className={c.teamMk} aria-hidden="true" />
+            )}
+            {TEAM_WORD[r.state]}
+          </span>
+          <span className={c.teamStep}>{r.step}</span>
+          <span className={c.teamPick}>
+            {r.state === "unassigned" ? (
+              <>
+                <span className={c.teamNone}>No specialist</span>
+                <span className={c.teamWhy}>{r.reason}</span>
+              </>
+            ) : (
+              <>
+                <span className={c.teamSpec}>
+                  {r.specialist}
+                  <span className={c.teamVer}>v{r.version}</span>
+                </span>
+                <span className={c.teamModel}>
+                  {r.engine || "unknown"} · {r.model}
+                </span>
+              </>
+            )}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+  return (
+    <div data-testid="ask-team">
+      {stale ? (
+        <p className={c.staged} data-testid="ask-team-staged">
+          <b>{revision ? `As staged at plan revision ${revision}. ` : "As staged. "}</b>
+          These are the picks this card was proposed with, kept as they were; today&apos;s team is
+          not shown here. Ask HQ to propose it again.
+        </p>
+      ) : null}
+      <div className={c.teamHead} data-testid="ask-team-counts">
+        <span className={c.teamLbl}>{label}</span>
+        <span className={c.teamCnt}>
+          <b>{rows.length}</b> {rows.length === 1 ? "step" : "steps"}
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("assembled")}</b> picked
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("kept")}</b> kept
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("unassigned")}</b> unassigned
+        </span>
+      </div>
+      {scroll ? (
+        <div
+          className={c.teamScroll}
+          tabIndex={0}
+          role="region"
+          aria-label={`${label}, ${rows.length} steps`}
+          data-testid="ask-team-scroll"
+        >
+          {list}
+        </div>
+      ) : (
+        list
       )}
     </div>
   );

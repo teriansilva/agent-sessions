@@ -332,6 +332,170 @@
   color: var(--hud-text);
 }
 
+/* An `assemble` card's team (#2130): the count line, then one row per step in plan order. */
+.teamHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.teamLbl {
+  color: var(--text-3);
+}
+.teamCnt {
+  white-space: nowrap;
+}
+.teamCnt b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.team {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+/* A plan past ~8 rows scrolls INSIDE the card: the card and its actions never grow past it. The
+ * region wraps the list, so the list keeps its own semantics. */
+.teamScroll {
+  max-height: 368px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+/* Focus is the inset reticle (docs/design.md v2 §6), as on the card's other focusables. */
+.teamScroll:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.teamRow {
+  display: grid;
+  grid-template-columns: 22px 104px minmax(0, 1fr) minmax(0, 1.55fr);
+  grid-template-areas: "n st step pick";
+  gap: 2px var(--sp-3);
+  align-items: start;
+  padding: 7px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.teamRow:first-child {
+  border-top: 0;
+}
+.teamN {
+  grid-area: n;
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+/* The state is a marker + a WORD, never colour alone. */
+.teamState {
+  grid-area: st;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.teamMk {
+  flex: none;
+  width: 7px;
+  height: 7px;
+}
+.teamS_assembled {
+  color: var(--hud-text);
+}
+.teamS_assembled .teamMk {
+  background: var(--hud);
+}
+.teamS_kept {
+  color: var(--text-2);
+}
+.teamS_kept .teamMk {
+  border: 1px solid var(--text-2);
+}
+.teamS_unassigned {
+  color: var(--warn-text);
+}
+.teamStep {
+  grid-area: step;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.teamPick {
+  grid-area: pick;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.teamSpec {
+  min-width: 0;
+  font-size: var(--fs-row);
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.teamVer {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.teamModel,
+.teamWhy {
+  min-width: 0;
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.teamModel {
+  font-family: var(--font-mono);
+}
+.teamNone {
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+/* A stale card says whose rows these are, above them. */
+.staged {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--status-degraded);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.staged b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
 /* ≤800px: actions stack full width at the 44px floor; cards take the column. */
 @media (max-width: 800px) {
   .actions {
@@ -343,6 +507,18 @@
   }
   .kv {
     grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .teamRow {
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas: "n st" ". step" ". pick";
+    gap: 3px var(--sp-2);
+    padding: 8px 10px;
+  }
+  .teamPick {
+    margin-top: 2px;
+  }
+  .teamScroll {
+    max-height: 420px;
   }
 }
 /* A followed session's row (#1443 Phase 4): not a state, so a flat HUD square, never an LED. */
