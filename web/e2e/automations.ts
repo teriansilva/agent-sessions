@@ -73,6 +73,29 @@ export function scopeLines(config: Json): string[] {
         : "Permission bypass: off",
     );
     lines.push(messageLine("Message", action.message as Json));
+  } else if (action.kind === "forge_review_loop") {
+    // `automations._review_loop_lines` (#2202), for the configs the review-loop spec uses.
+    const legs = action.legs as Json;
+    const caps = action.max_rounds as Json;
+    const rv = action.reviewer as Json;
+    const what = [
+      legs.issues ? "issues (opened, reopened, edited)" : "",
+      legs.pulls ? "pull requests (opened, reopened, pushed; drafts skipped)" : "",
+    ].filter(Boolean);
+    lines.push(`Reviews ${what.join(" and ") || "nothing"} in ${action.repo}`);
+    lines.push(
+      `Starts Shop Reviewer (${rv.specialist_id} v${rv.version}) as an API session in project ${action.project_id}, in /repo`,
+    );
+    lines.push(
+      `Trusts verdicts only from ${action.reviewer_login}, and only for a review it started, once, for the revision it reviewed`,
+    );
+    lines.push(
+      action.return_to_origin
+        ? `Sends the verdict to the API session that opened the item, if it is in project ${action.project_id} (and on the pull request's branch); a terminal session gets nothing and you are notified`
+        : "Does not send verdicts to any session",
+    );
+    lines.push(`At most ${caps.pr} rounds per pull request and ${caps.issue} per issue; then one notification`);
+    lines.push("Never posts, merges or labels anything on the forge");
   } else {
     lines.push(`Types into the live session ${action.session_key}`);
     lines.push("If that session isn't running, the run is refused; nothing is started");
@@ -81,6 +104,8 @@ export function scopeLines(config: Json): string[] {
   if (trigger.kind === "schedule")
     lines.push(`On a schedule (${trigger.tz}), up to ${policy.max_runs_per_day ?? 48}/day`);
   else if (trigger.kind === "once") lines.push(`Once, at ${trigger.at} (${trigger.tz})`);
+  else if (trigger.kind === "webhook")
+    lines.push(`Starts when Forgejo sends a signed event for ${action.repo}`);
   else lines.push("Only when you press Run now");
   lines.push(`At most ${policy.max_runs_per_day ?? 48} runs a day`);
   lines.push(`Pauses after ${policy.pause_after_failures ?? 3} failures in a row`);
@@ -152,11 +177,29 @@ export function automation(over: Json = {}): Json {
   };
   const out = { ...base, ...over };
   out.scope_lines = over.scope_lines ?? scopeLines(out);
+  // A webhook automation carries its delivery facts (#2202); any other has `webhook: null`.
+  if (!("webhook" in over))
+    out.webhook = (out.trigger as Json).kind === "webhook" ? hookState(String(out.id)) : null;
   // The strip FOLLOWS the stats, as the server's does: a fixture with no runs has fourteen empty
   // days, and one with failures has failed days. A fixed strip painted impossible rows ("never
   // enabled" beside a full strip) and let "paint an empty day green" pass.
   if (!("strip" in over)) out.strip = stripFor(now, out.stats as Stats);
   return out;
+}
+
+/** `routes/automations.public()["webhook"]` before any secret or delivery (#2202). */
+export function hookState(id: string, over: Json = {}): Json {
+  return {
+    path: `/hooks/a/${id}`,
+    secret_set: false,
+    secret_created_at: null,
+    previous_valid_until: null,
+    last_delivery_at: null,
+    last_event: "",
+    last_note: "",
+    unsigned_24h: 0,
+    ...over,
+  };
 }
 
 type Stats = { ok: number; failed: number; skipped: number; pending: number; runs: number };
@@ -438,6 +481,26 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
       if (verb === "disable") Object.assign(a, { enabled: false, paused: false, state: "off", next_run: null });
       return changed(a);
     }
+    if (verb === "webhook-secret" && method === "POST") {
+      // `automations_store.new_hook_secret` (#2202): a fresh 64-hex secret, shown in THIS answer
+      // only; a rotation keeps the previous one valid for 24 h.
+      if ((a.trigger as Json).kind !== "webhook")
+        return json(409, { detail: "only a webhook automation has a webhook secret" });
+      const t = Math.floor(Date.now() / 1000);
+      const prev = (a.webhook ?? hookState(String(a.id))) as Json;
+      seq += 1;
+      const secret = `${String(seq).padStart(4, "0")}${"5ec7e7".repeat(10)}`.slice(0, 64);
+      a.webhook = {
+        ...prev,
+        secret_set: true,
+        secret_created_at: t,
+        previous_valid_until: prev.secret_set ? t + DAY : prev.previous_valid_until,
+      };
+      return json(201, { secret, webhook: a.webhook });
+    }
+    if (verb === "run" && method === "POST" && (a.trigger as Json).kind === "webhook")
+      // `automation_runner.run_now` refuses a review loop: only a delivery names an item.
+      return json(409, { detail: "a review loop runs only when its webhook delivers an event" });
     if (verb === "run" && method === "POST" && legacy.has(a.id as string)) {
       Object.assign(a, {
         needs_reapproval: true,

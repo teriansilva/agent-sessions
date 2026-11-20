@@ -26,7 +26,9 @@ export type Cadence =
 export type Trigger =
   | { kind: "manual" }
   | { kind: "once"; at: string; tz: string }
-  | { kind: "schedule"; cadence: Cadence; tz: string };
+  | { kind: "schedule"; cadence: Cadence; tz: string }
+  /** #2202: a signed Forgejo delivery. It pairs ONLY with a `forge_review_loop` action. */
+  | { kind: "webhook"; scheme: "forgejo" };
 
 export type AutomationMessage =
   | { text: string }
@@ -55,7 +57,24 @@ export type AutomationAction =
       kind: "send_to_session";
       session_key: string;
       message: AutomationMessage;
-    };
+    }
+  | ReviewLoopAction;
+
+/** The Forgejo review loop (#2202): one repository, one pinned reviewer specialist VERSION, one
+ *  reviewer login, inside one project. Every field is part of the consent scope. */
+export interface ReviewLoopAction {
+  kind: "forge_review_loop";
+  project_id: string;
+  /** `owner/name` on the configured forge. */
+  repo: string;
+  reviewer: { specialist_id: string; version: number };
+  /** The forge account whose verdicts are trusted. */
+  reviewer_login: string;
+  legs: { issues: boolean; pulls: boolean };
+  /** Reviews per item over its whole life (1..10). */
+  max_rounds: { issue: number; pr: number };
+  return_to_origin: boolean;
+}
 
 export interface AutomationPolicy {
   concurrency: "skip" | "allow";
@@ -88,11 +107,17 @@ export type RunOutcome =
   /** The operator's own disable, pause or edit stopped it (strip class `skipped`). */
   | "stopped"
   /** Text was typed into the session but not submitted (strip class `failed`). */
-  | "partial";
+  | "partial"
+  /** #2202: a signed delivery that was not acted on (stale, closed, a bad verdict). Strip `skipped`. */
+  | "ignored"
+  /** #2202: the item already had its last review; nothing launched. Strip `skipped`. */
+  | "capped"
+  /** #2202: an accepted verdict that could not be sent to its origin. Strip `failed`. */
+  | "undelivered";
 
 export interface RunSummary {
   id: string;
-  trigger: "once" | "schedule" | "manual" | string;
+  trigger: "once" | "schedule" | "manual" | "webhook" | string;
   slot: string;
   catch_up: boolean;
   covered: number;
@@ -160,12 +185,37 @@ export interface Automation {
     success_rate: number | null;
   };
   strip: StripDay[];
+  /** #2202: a webhook automation's delivery facts (never a secret); `null` for any other trigger.
+   *  Absent from a server that predates the review loop. */
+  webhook?: AutomationWebhook | null;
   created_at: number;
   updated_at: number;
   /** On a verb / PATCH / enable response: the change was acknowledged but a run already past its
    *  last check may still complete (`in_flight_detail` says so). Absent or false = no later effect. */
   in_flight?: boolean;
   in_flight_detail?: string;
+}
+
+/** Where the forge delivers and what arrived (#2202). The secret itself is never here: it is shown
+ *  once, by `POST /api/automations/{id}/webhook-secret`. */
+export interface AutomationWebhook {
+  /** Root-relative: `/hooks/a/<id>`. */
+  path: string;
+  secret_set: boolean;
+  secret_created_at: number | null;
+  /** A rotated-out secret keeps verifying deliveries until then. */
+  previous_valid_until: number | null;
+  last_delivery_at: number | null;
+  last_event: string;
+  last_note: string;
+  /** Unsigned or badly signed deliveries refused in the last 24 h. */
+  unsigned_24h: number;
+}
+
+/** `POST /api/automations/{id}/webhook-secret` (201): the plaintext, this once. */
+export interface WebhookSecret {
+  secret: string;
+  webhook: AutomationWebhook;
 }
 
 /** `DELETE /api/automations/{id}`. */

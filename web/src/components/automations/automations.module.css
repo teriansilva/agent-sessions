@@ -1132,3 +1132,98 @@ textarea.control {
 .switchFacts s {
   color: var(--text-3);
 }
+
+/* --- the Forgejo review loop (#2202) ----------------------------------------------------------- */
+/* "Connect Forgejo": the payload URL and secret are mono values that wrap anywhere (a 64-hex secret
+ * on a 390px phone must never push the page sideways); the tag beside the title is a neutral stamp,
+ * the event list is instructions (not inputs), and only the last delivery's LED carries a state. */
+.hookHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.hookHead .panelTitle {
+  margin: 0;
+}
+.hookTag,
+.loopTag {
+  composes: nj-stamp from global;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.hookValue,
+.hookSecret {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+.hookSecret {
+  display: block;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.hookSub {
+  margin-bottom: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hookEvents {
+  list-style: none;
+  margin: 6px 0 8px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 6px 14px;
+  font-size: var(--fs-row);
+}
+.hookEvents li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hookTick {
+  font-family: var(--font-mono);
+  color: var(--hud-text);
+}
+.hookLast {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.hookLast .led {
+  align-self: flex-start;
+  margin-top: 0.55em;
+}
+/* A review-loop run's leg and round beside its time: neutral stamps, never a state colour. */
+.loopTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.loopTag {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+}
+.untrusted {
+  color: var(--text-3);
+  font-style: italic;
+}

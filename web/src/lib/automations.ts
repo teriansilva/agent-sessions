@@ -6,42 +6,56 @@
  *  editor's flat form to the nested body the routes validate strictly — so a field the form does not
  *  own is never sent, and an unknown one can never be. */
 import { ApiError } from "./api";
-import { engineInfo, familyOf, isActive, runsInTerminal } from "../app/engineRoster";
+import {
+  engineInfo,
+  familyOf,
+  isActive,
+  runsInTerminal,
+} from "../app/engineRoster";
 import type {
   Automation,
   AutomationAction,
   AutomationConfig,
   AutomationMessage,
   AutomationPolicy,
+  AutomationRun,
   AutomationState,
   Autonomy,
   Cadence,
   ConsentRequired,
   ResultClass,
+  ReviewLoopAction,
   RunSummary,
   StripDay,
   Trigger,
   UnattendedEngine,
   Weekday,
 } from "../types/automations";
+import type { Specialist } from "../types/specialists";
 
 /** A status tone, which is what decides the LED and the word's colour. `down` is ACTIVE failure
  *  only (docs/design.md §7); `degraded` is "needs you"; `idle` is off, skipped or unknown. */
 export type Tone = "up" | "degraded" | "down" | "idle";
 
-export const STATE_WORD: Record<AutomationState, { word: string; tone: Tone }> = {
-  enabled: { word: "Enabled", tone: "up" },
-  paused: { word: "Paused", tone: "degraded" },
-  needs_reapproval: { word: "Needs re-approval", tone: "degraded" },
-  erroring: { word: "Erroring", tone: "down" },
-  off: { word: "Off", tone: "idle" },
-  expired: { word: "Expired", tone: "idle" },
-  finished: { word: "Finished", tone: "idle" },
-  unreadable: { word: "Unreadable", tone: "down" },
-};
+export const STATE_WORD: Record<AutomationState, { word: string; tone: Tone }> =
+  {
+    enabled: { word: "Enabled", tone: "up" },
+    paused: { word: "Paused", tone: "degraded" },
+    needs_reapproval: { word: "Needs re-approval", tone: "degraded" },
+    erroring: { word: "Erroring", tone: "down" },
+    off: { word: "Off", tone: "idle" },
+    expired: { word: "Expired", tone: "idle" },
+    finished: { word: "Finished", tone: "idle" },
+    unreadable: { word: "Unreadable", tone: "down" },
+  };
 
 export function stateWord(state: string): { word: string; tone: Tone } {
-  return STATE_WORD[state as AutomationState] ?? { word: state || "Unknown", tone: "idle" };
+  return (
+    STATE_WORD[state as AutomationState] ?? {
+      word: state || "Unknown",
+      tone: "idle",
+    }
+  );
 }
 
 /** Whether an automation is waiting on the operator — the "why is something not running?" panel.
@@ -58,8 +72,10 @@ export function needsYou(a: Automation): boolean {
 /** An API refusal in the operator's words. The server's `detail` is kept; the status adds what it
  *  means for them: gone (404), too large (413), or not right now (503). */
 export function errorWords(e: unknown, fallback = "That didn’t work."): string {
-  if (!(e instanceof ApiError)) return e instanceof Error ? e.message : fallback;
-  if (e.status === 404) return "It no longer exists — it may have been deleted.";
+  if (!(e instanceof ApiError))
+    return e instanceof Error ? e.message : fallback;
+  if (e.status === 404)
+    return "It no longer exists — it may have been deleted.";
   if (e.status === 413) return "That is too large to save.";
   if (e.status === 503) return `${e.message} — try again in a moment.`;
   return e.message || fallback;
@@ -67,15 +83,24 @@ export function errorWords(e: unknown, fallback = "That didn’t work."): string
 
 /** The amber note a change's confirmation carries when a run already past its last check may
  *  still complete (`in_flight`). `""` when the change has no later effect to warn about. */
-export function inFlightNote(r: { in_flight?: boolean; in_flight_detail?: string } | null): string {
+export function inFlightNote(
+  r: { in_flight?: boolean; in_flight_detail?: string } | null,
+): string {
   if (!r?.in_flight) return "";
   return `Note: ${r.in_flight_detail || "a run already in progress may still complete"}.`;
 }
 
 /** The words for one run's outcome. A run still `dispatching` has no outcome yet. `interrupted`
  *  is amber, not red: its outcome is UNKNOWN, which is a thing to look at, not a failure. */
-export function outcomeWord(outcome: string, state?: string): { word: string; tone: Tone } {
-  if (!outcome) return { word: state === "dispatching" ? "Starting" : "Pending", tone: "idle" };
+export function outcomeWord(
+  outcome: string,
+  state?: string,
+): { word: string; tone: Tone } {
+  if (!outcome)
+    return {
+      word: state === "dispatching" ? "Starting" : "Pending",
+      tone: "idle",
+    };
   switch (outcome) {
     case "ok":
       return { word: "OK", tone: "up" };
@@ -96,6 +121,15 @@ export function outcomeWord(outcome: string, state?: string): { word: string; to
     case "partial":
       // Something may be sitting unsubmitted in front of the agent: an active failure to look at.
       return { word: "Typed, not sent", tone: "down" };
+    // The review loop (#2202). `ignored` is a delivery deliberately not acted on (grey, like a
+    // skip); `capped` is the item's last review used up, which the operator is told about (amber);
+    // `undelivered` is a verdict that never reached its session (counted as failed on the strip).
+    case "ignored":
+      return { word: "Ignored", tone: "idle" };
+    case "capped":
+      return { word: "Capped", tone: "degraded" };
+    case "undelivered":
+      return { word: "Not delivered", tone: "down" };
     default:
       return { word: outcome, tone: "idle" };
   }
@@ -125,7 +159,15 @@ export function dayWord(day: StripDay): string {
 
 // ---- cadence and trigger words ---------------------------------------------------------------------
 
-export const WEEKDAYS: Weekday[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+export const WEEKDAYS: Weekday[] = [
+  "mon",
+  "tue",
+  "wed",
+  "thu",
+  "fri",
+  "sat",
+  "sun",
+];
 const DAY_NAME: Record<Weekday, string> = {
   mon: "Mon",
   tue: "Tue",
@@ -137,14 +179,19 @@ const DAY_NAME: Record<Weekday, string> = {
 };
 
 function ordinal(n: number): string {
-  const s = n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+  const s =
+    n % 100 >= 11 && n % 100 <= 13
+      ? "th"
+      : (["th", "st", "nd", "rd"][n % 10] ?? "th");
   return `${n}${s}`;
 }
 
 export function cadenceWords(c: Cadence): string {
   switch (c.kind) {
     case "interval":
-      return c.unit === "minutes" ? `Every ${c.every} min` : `Every ${c.every} h`;
+      return c.unit === "minutes"
+        ? `Every ${c.every} min`
+        : `Every ${c.every} h`;
     case "daily":
       return `Daily ${c.time}`;
     case "weekly": {
@@ -166,15 +213,31 @@ export function onceWords(at: string): string {
   if (!m) return at;
   const [, y, mo, d, hm] = m;
   const date = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
-  const wd = date.toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
-  const mon = date.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" });
+  const wd = date.toLocaleDateString("en-GB", {
+    weekday: "short",
+    timeZone: "UTC",
+  });
+  const mon = date.toLocaleDateString("en-GB", {
+    month: "short",
+    timeZone: "UTC",
+  });
   return `${wd} ${d} ${mon} ${y} ${hm}`;
 }
 
-export function triggerWords(t: Trigger | null): { label: string; detail: string } {
+export function triggerWords(t: Trigger | null): {
+  label: string;
+  detail: string;
+} {
   if (!t) return { label: "Unreadable", detail: "its settings can't be read" };
-  if (t.kind === "manual") return { label: "Manual", detail: "only when you press Run now" };
-  if (t.kind === "once") return { label: "Once", detail: `${onceWords(t.at)} · ${t.tz}` };
+  if (t.kind === "manual")
+    return { label: "Manual", detail: "only when you press Run now" };
+  if (t.kind === "once")
+    return { label: "Once", detail: `${onceWords(t.at)} · ${t.tz}` };
+  if (t.kind === "webhook")
+    return {
+      label: "Forgejo webhook",
+      detail: "when Forgejo delivers a signed event",
+    };
   return { label: "Schedule", detail: `${cadenceWords(t.cadence)} · ${t.tz}` };
 }
 
@@ -183,13 +246,17 @@ export function triggerWords(t: Trigger | null): { label: string; detail: string
 export const AUTONOMY_WORDS: Record<Autonomy, string> = {
   propose: "Creates the draft; you plan it with HQ",
   dispatch: "Dispatches the plan without asking (retired: HQ plans missions)",
-  dispatch_auto_choose: "Dispatches and may answer menus on its own (retired: HQ plans missions)",
+  dispatch_auto_choose:
+    "Dispatches and may answer menus on its own (retired: HQ plans missions)",
 };
 
-export function actionLabel(kind: AutomationAction["kind"] | undefined): string {
+export function actionLabel(
+  kind: AutomationAction["kind"] | undefined,
+): string {
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
+  if (kind === "forge_review_loop") return "Review loop";
   return "Unreadable";
 }
 
@@ -198,7 +265,10 @@ export function baseName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
-export function messageWords(m: AutomationMessage, templateName?: (id: string) => string): string {
+export function messageWords(
+  m: AutomationMessage,
+  templateName?: (id: string) => string,
+): string {
   if ("text" in m) return "Plain text";
   return `Template ${templateName ? templateName(m.template_id) : m.template_id}`;
 }
@@ -211,6 +281,8 @@ export function targetWords(
   if (!action) return "";
   if (action.kind === "start_mission") return projectName(action.project_id);
   if (action.kind === "start_session") return baseName(action.folder);
+  if (action.kind === "forge_review_loop")
+    return projectName(action.project_id);
   return action.session_key;
 }
 
@@ -231,7 +303,10 @@ export function untilWords(at: number, nowS: number): string {
 export function whenWords(at: number, nowS: number): string {
   const d = new Date(at * 1000);
   const now = new Date(nowS * 1000);
-  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const hm = d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const day = (x: Date) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
   if (day(d) === day(now)) return `${hm} today`;
   const tomorrow = new Date(now);
@@ -240,20 +315,37 @@ export function whenWords(at: number, nowS: number): string {
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (day(d) === day(yesterday)) return `${hm} yesterday`;
-  const wd = d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" });
+  const wd = d.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
   return `${wd} ${hm}`;
 }
 
 /** The "next run" cell: the time and a sub-line, or a dash and WHY nothing is scheduled. */
-export function nextRunWords(a: Automation, nowS: number): { main: string; sub: string } {
-  if (a.next_run) return { main: whenWords(a.next_run.at, nowS), sub: untilWords(a.next_run.at, nowS) };
+export function nextRunWords(
+  a: Automation,
+  nowS: number,
+): { main: string; sub: string } {
+  if (a.next_run)
+    return {
+      main: whenWords(a.next_run.at, nowS),
+      sub: untilWords(a.next_run.at, nowS),
+    };
   switch (a.state) {
     case "off":
-      return { main: "—", sub: a.consented_at == null ? "never enabled" : "turned off" };
+      return {
+        main: "—",
+        sub: a.consented_at == null ? "never enabled" : "turned off",
+      };
     case "paused":
       return { main: "—", sub: a.paused_reason || "paused" };
     case "needs_reapproval":
-      return { main: "—", sub: a.reapproval_reason || "needs your approval again" };
+      return {
+        main: "—",
+        sub: a.reapproval_reason || "needs your approval again",
+      };
     case "expired":
       return { main: "—", sub: "past its end date" };
     case "finished":
@@ -261,6 +353,8 @@ export function nextRunWords(a: Automation, nowS: number): { main: string; sub: 
     case "unreadable":
       return { main: "—", sub: "its settings can't be read" };
     default:
+      if (a.trigger?.kind === "webhook")
+        return { main: "On delivery", sub: "when Forgejo sends an event" };
       return a.trigger?.kind === "manual"
         ? { main: "On Run now", sub: "no schedule" }
         : { main: "—", sub: "nothing due" };
@@ -278,7 +372,9 @@ function whyNotRunningState(a: Automation): string {
   if (a.state === "needs_reapproval")
     return `${a.reapproval_reason || "An approved input changed"}. It stays paused until you review the change and approve it again.`;
   if (a.state === "paused") {
-    const last = a.last_run?.reason ? ` The last run: ${a.last_run.reason}.` : "";
+    const last = a.last_run?.reason
+      ? ` The last run: ${a.last_run.reason}.`
+      : "";
     return `${capital(a.paused_reason || "Paused")}.${last}`;
   }
   if (a.state === "erroring")
@@ -293,8 +389,12 @@ function capital(s: string): string {
 /** Whether Run now can be offered, and why not. The server refuses the same cases (409); this only
  *  keeps the button honest. */
 export function runNowBlock(a: Automation, loopEnabled: boolean): string {
+  // A review loop has no Run now (#2202): only a delivery names the item to review.
+  if (a.trigger?.kind === "webhook")
+    return "It runs only when its webhook delivers an event";
   if (!loopEnabled) return "Automations are switched off on this server";
-  if (a.consented_at == null) return "Enable it first — it has never been approved";
+  if (a.consented_at == null)
+    return "Enable it first — it has never been approved";
   if (a.needs_reapproval) return "It needs your approval again";
   if (!a.enabled) return "It is turned off";
   if (a.state === "unreadable") return "Its settings can't be read";
@@ -328,11 +428,76 @@ export function stepWords(step: string): string {
   return STEP_WORDS[step] ?? step.replace(/_/g, " ");
 }
 
-export function runTriggerWords(r: RunSummary): string {
+export function runTriggerWords(r: RunSummary | AutomationRun): string {
   if (r.trigger === "manual") return "Run now (you)";
+  if (r.trigger === "webhook") {
+    const facts = "inputs" in r ? loopFacts(r) : null;
+    if (facts?.item)
+      return facts.revision
+        ? `${facts.item} at ${shortRev(facts.revision)}`
+        : facts.item;
+    return "Forgejo delivery";
+  }
   if (r.catch_up)
     return `catch-up · covered ${r.covered} missed ${r.covered === 1 ? "slot" : "slots"}`;
   return r.trigger === "once" ? "once" : "scheduled";
+}
+
+// ---- the review loop's runs (#2202) ---------------------------------------------------------------
+
+/** What a review-loop run shows about itself, read from the server's recorded `inputs`. `event` and
+ *  `delivery` come from UNSIGNED headers: shown, always marked "recorded, untrusted". */
+export interface LoopFacts {
+  /** `review` starts the reviewer; `return` sends its verdict back. */
+  leg: "review" | "return";
+  /** "review 2 / 4", "4 / 4 reviews", "review 2", or null when the run carries no round. */
+  round: string | null;
+  item: string;
+  revision: string;
+  verdict: string;
+  event: string;
+  delivery: string;
+}
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
+}
+function int(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/** A commit sha as people read it (7 characters); an issue's 16-hex digest likewise. */
+export function shortRev(rev: string): string {
+  return /^[0-9a-f]{12,}$/i.test(rev) ? rev.slice(0, 7) : rev;
+}
+
+/** Only for a webhook run; `null` for any other trigger. A verdict that never reached the
+ *  acceptance (a malformed marker) carries no `leg` but is still the return leg: its event is a
+ *  review or a comment, never an item change. */
+export function loopFacts(r: AutomationRun): LoopFacts | null {
+  if (r.trigger !== "webhook") return null;
+  const i = r.inputs ?? {};
+  const leg =
+    i.leg === "return" || i.kind === "pr_review" || i.kind === "issue_comment"
+      ? "return"
+      : "review";
+  const round = int(i.round);
+  const cap = int(i.cap);
+  const reviews = int(i.reviews);
+  let roundWords: string | null = null;
+  if (r.outcome === "capped" && cap)
+    roundWords = `${reviews ?? cap} / ${cap} reviews`;
+  else if (round && cap) roundWords = `review ${round} / ${cap}`;
+  else if (round) roundWords = `review ${round}`;
+  return {
+    leg,
+    round: roundWords,
+    item: str(i.item),
+    revision: str(i.revision),
+    verdict: str(i.verdict),
+    event: str(i.event),
+    delivery: str(i.delivery),
+  };
 }
 
 // ---- the editor's form ---------------------------------------------------------------------------
@@ -341,7 +506,7 @@ export type MessageMode = "text" | "template";
 
 export interface EditorForm {
   name: string;
-  triggerKind: "once" | "schedule" | "manual";
+  triggerKind: "once" | "schedule" | "manual" | "webhook";
   onceAt: string;
   tz: string;
   cadenceKind: Cadence["kind"];
@@ -366,7 +531,22 @@ export interface EditorForm {
   maxRunsPerDay: number;
   pauseAfterFailures: number;
   expiresAt: number | null;
+  // The review loop (#2202). `projectId` is shared with a mission.
+  repo: string;
+  reviewerId: string;
+  /** The specialist version pinned: its CURRENT version when it was chosen. */
+  reviewerVersion: number | null;
+  reviewerLogin: string;
+  reviewIssues: boolean;
+  reviewPulls: boolean;
+  roundsIssue: number;
+  roundsPr: number;
+  returnToOrigin: boolean;
 }
+
+/** The server's round bounds (`review_loop.ROUNDS_*`). */
+export const ROUNDS_MIN = 1;
+export const ROUNDS_MAX = 10;
 
 export function blankForm(tz: string): EditorForm {
   return {
@@ -396,6 +576,66 @@ export function blankForm(tz: string): EditorForm {
     maxRunsPerDay: 48,
     pauseAfterFailures: 3,
     expiresAt: null,
+    repo: "",
+    reviewerId: "",
+    reviewerVersion: null,
+    reviewerLogin: "",
+    reviewIssues: true,
+    reviewPulls: true,
+    roundsIssue: 5,
+    roundsPr: 4,
+    returnToOrigin: true,
+  };
+}
+
+/** A Forgejo webhook starts a review loop, and a review loop is started by one (the server refuses
+ *  any other pairing). Choosing either side chooses the other; leaving either leaves both, back to
+ *  the blank form's schedule + mission. A review loop's deliveries come in bursts (a push and an
+ *  edit), so it defaults to running them side by side, as the server does. */
+export function withTrigger(
+  f: EditorForm,
+  kind: EditorForm["triggerKind"],
+  maxConcurrent: number,
+): EditorForm {
+  if (kind === f.triggerKind) return f;
+  if (kind === "webhook")
+    return intoLoop({ ...f, triggerKind: kind }, maxConcurrent);
+  if (f.triggerKind === "webhook")
+    return outOfLoop({ ...f, triggerKind: kind }, "trigger");
+  return { ...f, triggerKind: kind };
+}
+
+export function withAction(
+  f: EditorForm,
+  kind: EditorForm["actionKind"],
+  maxConcurrent: number,
+): EditorForm {
+  if (kind === f.actionKind) return f;
+  if (kind === "forge_review_loop")
+    return intoLoop({ ...f, actionKind: kind }, maxConcurrent);
+  if (f.actionKind === "forge_review_loop")
+    return outOfLoop({ ...f, actionKind: kind }, "action");
+  return { ...f, actionKind: kind };
+}
+
+function intoLoop(f: EditorForm, maxConcurrent: number): EditorForm {
+  return {
+    ...f,
+    triggerKind: "webhook",
+    actionKind: "forge_review_loop",
+    concurrency: "allow",
+    maxConcurrent: Math.max(2, maxConcurrent),
+  };
+}
+
+function outOfLoop(f: EditorForm, chose: "trigger" | "action"): EditorForm {
+  const blank = blankForm(f.tz);
+  return {
+    ...f,
+    triggerKind: chose === "trigger" ? f.triggerKind : blank.triggerKind,
+    actionKind: chose === "action" ? f.actionKind : blank.actionKind,
+    concurrency: blank.concurrency,
+    maxConcurrent: blank.maxConcurrent,
   };
 }
 
@@ -410,6 +650,8 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     if (t.kind === "once") {
       f.onceAt = t.at;
       f.tz = t.tz;
+    } else if (t.kind === "webhook") {
+      // Nothing more to carry: the scheme is Forgejo's, the only one.
     } else if (t.kind === "schedule") {
       f.tz = t.tz;
       const c = t.cadence;
@@ -425,7 +667,19 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     }
   }
   const act = a.action;
-  if (act) {
+  if (act?.kind === "forge_review_loop") {
+    f.actionKind = act.kind;
+    f.projectId = act.project_id;
+    f.repo = act.repo;
+    f.reviewerId = act.reviewer.specialist_id;
+    f.reviewerVersion = act.reviewer.version;
+    f.reviewerLogin = act.reviewer_login;
+    f.reviewIssues = act.legs.issues;
+    f.reviewPulls = act.legs.pulls;
+    f.roundsIssue = act.max_rounds.issue;
+    f.roundsPr = act.max_rounds.pr;
+    f.returnToOrigin = act.return_to_origin;
+  } else if (act) {
     f.actionKind = act.kind;
     const msg = act.kind === "start_mission" ? act.instruction : act.message;
     if ("text" in msg) {
@@ -469,17 +723,25 @@ function formMessage(f: EditorForm): AutomationMessage {
 
 export function formTrigger(f: EditorForm): Trigger {
   if (f.triggerKind === "manual") return { kind: "manual" };
+  if (f.triggerKind === "webhook")
+    return { kind: "webhook", scheme: "forgejo" };
   if (f.triggerKind === "once") return { kind: "once", at: f.onceAt, tz: f.tz };
   let cadence: Cadence;
-  if (f.cadenceKind === "interval") cadence = { kind: "interval", every: f.every, unit: f.unit };
+  if (f.cadenceKind === "interval")
+    cadence = { kind: "interval", every: f.every, unit: f.unit };
   else if (f.cadenceKind === "daily") cadence = { kind: "daily", time: f.time };
   else if (f.cadenceKind === "weekly")
-    cadence = { kind: "weekly", days: WEEKDAYS.filter((d) => f.days.includes(d)), time: f.time };
+    cadence = {
+      kind: "weekly",
+      days: WEEKDAYS.filter((d) => f.days.includes(d)),
+      time: f.time,
+    };
   else cadence = { kind: "monthly", day: f.day, time: f.time };
   return { kind: "schedule", cadence, tz: f.tz };
 }
 
 export function formAction(f: EditorForm): AutomationAction {
+  if (f.actionKind === "forge_review_loop") return formReviewLoop(f);
   const message = formMessage(f);
   if (f.actionKind === "start_mission")
     return {
@@ -501,6 +763,24 @@ export function formAction(f: EditorForm): AutomationAction {
   return { kind: "send_to_session", session_key: f.sessionKey, message };
 }
 
+/** A review loop's action, exactly the fields the server's strict validator accepts. */
+function formReviewLoop(f: EditorForm): ReviewLoopAction {
+  return {
+    kind: "forge_review_loop",
+    project_id: f.projectId,
+    repo: f.repo.trim(),
+    reviewer: { specialist_id: f.reviewerId, version: f.reviewerVersion ?? 0 },
+    reviewer_login: f.reviewerLogin.trim(),
+    legs: { issues: f.reviewIssues, pulls: f.reviewPulls },
+    max_rounds: { issue: f.roundsIssue, pr: f.roundsPr },
+    return_to_origin: f.returnToOrigin,
+  };
+}
+
+/** The server's own alphabets for a repository and a login (`automations._REPO_RE`, `_LOGIN_RE`). */
+export const REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+export const LOGIN_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
 /** The whole create/patch body. The policy is sent in full, so what the operator sees in the
  *  Limits section is what is stored. */
 export function bodyFromForm(f: EditorForm): AutomationConfig {
@@ -511,7 +791,12 @@ export function bodyFromForm(f: EditorForm): AutomationConfig {
     expires_at: f.expiresAt,
   };
   if (f.concurrency === "allow") policy.max_concurrent = f.maxConcurrent;
-  return { name: f.name.trim(), trigger: formTrigger(f), action: formAction(f), policy };
+  return {
+    name: f.name.trim(),
+    trigger: formTrigger(f),
+    action: formAction(f),
+    policy,
+  };
 }
 
 /** What the form still needs before Save can be pressed — client-side only for fields whose
@@ -520,15 +805,45 @@ export function formProblems(f: EditorForm): string[] {
   const out: string[] = [];
   if (!f.name.trim()) out.push("Give it a name");
   if (f.triggerKind === "once" && !f.onceAt) out.push("Choose when it runs");
-  if (f.triggerKind === "schedule" && f.cadenceKind === "weekly" && !f.days.length)
+  if (
+    f.triggerKind === "schedule" &&
+    f.cadenceKind === "weekly" &&
+    !f.days.length
+  )
     out.push("Choose at least one day");
-  if (f.actionKind === "start_mission" && !f.projectId) out.push("Choose a project");
-  if (f.actionKind === "start_session" && !f.engine) out.push("Choose an agent");
-  if (f.actionKind === "start_session" && !f.folder) out.push("Choose a folder");
-  if (f.actionKind === "send_to_session" && !f.sessionKey) out.push("Choose a session");
+  if (f.actionKind === "start_mission" && !f.projectId)
+    out.push("Choose a project");
+  if (f.actionKind === "start_session" && !f.engine)
+    out.push("Choose an agent");
+  if (f.actionKind === "start_session" && !f.folder)
+    out.push("Choose a folder");
+  if (f.actionKind === "send_to_session" && !f.sessionKey)
+    out.push("Choose a session");
+  if (f.actionKind === "forge_review_loop") {
+    if (!f.projectId) out.push("Choose a project");
+    if (!REPO_RE.test(f.repo.trim()))
+      out.push("Name the repository as owner/name");
+    if (!f.reviewerId || !f.reviewerVersion)
+      out.push("Choose a reviewer specialist");
+    if (!LOGIN_RE.test(f.reviewerLogin.trim()))
+      out.push("Name the reviewer’s forge account");
+    if (!f.reviewIssues && !f.reviewPulls)
+      out.push("Review issues, pull requests or both");
+    for (const n of [f.roundsIssue, f.roundsPr])
+      if (!Number.isInteger(n) || n < ROUNDS_MIN || n > ROUNDS_MAX) {
+        out.push(`Reviews per item: ${ROUNDS_MIN} to ${ROUNDS_MAX}`);
+        break;
+      }
+    return out; // a review loop's briefs are BattleLab's own text: there is no message to write
+  }
   if (f.messageMode === "text" && !f.text.trim())
-    out.push(f.actionKind === "start_mission" ? "Write the instruction" : "Write the message");
-  if (f.messageMode === "template" && !f.templateId) out.push("Choose a template");
+    out.push(
+      f.actionKind === "start_mission"
+        ? "Write the instruction"
+        : "Write the message",
+    );
+  if (f.messageMode === "template" && !f.templateId)
+    out.push("Choose a template");
   return out;
 }
 
@@ -541,9 +856,11 @@ export function formProblems(f: EditorForm): string[] {
  *  way the dialog shows the server's lines and resends with the server's digest — never one the
  *  client computed. */
 export function consentFromError(e: unknown): ConsentRequired | null {
-  if (!(e instanceof ApiError) || (e.status !== 422 && e.status !== 409)) return null;
+  if (!(e instanceof ApiError) || (e.status !== 422 && e.status !== 409))
+    return null;
   const r = e.record as ConsentRequired | undefined;
-  if (!r || typeof r.scope_digest !== "string" || !Array.isArray(r.scope_lines)) return null;
+  if (!r || typeof r.scope_digest !== "string" || !Array.isArray(r.scope_lines))
+    return null;
   return {
     detail: typeof r.detail === "string" ? r.detail : e.message,
     // PRESENCE IS KEPT: `undefined` = the server did not say; `[]` = it said nothing widened.
@@ -582,7 +899,9 @@ const WIDENED_KEYS: [RegExp, RegExp][] = [
 ];
 
 export function widenedLine(line: string, widened: string[]): boolean {
-  return widened.some((w) => WIDENED_KEYS.some(([item, l]) => item.test(w) && l.test(line)));
+  return widened.some((w) =>
+    WIDENED_KEYS.some(([item, l]) => item.test(w) && l.test(line)),
+  );
 }
 
 /** A copy's body: the same configuration under a new name. Always created OFF by the server. */
@@ -590,7 +909,9 @@ export function duplicateBody(a: Automation): AutomationConfig | null {
   if (!a.trigger || !a.action || !a.policy) return null;
   const trigger =
     // A once in the past cannot be saved; the copy becomes manual until the operator picks a time.
-    a.trigger.kind === "once" && a.next_run == null ? ({ kind: "manual" } as Trigger) : a.trigger;
+    a.trigger.kind === "once" && a.next_run == null
+      ? ({ kind: "manual" } as Trigger)
+      : a.trigger;
   return {
     name: `${a.name} (copy)`.slice(0, 80),
     trigger,
@@ -607,7 +928,10 @@ export const SCOPE_MOVED_NOTE =
  *  it is PRESENT — an explicit `[]` means nothing widens now, and must not be overridden by labels
  *  from the old dialog. Only when the field is absent (an older server) is the previous list
  *  carried forward, so what widened is never silently dropped. */
-export function reconsent(next: ConsentRequired, prev: ConsentRequired | null): ConsentRequired {
+export function reconsent(
+  next: ConsentRequired,
+  prev: ConsentRequired | null,
+): ConsentRequired {
   if (next.widened !== undefined) return next;
   return { ...next, widened: prev?.widened ?? [] };
 }
@@ -618,8 +942,12 @@ export function reconsent(next: ConsentRequired, prev: ConsentRequired | null): 
  *  runtime — any console target, whatever its history: nothing is stamped on the row. Such an
  *  automation keeps running (no cutoff before #1728 Phase 3) and is labelled "Terminal —
  *  unreliable unattended": a terminal has nobody watching it. `false` while the roster is unknown. */
-export function isTerminalTarget(action: AutomationAction | null | undefined): boolean {
-  return action?.kind === "start_session" && runsInTerminal(action.engine) === true;
+export function isTerminalTarget(
+  action: AutomationAction | null | undefined,
+): boolean {
+  return (
+    action?.kind === "start_session" && runsInTerminal(action.engine) === true
+  );
 }
 
 /** The API client a terminal automation can switch to: its family's API client (the server's
@@ -631,7 +959,8 @@ export function apiSwitchFor(
   action: AutomationAction | null | undefined,
   admitted: readonly UnattendedEngine[],
 ): { engine: string; ok: boolean; reason: string } | null {
-  if (!action || action.kind !== "start_session" || !isTerminalTarget(action)) return null;
+  if (!action || action.kind !== "start_session" || !isTerminalTarget(action))
+    return null;
   const family = familyOf(action.engine);
   if (!family) return null;
   const apiClients = family.clients.filter((c) => {
@@ -658,5 +987,65 @@ export function switchBody(
   engine: string,
 ): { revision: number; action: AutomationAction } | null {
   if (!a.action || a.action.kind !== "start_session") return null;
-  return { revision: a.revision, action: { ...a.action, engine, model: null, bypass: false } };
+  return {
+    revision: a.revision,
+    action: { ...a.action, engine, model: null, bypass: false },
+  };
 }
+
+// ---- the review loop's reviewer (#2202) ----------------------------------------------------------
+
+export interface ReviewerOption {
+  id: string;
+  /** The version a choice pins: the specialist's CURRENT one. */
+  version: number;
+  label: string;
+  /** Why it can't be chosen right now, or "". */
+  blocked: string;
+}
+
+/** The specialists a review loop may start: only those on an API client (the roster's runtime —
+ *  nothing unattended drives a terminal), never an archived one. One the server reports it can't
+ *  start unattended (`engines[].ok`) is offered disabled with its reason; the server checks again
+ *  at save and at every launch. `engineLabel` is passed in so this stays a pure function. */
+export function reviewerOptions(
+  specialists: readonly Specialist[] | null,
+  admitted: readonly UnattendedEngine[],
+  engineLabel: (id: string) => string,
+): ReviewerOption[] {
+  return (specialists ?? [])
+    .filter(
+      (s) => !s.archived && engineInfo(s.current.engine)?.runtime === "api",
+    )
+    .filter((s) => {
+      const info = engineInfo(s.current.engine);
+      return !!info && isActive(info);
+    })
+    .map((s) => {
+      const v = s.current;
+      const verdict = admitted.find((e) => e.id === v.engine);
+      const model = v.model ? ` · ${v.model}` : "";
+      return {
+        id: s.id,
+        version: v.version,
+        label: `${v.title || s.id} v${v.version} · ${engineLabel(v.engine)}${model}`,
+        blocked:
+          verdict && !verdict.ok
+            ? verdict.reason || "it can’t be started unattended"
+            : "",
+      };
+    });
+}
+
+/** The Forgejo events the loop reads: item changes (review leg) and the reviewer's verdicts
+ *  (return leg). Anything else the forge sends is chatter and only updates "Last delivery".
+ *  "Pull request synchronized" is its OWN checkbox on Forgejo (`pull_request_sync`, gated apart
+ *  from "Pull request"): without it a push to an open PR never starts the next review, which is
+ *  the loop's whole point (#2202, Hermes on #2214). Pinned by its tests. */
+export const FORGE_EVENTS = [
+  "Issues",
+  "Issue comment",
+  "Pull request",
+  "Pull request synchronized",
+  "Pull request reviewed",
+];

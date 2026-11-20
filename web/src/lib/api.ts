@@ -83,6 +83,7 @@ import type {
   AutomationList,
   AutomationOrigin,
   AutomationRun,
+  WebhookSecret,
 } from "../types/automations";
 import { uploadStoredName } from "./templateMessage";
 import { projectPickerStore, type ProjectPickerEntity } from "./projectPickerStore";
@@ -3410,6 +3411,10 @@ export const api = {
   ) => mutateJson<Automation>("POST", `${autoPath(id)}/enable`, body),
   automationVerb: (id: string, verb: "disable" | "pause" | "resume") =>
     mutateJson<Automation>("POST", `${autoPath(id)}/${verb}`),
+  /** Makes (or rotates) a review loop's webhook secret (#2202). The plaintext is in THIS answer
+   *  only; a rotated-out secret keeps working for 24 h. Never cached, never re-read. */
+  newWebhookSecret: (id: string) =>
+    mutateJson<WebhookSecret>("POST", `${autoPath(id)}/webhook-secret`),
   /** Run now. 202 with the run; a 409 `detail` says why it was refused. */
   runAutomation: (id: string) =>
     mutateJson<AutomationRun>("POST", `${autoPath(id)}/run`),

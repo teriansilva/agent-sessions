@@ -8,8 +8,11 @@
  *  what it started.
  *
  *  A failure notification links here (`automationPath`), and `?run=<id>` opens one run. A failed
- *  reload keeps the runs already shown and says when they were loaded. The webhook panel is
- *  Phase 3 of #1201 and is not here. */
+ *  reload keeps the runs already shown and says when they were loaded.
+ *
+ *  A review loop (#2202) shows its "Connect Forgejo" panel here too, and each of its runs says its
+ *  leg (review / return), its round ("review 2 / 4"), the item and revision, and the delivery's
+ *  unsigned headers as "recorded, untrusted". It has no Run now: only a delivery names an item. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -22,12 +25,14 @@ import {
 } from "../components/automations/AutomationBits";
 import { useAutomations, useNowS } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
+import { WebhookPanel } from "../components/automations/WebhookPanel";
 import { useRunPages } from "../components/automations/useRunPages";
 import { refreshOrigins } from "../app/automationOrigins";
 import { api } from "../lib/api";
 import {
   errorWords,
   inFlightNote,
+  loopFacts,
   runNowBlock,
   runTriggerWords,
   stepWords,
@@ -38,6 +43,7 @@ import { sessionPathFromKey } from "../lib/format";
 import { missionLink } from "../lib/missionLink";
 import { AUTOMATIONS_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Automation, AutomationRun, RunStep } from "../types/automations";
+import type { LoopFacts } from "../lib/automations";
 import styles from "../components/automations/automations.module.css";
 
 /** A run still starting (or a mission still running) is re-read at this pace while it is open… */
@@ -200,6 +206,7 @@ function RunsPage({ id }: { id: string }) {
 
   const number = (i: number) => total - i;
   const block = a ? runNowBlock(a, loopOn) : "";
+  const hooked = a?.trigger?.kind === "webhook";
   const decided = a ? a.stats.ok + a.stats.failed : 0;
 
   if (missing && !a) {
@@ -263,22 +270,29 @@ function RunsPage({ id }: { id: string }) {
                     {a.paused ? "Resume" : "Pause"}
                   </button>
                 )}
-                <button
-                  type="button"
-                  className={styles.primary}
-                  disabled={busy || !!block}
-                  title={block || undefined}
-                  onClick={() => void runNow()}
-                  data-testid="runs-run-now"
-                >
-                  Run now
-                </button>
+                {/* A review loop has no Run now (#2202): the reason is said below instead. */}
+                {!hooked && (
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    disabled={busy || !!block}
+                    title={block || undefined}
+                    onClick={() => void runNow()}
+                    data-testid="runs-run-now"
+                  >
+                    Run now
+                  </button>
+                )}
               </div>
             )}
           </div>
 
           {!loopOn && <KillSwitchNotice />}
-          {a && block && loopOn && <p className={styles.hint}>Run now is unavailable: {block}.</p>}
+          {a && block && (loopOn || hooked) && (
+            <p className={styles.hint} data-testid="runs-run-now-why">
+              {hooked ? `No Run now: ${block.charAt(0).toLowerCase()}${block.slice(1)}.` : `Run now is unavailable: ${block}.`}
+            </p>
+          )}
           {listError && !a && (
             <div className={`${styles.notice} ${styles.noticeBad}`} role="alert">
               <strong>Couldn’t load this automation</strong>
@@ -312,6 +326,17 @@ function RunsPage({ id }: { id: string }) {
             </div>
           )}
 
+          {a?.webhook && (
+            <div className={styles.more}>
+              <WebhookPanel
+                automationId={a.id}
+                webhook={a.webhook}
+                nowS={nowS}
+                onWebhook={(w) => applyRow({ ...a, webhook: w })}
+              />
+            </div>
+          )}
+
           <div className={`${styles.runsGrid} ${styles.more}`}>
             <div>
               {runs == null && !runsError && <p className={styles.lede}>Loading runs…</p>}
@@ -319,7 +344,9 @@ function RunsPage({ id }: { id: string }) {
                 <div className={styles.empty} data-testid="runs-empty">
                   <strong>No runs yet</strong>
                   <span className={styles.lede}>
-                    {a?.next_run
+                    {hooked
+                      ? "Every signed delivery about an issue or pull request becomes a run, with its reason. Chatter (a human’s comment, a label change) only updates Last delivery."
+                      : a?.next_run
                       ? `The first one is due ${whenWords(a.next_run.at, nowS)}.`
                       : a && !a.enabled
                         ? "It is off. Enable it, then it runs on its schedule or when you press Run now."
@@ -329,7 +356,9 @@ function RunsPage({ id }: { id: string }) {
               )}
               {runs && runs.length > 0 && (
                 <ul className={styles.runList} aria-label="Runs" data-testid="runs-list">
-                  {runs.map((r, i) => (
+                  {runs.map((r, i) => {
+                    const loop = loopFacts(r);
+                    return (
                     <li key={r.id}>
                       <button
                         type="button"
@@ -343,6 +372,7 @@ function RunsPage({ id }: { id: string }) {
                           <span>
                             {whenWords(r.created_at, nowS)} · {runTriggerWords(r)}
                           </span>
+                          {loop && <LoopTags facts={loop} />}
                           <span className={styles.sub}>{r.reason || "—"}</span>
                         </span>
                         <span className={styles.runOutcome}>
@@ -350,7 +380,8 @@ function RunsPage({ id }: { id: string }) {
                         </span>
                       </button>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               )}
               {runs && runs.length < total && (
@@ -382,6 +413,62 @@ function RunsPage({ id }: { id: string }) {
       </div>
       {enable.dialog}
     </div>
+  );
+}
+
+/** A review-loop run's leg and round, beside its time in the list: neutral stamps. */
+function LoopTags({ facts }: { facts: LoopFacts }) {
+  return (
+    <span className={styles.loopTags} data-testid="run-loop-tags">
+      <span className={styles.loopTag} data-testid="run-leg">
+        {facts.leg}
+      </span>
+      {facts.round && (
+        <span className={styles.loopTag} data-testid="run-round">
+          {facts.round}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** A review-loop run's facts in the detail. The event and delivery come from UNSIGNED headers:
+ *  shown for matching against the forge's delivery log, never trusted for anything. */
+function LoopDetail({ facts }: { facts: LoopFacts }) {
+  return (
+    <>
+      <dt>Leg</dt>
+      <dd data-testid="run-detail-leg">
+        {facts.leg === "return" ? "Return — the reviewer’s verdict, back to the session that opened it" : "Review — starts the reviewer"}
+        {facts.round ? ` · ${facts.round}` : ""}
+      </dd>
+      {facts.item && (
+        <>
+          <dt>Item</dt>
+          <dd className={styles.mono} data-testid="run-detail-item">
+            {facts.item}
+            {facts.revision ? ` at ${facts.revision}` : ""}
+          </dd>
+        </>
+      )}
+      {facts.verdict && (
+        <>
+          <dt>Verdict</dt>
+          <dd>{facts.verdict}</dd>
+        </>
+      )}
+      {(facts.event || facts.delivery) && (
+        <>
+          <dt>Delivery</dt>
+          <dd data-testid="run-detail-delivery">
+            <span className={styles.mono}>
+              {[facts.event, facts.delivery && `delivery ${facts.delivery}`].filter(Boolean).join(" · ")}
+            </span>{" "}
+            <span className={styles.untrusted}>(recorded, untrusted)</span>
+          </dd>
+        </>
+      )}
+    </>
   );
 }
 
@@ -421,6 +508,7 @@ function RunDetail({
     );
   const sessionHref = run.session_key ? sessionPathFromKey(run.session_key) : null;
   const inputs = run.inputs && Object.keys(run.inputs).length ? inputsText(run.inputs) : "";
+  const loop = loopFacts(run);
   const steps: RunStep[] = run.steps ?? [];
   return (
     <section className={styles.panel} aria-labelledby="run-detail-title" data-testid="run-detail">
@@ -437,8 +525,11 @@ function RunDetail({
         <dd>
           {run.trigger === "manual"
             ? "Run now, by you"
-            : `${run.catch_up ? "Catch-up" : "Scheduled"} slot ${run.slot}${run.covered > 1 ? ` · covered ${run.covered} missed slots` : ""}`}
+            : loop
+              ? "A signed Forgejo delivery"
+              : `${run.catch_up ? "Catch-up" : "Scheduled"} slot ${run.slot}${run.covered > 1 ? ` · covered ${run.covered} missed slots` : ""}`}
         </dd>
+        {loop && <LoopDetail facts={loop} />}
         <dt>Started</dt>
         <dd>{new Date(run.created_at * 1000).toLocaleString("en-GB")}</dd>
         {run.reason && (
