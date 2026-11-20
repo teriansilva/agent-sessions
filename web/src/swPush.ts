@@ -5,7 +5,8 @@
  *
  * **One payload shape, and every push SHOWS its own notification.** `{title, body, url, tag?,
  * close?}` — titles, a project, a link and tags this server minted; never session content. A
- * needs-you episode carries its own `tag` (`needs-you:<session>:<episode>`); anything else
+ * needs-you episode carries its own `tag` (`needs-you:<session>:<episode>`), and so does a mission
+ * notification episode (#2154: `mission-ep:<refusal or rework action id>`); anything else
  * coalesces per link as before. `close` lists owed retractions, applied before showing. There is
  * no retraction-only push: the subscription is `userVisibleOnly`, and a push that shows nothing
  * spends the browser's silent-push budget until Chrome shows its own generic notification.
@@ -13,15 +14,15 @@
  * **The SERVER is the one authority on what is retracted** (its closed-episode ledger, the bell's
  * `close_tags`). There is no device-side tombstone store: a cache that fails, fills up or is shared
  * with a reused tag cannot decide anything (Hermes 5265, findings 2, 6 and 7). The worker asks the
- * server TWICE for a needs-you notification:
+ * server TWICE for an EPISODE notification (needs-you or mission, both never-reused tags):
  *  - before showing it: one already retracted — a delayed or reordered delivery — is still shown
  *    (every push must show), silently, and closed at once;
  *  - AFTER showing it: an app reconciliation that ran while the platform show was in flight found
  *    nothing to close yet, so the worker closes it itself if the server now lists it (Hermes 5275,
  *    finding 3). Once shown, any later reconciliation sees it.
  * A question the server cannot answer (offline, logged out, slow) fails OPEN: the notification is
- * shown and kept, and the app closes it later if it turns out to be retracted. Mission and other
- * notifications are never asked about.
+ * shown and kept, and the app closes it later if it turns out to be retracted. Notifications under
+ * a REUSED tag (an escalation's per-session URL, the generic "mission") are never asked about.
  */
 export interface PushPayload {
   title?: string;
@@ -40,6 +41,12 @@ export interface NotificationSurface {
 export type IsRetracted = (tag: string) => Promise<boolean>;
 
 export const NEEDS_YOU_PREFIX = "needs-you:";
+/** A mission refusal / rework episode's own tag (#2154), minted once and never reused. */
+export const MISSION_EPISODE_PREFIX = "mission-ep:";
+
+/** Only EPISODE tags are retractable: a reused tag's retraction would close a newer notification. */
+export const isEpisodeTag = (tag: string) =>
+  tag.startsWith(NEEDS_YOU_PREFIX) || tag.startsWith(MISSION_EPISODE_PREFIX);
 
 async function closeTags(
   reg: Pick<NotificationSurface, "getNotifications">,
@@ -62,7 +69,7 @@ export function createPushHandler(
   let chain: Promise<void> = Promise.resolve();
 
   const ask = async (tag: string) => {
-    if (!tag.startsWith(NEEDS_YOU_PREFIX)) return false;
+    if (!isEpisodeTag(tag)) return false;
     try {
       return await isRetracted(tag);
     } catch {
@@ -81,7 +88,8 @@ export function createPushHandler(
       icon: "/icon-192.png",
       badge: "/icon-192.png",
       // Coalesce per session: a second escalation for the same session replaces the first rather
-      // than stacking. A needs-you episode uses its own tag, which a retraction closes exactly.
+      // than stacking. An episode (needs-you or mission) uses its own tag, which a retraction
+      // closes exactly.
       tag,
       silent: retracted,
       data: { url: data.url || fallbackUrl },
@@ -122,7 +130,8 @@ export function serverRetractions(
 }
 
 /** The app-open retraction (#1086 Phase 4): with the bell's read in hand, close on this device
- *  EXACTLY the tags the server lists as retracted — needs-you episode tags only, never reused; an
+ *  EXACTLY the tags the server lists as retracted — episode tags only (needs-you and mission,
+ *  #2154), never reused; an
  *  escalation's URL tag never. Never inferred from "not currently open": a read taken just before an
  *  episode opened would close the brand-new notification. */
 export async function reconcileDeviceNotifications(

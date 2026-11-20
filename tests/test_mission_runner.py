@@ -235,13 +235,23 @@ async def test_a_stale_binding_is_refused_at_launch_with_nothing_reserved_or_sta
     cv = next(s for s in view["steps"] if s["id"] == "o1.cv")
     assert cv["refusal"] is not None and code in cv["refusal"]["codes"]
     assert "Nothing was reserved, given or started" in cv["refusal"]["text"]
-    mine = [b for b in bell if b["reason"].startswith("o1.cv: ")]
+    if change == "revision":
+        # A plan edit is ONE notice per approval and revision, whatever it refused (#2154).
+        def mine_of(rows):
+            key = mission_runner.plan_notice_key(approval["id"], 2)
+            return [b for b in rows if b["action_id"] == key]
+    else:
+
+        def mine_of(rows):
+            return [b for b in rows if b["reason"].startswith("o1.cv: ")]
+
+    mine = mine_of(bell)
     assert len(mine) == 1 and mine[0]["action_id"].startswith(f"mission-refusal:{approval['id']}:")
     # Offered again after the back-off, against the same change: asked once, nothing new.
     again = await mission_runner.advance(seam["mid"], now=mission_runner.RETRY_S + 1)
     assert again.get("o1.cv") == "refused"
     assert len([r for r in missions.refusals(seam["mid"]) if r["step"] == "o1.cv"]) == 1
-    assert len([b for b in bell if b["reason"].startswith("o1.cv: ")]) == 1
+    assert len(mine_of(bell)) == 1
     assert missions.step_runs(seam["mid"]) == []
 
 

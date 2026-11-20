@@ -36,7 +36,6 @@ so a slow create never holds the supervisor's sweep. Kill switch:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import time
@@ -80,10 +79,45 @@ def runs() -> bool:
     return enabled() and os.getenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "1") != "0"
 
 
+NOTICE = "mission-refusal:"
+#: A plan edit while approved (#2154): every ready step is refused for the SAME reason, the plan
+#: moving to a new revision. Its notice is one per approval and revision, not one per step.
+_PLAN_MOVED = "plan_revision_superseded"
+
+
 def notice_key(approval_id: str, change: str) -> str:
     """The bell row's action id for one refusal record: the approval and the change digest, so a
     retry against the same change raises nothing new. No model text."""
-    return f"mission-refusal:{approval_id}:{change.removeprefix('sha256:')[:24]}"
+    return f"{NOTICE}{approval_id}:{change.removeprefix('sha256:')[:24]}"
+
+
+def _plan_moved_to(reasons: list[dict]) -> int | None:
+    """The revision the plan moved to, when that is the ONLY reason a step was refused."""
+    if not reasons or any(r.get("code") != _PLAN_MOVED for r in reasons):
+        return None
+    new = reasons[0].get("new")
+    return new if type(new) is int else None
+
+
+def plan_notice_key(approval_id: str, revision: int) -> str:
+    """The ONE notice of a plan edit while approved (#2154): the approval and the revision the plan
+    moved to, so several ready steps, repeated passes and a restart push once, and the next
+    revision pushes once more. The per-step refusal records stay; only the notice coalesces."""
+    return f"{NOTICE}{approval_id}:r{int(revision)}"
+
+
+def _revision_of(action_id: str) -> int | None:
+    """The revision of a plan-edit notice's action id (`…:r<n>`), or None."""
+    change = (_split(action_id) or ("", ""))[1]
+    return int(change[1:]) if change.startswith("r") and change[1:].isdigit() else None
+
+
+def _split(action_id: str) -> tuple[str, str] | None:
+    """`(approval id, change part)` of a refusal notice's action id, or None."""
+    if not action_id.startswith(NOTICE):
+        return None
+    approval_id, sep, rest = action_id[len(NOTICE) :].partition(":")
+    return (approval_id, rest) if sep and approval_id and rest else None
 
 
 def offers_sync(mission_id: str) -> dict:
@@ -114,27 +148,85 @@ def offers_sync(mission_id: str) -> dict:
 
 
 def _notify(mission_id: str, title: str, step_id: str, extra: dict) -> None:
-    """One bell row and push for a refusal nobody tapped for (D-P6-9). Best-effort: the refusal
-    is already recorded, and the board shows it."""
+    """One bell row and push for a refusal nobody tapped for (D-P6-9), under its own never-reused
+    device tag, so its retraction closes it on devices (#2154). A plan edit while approved is ONE
+    notice per approval and revision, however many steps it refused. A new refusal of a step
+    retracts that step's older notices under the same approval. Best-effort: the refusal is already
+    recorded, and the board shows it."""
     from . import notifications
 
     approval_id, change = extra.get("approval_id"), extra.get("change")
     if not (extra.get("new") and approval_id and change):
         return
+    reasons = extra.get("reasons") or []
+    moved = _plan_moved_to(reasons)
     try:
-        rec = notifications.add(
-            title=f"Mission step not started: {title}"[:200],
-            project="",
-            session_id="",
-            engine="",
-            reason=f"{step_id}: {mission_approval.class_text(extra.get('reasons') or [])}",
-            action_id=notice_key(approval_id, change),
-        )
-        if rec and notifications.list_subscriptions():
-            with contextlib.suppress(Exception):
-                notifications.fanout(rec)
+        if moved is not None:
+            key = plan_notice_key(approval_id, moved)
+            rec = notifications.add(
+                title=f"Mission steps not started: {title}"[:200],
+                project="",
+                session_id="",
+                engine="",
+                reason=mission_approval.class_text(reasons),
+                action_id=key,
+                once=True,  # one push per approval and revision, ever: its tag is never reused
+                tag=notifications.mission_episode_tag(key),
+            )
+        else:
+            key = notice_key(approval_id, change)
+            rec = notifications.add(
+                title=f"Mission step not started: {title}"[:200],
+                project="",
+                session_id="",
+                engine="",
+                reason=f"{step_id}: {mission_approval.class_text(reasons)}",
+                action_id=key,
+                tag=notifications.mission_episode_tag(key),
+            )
+        if rec is None:
+            return
+        # BEFORE the push, so the older notices' closes ride on this very push: the step's older
+        # notices under the approval, or (a plan edit) the approval's older revisions' notice.
+        _retract_older(mission_id, approval_id, None if moved is not None else step_id, key)
+        notifications.push(rec)
     except Exception:  # noqa: BLE001 — the bell is another store
         log.warning("mission %s: refusal notification failed", mission_id, exc_info=True)
+
+
+def _retract_older(mission_id: str, approval_id: str, step_id: str | None, newest: str) -> int:
+    """Retract the OPEN notices under `approval_id` that `newest` replaces (#2154): with `step_id`,
+    that step's other notices (its latest refusal is the one that stands); without, the approval's
+    other plan-edit notices (the latest revision is the one that stands). Reads the open rows,
+    then only that approval's refusal keys. Best-effort."""
+    from . import notifications
+
+    n = 0
+    try:
+        opened = [
+            a for a in notifications.actions_with_prefix(f"{NOTICE}{approval_id}:") if a != newest
+        ]
+        plan = {a for a in opened if (_split(a) or ("", ""))[1].startswith("r")}
+        if step_id is None:
+            # Only LOWER revisions: a late notice can never retract a newer revision's.
+            mine_rev = _revision_of(newest)
+            for a in sorted(plan):
+                rev = _revision_of(a)
+                if mine_rev is not None and rev is not None and rev < mine_rev:
+                    n += notifications.retract_episode(a)
+            return n
+        mine = set(opened) - plan
+        if not mine:
+            return 0
+        for r in missions.refusal_steps(
+            mission_id, approval_id, ((_split(a) or ("", ""))[1] for a in mine)
+        ):
+            key = notice_key(approval_id, r["change_digest"])
+            if r["step"] == step_id and key in mine:
+                n += notifications.retract_episode(key)
+    except Exception:  # noqa: BLE001 — retried by the next refusal or the approval's end
+        log.debug("mission %s: older refusal notices not retracted", mission_id, exc_info=True)
+    return n
 
 
 def _runs_of(mission_id: str, step_id: str) -> int:
@@ -199,17 +291,75 @@ def wrote_run(out: dict) -> bool:
 def retract_sync(mission_id: str, *, step_id: str | None = None) -> int:
     """Retract the refusal notifications that no longer stand: every one recorded under an
     approval that is not the one in force, and (with `step_id`) that step's under the one in force,
-    once it started. Blocking; best-effort. Returns how many rows went."""
+    once it started. Each retraction closes the notice on devices too (#2154).
+
+    It also CONVERGES what a replacement left behind (Hermes on #2223): under the approval in
+    force, only the highest-revision plan-edit notice and, per step, only the open notice of its
+    LATEST refusal stand; any other open one is retracted. `_notify` retracts them at once when it
+    raises the newer notice, but that cleanup may fail, and the newer refusal is never "new" again
+    (a plan notice is announced `once`), so this pass — run by every `advance` — is what retries
+    it, independent of whether anything new was announced. It never leaves a step that has open
+    notices with none.
+
+    BOUNDED by what is open, never the refusal history (#2154): it starts from the bell's open
+    refusal rows, keeps this mission's (`approval_by_id` is scoped to it), and reads refusal keys
+    only for the approval in force, and only when a step is named or two of its notices could
+    compete. A plan-edit notice belongs to the approval, not a step, so a step starting never
+    retracts it. Blocking; best-effort. Returns how many rows went."""
     from . import notifications
 
     try:
+        open_ids = notifications.actions_with_prefix(NOTICE)
+        if not open_ids:
+            return 0
         live = missions.approval(mission_id)
         live_id = live["id"] if live is not None and live.get("revoked_at") is None else None
+        ours: dict[str, bool] = {}
         n = 0
-        for r in missions.refusals(mission_id):
-            if r["approval_id"] == live_id and r["step"] != step_id:
+        plan: list[str] = []
+        per_change: list[str] = []
+        for action_id in open_ids:
+            parts = _split(action_id)
+            if parts is None:
                 continue
-            n += notifications.dismiss_for_action(notice_key(r["approval_id"], r["change_digest"]))
+            approval_id, change = parts
+            if approval_id not in ours:
+                ours[approval_id] = (
+                    approval_id == live_id
+                    or missions.approval_by_id(mission_id, approval_id) is not None
+                )
+            if not ours[approval_id]:
+                continue  # another mission's notice
+            if approval_id != live_id:
+                n += notifications.retract_episode(action_id)
+            elif change.startswith("r"):
+                plan.append(action_id)
+            else:
+                per_change.append(action_id)
+        # The approval's plan edits: only the latest revision's notice stands.
+        newest = max(plan, key=lambda a: _revision_of(a) or 0, default=None)
+        for action_id in plan:
+            if action_id != newest:
+                n += notifications.retract_episode(action_id)
+        if per_change and live_id is not None and (step_id is not None or len(per_change) > 1):
+            # Refusal keys in the order they were last refused: the last of a step is its latest.
+            order = [
+                (notice_key(live_id, r["change_digest"]), r["step"])
+                for r in missions.refusal_steps(
+                    mission_id, live_id, ((_split(a) or ("", ""))[1] for a in per_change)
+                )
+            ]
+            latest: dict[str, str] = {}
+            for key, step in order:
+                if key in per_change:
+                    latest[step] = key
+            owner = {key: step for key, step in order}
+            for action_id in per_change:
+                step = owner.get(action_id)
+                if step is None:
+                    continue
+                if step == step_id or latest.get(step) != action_id:
+                    n += notifications.retract_episode(action_id)
         return n
     except Exception:  # noqa: BLE001
         log.debug("mission %s: refusal notifications not retracted", mission_id, exc_info=True)

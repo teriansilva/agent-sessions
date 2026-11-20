@@ -119,7 +119,7 @@ describe("push handling (#1086 Phase 4, Hermes 5265)", () => {
     expect(open.has("needs-you:a:1")).toBe(true);
   });
 
-  test("mission and other notifications are never asked about", async () => {
+  test("notifications under a REUSED tag are never asked about", async () => {
     const { reg } = shade();
     const srv = server(["/s/claude/x", "mission"]);
     const push = createPushHandler(reg, "/mission", srv.isRetracted);
@@ -154,6 +154,67 @@ describe("push handling (#1086 Phase 4, Hermes 5265)", () => {
     release();
     await Promise.all([first, second]);
     expect([...open.keys()]).toEqual(["needs-you:b:1"]);
+  });
+});
+
+describe("mission episode notifications (#2154)", () => {
+  const REFUSAL = "mission-ep:mission-refusal:apr1:0123456789abcdef01234567";
+  const NEWER = "mission-ep:mission-refusal:apr1:fedcba9876543210fedcba98";
+  const REWORK = "mission-ep:mission-rework:msn_1:o1.cv:1";
+
+  test("the worker asks about them before and after the show", async () => {
+    const { reg, open } = shade();
+    const srv = server();
+    const push = createPushHandler(reg, "/mission", srv.isRetracted);
+    await push({ title: "R", url: "/mission", tag: REFUSAL });
+    await push({ title: "Q", url: "/mission", tag: REWORK });
+    expect(srv.asked).toEqual([REFUSAL, REFUSAL, REWORK, REWORK]);
+    expect([...open.keys()]).toEqual([REFUSAL, REWORK]);
+  });
+
+  test("a delayed delivery the server already retracted is shown silently and closed", async () => {
+    const { reg, open, shown } = shade();
+    const push = createPushHandler(
+      reg,
+      "/mission",
+      server([REFUSAL]).isRetracted,
+    );
+    await push({ title: "R", tag: REFUSAL });
+    expect(shown).toEqual([{ title: "R", tag: REFUSAL, silent: true }]);
+    expect(open.size).toBe(0);
+  });
+
+  test("a retraction that lands while the show is in flight closes it after the show", async () => {
+    const { reg, open, hold } = shade();
+    const srv = server();
+    const push = createPushHandler(reg, "/mission", srv.isRetracted);
+    const release = hold();
+    const shown = push({ title: "R", tag: REFUSAL });
+    await vi.waitFor(() => expect(srv.asked).toEqual([REFUSAL]));
+    srv.retracted.add(REFUSAL);
+    expect(await reconcileDeviceNotifications(reg, [REFUSAL])).toBe(0);
+    release();
+    await shown;
+    expect(open.has(REFUSAL)).toBe(false);
+  });
+
+  test("reordered delivery: the close arrives before its notification, which then stays closed", async () => {
+    const { reg, open } = shade();
+    const srv = server([REFUSAL]);
+    const push = createPushHandler(reg, "/mission", srv.isRetracted);
+    await push({ title: "N", tag: NEWER, close: [REFUSAL] }); // the later push came first
+    await push({ title: "R", tag: REFUSAL }); // the older, already retracted, arrives late
+    expect([...open.keys()]).toEqual([NEWER]);
+  });
+
+  test("closing an older episode leaves the newer one open", async () => {
+    const { reg, open } = shade();
+    const push = createPushHandler(reg, "/mission", server().isRetracted);
+    await push({ title: "R", tag: REFUSAL });
+    await push({ title: "N", tag: NEWER, close: [REFUSAL] });
+    expect([...open.keys()]).toEqual([NEWER]);
+    expect(await reconcileDeviceNotifications(reg, [REFUSAL])).toBe(0);
+    expect(open.has(NEWER)).toBe(true);
   });
 });
 

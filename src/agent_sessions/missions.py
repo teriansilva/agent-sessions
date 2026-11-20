@@ -52,7 +52,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1651,6 +1651,15 @@ REWORK_DDL: tuple[str, ...] = (
 )
 _SCHEMA += ";\n".join(REWORK_DDL) + ";\n"
 
+#: v44 (#2154): refusals by (approval, change digest), so the refusal-notice backstop seeks the
+#: refusals of the OPEN notices only, never an approval's retired history (the primary key puts
+#: the step before the digest, and a notice's key names the digest, not the step).
+REFUSALS_BY_CHANGE_DDL: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS mission_approval_refusals_by_change "
+    "ON mission_approval_refusals(mission_id, approval_id, change_digest)",
+)
+_SCHEMA += ";\n".join(REFUSALS_BY_CHANGE_DDL) + ";\n"
+
 
 def _migrate_40_to_41(con) -> None:
     """Additive only (workflow §0): two tables, one index. Idempotent, and it converges a table an
@@ -1677,23 +1686,29 @@ def _migrate_42_to_43(con) -> None:
         con.execute("ALTER TABLE mission_step_runs ADD COLUMN rework_ref TEXT")
 
 
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40, 41, 42})
+def _migrate_43_to_44(con) -> None:
+    """Additive only (workflow §0): one index. Idempotent."""
+    for statement in REFUSALS_BY_CHANGE_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     """Take the store back to schema `to` for the previous build, deleting nothing (#1777, #1740).
 
     Every target is additive below this build: v34 added the plan revisions and three objective
-    columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
-    column (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan
-    approval (to 38), v40 the step runs (to 39), v41 the mission budget (to 40), v42 the step
-    holds (to 41), v43 the rework rounds and a step-run column naming the reopen a run consumed
-    (to 42); an older build never reads any of them, and every `INSERT INTO mission_step_runs`
-    names its columns. (A v41 build starts no step by itself, so the holds it does not read hold
-    nothing it would start; a v42 build reads no rework round and so resets nothing again. A plan
-    revision carrying a team, #1950, reads fine on an older build. Applying another procedure
-    there rebuilds every step with `assignment: null`, so that one write drops the team: earlier
-    revisions keep it, and Assemble restores it.)
+    columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch column
+    (to 35), v37 the mission debriefs (to 36), v38 the plan-op ledger (to 37), v39 plan approval (to
+    38), v40 the step runs (to 39), v41 the mission budget (to 40), v42 the step holds (to 41), v43
+    the rework rounds and a step-run column naming the reopen a run consumed (to 42), v44 an index
+    on the refusals by change (to 43); an older build never reads any of them, and every `INSERT
+    INTO mission_step_runs` names its columns. (A v41 build starts no step by itself, so the holds
+    it does not read hold nothing it would start; a v42 build reads no rework round and so resets
+    nothing again. A plan revision carrying a team, #1950, reads fine on an older build. Applying
+    another procedure there rebuilds every step with `assignment: null`, so that one write drops the
+    team: earlier revisions keep it, and Assemble restores it.)
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1873,6 +1888,8 @@ def _migrate(con) -> int:
             _migrate_41_to_42(con)
         if version < 43:
             _migrate_42_to_43(con)
+        if version < 44:
+            _migrate_43_to_44(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -13276,6 +13293,42 @@ def refusals(mission_id: str, *, path: Path | None = None) -> list[dict]:
         ]
     finally:
         con.close()
+
+
+def refusal_steps(
+    mission_id: str, approval_id: str, changes: Iterable[str], *, path: Path | None = None
+) -> list[dict]:
+    """``[{step, change_digest}]`` of ONE approval's refusals whose change digest begins with one
+    of ``changes`` (a refusal notice's key part: the digest's leading hex, `sha256:` dropped), in
+    the order they were last refused (#2154). What an OPEN refusal notice's step is looked up in:
+    one seek per notice on `mission_approval_refusals_by_change`, so the work is proportional to
+    the open notices, never to the approval's retired history (Hermes on #2223)."""
+    validate_id(mission_id)
+    wanted = sorted({c for c in changes if isinstance(c, str) and _HEX_PART.fullmatch(c)})
+    if not wanted:
+        return []
+    con = _ready(path)
+    try:
+        rows: list = []
+        for part in wanted:
+            for prefix in (f"sha256:{part}", part):
+                # A range on the indexed column: every digest that begins with `prefix` (hex
+                # digits sort below "g").
+                rows += con.execute(
+                    "SELECT step, change_digest, created_at, rowid AS rid "
+                    "FROM mission_approval_refusals "
+                    "WHERE mission_id=? AND approval_id=? AND change_digest >= ? "
+                    "AND change_digest < ?",
+                    (mission_id, approval_id, prefix, prefix + "g"),
+                ).fetchall()
+        rows.sort(key=lambda r: (r["created_at"], r["rid"]))
+        return [{"step": r["step"], "change_digest": r["change_digest"]} for r in rows]
+    finally:
+        con.close()
+
+
+#: A refusal notice key's change part: lowercase hex, as `mission_runner.notice_key` writes it.
+_HEX_PART = re.compile(r"[0-9a-f]{1,64}")
 
 
 def consent_replay(

@@ -46,7 +46,6 @@ Called from `mission_steps.reconcile` (every supervisor pass and every start). N
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 from . import missions
@@ -316,9 +315,12 @@ def _holds(mission_id: str, rec: dict, by_id: dict) -> bool:
 
 
 def _retract(mission_id: str, rec: dict) -> None:
+    """Retract one round's notification, on devices too (#2154). The closure is persisted with the
+    row's removal (`notifications.retract_episode`) BEFORE the round is marked closed, so a failed
+    notifications write leaves the round open and the next pass retries the whole retraction."""
     from . import notifications
 
-    notifications.dismiss_for_action(notice_key(mission_id, rec["edge_from"], rec["round"]))
+    notifications.retract_episode(notice_key(mission_id, rec["edge_from"], rec["round"]))
     missions.mark_rework_notice(mission_id, rec["edge_from"], rec["round"], closed=True)
 
 
@@ -345,18 +347,20 @@ def notify_sync(mission_id: str) -> int:
             if rec["notice_at"] is not None:
                 continue
             title = str((missions.get_mission(mission_id, events_limit=1) or {}).get("title") or "")
+            key = notice_key(mission_id, rec["edge_from"], rec["round"])
             row = notifications.add(
                 title=f"Mission asks you: {title}"[:200],
                 project="",
                 session_id="",
                 engine="",
                 reason=f"{rec['edge_from']}: the plan's rework rounds are used",
-                action_id=notice_key(mission_id, rec["edge_from"], rec["round"]),
+                action_id=key,
                 once=True,
+                # Its own never-reused device tag (#2154): its retraction closes exactly it.
+                tag=notifications.mission_episode_tag(key),
             )
-            if row and notifications.list_subscriptions():
-                with contextlib.suppress(Exception):
-                    notifications.fanout(row)
+            if row:
+                notifications.push(row)
             missions.mark_rework_notice(mission_id, rec["edge_from"], rec["round"])
             raised += 1 if row else 0
             # Answered between the read and the row: retract it now, not on a later pass.

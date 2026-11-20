@@ -581,20 +581,20 @@ async def test_the_reopen_is_a_new_episode_and_a_stale_pin_refuses_it(seam, monk
     await _stop_all(seam)
 
 
-def test_the_schema_is_v43_and_rolls_back_to_42(tmp_path):
+def test_the_schema_has_v43s_rework_rounds_and_rolls_back_to_42(tmp_path):
     import sqlite3
 
     db = tmp_path / "missions.sqlite3"
     missions._ready(db).close()
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 43
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION >= 43
     assert con.execute("SELECT name FROM sqlite_master WHERE name='mission_reworks'").fetchone()
     con.close()
-    assert missions.rollback_schema(42, path=db) == {"from": 43, "to": 42}
+    assert missions.rollback_schema(42, path=db) == {"from": missions.SCHEMA_VERSION, "to": 42}
     missions.reset_schema_cache_for_test()
     missions._ready(db).close()  # re-opening converges
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     con.close()
 
 
@@ -1276,7 +1276,7 @@ def test_a_v42_store_upgrades_to_v43_with_the_rework_column(tmp_path):
     cols = {r[1] for r in con.execute("PRAGMA table_info(mission_step_runs)")}
     assert "rework_ref" in cols
     assert con.execute("SELECT name FROM sqlite_master WHERE name='mission_reworks'").fetchone()
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 43
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     con.close()
 
 

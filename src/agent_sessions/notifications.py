@@ -288,6 +288,7 @@ def _write(
     *,
     announced: list[str] | None = None,
     episodes: dict[str, dict] | None = None,
+    now: float | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Unique per writer: a shared ".tmp" lets one writer's os.replace unlink the file
@@ -299,12 +300,30 @@ def _write(
     # `episodes` (#1086 Phase 4) follows the same rule: `None` preserves what is on disk, so no
     # writer that edits rows can drop the open needs-you episodes — which would re-announce every
     # one of them on the next sync.
-    if announced is None or episodes is None:
-        # STRICT: preserving what is on disk from a document that could not be read would write
-        # an invented empty predecessor over it (Hermes 5231) — so an unreadable one refuses.
-        _, disk_announced, disk_episodes = _load_doc_strict(path)
-        announced = disk_announced if announced is None else announced
-        episodes = disk_episodes if episodes is None else episodes
+    # STRICT: preserving what is on disk from a document that could not be read would write an
+    # invented empty predecessor over it (Hermes 5231) — so an unreadable one refuses.
+    disk_rows, disk_announced, disk_episodes = _load_doc_strict(path)
+    announced = disk_announced if announced is None else announced
+    episodes = disk_episodes if episodes is None else episodes
+    # A MISSION EPISODE'S ROW LEAVING THE STORE BY ANY ROUTE closes it on devices (#2154): its
+    # retraction, but also the operator's dismiss or clear-all, an action's dismissal and the
+    # ring's eviction. Decided here, the one write every path goes through, against the document
+    # it replaces (every writer holds the lock), so no path can drop a tagged row without its
+    # `closing:` / `closed:` landing in the same `os.replace`. Tags are never reused, so closing
+    # one can never close a newer notification.
+    kept = {str(r.get("tag") or "") for r in rows}
+    gone = {
+        tag
+        for r in disk_rows
+        if is_mission_episode_tag(tag := str(r.get("tag") or "")) and tag not in kept
+    }
+    if gone:
+        at = time.time() if now is None else now
+        episodes = dict(episodes)
+        for tag in gone:
+            episodes[f"{CLOSING}{tag}"] = {"tag": tag, "closing": True, "ts": at}
+            episodes[f"{CLOSED}{tag}"] = {"tag": tag, "closed": True, "ts": at}
+        _prune_ledger(episodes, at)
     doc: object = rows
     if announced or episodes:
         full: dict[str, object] = {"rows": rows, "announced": announced}
@@ -360,6 +379,7 @@ def add(
     after: Callable[[], None] | None = None,
     record: Callable[[str], bool] | None = None,
     dispatch_tag: str | None = None,
+    tag: str = "",
     path: Path | None = None,
 ) -> dict | None:
     """Record one notification, or return ``None`` when an equivalent one is already pending.
@@ -371,6 +391,10 @@ def add(
     ``dispatch_tag`` (#1837) is the producer's event tag for HQ's Dispatches, stored on the row as
     ``dispatch`` — a tag, never text. One that does not fully match :data:`DISPATCH_TAG_RES` is
     dropped and logged: the row is written without it, exactly as if none was given.
+
+    ``tag`` (#2154) is a mission producer's per-episode DEVICE tag (:func:`mission_episode_tag`):
+    the push shows under it, and :func:`retract_episode` closes exactly it. Anything else is
+    dropped, and the push coalesces per link as before.
 
     ``once`` (#1994) announces ``action_id`` at most once EVER, through the same tombstone the
     autonomous-direction class uses: written in the same write as the row, outside the rows, so
@@ -540,6 +564,8 @@ def add(
         if dispatch_tag is not None:
             # A tag only (#1837): HQ's line lives in its own store and is joined into the view.
             rec["dispatch"] = dispatch_tag
+        if tag and is_mission_episode_tag(tag):
+            rec["tag"] = tag
         rows.append(rec)
         kept = _evict(rows)
         if (auto_direction or once) and action_id:
@@ -1161,6 +1187,29 @@ def episode_tag(session_id: str, episode: str) -> str:
     return f"needs-you:{session_id}:{episode}"
 
 
+#: The device-tag family of a MISSION notification episode (#2154): a refusal notice
+#: (`mission-refusal:…`) or an exhausted rework question (`mission-rework:…`). Each producer's
+#: action id is announced once and never reused, so its tag is never reused either, and retracting
+#: one can never close a newer episode. Kept distinct from the bell/action identity.
+MISSION_EPISODE = "mission-ep:"
+_MISSION_ACTIONS = ("mission-refusal:", "mission-rework:")
+
+
+def mission_episode_tag(action_id: str) -> str:
+    """The device tag one mission notification shows under, and the ONLY one its retraction
+    closes. Empty for an action id that is not a mission episode's."""
+    return f"{MISSION_EPISODE}{action_id}" if action_id.startswith(_MISSION_ACTIONS) else ""
+
+
+def is_mission_episode_tag(tag: str) -> bool:
+    return (
+        isinstance(tag, str)
+        and len(tag) <= 200
+        and tag.startswith(MISSION_EPISODE)
+        and tag[len(MISSION_EPISODE) :].startswith(_MISSION_ACTIONS)
+    )
+
+
 #: Reserved key prefix in the episodes map for a device notification still to be RETRACTED. Session
 #: keys are ``engine:id`` and no engine is called ``closing``, so the two can never collide; keeping
 #: them in the same map is what makes every writer preserve them (`_write(..., episodes=None)`).
@@ -1213,12 +1262,101 @@ def _said_before(record: dict | None, info: dict) -> bool:
     return seen is None or (was is not None and seen <= was)
 
 
+def _prune_ledger(episodes: dict[str, dict], now: float) -> bool:
+    """Age out and cap the episodes map's records IN PLACE; True when anything went. Owed
+    retractions expire from the PUSH path after CLOSING_KEEP_S; the closed ledger keeps covering
+    them for the app for CLOSED_KEEP_S, then the oldest beyond CLOSED_MAX go. Shared by every
+    writer of closures (needs-you and mission episodes), so the map stays bounded even when only
+    one of them runs."""
+    changed = False
+    for prefix, keep_s in (
+        (CLOSING, CLOSING_KEEP_S),
+        (CLOSED, CLOSED_KEEP_S),
+        (SAID, SAID_KEEP_S),
+    ):
+        for k in [k for k in episodes if k.startswith(prefix)]:
+            ts = episodes[k].get("ts")
+            if not isinstance(ts, int | float) or now - float(ts) > keep_s:
+                del episodes[k]
+                changed = True
+    for prefix, cap in ((CLOSED, CLOSED_MAX), (SAID, SAID_MAX)):
+        keys = sorted(
+            (k for k in episodes if k.startswith(prefix)),
+            key=lambda k: float(episodes[k].get("ts") or 0),
+        )
+        for k in keys[: max(0, len(keys) - cap)]:
+            del episodes[k]
+            changed = True
+    return changed
+
+
+def _owed(episodes: dict[str, dict]) -> list[str]:
+    """Owed retractions, oldest first, so a bounded batch always drains the longest-owed."""
+    owed = sorted(
+        (ep for k, ep in episodes.items() if k.startswith(CLOSING)),
+        key=lambda ep: (float(ep.get("ts") or 0), str(ep["tag"])),
+    )
+    return [str(ep["tag"]) for ep in owed]
+
+
+def retract_episode(action_id: str, path: Path | None = None, *, now: float | None = None) -> int:
+    """THE shared episode-close operation of the mission producers (#2154): drop the bell rows of
+    ``action_id``. The device retraction of each that showed under its own mission episode tag —
+    an owed close (``closing:``) for the next SHOWN push and an entry in the closed ledger
+    (``closed:``) for the app and the service worker — is written by :func:`_write` in the SAME
+    write, as it is for a row leaving by any other route. A device close therefore exists exactly
+    when the row is gone, and a write that fails (an unreadable store raises
+    :class:`StoreUnreadable`, a full disk ``OSError``) changes nothing: the caller retires its own
+    source record only after this returns, so the work is retried and the closure is persisted
+    first. No close-only push: the close rides on the next shown push or the app's reconciliation
+    (needs-you-notifications.md). Returns the rows removed."""
+    if not action_id:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read_strict(p)
+        keep = [r for r in rows if r.get("action_id") != action_id]
+        if len(keep) == len(rows):
+            return 0
+        _write(p, keep, now=now)
+        return len(rows) - len(keep)
+
+
+def push(rec: dict, path: Path | None = None) -> None:
+    """Push one mission notification, carrying as many owed retractions as fit its ENCODED budget,
+    oldest first; exactly the batch on the wire is acknowledged, and only when the subscription
+    list was read and no device failed (the needs-you rule, `needs_you_notify._deliver`).
+    Blocking; best-effort — the bell row stands on its own."""
+    from . import webpush
+
+    try:
+        if not list_subscriptions():
+            return
+        try:
+            pending = _owed(_load_doc_strict(path or _notifications_path())[2])
+        except StoreUnreadable:
+            pending = []
+        batch = webpush.fit_close(
+            pending,
+            title=rec.get("title", ""),
+            project=rec.get("project", ""),
+            url=_link(rec),
+            tag=str(rec.get("tag") or ""),
+        )
+        sent = fanout(rec, close=batch)
+        if batch and not sent.get("failed"):
+            ack_closes(batch, path)
+    except Exception:  # noqa: BLE001 — best-effort; an owed close stays owed
+        log.warning("notifications: a mission push failed", exc_info=True)
+
+
 def owed_close_tags(path: Path | None = None) -> list[str]:
     """Every retracted device tag in the recovery horizon — what the app closes EXACTLY, and what
     the service worker checks before showing (Hermes 5239 finding 5, 5265 findings 2 and 6). Strict.
 
-    Only needs-you EPISODE tags are ever listed. They are minted per episode and never reused, so
-    retracting one can never close or suppress a later notification (Hermes 5275, finding 1). An
+    Only EPISODE tags are ever listed: needs-you episodes and mission notification episodes
+    (:data:`MISSION_EPISODE`, #2154). Both are minted per episode and never reused, so retracting
+    one can never close or suppress a later notification (Hermes 5275, finding 1). An
     escalation's per-session URL tag is reused by every later escalation, so it is never retracted
     from here at all: episodes defer to such a row rather than adopting it (see
     :func:`sync_needs_you`)."""
@@ -1317,32 +1455,7 @@ def sync_needs_you(
 
         _is_open = _is_open_key
 
-        # Owed retractions expire from the PUSH path after CLOSING_KEEP_S; the closed ledger keeps
-        # covering them for the app for CLOSED_KEEP_S, then the oldest beyond CLOSED_MAX go.
-        for prefix, keep_s in (
-            (CLOSING, CLOSING_KEEP_S),
-            (CLOSED, CLOSED_KEEP_S),
-            (SAID, SAID_KEEP_S),
-        ):
-            for k in [k for k in episodes if k.startswith(prefix)]:
-                ts = episodes[k].get("ts")
-                if not isinstance(ts, int | float) or now - float(ts) > keep_s:
-                    del episodes[k]
-                    changed = True
-        ledger = sorted(
-            (k for k in episodes if k.startswith(CLOSED)),
-            key=lambda k: float(episodes[k].get("ts") or 0),
-        )
-        for k in ledger[: max(0, len(ledger) - CLOSED_MAX)]:
-            del episodes[k]
-            changed = True
-        said = sorted(
-            (k for k in episodes if k.startswith(SAID)),
-            key=lambda k: float(episodes[k].get("ts") or 0),
-        )
-        for k in said[: max(0, len(said) - SAID_MAX)]:
-            del episodes[k]
-            changed = True
+        changed = _prune_ledger(episodes, now)
 
         def _say(sid: str, info: dict) -> None:
             episodes[f"{SAID}{sid}"] = {
@@ -1478,16 +1591,11 @@ def sync_needs_you(
             if opened and before_write is not None:
                 before_write(opened)
             _write(p, rows, episodes=episodes)
-        # Oldest first, so a bounded batch always drains the longest-owed retractions.
-        owed = sorted(
-            (ep for k, ep in episodes.items() if k.startswith(CLOSING)),
-            key=lambda ep: (float(ep.get("ts") or 0), str(ep["tag"])),
-        )
         return {
             "opened": opened,
             "reopened": reopened,
             "closed": closed,
-            "pending": [str(ep["tag"]) for ep in owed],
+            "pending": _owed(episodes),
             "open": sorted(k for k in episodes if _is_open(k)),
         }
 
