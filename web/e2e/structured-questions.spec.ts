@@ -441,6 +441,8 @@ test("#1463: several questions and a multi-select — Send waits for every answe
   await expect(askSend(page)).toBeDisabled();
   await expect(ask(page)).toContainText("1 of 2 answered");
   await expect(ask(page)).toContainText("Answer “Channel” to send.");
+  // A multi-select stays put after a pick (#2234): the next question is its own tab.
+  await ask(page).getByRole("tab", { name: /Channel/ }).click();
   await askOptions(page).nth(4).click();
   await askSend(page).click();
   await expect.poll(() => decisions.length).toBe(1);
@@ -738,4 +740,78 @@ test("#1463: a lost message-mode answer is retried as the identical message, and
   expect(posts[1]).toEqual(posts[0]);
   expect(decisions[0].decision).toBe("cancel");
   expect(state.turns.filter((t) => typeof t.text === "string" && (t.text as string).startsWith("My answers"))).toHaveLength(1);
+});
+
+const tabs = (page: Page) => page.getByTestId("structured-question-dock").getByRole("tab");
+
+// #2234: an open question is pinned in a dock between the log and the composer, one tab per
+// question, so it never scrolls away and several questions never fill the screen.
+test("#2234: several questions are pinned above the composer, one tab at a time, while the log scrolls", async ({ page }, testInfo) => {
+  const qs = [
+    { title: "How does he reach the Mac mini?", options: ["SSH through a tunnel (Recommended)", "SSH and screen sharing", "On site, LAN only"] },
+    { title: "Which networks does the block cover?", options: ["Every private range (Recommended)", "Only the two named subnets"] },
+    { title: "Where does the sudo password come from?", options: ["The password vault", "You give it to me", "You run the sudo steps yourself"] },
+  ];
+  const { state, submits } = await asked(page, "dark", qs);
+  // A long conversation before the question, so the log scrolls.
+  const filler = Array.from({ length: 10 }, (_, i) => ({
+    ...state.turns[0], turn_id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    operation_id: undefined, text: `Earlier message ${i}`, reply: "A long earlier reply line.\n\n".repeat(6),
+    questions: undefined, question_id: undefined,
+  }));
+  state.turns = [...filler, ...state.turns];
+  state.revision++;
+  // The bug: reading the conversation from the top scrolled the question and its Send away.
+  await expect(block(page)).toBeVisible();
+  await expect(page.getByTestId("structured-turn")).toHaveCount(11);
+  await page.getByTestId("api-log").evaluate((el) => { el.scrollTop = 0; });
+  await expect(send(page)).toBeInViewport();
+  const dock = page.getByTestId("structured-question-dock");
+  await expect(dock.getByTestId("structured-question")).toBeVisible();
+  // The transcript keeps a marker where the question was asked, not the block.
+  await expect(page.getByTestId("api-log").getByTestId("structured-question")).toHaveCount(0);
+  await expect(page.getByTestId("api-log").getByTestId("structured-question-marker")).toHaveCount(1);
+  // One question's options at a time.
+  await expect(tabs(page)).toHaveCount(3);
+  await expect(options(page).filter({ visible: true })).toHaveCount(3);
+  for (const tab of await tabs(page).all()) {
+    expect((await tab.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); // design §8
+  }
+  // Read from the top: the question, its tabs and Send stay in view, and the dock leaves the log
+  // at least half the pane and never covers the composer.
+  await page.getByTestId("api-log").evaluate((el) => { el.scrollTop = 0; });
+  await expect(send(page)).toBeInViewport();
+  await expect(tabs(page).first()).toBeInViewport();
+  const pane = (await page.getByTestId("structured-pane").boundingBox())!;
+  const box = (await dock.boundingBox())!;
+  expect(box.height).toBeLessThanOrEqual(pane.height * 0.5 + 1);
+  const composer = (await page.getByRole("textbox").last().boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(composer.y + 1);
+  await page.screenshot({ path: testInfo.outputPath("question-dock.png") });
+  // A pick moves on to the next question; Send waits for all three.
+  await options(page).filter({ visible: true }).first().click();
+  await expect(tabs(page).nth(1)).toHaveAttribute("aria-selected", "true");
+  await options(page).filter({ visible: true }).first().click();
+  await expect(send(page)).toBeDisabled();
+  await options(page).filter({ visible: true }).nth(2).click();
+  await send(page).click();
+  await expect.poll(() => submits.length).toBe(1);
+  expect(submits[0].text).toBe(
+    `${qs[0].title}: ${qs[0].options[0]}\n${qs[1].title}: ${qs[1].options[0]}\n${qs[2].title}: ${qs[2].options[2]}`,
+  );
+  // Answered: the dock empties and takes no room.
+  await expect(dock).toBeHidden();
+});
+
+test("#2234: the dock minimises to its head, and the transcript marker brings it back", async ({ page }) => {
+  await asked(page, "dark", [ASKED, { title: "Which channel ships it first?", options: ["main", "stable"] }]);
+  const minimise = page.getByTestId("structured-question-minimise");
+  await expect(minimise).toBeVisible();
+  expect((await minimise.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await minimise.click();
+  await expect(options(page).filter({ visible: true })).toHaveCount(0);
+  await expect(block(page)).toContainText("0 of 2 answered");
+  await page.getByTestId("structured-question-marker").click();
+  await expect(options(page).filter({ visible: true })).toHaveCount(2);
+  await expect(tabs(page).first()).toBeFocused();
 });

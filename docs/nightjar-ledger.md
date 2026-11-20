@@ -225,6 +225,7 @@ the same list.
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu popup:objective-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/structured/ApiRail.tsx` | popup | 6 | todo |  |  |
+| `components/structured/QuestionDock.tsx` | popup | 6 | todo | `e2e/structured-questions.spec.ts` drives the dock desktop + mobile (#2234): pinned above the composer while the log scrolls, tabs, minimise and the transcript marker | not a popup surface: a portal into the pane's own dock slot above the composer (in flow, no scrim, no overlay) |
 | `components/structured/PermissionsDialog.tsx` | popup | 3 | done | popup:permissions | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/structured/StructuredPane.tsx` | popup | 6 | todo |  |  |
 | `components/templates/ConfirmDialog.tsx` | popup | 3 | done | popup:confirm popup:git-confirm | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

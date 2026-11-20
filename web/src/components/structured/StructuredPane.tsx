@@ -176,6 +176,8 @@ import {
   remedyWarning,
 } from "./structuredView";
 import { ChoiceQuestions } from "./Questions";
+import { DockedQuestion, QuestionDock } from "./QuestionDock";
+import { QuestionDockTarget } from "./questionDockContext";
 import {
   nextToPost,
   conversationReading,
@@ -430,6 +432,8 @@ function QuestionRequest({
   const mineText = mine?.decision === "answer" ? `“${answerLabel(mine.answers)}”` : `“${choiceLabel(mine?.decision ?? "", req)}”`;
   return (
     <div data-testid="structured-request" data-kind={req.kind}>
+      {/* Pinned in the pane's dock above the composer (#2234); its marker stays here. */}
+      <DockedQuestion key={requestKey(req)} label={requestTitle(req, agent)}>
       <ChoiceQuestions
         key={requestKey(req)}
         testId="structured-ask"
@@ -523,6 +527,7 @@ function QuestionRequest({
               : null
         }
       />
+      </DockedQuestion>
       {/* The complete request the answer goes back with (Hermes #6477): an answer returns the
           original input, so nothing in it may be hidden behind the picker. */}
       <details className={styles.requestDetails} data-testid="structured-ask-details">
@@ -1918,6 +1923,8 @@ export function StructuredPane({
   const op = useRef<{ id: string; text: string } | null>(null);
   const cursor = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
+  // The pinned question dock (#2234): questions portal into it from their turns.
+  const [questionDock, setQuestionDock] = useState<HTMLDivElement | null>(null);
   // The outbox (#1465): sent messages the conversation does not show yet, FIFO, only the head in
   // flight. A late POST result for an unmounted pane (a session switch) touches nothing.
   const { outbox, outboxRef, setOutbox } = useOutbox();
@@ -3692,6 +3699,8 @@ export function StructuredPane({
     const mine = answer?.session === key && answer.question === question ? answer : null;
     const holding = mine?.phase === "sending" || mine?.phase === "unknown";
     return (
+      // Pinned in the pane's dock above the composer (#2234); its marker stays in the turn.
+      <DockedQuestion key={`${t.turn_id}:${question}`} label={`${agent} asks · it keeps working meanwhile`}>
       <ChoiceQuestions
         key={`${t.turn_id}:${question}`}
         heading={`${agent} asks · it keeps working meanwhile`}
@@ -3754,6 +3763,7 @@ export function StructuredPane({
             : "Pick an option, or type your own answer below.";
         }}
       />
+      </DockedQuestion>
     );
   };
   // Background jobs are the strip above the composer (#1726), never a transcript row.
@@ -4021,6 +4031,7 @@ export function StructuredPane({
       )}
       {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
           heading is never inside the log's own live region or its busy state). */}
+      <QuestionDockTarget.Provider value={questionDock}>
       <RecordFrom.Provider value={startedFrom.get(actionKey)}>
       <PeerRaceLine.Provider value={raceLine}>
       <ArrivalContext.Provider value={{ has: arrived.has, primed: painted.current }}>
@@ -4211,6 +4222,9 @@ export function StructuredPane({
       </ArrivalContext.Provider>
       </PeerRaceLine.Provider>
       </RecordFrom.Provider>
+      </QuestionDockTarget.Provider>
+      {/* The open question, pinned between the log and the composer (#2234). */}
+      <QuestionDock dockRef={setQuestionDock} />
       {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}
       <BackgroundStrip
         snap={snap}
