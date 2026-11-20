@@ -14,6 +14,10 @@ export const AUTOMATIONS_API = "/api/automations";
  *  started, for the origin badges. */
 export const AUTOMATION_ORIGINS_API = `${AUTOMATIONS_API}/origins`;
 
+/** Library → Webhooks (#2221): list/create at the root, one webhook at `webhookApiPath(id)`. */
+export const WEBHOOKS_API = "/api/webhooks";
+export const webhookApiPath = (id: string) => `${WEBHOOKS_API}/${encodeURIComponent(id)}`;
+
 /** `POST` — stop one running HQ turn (#2076). It names the turn, so it can never end another. */
 export const askStopTurnPath = (cid: string, turnId: string) =>
   `/api/ask/conversations/${encodeURIComponent(cid)}/turns/${encodeURIComponent(turnId)}/stop`;

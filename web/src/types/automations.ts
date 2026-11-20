@@ -27,7 +27,11 @@ export type Trigger =
   | { kind: "manual" }
   | { kind: "once"; at: string; tz: string }
   | { kind: "schedule"; cadence: Cadence; tz: string }
-  /** #2202: a signed Forgejo delivery. It pairs ONLY with a `forge_review_loop` action. */
+  /** A webhook picked from Library → Webhooks (#2221). It pairs ONLY with a `forge_review_loop`
+   *  action. */
+  | { kind: "webhook"; webhook_id: string }
+  /** #2202: a review loop's own Forgejo webhook. Read-only: an existing automation keeps it, but the
+   *  server refuses creating a new one in this form. */
   | { kind: "webhook"; scheme: "forgejo" };
 
 export type AutomationMessage =
@@ -197,8 +201,15 @@ export interface Automation {
 }
 
 /** Where the forge delivers and what arrived (#2202). The secret itself is never here: it is shown
- *  once, by `POST /api/automations/{id}/webhook-secret`. */
+ *  once, by the call that makes it. Since #2221 it is the picked webhook's public view plus
+ *  `webhook_id`; a legacy review loop's is its own webhook (`legacy_automation` set). The extra
+ *  fields are absent from a server that predates the list. */
 export interface AutomationWebhook {
+  webhook_id?: string;
+  id?: string;
+  name?: string;
+  legacy_automation?: string | null;
+  pickable?: boolean;
   /** Root-relative: `/hooks/a/<id>`. */
   path: string;
   secret_set: boolean;

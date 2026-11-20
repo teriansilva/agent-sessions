@@ -16,6 +16,7 @@ import {
   bodyFromForm,
   formFromAutomation,
   formProblems,
+  isLegacyHook,
   loopFacts,
   nextRunWords,
   outcomeWord,
@@ -145,6 +146,18 @@ describe("form ↔ config (#2202)", () => {
     expect(body.policy.max_concurrent).toBe(3);
   });
 
+  test("a loop on a picked webhook round-trips its webhook_id; a legacy one keeps its scheme (#2221)", () => {
+    const picked = loopAutomation({ trigger: { kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" } });
+    const f = formFromAutomation(picked, "UTC");
+    expect(f).toMatchObject({ webhookId: "0a1b2c3d4e5f6a7b", legacyHook: false });
+    expect(bodyFromForm(f).trigger).toEqual({ kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" });
+    const legacy = formFromAutomation(loopAutomation(), "UTC");
+    expect(legacy).toMatchObject({ webhookId: "", legacyHook: true });
+    // A legacy loop needs no pick: it is saved back as it was, never converted.
+    expect(formProblems({ ...legacy, reviewerVersion: 3 })).toEqual([]);
+    expect(bodyFromForm(legacy).trigger).toEqual({ kind: "webhook", scheme: "forgejo" });
+  });
+
   test("a new loop sends the defaults: both legs, 4 PR / 5 issue reviews, verdicts returned", () => {
     let f = withAction(blankForm("UTC"), "forge_review_loop", 3);
     f = {
@@ -155,8 +168,11 @@ describe("form ↔ config (#2202)", () => {
       reviewerId: "shop-reviewer",
       reviewerVersion: 3,
       reviewerLogin: "shop-reviewer-bot",
+      webhookId: "0a1b2c3d4e5f6a7b",
     };
     expect(formProblems(f)).toEqual([]);
+    // #2221: a new loop is started by a webhook PICKED from the list, never the legacy scheme.
+    expect(bodyFromForm(f).trigger).toEqual({ kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" });
     expect(bodyFromForm(f).action).toEqual({
       kind: "forge_review_loop",
       project_id: "p1",
@@ -174,6 +190,7 @@ describe("form ↔ config (#2202)", () => {
   test("the problems name what the server would refuse", () => {
     const f = { ...withAction(blankForm("UTC"), "forge_review_loop", 3), name: "x" };
     expect(formProblems(f)).toEqual([
+      "Pick a webhook",
       "Choose a project",
       "Name the repository as owner/name",
       "Choose a reviewer specialist",
@@ -181,6 +198,7 @@ describe("form ↔ config (#2202)", () => {
     ]);
     const g = {
       ...f,
+      webhookId: "0a1b2c3d4e5f6a7b",
       projectId: "p1",
       repo: "no-slash",
       reviewerId: "s",
@@ -202,6 +220,13 @@ describe("form ↔ config (#2202)", () => {
 describe("words (#2202)", () => {
   test("trigger, action, next run", () => {
     expect(triggerWords({ kind: "webhook", scheme: "forgejo" }).label).toBe("Forgejo webhook");
+    expect(triggerWords({ kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" }).label).toBe("Webhook");
+    expect(isLegacyHook({ kind: "webhook", scheme: "forgejo" })).toBe(true);
+    expect(isLegacyHook({ kind: "webhook", webhook_id: "w" })).toBe(false);
+    expect(isLegacyHook({ kind: "manual" })).toBe(false);
+    expect(
+      nextRunWords(loopAutomation({ trigger: { kind: "webhook", webhook_id: "w" } }), 0).sub,
+    ).toBe("when its webhook delivers an event");
     expect(actionLabel("forge_review_loop")).toBe("Review loop");
     expect(nextRunWords(loopAutomation(), 0)).toEqual({ main: "On delivery", sub: "when Forgejo sends an event" });
   });

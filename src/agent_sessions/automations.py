@@ -223,7 +223,7 @@ def _hhmm(raw: object) -> str:
 
 
 def validate_trigger(raw: object, *, now: float | None = None) -> dict:
-    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence", "scheme"}, {"kind"})
+    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence", "scheme", "webhook_id"}, {"kind"})
     kind = _word(t["kind"], "trigger kind")
     if kind in RESERVED_TRIGGERS:
         raise AutomationError(
@@ -233,6 +233,14 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
         _obj(t, "a manual trigger", {"kind"})
         return {"kind": "manual"}
     if kind == "webhook":
+        # A webhook picked from the list (#2221), or — read-only — a #2202 review loop's own
+        # (`scheme`), which lives on at its old address until #2222 moves it over.
+        if "webhook_id" in t:
+            _obj(t, "a webhook trigger", {"kind", "webhook_id"}, {"webhook_id"})
+            wid = t["webhook_id"]
+            if not isinstance(wid, str) or not _ID_RE.match(wid):
+                raise AutomationError("webhook_id must be a webhook id")
+            return {"kind": "webhook", "webhook_id": wid}
         _obj(t, "a webhook trigger", {"kind", "scheme"}, {"scheme"})
         scheme = _word(t["scheme"], "webhook scheme")
         if scheme not in WEBHOOK_SCHEMES:
@@ -998,6 +1006,9 @@ def scope_of(config: dict, pins: dict) -> dict:
         # Phase 3 fields, fixed here so a later phase widens against a real baseline.
         "webhook": trigger["kind"] == "webhook",
         "mapped": [],
+        # Which webhook from the list (#2221): only when one was picked, so a #2202 review loop's
+        # stored receipt (which has no such field) still equals its scope.
+        **({"webhook_source": trigger["webhook_id"]} if trigger.get("webhook_id") else {}),
     }
 
 
@@ -1024,6 +1035,7 @@ _CHANGED = {
     "engine": "a different agent or model",
     "model": "a different agent or model",
     "trigger": "a different trigger",
+    "webhook_source": "a different webhook",
     # ANY change of when it runs — time, days, day of month, interval, zone, or a once's `at` — is
     # re-approved: "runs at 03:00" and "runs at 14:00" are different grants.
     "cadence": "the schedule changed",
@@ -1382,6 +1394,14 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
     trig = scope.get("trigger")
     if trig in ("schedule", "once"):
         lines.append(_cadence_words(scope.get("cadence"), scope.get("tz")))
+    elif trig == "webhook" and scope.get("webhook_source"):
+        from . import webhooks
+
+        wid = str(scope["webhook_source"])
+        lines.append(
+            f"Starts when the webhook “{webhooks.name_of(wid)}” ({wid}) delivers a signed event"
+            + (f" for {t.get('repo')}" if t.get("repo") else "")
+        )
     elif trig == "webhook":
         lines.append(f"Starts when Forgejo sends a signed event for {t.get('repo')}")
     elif trig == "manual":

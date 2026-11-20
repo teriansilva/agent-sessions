@@ -120,26 +120,35 @@ def _facts(ev: forge_hook.Event | None, headers: dict) -> dict:
     return out
 
 
-async def handle(aid: str, body: bytes, headers: dict, *, registry) -> None:
-    """Act on one VERIFIED delivery. Never raises; every outcome is recorded or logged."""
+async def handle(
+    aid: str, body: bytes, headers: dict, *, registry, source: str | None = None
+) -> None:
+    """Act on one VERIFIED delivery that arrived through webhook ``source``. Never raises; every
+    outcome is recorded or logged. The automation must still listen on ``source`` when it decides
+    and inside every admission (Hermes on #2225): a delivery never runs under a webhook it didn't
+    come through."""
     try:
-        await _handle(aid, body, headers, registry=registry)
+        await _handle(aid, body, headers, registry=registry, source=source)
     except Exception:  # noqa: BLE001 — a delivery must never take the app down
         log.warning("review loop %s: delivery handling failed", aid, exc_info=True)
 
 
-async def _handle(aid: str, body: bytes, headers: dict, *, registry) -> None:
+async def _handle(
+    aid: str, body: bytes, headers: dict, *, registry, source: str | None = None
+) -> None:
     # Classified against one automation revision, admitted only under that same revision: if the
     # operator changed (and re-approved) the automation during the forge read, the delivery is
     # classified ONCE more against the current configuration — never admitted under a config it
     # was not checked against (Hermes on #2206).
     for _attempt in range(2):
-        if not await _handle_once(aid, body, headers, registry=registry):
+        if not await _handle_once(aid, body, headers, registry=registry, source=source):
             return
     log.warning("review loop %s: the automation kept changing; delivery dropped", aid)
 
 
-async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> bool:
+async def _handle_once(
+    aid: str, body: bytes, headers: dict, *, registry, source: str | None = None
+) -> bool:
     """One classification and admission. Returns True when the automation changed under it and
     the delivery should be classified again."""
     fp = _fingerprint(body)
@@ -152,6 +161,7 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"rejected:{fp}",
             outcome="refused",
             reason=f"rejected: {e.reason}; nothing started",
@@ -161,6 +171,9 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
     row = await asyncio.to_thread(store.get, aid)
     config = row["config"]
     if config is None or config["action"]["kind"] != "forge_review_loop":
+        return False
+    if source is not None and store.source_of(aid, config) != source:
+        # Switched to another webhook since this delivery was routed: not its delivery.
         return False
     action = config["action"]
     dec = review_loop.classify(action, ev)
@@ -174,6 +187,7 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"rejected:{fp}",
             outcome="refused",
             reason=f"rejected: {dec.reason}",
@@ -182,13 +196,16 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
         return False
     origin = _origin(_repo_url(body))
     if dec.kind == "verdict":
-        return await _verdict(aid, row, action, ev, facts, fp, origin, registry=registry)
+        return await _verdict(
+            aid, row, action, ev, facts, fp, origin, registry=registry, source=source
+        )
     # THE FORGE SAYS WHAT IS CURRENT — never the order deliveries arrived in.
     rev, is_open, why = await asyncio.to_thread(current_revision, action["repo"], dec.item, origin)
     if rev is None:
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"unconfirmed:{fp}",
             outcome="refused",
             reason=f"{UNCONFIRMED} ({why}); nothing started",
@@ -205,6 +222,7 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"stale:{dec.slot}",
             outcome="ignored",
             reason=why,
@@ -214,6 +232,7 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry) -> boo
     res = await asyncio.to_thread(
         store.begin_review,
         aid,
+        source=source,
         slot=dec.slot,
         repo=action["repo"],
         item=dec.item,
@@ -256,6 +275,7 @@ async def _verdict(
     origin: str,
     *,
     registry,
+    source: str | None = None,
 ) -> bool:
     """The return leg's acceptance (#2202 PR 2): the marker, the formal type, the forge's current
     revision, then ONE transaction (`accept_verdict`) before anything is sent."""
@@ -269,6 +289,7 @@ async def _verdict(
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"verdict-bad:{fp}",
             outcome="ignored",
             reason=f"ignored: {ev.marker_problem}",
@@ -293,6 +314,7 @@ async def _verdict(
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"verdict-bad:{fp}",
             outcome="ignored",
             reason=why,
@@ -304,6 +326,7 @@ async def _verdict(
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"unconfirmed:{fp}",
             outcome="refused",
             reason=f"{UNCONFIRMED} ({cwhy}); nothing sent",
@@ -315,6 +338,7 @@ async def _verdict(
         await asyncio.to_thread(
             store.record_delivery,
             aid,
+            source=source,
             slot=f"closed-verdict:{fp}",
             outcome="ignored",
             reason=f"ignored: {item} is closed on the forge; the verdict is not returned",
@@ -324,6 +348,7 @@ async def _verdict(
     res = await asyncio.to_thread(
         store.accept_verdict,
         aid,
+        source=source,
         slot=f"verdict:{action['repo'].lower()}:{kind}:{number}:{record}",
         repo=action["repo"],
         expect_revision=row["revision"],

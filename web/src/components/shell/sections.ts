@@ -38,6 +38,7 @@ import {
   FileText,
   UsersRound,
   Route,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
 
@@ -62,12 +63,14 @@ import {
   SESSIONS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
+  WEBHOOKS_PATH,
 } from "../../lib/routes";
 
 export type SectionId = "ask" | "sessions" | "mission" | "library";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Library has
- *  templates, variables, memory, artifacts, automations, skills and playbooks (#1294, #1932). Skills and
+ *  templates, variables, memory, artifacts, automations, webhooks, skills and playbooks (#1294, #1932,
+ *  #2221). Skills and
  *  Playbooks each hold their own Browse gallery view (#1440). */
 export type SubsectionId =
   | "hq"
@@ -81,6 +84,7 @@ export type SubsectionId =
   | "memory"
   | "artifacts"
   | "automations"
+  | "webhooks"
   | "playbooks"
   | "skills"
   | "specialists"
@@ -154,6 +158,8 @@ export const SECTIONS: Section[] = [
       // What agents PUBLISHED (#1932): files and static sites at a stable link.
       { id: "artifacts", label: "Artifacts", Icon: Package, to: ARTIFACTS_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
+      // #2221: the signed addresses services deliver to, which automations pick as a trigger.
+      { id: "webhooks", label: "Webhooks", Icon: Webhook, to: WEBHOOKS_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "specialists", label: "Specialists", Icon: UsersRound, to: SPECIALISTS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
@@ -194,6 +200,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
+  // Webhooks OWNS its subtree: a new one is `/library/webhooks/new`, one webhook `/library/webhooks/<id>`.
+  if (pathname === WEBHOOKS_PATH || pathname.startsWith(`${WEBHOOKS_PATH}/`)) return "webhooks";
   // MCP servers OWNS its subtree: the wizard is `/library/mcp/new`, a server `/library/mcp/<id>`.
   if (pathname === MCP_PATH || pathname.startsWith(`${MCP_PATH}/`)) return "mcp";
   if (pathname === MEMORY_PATH) return "memory";

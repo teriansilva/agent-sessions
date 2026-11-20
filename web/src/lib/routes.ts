@@ -130,6 +130,14 @@ export function automationEditPath(id: string): string {
   return `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}/edit`;
 }
 
+/** Library → Webhooks (#2221): a name, an address and a secret any service can deliver to and any
+ *  automation can pick. `WEBHOOK_NEW_PATH` makes one (its secret shown once); one webhook's page is
+ *  `webhookPath(id)`. */
+export const WEBHOOKS_PATH = "/library/webhooks";
+export const WEBHOOK_NEW_PATH = `${WEBHOOKS_PATH}/new`;
+export const WEBHOOK_ROUTE = `${WEBHOOKS_PATH}/:webhookId`;
+export const webhookPath = (id: string) => `${WEBHOOKS_PATH}/${encodeURIComponent(id)}`;
+
 /** The New project wizard (#1187). Under no section of its own: the header nav is measured full at
  *  320 px (#1058), so the wizard is reached from New session, the dashboard and Settings → Projects,
  *  and renders without the session sidebar. */

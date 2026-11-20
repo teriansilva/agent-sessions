@@ -36,29 +36,24 @@ credentials and the working session pushes with its own.
 
 ## Set it up
 
-1. Open **Library → Automations → New automation**.
-2. Under **When**, choose **Forgejo webhook**. Under **Do**, **Review loop** is selected with it.
-3. Pick the **project**, then enter the **repository** (`owner/name`), the **reviewer specialist**
+1. **Create a webhook** in **Library → Webhooks** and add it to the repository on Forgejo, as
+   described in [Webhooks](/guide/webhooks). On the Forgejo form, set **Trigger on** to custom
+   events and tick these **five**:
+   - **Issues**
+   - **Issue comment**
+   - **Pull request**
+   - **Pull request synchronized**: a separate box. Without it, a push to an open pull request
+     never starts the next review.
+   - **Pull request reviewed**
+2. Open **Library → Automations → New automation**.
+3. Under **When**, choose **Webhook** and **pick the webhook** you created. Under **Do**,
+   **Review loop** is selected with it.
+4. Pick the **project**, then enter the **repository** (`owner/name`), the **reviewer specialist**
    and the **reviewer account** (the forge login the reviewer posts as).
-4. Choose what to review (issues, pull requests or both) and how many reviews an item gets at
+5. Choose what to review (issues, pull requests or both) and how many reviews an item gets at
    most. The defaults are 4 per pull request and 5 per issue, counted over the item's whole life.
-5. Save, then **Enable…**. The consent dialog lists everything the loop may do; confirm with
-   **Enable automation**. Any later change asks again.
-6. In **Connect Forgejo**, choose **Create secret** and copy it. It is shown once.
-7. In the repository on Forgejo, open **Settings → Webhooks → Add webhook → Forgejo** and set:
-   - **Target URL:** the payload URL from the panel (`https://<your BattleLab>/hooks/a/<id>`).
-   - **HTTP method:** POST. **Content type:** `application/json`.
-   - **Secret:** the secret you copied.
-   - **Trigger on:** custom events, and tick **Issues**, **Issue comment**, **Pull request**,
-     **Pull request synchronized** and **Pull request reviewed**. "Pull request synchronized" is
-     a separate box on Forgejo: without it, a push to an open pull request never starts the next
-     review.
-   - **Branch filter:** leave empty.
-8. Use **Test delivery** on Forgejo. **Last delivery** in the panel updates. A test delivery isn't
-   an item, so it isn't a run.
-
-**Rotate secret** makes a new one. The old secret keeps working for 24 hours, so you can update the
-forge without missing deliveries.
+6. Save, then **Enable…**. The consent dialog lists everything the loop may do, including which
+   webhook starts it; confirm with **Enable automation**. Any later change asks again.
 
 ### Behind a reverse proxy
 

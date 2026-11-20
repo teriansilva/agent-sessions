@@ -270,6 +270,9 @@ def public_run(r: dict) -> dict:
 def _create(body: dict) -> dict:
     now = time.time()
     config = model.validate_config(body, now=now)
+    if config["trigger"]["kind"] == "webhook" and not config["trigger"].get("webhook_id"):
+        # #2202's per-automation webhook lives on for existing review loops only (#2221).
+        raise model.AutomationError("pick a webhook from Library → Webhooks (webhook_id)")
     automation_runner.check_save(config)
     row = store.create(config, model.compute_pins(config), now=now)
     return public(row)

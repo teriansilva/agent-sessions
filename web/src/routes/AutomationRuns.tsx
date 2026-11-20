@@ -26,12 +26,14 @@ import {
 import { useAutomations, useNowS } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
 import { WebhookPanel } from "../components/automations/WebhookPanel";
+import { SharedWebhookPanel } from "../components/webhooks/WebhookBits";
 import { useRunPages } from "../components/automations/useRunPages";
 import { refreshOrigins } from "../app/automationOrigins";
 import { api } from "../lib/api";
 import {
   errorWords,
   inFlightNote,
+  isLegacyHook,
   loopFacts,
   runNowBlock,
   runTriggerWords,
@@ -328,12 +330,27 @@ function RunsPage({ id }: { id: string }) {
 
           {a?.webhook && (
             <div className={styles.more}>
-              <WebhookPanel
-                automationId={a.id}
-                webhook={a.webhook}
-                nowS={nowS}
-                onWebhook={(w) => applyRow({ ...a, webhook: w })}
-              />
+              {/* A webhook picked from the list (#2221) is shared: read-only here, with a link to its
+                  page; only a #2202 review loop's own webhook keeps its secret controls. */}
+              {a.trigger?.kind === "webhook" && !isLegacyHook(a.trigger) && a.webhook.webhook_id ? (
+                <SharedWebhookPanel
+                  id={a.webhook.webhook_id}
+                  name={a.webhook.name ?? a.webhook.webhook_id}
+                  path={a.webhook.path}
+                  lastDeliveryAt={a.webhook.last_delivery_at}
+                  lastEvent={a.webhook.last_event}
+                  lastNote={a.webhook.last_note}
+                  unsigned24h={a.webhook.unsigned_24h}
+                  nowS={nowS}
+                />
+              ) : (
+                <WebhookPanel
+                  automationId={a.id}
+                  webhook={a.webhook}
+                  nowS={nowS}
+                  onWebhook={(w) => applyRow({ ...a, webhook: w })}
+                />
+              )}
             </div>
           )}
 

@@ -1,9 +1,10 @@
 /** The Forgejo review loop's UI (#2202 PR 3), in a real browser on desktop and phone, both themes.
  *
- *  The editor pairs the "Forgejo webhook" trigger with the "Review loop" action (choosing either
+ *  The editor pairs the "Webhook" trigger with the "Review loop" action (choosing either
  *  chooses both; leaving either leaves both), offers only API-client specialists as the reviewer and
- *  pins the current version, and saves exactly the strict body the server validates. Once saved,
- *  "Connect Forgejo" shows the payload URL, reveals the secret ONCE after Create secret (Copy, then
+ *  pins the current version, and saves exactly the strict body the server validates — since #2221
+ *  with a webhook PICKED from the list (`webhook_id`; `./webhooks.spec.ts` covers the picker). A
+ *  #2202 loop saved with its own webhook keeps it: "Connect Forgejo" shows the payload URL, reveals the secret ONCE after Create secret (Copy, then
  *  Done forgets it), and Rotate says the old one keeps working for 24 h. The run history shows the
  *  new outcomes (`ignored`, `capped`, `undelivered`) with their leg and round, the unsigned headers as
  *  "recorded, untrusted", and no Run now. Every new control holds 44 px; nothing clips at 390 px.
@@ -15,6 +16,7 @@ import { automation, hookState, mockAutomations, type FakeOptions } from "./auto
 import { animationsSettled } from "./nightjarShell";
 import { ROSTER, mockRoster } from "./roster";
 import { TOUCH_FLOOR } from "./touchTarget";
+import { mockWebhooks, webhook } from "./webhooks";
 
 // Engine ids from the roster fixture, never literals: one API client, one terminal client.
 const API = ROSTER.engines.find((e) => e.runtime === "api" && (e.status ?? "active") === "active")!.id;
@@ -160,13 +162,14 @@ async function targetsAndOverflow(page: Page, root: string) {
 
 test("create a review loop: the trigger and action pair, only API reviewers, the strict body (#2202)", async ({ page }) => {
   const fake = await setup(page);
+  await mockWebhooks(page, [webhook({ id: "0a1b2c3d4e5f6a7b", name: "shop repo" })]);
   await page.goto(AUTOMATION_NEW_PATH);
   await expect(page.getByTestId("automation-editor")).toBeVisible();
   const trigger = page.getByTestId("trigger-kind");
   const action = page.getByTestId("action-kind");
 
   // Choosing the trigger chooses the action…
-  await trigger.getByRole("button", { name: "Forgejo webhook" }).click();
+  await trigger.getByRole("button", { name: "Webhook" }).click();
   await expect(action.getByRole("button", { name: "Review loop" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("review-loop-fields")).toBeVisible();
   await expect(page.getByTestId("message-mode")).toHaveCount(0); // no message: BattleLab writes the brief
@@ -176,7 +179,7 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
   await expect(page.getByTestId("review-loop-fields")).toHaveCount(0);
   // …and choosing the action chooses the trigger.
   await action.getByRole("button", { name: "Review loop" }).click();
-  await expect(trigger.getByRole("button", { name: "Forgejo webhook" })).toHaveAttribute("aria-pressed", "true");
+  await expect(trigger.getByRole("button", { name: "Webhook" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("trigger-callout")).toContainText("There is no Run now");
 
   await page.getByTestId("automation-name").fill("Review loop · example-org/shop");
@@ -191,6 +194,8 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
   await page.getByTestId("loop-login").fill("shop-reviewer-bot");
   await page.getByTestId("loop-issues").uncheck();
   await page.getByTestId("loop-rounds-pr").selectOption("6");
+  await expect(page.getByTestId("webhook-pick-hint")).toBeVisible();
+  await page.getByTestId("trigger-webhook").selectOption("0a1b2c3d4e5f6a7b");
   await expect(page.getByTestId("editor-problems")).toHaveCount(0);
   await minHeight(page, [
     "loop-project",
@@ -204,19 +209,20 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
     const label = page.getByTestId(id).locator("xpath=ancestor::label");
     expect((await label.boundingBox())!.height, `${id}'s label is a 44px target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
-  await expect(page.getByTestId("webhook-after-save")).toBeVisible();
+  await expect(page.getByTestId("shared-webhook-panel")).toBeVisible();
 
   await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("editor-notice")).toContainText("is off until you enable it");
   const create = fake.requests.find((r) => r.method === "POST" && r.path === "")!;
   expect(create.body).toEqual({
     name: "Review loop · example-org/shop",
-    trigger: { kind: "webhook", scheme: "forgejo" },
+    trigger: { kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" },
     action: { ...LOOP_ACTION, legs: { issues: false, pulls: true }, max_rounds: { issue: 5, pr: 6 } },
     policy: { concurrency: "allow", max_concurrent: 3, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
   });
-  // Saved: the forge can be connected now.
-  await expect(page.getByTestId("webhook-panel")).toBeVisible();
+  // Saved: the picked webhook stays beside the form, read-only (its secret is on its own page).
+  await expect(page.getByTestId("shared-webhook-panel")).toBeVisible();
+  await expect(page.getByTestId("webhook-panel")).toHaveCount(0);
 });
 
 test("Connect Forgejo: the URL, a secret shown once, copy, Done forgets it, rotate keeps the old one 24 h (#2202)", async ({ page, context }) => {

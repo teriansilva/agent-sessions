@@ -17,7 +17,13 @@
  *  either selects the other, and leaving either leaves both (the server refuses any other pairing).
  *  Its reviewer is a specialist on an API client, pinned at its current version; once saved, the
  *  side panel connects the forge (payload URL, a secret shown once, the events to tick). The loop
- *  trigger is a later phase of #1201 and is not offered here. */
+ *  trigger is a later phase of #1201 and is not offered here.
+ *
+ *  **Since #2221 the webhook is PICKED from Library → Webhooks** (`trigger.webhook_id`); "+ New
+ *  webhook…" opens the create flow with this draft in router state (the form only, never a secret)
+ *  and comes back with the new webhook picked. A #2202 review loop saved with its own webhook
+ *  (`scheme`) keeps it — saved back as it was, with its own Connect Forgejo panel — and is never
+ *  converted here. */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -31,6 +37,10 @@ import {
 } from "../components/automations/AutomationBits";
 import { useNowS, useProjects } from "../components/automations/useAutomations";
 import { WebhookPanel } from "../components/automations/WebhookPanel";
+import { SharedWebhookPanel } from "../components/webhooks/WebhookBits";
+import { WebhookPicker } from "../components/webhooks/WebhookPicker";
+import { useWebhooks } from "../components/webhooks/useWebhooks";
+import type { NewWebhookHandoff } from "./WebhookNew";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
 import { engineLabel, engineName, runsInTerminal, useEngineRoster } from "../app/engineRoster";
 import { LegacyTerminalStamp, SwitchToApiButton } from "../components/automations/SwitchToApi";
@@ -52,6 +62,7 @@ import {
   formProblems,
   formTrigger,
   inFlightNote,
+  isLegacyHook,
   reconsent,
   reviewerOptions,
   triggerWords,
@@ -59,9 +70,15 @@ import {
   withTrigger,
   type EditorForm,
 } from "../lib/automations";
-import { AUTOMATIONS_PATH, automationEditPath, automationPath } from "../lib/routes";
+import {
+  AUTOMATIONS_PATH,
+  WEBHOOK_NEW_PATH,
+  automationEditPath,
+  automationPath,
+} from "../lib/routes";
 import type { Session, Template, TemplateVariable } from "../types/api";
 import type { Specialist } from "../types/specialists";
+import type { Webhook } from "../types/webhooks";
 import type {
   Automation,
   AutomationList,
@@ -182,8 +199,32 @@ function Editor({ routeId }: { routeId?: string }) {
   const [consent, setConsent] = useState<ConsentRequired | null>(null);
   const [consentError, setConsentError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const webhooks = useWebhooks();
+  /** A draft handed back by the New webhook page (#2221), adopted once on the first load. */
+  const handedBack = useRef(
+    (location.state as { webhookPick?: { id: string; draft: EditorForm } } | null)?.webhookPick ?? null,
+  );
+  /** Set while handing the draft to the New webhook page: that leave is not a discard. */
+  const handingOff = useRef(false);
   /** Where focus returns when a dialog closes: the control that opened it, captured on open. */
   const [returnTo, setReturnTo] = useState<HTMLElement | null>(null);
+
+  /** The draft the New webhook page handed back, over the loaded form: the stored automation stays
+   *  what is saved (so it reads as unsaved changes), and a legacy webhook is never converted. */
+  const adoptHandedBack = useCallback((f: EditorForm): EditorForm => {
+    const back = handedBack.current;
+    handedBack.current = null;
+    if (!back || typeof back.draft !== "object" || back.draft == null) return f;
+    const next: EditorForm = { ...f, ...back.draft, legacyHook: f.legacyHook };
+    if (back.id) next.webhookId = back.id;
+    return next;
+  }, []);
+  useEffect(() => {
+    // Adopted from the ref; drop it from history so a reload does not adopt it again.
+    if ((location.state as { webhookPick?: unknown } | null)?.webhookPick)
+      navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -197,12 +238,12 @@ function Editor({ routeId }: { routeId?: string }) {
         if (a.id !== id) return;
         const f = formFromAutomation(a, tz);
         setSaved(a);
-        setForm(f);
+        setForm(adoptHandedBack(f));
         setPristine(JSON.stringify(f));
       } else {
         const f = blankForm(tz);
         setSaved(null);
-        setForm(f);
+        setForm(adoptHandedBack(f));
         setPristine(JSON.stringify(f));
       }
       setStale(false);
@@ -210,7 +251,7 @@ function Editor({ routeId }: { routeId?: string }) {
       setLoadError(errorWords(e, "Couldn’t load it."));
       if (e instanceof ApiError && e.status === 404) setMissing(true);
     }
-  }, [id]);
+  }, [id, adoptHandedBack]);
 
   useEffect(() => {
     // The fetch's state lands after its await, never synchronously in this body.
@@ -243,7 +284,10 @@ function Editor({ routeId }: { routeId?: string }) {
   const dirty = form != null && JSON.stringify(form) !== pristine;
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
-      dirty && !saving && currentLocation.pathname !== nextLocation.pathname,
+      dirty &&
+      !saving &&
+      !handingOff.current &&
+      currentLocation.pathname !== nextLocation.pathname,
   );
 
   const enable = useEnableFlow(
@@ -408,6 +452,7 @@ function Editor({ routeId }: { routeId?: string }) {
   const reviewers = reviewerOptions(specialists, engines, engineLabel);
   const reviewerChosen = reviewers.find((r) => r.id === form.reviewerId) ?? null;
   const loop = form.actionKind === "forge_review_loop";
+  const pickedHook = pickedWebhook(form.webhookId, webhooks.list, saved);
   const f = (name: string) => `${uid}-${name}`;
 
   return (
@@ -481,7 +526,7 @@ function Editor({ routeId }: { routeId?: string }) {
                   { value: "once", label: "Once" },
                   { value: "schedule", label: "Schedule" },
                   { value: "manual", label: "Run now only" },
-                  { value: "webhook", label: "Forgejo webhook" },
+                  { value: "webhook", label: "Webhook" },
                 ]}
               />
               {form.triggerKind === "schedule" && (
@@ -591,6 +636,27 @@ function Editor({ routeId }: { routeId?: string }) {
                   )}
                 </div>
               )}
+              {form.triggerKind === "webhook" &&
+                (form.legacyHook ? (
+                  <p className={styles.hint} data-testid="trigger-webhook-legacy">
+                    It keeps its own Forgejo webhook from before webhooks were a list: the same
+                    address and secret, beside the form. Editing it here does not move it.
+                  </p>
+                ) : (
+                  <WebhookPicker
+                    id={f("webhook")}
+                    value={form.webhookId}
+                    list={webhooks.list}
+                    error={webhooks.error}
+                    nowS={nowS}
+                    onPick={(v) => set("webhookId", v)}
+                    onNew={() => {
+                      const handoff: NewWebhookHandoff = { returnTo: location.pathname, draft: form };
+                      handingOff.current = true;
+                      navigate(WEBHOOK_NEW_PATH, { state: { webhookHandoff: handoff } });
+                    }}
+                  />
+                ))}
               {form.triggerKind === "once" && (
                 <div className={styles.fields}>
                   <div className={styles.field}>
@@ -611,7 +677,9 @@ function Editor({ routeId }: { routeId?: string }) {
               )}
               <p className={styles.callout} data-testid="trigger-callout">
                 {form.triggerKind === "webhook"
-                  ? "It runs when Forgejo delivers a signed event for the repository, and only starts a review loop. Once it is saved, connect the forge beside the form: the payload URL, a secret shown once, and the events to tick. There is no Run now: only a delivery names the item to review."
+                  ? form.legacyHook
+                    ? "It runs when Forgejo delivers a signed event for the repository, and only starts a review loop. Connect the forge beside the form: the payload URL, a secret shown once, and the events to tick. There is no Run now: only a delivery names the item to review."
+                    : "It runs when the picked webhook delivers a signed event for the repository, and only starts a review loop. There is no Run now: only a delivery names the item to review."
                   : form.triggerKind === "manual"
                     ? "It runs only when you press Run now."
                     : `${draftTrigger.detail}. Every ${list.limits.interval_min_minutes} minutes is the shortest schedule. A time skipped by a clock change runs once, at the next valid minute. Runs missed while BattleLab was down collapse into one catch-up run.`}{" "}
@@ -1135,7 +1203,7 @@ function Editor({ routeId }: { routeId?: string }) {
               a higher cap, new content — asks for your consent again.
             </p>
           </section>
-          {saved?.webhook ? (
+          {saved?.webhook && isLegacyHook(saved.trigger) ? (
             <WebhookPanel
               automationId={saved.id}
               webhook={saved.webhook}
@@ -1143,11 +1211,16 @@ function Editor({ routeId }: { routeId?: string }) {
               onWebhook={(w) => setSaved((x) => (x && x.id === saved.id ? { ...x, webhook: w } : x))}
             />
           ) : (
-            form.triggerKind === "webhook" && (
-              <p className={`${styles.hint} ${styles.more}`} data-testid="webhook-after-save">
-                Save it to get its payload URL and secret for the forge.
+            form.triggerKind === "webhook" &&
+            !form.legacyHook &&
+            (pickedHook ? (
+              <SharedWebhookPanel {...pickedHook} nowS={nowS} />
+            ) : (
+              <p className={`${styles.hint} ${styles.more}`} data-testid="webhook-pick-hint">
+                Pick a webhook: its address and last delivery show here. Its secret is on its own
+                page in Library → Webhooks.
               </p>
-            )
+            ))
           )}
         </aside>
       </div>
@@ -1456,4 +1529,27 @@ function TzField({
       )}
     </div>
   );
+}
+
+/** The picked webhook's facts for the side panel: from the list, else from the saved row (the
+ *  automation's own read carries the picked webhook's public view). `null` while none is picked. */
+function pickedWebhook(
+  webhookId: string,
+  list: Webhook[] | null,
+  saved: Automation | null,
+): Omit<Parameters<typeof SharedWebhookPanel>[0], "nowS"> | null {
+  if (!webhookId) return null;
+  const w = list?.find((x) => x.id === webhookId);
+  const fromRow = saved?.webhook?.webhook_id === webhookId ? saved.webhook : null;
+  const src = w ?? fromRow;
+  if (!src) return null;
+  return {
+    id: webhookId,
+    name: src.name ?? webhookId,
+    path: src.path,
+    lastDeliveryAt: src.last_delivery_at,
+    lastEvent: src.last_event,
+    lastNote: src.last_note,
+    unsigned24h: src.unsigned_24h,
+  };
 }

@@ -1227,3 +1227,106 @@ textarea.control {
   color: var(--text-3);
   font-style: italic;
 }
+
+/* --- Library → Webhooks (#2221) ---------------------------------------------------------------- */
+/* A simple list (frame 1): each row is ONE link — name, the last delivery's LED and time, then a
+ * mono meta line. Only the LED carries a state; refused unsigned deliveries tint their line amber.
+ * The same row shape lists a webhook's automations on its page. */
+.hookStack {
+  max-width: 920px;
+}
+.hookList {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hookRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 4px var(--sp-3);
+  align-items: center;
+  min-height: 44px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text-1);
+  text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.hookRow:hover {
+  background: var(--row-hover);
+}
+.hookRow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hookName {
+  min-width: 0;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hookWhen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.hookMeta {
+  grid-column: 1 / 3;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.hookChev {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  color: var(--text-3);
+}
+/* The last delivery's shape: a field's path, then its type, quieter. Names and types only. */
+.hookShape {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.hookShape li {
+  min-width: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.hookType {
+  color: var(--text-3);
+}
+@media (max-width: 800px) {
+  .hookRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .hookWhen {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .hookMeta {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .hookChev {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+}

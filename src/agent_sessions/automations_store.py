@@ -32,7 +32,7 @@ from pathlib import Path
 
 from . import automations as model
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: The claim's refusal when the consent receipt no longer equals the config's scope (a receipt from
 #: before a scope field existed, or a hand edit). Never run; the due check and Run now both flag it
@@ -217,8 +217,98 @@ def _to_v2(con: sqlite3.Connection) -> None:
             con.execute(stmt)
 
 
+#: Webhooks as a list (#2221 P1, schema v3).
+_SCHEMA_V3 = """
+CREATE TABLE webhooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  legacy_automation TEXT UNIQUE,
+  last_at REAL,
+  last_event TEXT NOT NULL DEFAULT '',
+  last_note TEXT NOT NULL DEFAULT '',
+  last_shape TEXT,
+  unsigned_count INTEGER NOT NULL DEFAULT 0,
+  unsigned_since REAL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE TABLE webhook_secrets (
+  webhook_id TEXT NOT NULL,
+  gen INTEGER NOT NULL,
+  envelope TEXT NOT NULL,
+  aad TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  retire_at REAL,
+  PRIMARY KEY (webhook_id, gen)
+);
+"""
+
+
+def _to_v3(con: sqlite3.Connection) -> None:
+    """Webhooks become a list. Each #2202 review loop's own webhook moves in UNCHANGED: same id as
+    its automation (`legacy_automation`), same secret envelopes with the AAD they were sealed
+    under, same counters. The automation's configuration is not touched, so nothing needs
+    re-approval and its address `/hooks/a/{id}` keeps routing to it alone."""
+    for stmt in _SCHEMA_V3.split(";"):
+        if stmt.strip():
+            con.execute(stmt)
+    _adopt_legacy_webhooks(con)
+
+
+def _adopt_legacy_webhooks(con: sqlite3.Connection) -> None:
+    """Copy every #2202 review loop's own webhook (secret envelopes with their AAD, counters) into
+    the webhook list. Idempotent: an automation that already has its row is left alone, so a
+    re-run (or a restart mid-migration, which rolls back anyway) never duplicates or resets."""
+    for a in con.execute("SELECT id, name, config, created_at FROM automations").fetchall():
+        try:
+            trig = (json.loads(a["config"]) or {}).get("trigger") or {}
+        except (TypeError, ValueError):
+            continue
+        if trig.get("kind") != "webhook":
+            continue
+        aid = a["id"]
+        if con.execute("SELECT 1 FROM webhooks WHERE id=?", (aid,)).fetchone():
+            continue
+        st = con.execute(
+            "SELECT * FROM automation_hook_stats WHERE automation_id=?", (aid,)
+        ).fetchone()
+        con.execute(
+            "INSERT INTO webhooks (id, name, revision, legacy_automation, last_at, last_event, "
+            "last_note, unsigned_count, unsigned_since, created_at, updated_at) "
+            "VALUES (?,?,1,?,?,?,?,?,?,?,?)",
+            (
+                aid,
+                str(a["name"])[:60] or aid,
+                aid,
+                st["last_at"] if st else None,
+                st["last_event"] if st else "",
+                st["last_note"] if st else "",
+                int(st["unsigned_count"]) if st else 0,
+                st["unsigned_since"] if st else None,
+                a["created_at"],
+                a["created_at"],
+            ),
+        )
+        for sec in con.execute(
+            "SELECT * FROM automation_hook_secrets WHERE automation_id=?", (aid,)
+        ).fetchall():
+            con.execute(
+                "INSERT INTO webhook_secrets (webhook_id, gen, envelope, aad, created_at, "
+                "retire_at) VALUES (?,?,?,?,?,?)",
+                (
+                    aid,
+                    sec["gen"],
+                    sec["envelope"],
+                    f"automation-webhook:{aid}:{sec['gen']}",
+                    sec["created_at"],
+                    sec["retire_at"],
+                ),
+            )
+
+
 #: ``{from_version: step}`` — each step brings a file from that version to the next.
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2}
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2, 2: _to_v3}
 
 
 class StoreError(RuntimeError):
@@ -519,10 +609,33 @@ def _get(con, aid: str) -> dict:
 # ---- automations --------------------------------------------------------------------------------
 
 
+def _check_webhook_ref(con, config: dict | None) -> None:
+    """A picked webhook must exist and be pickable — read INSIDE the writing transaction, so a
+    concurrent `webhooks.delete` (which checks references inside its own) can never leave an
+    automation pointing at nothing (#2221)."""
+    trig = (config or {}).get("trigger") or {}
+    wid = trig.get("webhook_id") if trig.get("kind") == "webhook" else None
+    if not wid:
+        return
+    r = con.execute("SELECT legacy_automation FROM webhooks WHERE id=?", (wid,)).fetchone()
+    if r is None or r["legacy_automation"]:
+        raise StoreError("that webhook doesn't exist (or can't be picked)", 422)
+
+
+def source_of(aid: str, config: dict | None) -> str | None:
+    """The webhook a delivery for automation ``aid`` must have come through: the picked one, or
+    — for a #2202 review loop in its old form — its own (same id as the automation)."""
+    trig = (config or {}).get("trigger") or {}
+    if trig.get("kind") != "webhook":
+        return None
+    return trig.get("webhook_id") or aid
+
+
 def create(config: dict, pins: dict, *, now: float | None = None) -> dict:
     ts = time.time() if now is None else now
     aid = uuid.uuid4().hex[:16]
     with _tx() as con:
+        _check_webhook_ref(con, config)
         n = con.execute("SELECT COUNT(*) FROM automations").fetchone()[0]
         if n >= AUTOMATIONS_MAX:
             raise StoreError(f"at most {AUTOMATIONS_MAX} automations", status=409)
@@ -561,6 +674,8 @@ def mutate(
         updates = fn(row)
         if not updates:
             return row
+        if "config" in updates:
+            _check_webhook_ref(con, updates["config"])
         enc = {
             k: (json.dumps(v) if k in _JSON_COLUMNS and v is not None else v)
             for k, v in updates.items()
@@ -590,6 +705,13 @@ def delete(aid: str, *, expect_revision: int | None = None) -> None:
             "(SELECT id FROM automation_runs WHERE automation_id=?)",
             (aid,),
         )
+        # A #2202 review loop's OWN webhook (migrated into the list) goes with it, secrets included;
+        # a shared webhook it merely picked stays.
+        for legacy in con.execute(
+            "SELECT id FROM webhooks WHERE legacy_automation=?", (aid,)
+        ).fetchall():
+            con.execute("DELETE FROM webhook_secrets WHERE webhook_id=?", (legacy["id"],))
+            con.execute("DELETE FROM webhooks WHERE id=?", (legacy["id"],))
         for table in (
             "automation_runs",
             "automation_claims",
@@ -1134,171 +1256,138 @@ SECRET_OVERLAP_S = 24 * 3600
 UNSIGNED_WINDOW_S = 24 * 3600
 
 
-def _secret_aad(aid: str, gen: int) -> str:
-    return f"automation-webhook:{aid}:{gen}"
+def webhook_of(aid: str) -> str | None:
+    """The webhook automation ``aid`` listens on: its own legacy one (#2202), or the one its
+    trigger picked (#2221). None when it is not a webhook automation."""
+    from . import webhooks
+
+    legacy = webhooks.legacy_for(aid)
+    if legacy:
+        return legacy
+    with _read() as con:
+        row = _get(con, aid)
+    trig = (row["config"] or {}).get("trigger") or {}
+    return trig.get("webhook_id") if trig.get("kind") == "webhook" else None
 
 
 def new_hook_secret(aid: str, *, now: float | None = None) -> str:
-    """Make a new webhook secret for ``aid`` and return its plaintext — the ONLY time it is shown.
+    """Rotate the secret of automation ``aid``'s OWN webhook (a #2202 review loop's) and return it
+    — the only time it is shown. A webhook picked from the list is shared, so it is rotated on its
+    own page (`webhooks.rotate`), never through one of its automations."""
+    from . import webhooks
 
-    An existing current secret is retired with a `SECRET_OVERLAP_S` grace (rotation); secrets
-    already past their grace are deleted."""
-    import secrets as _secrets
-
-    from . import template_secrets
-
-    ts = time.time() if now is None else now
-    plaintext = _secrets.token_hex(32)
-    with _tx() as con:
+    with _read() as con:
         row = _get(con, aid)
-        if (row["config"] or {}).get("trigger", {}).get("kind") != "webhook":
-            raise StoreError("only a webhook automation has a webhook secret", 409)
-        con.execute(
-            "DELETE FROM automation_hook_secrets WHERE automation_id=? AND retire_at IS NOT NULL "
-            "AND retire_at<=?",
-            (aid, ts),
-        )
-        con.execute(
-            "UPDATE automation_hook_secrets SET retire_at=? WHERE automation_id=? AND "
-            "retire_at IS NULL",
-            (ts + SECRET_OVERLAP_S, aid),
-        )
-        gen = int(
-            con.execute(
-                "SELECT COALESCE(MAX(gen), 0) + 1 FROM automation_hook_secrets WHERE "
-                "automation_id=?",
-                (aid,),
-            ).fetchone()[0]
-        )
-        try:
-            env = template_secrets.encrypt(_secret_aad(aid, gen), plaintext)
-        except template_secrets.SecretKeyUnavailable as e:
-            raise StoreError(f"the secret could not be stored ({e})", 503) from None
-        con.execute(
-            "INSERT INTO automation_hook_secrets (automation_id, gen, envelope, created_at, "
-            "retire_at) VALUES (?,?,?,?,NULL)",
-            (aid, gen, json.dumps(env), ts),
-        )
-    return plaintext
+    if (row["config"] or {}).get("trigger", {}).get("kind") != "webhook":
+        raise StoreError("only a webhook automation has a webhook secret", 409)
+    wid = webhooks.legacy_for(aid)
+    if wid is None:
+        raise StoreError("this automation uses a shared webhook: rotate it on its page", 409)
+    return webhooks.rotate(wid, now=now)
 
 
 def hook_secrets(aid: str, *, now: float | None = None) -> list[str]:
-    """Every secret that verifies a delivery for ``aid`` right now: the current one, and a rotated
-    one inside its grace. An envelope that no longer decrypts (a lost key) verifies nothing."""
-    from . import template_secrets
+    from . import webhooks
 
-    ts = time.time() if now is None else now
-    with _read() as con:
-        rows = con.execute(
-            "SELECT gen, envelope FROM automation_hook_secrets WHERE automation_id=? AND "
-            "(retire_at IS NULL OR retire_at>?) ORDER BY gen",
-            (aid, ts),
-        ).fetchall()
-    out = []
-    for r in rows:
-        env = _loads(r["envelope"], None)
-        if not isinstance(env, dict):
-            continue
-        value = template_secrets.decrypt(_secret_aad(aid, int(r["gen"])), env)
-        if value:
-            out.append(value)
-    return out
+    wid = webhook_of(aid)
+    return webhooks.secrets(wid, now=now) if wid else []
 
 
 def hook_state(aid: str, *, now: float | None = None) -> dict:
-    """What the setup panel shows: whether a secret exists, a rotation's grace, the last signed
-    delivery and the unsigned counter. Never a secret."""
-    ts = time.time() if now is None else now
-    with _read() as con:
-        cur = con.execute(
-            "SELECT created_at FROM automation_hook_secrets WHERE automation_id=? AND "
-            "retire_at IS NULL",
-            (aid,),
-        ).fetchone()
-        old = con.execute(
-            "SELECT MAX(retire_at) FROM automation_hook_secrets WHERE automation_id=? AND "
-            "retire_at>?",
-            (aid, ts),
-        ).fetchone()[0]
-        st = con.execute(
-            "SELECT * FROM automation_hook_stats WHERE automation_id=?", (aid,)
-        ).fetchone()
-    unsigned = 0
-    if st is not None and st["unsigned_since"] is not None:
-        if ts - float(st["unsigned_since"]) < UNSIGNED_WINDOW_S:
-            unsigned = int(st["unsigned_count"])
-    return {
-        "secret_set": cur is not None,
-        "secret_created_at": cur["created_at"] if cur else None,
-        "previous_valid_until": old,
-        "last_delivery_at": st["last_at"] if st else None,
-        "last_event": st["last_event"] if st else "",
-        "last_note": st["last_note"] if st else "",
-        "unsigned_24h": unsigned,
-    }
+    """The automation's webhook as its panel shows it. Never a secret."""
+    from . import webhooks
+
+    wid = webhook_of(aid)
+    if not wid:
+        return {"secret_set": False, "unsigned_24h": 0, "last_delivery_at": None}
+    try:
+        pub = webhooks.get(wid, now=now)
+    except NotFound:
+        return {"secret_set": False, "unsigned_24h": 0, "last_delivery_at": None}
+    pub.pop("last_shape", None)
+    return {**pub, "webhook_id": wid}
 
 
 def note_delivery(aid: str, event: str, note: str, *, now: float | None = None) -> None:
-    """A signed delivery arrived (whether or not it became a run)."""
-    ts = time.time() if now is None else now
-    with _tx() as con:
-        con.execute(
-            "INSERT INTO automation_hook_stats (automation_id, last_at, last_event, last_note) "
-            "VALUES (?,?,?,?) ON CONFLICT(automation_id) DO UPDATE SET last_at=excluded.last_at, "
-            "last_event=excluded.last_event, last_note=excluded.last_note",
-            (aid, ts, event[:64], note[:300]),
-        )
+    """A signed delivery reached automation ``aid``: noted on its webhook."""
+    from . import webhooks
 
-
-def note_unsigned(aid: str, *, now: float | None = None) -> int:
-    """An unsigned or badly signed delivery for an EXISTING webhook automation: counted in a
-    rolling window. Returns the count in the current window."""
-    ts = time.time() if now is None else now
-    with _tx() as con:
-        st = con.execute(
-            "SELECT unsigned_count, unsigned_since FROM automation_hook_stats WHERE "
-            "automation_id=?",
-            (aid,),
-        ).fetchone()
-        if (
-            st is None
-            or st["unsigned_since"] is None
-            or ts - st["unsigned_since"] >= (UNSIGNED_WINDOW_S)
-        ):
-            count, since = 1, ts
-        else:
-            count, since = int(st["unsigned_count"]) + 1, float(st["unsigned_since"])
-        con.execute(
-            "INSERT INTO automation_hook_stats (automation_id, unsigned_count, unsigned_since) "
-            "VALUES (?,?,?) ON CONFLICT(automation_id) DO UPDATE SET "
-            "unsigned_count=excluded.unsigned_count, unsigned_since=excluded.unsigned_since",
-            (aid, count, since),
-        )
-    return count
+    wid = webhook_of(aid)
+    if wid:
+        webhooks.note_delivery(wid, event, note, now=now)
 
 
 def record_delivery(
-    aid: str, *, slot: str, outcome: str, reason: str, inputs: dict, now: float | None = None
+    aid: str,
+    *,
+    slot: str,
+    outcome: str,
+    reason: str,
+    inputs: dict,
+    source: str | None = None,
+    now: float | None = None,
 ) -> dict | None:
     """A signed delivery that becomes a FINISHED run without an effect (``rejected`` → refused,
-    ``ignored``): claimed under ``slot`` when one is given, so a re-sent delivery records nothing
-    twice. Returns the run, or None when the slot was already claimed or the automation can't run.
-    """
-    res = begin_run(aid, trigger="webhook", slot=slot, fire_at=None, now=now, force_skip=reason)
-    run = res.get("run")
-    if not res["claimed"] or run is None:
-        return None
+    ``ignored``) — ONE transaction (Hermes on #2225).
+
+    Inside it: the automation must still listen on ``source`` (the webhook the delivery came
+    through), be eligible like any run (`_eligibility`), and ``slot`` must be unclaimed. Only then
+    are the claim, the run and its failure accounting (`_settle`) written — together, so a switch
+    to another webhook can never charge a failure to the newly approved configuration. Returns the
+    run, or None when nothing was recorded."""
+    ts = time.time() if now is None else now
     with _tx() as con:
+        row = _get(con, aid)
+        if source is not None and source_of(aid, row["config"]) != source:
+            return None  # the automation no longer listens on that webhook: not its delivery
+        if con.execute(
+            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
+        ).fetchone():
+            return None
+        verdict, _why = _eligibility(con, row, manual=False, now=ts)
+        if verdict != "run":
+            return None
+        run_id = uuid.uuid4().hex
+        scope = {
+            "config": row["config"],
+            "pins": row["pins"],
+            "consented_scope": row["consented_scope"],
+            "consented_at": row["consented_at"],
+            "revision": row["revision"],
+        }
         con.execute(
-            "UPDATE automation_runs SET outcome=?, reason=?, inputs=?, counts=? WHERE id=?",
-            (outcome, reason[:1000], json.dumps(inputs), 0, run["id"]),
+            "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
+            "VALUES (?,?,?,?,?)",
+            (aid, slot, None, ts, run_id),
         )
+        con.execute(
+            "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
+            "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
+            "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                aid,
+                "webhook",
+                slot,
+                None,
+                0,
+                1,
+                "done",
+                outcome,
+                reason[:1000],
+                json.dumps(scope),
+                json.dumps(inputs),
+                0,
+                "",
+                ts,
+                ts,
+            ),
+        )
+        _step(con, run_id, outcome, reason)
         if outcome in FAILURE_OUTCOMES:
-            _settle(con, aid, run["id"], outcome)
-        _step(con, run["id"], outcome, reason)
-        return _run(
-            con.execute("SELECT * FROM automation_runs WHERE id=?", (run["id"],)).fetchone()
-        )
+            _settle(con, aid, run_id, outcome)
+        got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        return _run(got)
 
 
 def begin_review(
@@ -1310,6 +1399,7 @@ def begin_review(
     revision: str,
     expect_revision: int,
     inputs: dict,
+    source: str | None = None,
     now: float | None = None,
 ) -> dict:
     """The review leg's dispatch admission (#2202) — ONE transaction, before any launch.
@@ -1341,6 +1431,7 @@ def begin_review(
             row["revision"] != expect_revision
             or action.get("kind") != "forge_review_loop"
             or str(action.get("repo", "")).lower() != repo.lower()
+            or (source is not None and source_of(aid, row["config"]) != source)
         ):
             return {
                 "run": None,
@@ -1485,6 +1576,7 @@ def accept_verdict(
     verdict: str,
     current: str,
     inputs: dict,
+    source: str | None = None,
     now: float | None = None,
 ) -> dict:
     """The return leg's acceptance (#2202 PR 2) — ONE transaction, before any send.
@@ -1513,6 +1605,7 @@ def accept_verdict(
             row["revision"] != expect_revision
             or action.get("kind") != "forge_review_loop"
             or str(action.get("repo", "")).lower() != repo.lower()
+            or (source is not None and source_of(aid, row["config"]) != source)
         ):
             return {
                 "run": None,

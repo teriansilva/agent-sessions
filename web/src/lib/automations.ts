@@ -224,6 +224,12 @@ export function onceWords(at: string): string {
   return `${wd} ${d} ${mon} ${y} ${hm}`;
 }
 
+/** A #2202 review loop's own webhook (`scheme`), not one picked from Library → Webhooks (#2221).
+ *  It lives on at its old address; the UI never converts it, and the server refuses a new one. */
+export function isLegacyHook(t: Trigger | null | undefined): boolean {
+  return t?.kind === "webhook" && !("webhook_id" in t);
+}
+
 export function triggerWords(t: Trigger | null): {
   label: string;
   detail: string;
@@ -234,10 +240,9 @@ export function triggerWords(t: Trigger | null): {
   if (t.kind === "once")
     return { label: "Once", detail: `${onceWords(t.at)} · ${t.tz}` };
   if (t.kind === "webhook")
-    return {
-      label: "Forgejo webhook",
-      detail: "when Forgejo delivers a signed event",
-    };
+    return isLegacyHook(t)
+      ? { label: "Forgejo webhook", detail: "when Forgejo delivers a signed event" }
+      : { label: "Webhook", detail: "when its webhook delivers a signed event" };
   return { label: "Schedule", detail: `${cadenceWords(t.cadence)} · ${t.tz}` };
 }
 
@@ -354,7 +359,12 @@ export function nextRunWords(
       return { main: "—", sub: "its settings can't be read" };
     default:
       if (a.trigger?.kind === "webhook")
-        return { main: "On delivery", sub: "when Forgejo sends an event" };
+        return {
+          main: "On delivery",
+          sub: isLegacyHook(a.trigger)
+            ? "when Forgejo sends an event"
+            : "when its webhook delivers an event",
+        };
       return a.trigger?.kind === "manual"
         ? { main: "On Run now", sub: "no schedule" }
         : { main: "—", sub: "nothing due" };
@@ -542,6 +552,10 @@ export interface EditorForm {
   roundsIssue: number;
   roundsPr: number;
   returnToOrigin: boolean;
+  /** The webhook picked from Library → Webhooks (#2221), or "" while none is. */
+  webhookId: string;
+  /** A stored #2202 review loop's own webhook: saved back as it was, never converted. */
+  legacyHook: boolean;
 }
 
 /** The server's round bounds (`review_loop.ROUNDS_*`). */
@@ -585,6 +599,8 @@ export function blankForm(tz: string): EditorForm {
     roundsIssue: 5,
     roundsPr: 4,
     returnToOrigin: true,
+    webhookId: "",
+    legacyHook: false,
   };
 }
 
@@ -651,7 +667,8 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.onceAt = t.at;
       f.tz = t.tz;
     } else if (t.kind === "webhook") {
-      // Nothing more to carry: the scheme is Forgejo's, the only one.
+      if ("webhook_id" in t) f.webhookId = t.webhook_id;
+      else f.legacyHook = true; // #2202's own webhook: kept as it is, never converted here
     } else if (t.kind === "schedule") {
       f.tz = t.tz;
       const c = t.cadence;
@@ -724,7 +741,9 @@ function formMessage(f: EditorForm): AutomationMessage {
 export function formTrigger(f: EditorForm): Trigger {
   if (f.triggerKind === "manual") return { kind: "manual" };
   if (f.triggerKind === "webhook")
-    return { kind: "webhook", scheme: "forgejo" };
+    return f.legacyHook
+      ? { kind: "webhook", scheme: "forgejo" }
+      : { kind: "webhook", webhook_id: f.webhookId };
   if (f.triggerKind === "once") return { kind: "once", at: f.onceAt, tz: f.tz };
   let cadence: Cadence;
   if (f.cadenceKind === "interval")
@@ -820,6 +839,8 @@ export function formProblems(f: EditorForm): string[] {
   if (f.actionKind === "send_to_session" && !f.sessionKey)
     out.push("Choose a session");
   if (f.actionKind === "forge_review_loop") {
+    if (f.triggerKind === "webhook" && !f.legacyHook && !f.webhookId)
+      out.push("Pick a webhook");
     if (!f.projectId) out.push("Choose a project");
     if (!REPO_RE.test(f.repo.trim()))
       out.push("Name the repository as owner/name");

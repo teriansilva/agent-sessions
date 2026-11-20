@@ -72,6 +72,8 @@ import {
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
   DIRECTION_PREVIEW_PATH,
+  WEBHOOKS_API,
+  webhookApiPath,
   askStopTurnPath,
   mcpInstallPath,
   mcpOperationPath,
@@ -86,6 +88,13 @@ import type {
   AutomationRun,
   WebhookSecret,
 } from "../types/automations";
+import type {
+  Webhook,
+  WebhookCreated,
+  WebhookDetail,
+  WebhookList,
+  WebhookRotated,
+} from "../types/webhooks";
 import { uploadStoredName } from "./templateMessage";
 import { projectPickerStore, type ProjectPickerEntity } from "./projectPickerStore";
 import type {
@@ -3425,6 +3434,22 @@ export const api = {
    *  only; a rotated-out secret keeps working for 24 h. Never cached, never re-read. */
   newWebhookSecret: (id: string) =>
     mutateJson<WebhookSecret>("POST", `${autoPath(id)}/webhook-secret`),
+  // ---- webhooks (#2221) --------------------------------------------------------------------------
+  webhooks: () => getJsonWithDetail<WebhookList>(WEBHOOKS_API),
+  /** The webhook and its last delivery's SHAPE (field names + types). Never a secret. */
+  webhook: (id: string) => getJsonWithDetail<WebhookDetail>(webhookApiPath(id)),
+  /** A name only. The answer carries the secret, this once: never cached, never re-read. */
+  createWebhook: (name: string) =>
+    mutateJson<WebhookCreated>("POST", WEBHOOKS_API, { name }),
+  /** A new secret, this once; the old one keeps verifying for 24 h. */
+  rotateWebhook: (id: string) =>
+    mutateJson<WebhookRotated>("POST", `${webhookApiPath(id)}/rotate`),
+  /** Fenced by `revision`: a stale one is a 409. */
+  renameWebhook: (id: string, name: string, revision: number) =>
+    mutateJson<Webhook>("PATCH", webhookApiPath(id), { name, revision }),
+  /** A 409 while an automation uses it. */
+  deleteWebhook: (id: string) =>
+    mutateJson<{ deleted: string }>("DELETE", webhookApiPath(id)),
   /** Run now. 202 with the run; a 409 `detail` says why it was refused. */
   runAutomation: (id: string) =>
     mutateJson<AutomationRun>("POST", `${autoPath(id)}/run`),

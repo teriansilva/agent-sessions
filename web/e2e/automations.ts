@@ -303,6 +303,9 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
   await page.route("**/api/template-variables", (r) =>
     r.fulfill({ json: { variables: [], limits: {} } }),
   );
+  // The editor's webhook picker reads the list (#2221); a spec that needs webhooks registers
+  // `mockWebhooks` (./webhooks.ts) after this, which wins.
+  await page.route("**/api/webhooks", (r) => r.fulfill({ json: { webhooks: [] } }));
   if (opts.sessions)
     await page.route("**/api/sessions**", (r) =>
       r.fulfill({

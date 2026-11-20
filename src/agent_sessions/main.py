@@ -130,6 +130,7 @@ from .routes import upload as upload_routes
 from .routes import usage as usage_routes
 from .routes import variables as variables_routes
 from .routes import voice as voice_routes
+from .routes import webhooks as webhooks_routes
 
 # Re-export the post-login redirect sanitizer (now owned by routes/auth.py) under its
 # historical name here, so tests that call main._safe_next still resolve it (#265).
@@ -906,6 +907,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # The review loop's Forgejo webhook (#2202): NO cookie, CSRF or Origin — it authenticates
     # itself by the delivery's HMAC signature and answers one uniform 404 otherwise.
     hooks_routes.register(app, registry=registry)
+    # The webhook list (#2221): same auth surface as the rest of the Library.
+    webhooks_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # The specialist pool (#1693, #1613 P3): same auth surface; grades derived at read.
     specialists_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Federation (#1246): the operator's pairing API, and `WS /ws/fed`, which authenticates

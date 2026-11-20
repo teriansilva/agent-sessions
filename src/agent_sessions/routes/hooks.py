@@ -1,19 +1,23 @@
-"""``POST /hooks/a/{automation_id}`` — the review loop's Forgejo webhook (#2202).
+"""The webhook addresses (#2202, #2221): ``POST /hooks/w/{webhook_id}`` for a webhook from the list,
+and ``POST /hooks/a/{automation_id}`` for a #2202 review loop's own webhook (routed to that
+automation only). Read `docs/invariants/webhooks.md`.
 
-**The one state-changing route with no session cookie, no CSRF token and no Origin check**, so it
-authenticates itself: the body must carry a valid ``X-Forgejo-Signature`` (hex HMAC-SHA256 under
-the automation's webhook secret). Read `docs/invariants/forge-review-loop.md`.
+**The state-changing routes with no session cookie, no CSRF token and no Origin check**, so they
+authenticate themselves: an HMAC-SHA256 of the raw body under the webhook's secret, in any common
+header form (`webhooks.signature_header`). No provider is configured or needed.
 
-* **Uniform 404.** An unknown id, a malformed id, an automation that is not an enabled, approved
-  webhook automation, one with no secret yet, and a missing or bad signature all answer the same
-  body. Each path computes one HMAC, so they share a timing class: nothing can be enumerated.
-* **Bounded.** The body is read incrementally and refused (413) at the first byte past
-  `forge_hook.BODY_MAX`; a global rate limit runs before anything is looked up (429), and a
-  per-automation one after the signature is proved.
-* **No echo.** An accepted delivery is 202 ``{"accepted": true}``; nothing of the payload, the
-  automation or its runs is returned. The work happens in the background
-  (`review_loop_runner.handle`), where every outcome is recorded on the automation.
-* **Kill switch.** ``AGENT_SESSIONS_AUTOMATION_LOOP=0`` refuses every delivery (503).
+* **Uniform 404.** An unknown or malformed id, a legacy address whose automation is not an enabled,
+  approved webhook automation, a webhook with no secret, and a missing or bad signature all answer
+  the same body, each after one HMAC: nothing can be enumerated. A bad signature for an existing
+  webhook is counted on it.
+* **Bounded.** The body is read incrementally and refused (413) past `forge_hook.BODY_MAX`; a global
+  rate limit runs before anything is looked up (429), a per-webhook one after the signature.
+* **Recorded once, decided per automation.** A verified delivery updates the webhook's last delivery
+  (time, event label, and its SHAPE — field names and types, never values), then each target
+  automation decides on its own (`review_loop_runner.handle`). A list webhook accepts deliveries
+  before any automation uses it, so a test delivery can teach the wizard its fields.
+* **No echo.** 202 ``{"accepted": true}``. **Kill switch:** ``AGENT_SESSIONS_AUTOMATION_LOOP=0``
+  refuses every delivery (503).
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import asyncio
 import collections
 import contextlib
 import hashlib
+import json
 import logging
 import re
 import time
@@ -29,12 +34,13 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import automation_runner, forge_hook, review_loop_runner
+from .. import automation_runner, forge_hook, review_loop_runner, webhooks
 from .. import automations_store as store
 
 log = logging.getLogger("agent_sessions.routes.hooks")
 
 PREFIX = "/hooks/a/"
+LIST_PREFIX = "/hooks/w/"
 _ID_RE = re.compile(r"^[a-z0-9]{1,64}$")
 #: Deliveries a minute: per automation (after the signature) and across all of them (before).
 PER_AUTOMATION_PER_MIN = 30
@@ -92,15 +98,15 @@ async def _read_capped(request: Request) -> bytes | None:
     return b"".join(chunks)
 
 
-def _secrets_for(aid: str) -> list[str]:
-    """The secrets that verify a delivery for ``aid`` — empty unless it is an enabled, approved,
-    runnable webhook automation. Every refusal looks the same to the caller. BLOCKING."""
+def _legacy_target(aid: str) -> str | None:
+    """The #2202 webhook behind `/hooks/a/{aid}` — only while its automation is an enabled,
+    approved, runnable webhook automation (its old behaviour). BLOCKING."""
     if not _ID_RE.match(aid):
-        return []
+        return None
     try:
         row = store.get(aid)
     except store.StoreError:
-        return []
+        return None
     config = row.get("config")
     if (
         config is None
@@ -109,16 +115,40 @@ def _secrets_for(aid: str) -> list[str]:
         or row["consented_at"] is None
         or row["needs_reapproval"]
     ):
+        return None
+    try:
+        return webhooks.legacy_for(aid)
+    except store.StoreError:
+        return None
+
+
+def _secrets(wid: str | None) -> list[str]:
+    if not wid:
         return []
     try:
-        return store.hook_secrets(aid)
+        return webhooks.secrets(wid)
     except store.StoreError:
         return []
 
 
+def _shape(body: bytes) -> list[dict] | None:
+    try:
+        return webhooks.shape_of(json.loads(body))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+
+
+def _event_label(headers: dict) -> str:
+    for name in ("x-forgejo-event", "x-gitea-event", "x-github-event"):
+        if headers.get(name):
+            return forge_hook.display(headers.get(name))
+    return "delivery"
+
+
 def register(app: FastAPI, *, registry=None) -> None:
-    @app.post(PREFIX + "{aid}")
-    async def forgejo_hook(aid: str, request: Request) -> JSONResponse:
+    async def _deliver(request: Request, wid: str | None, targets) -> JSONResponse:
+        """One signed delivery to webhook ``wid``: verified once, recorded once (time, event label,
+        shape — never values), then handed to each target automation, each deciding alone."""
         now = time.monotonic()
         if not _GLOBAL.allow("*", now):
             return JSONResponse({"detail": "slow down"}, status_code=429, headers=_NO_STORE)
@@ -131,26 +161,47 @@ def register(app: FastAPI, *, registry=None) -> None:
         body = await _read_capped(request)
         if body is None:
             return JSONResponse({"detail": "too large"}, status_code=413, headers=_NO_STORE)
-        secrets = await asyncio.to_thread(_secrets_for, aid)
-        header = request.headers.get(forge_hook.SIGNATURE_HEADER)
+        secrets = await asyncio.to_thread(_secrets, wid)
+        header = webhooks.signature_header(request.headers)
         if not secrets:
-            # The same HMAC an existing automation would cost, then the same answer.
+            # The same HMAC an existing webhook would cost, then the same answer.
             forge_hook.signature_ok(body, header, [_DUMMY])
             return _not_found()
         if not forge_hook.signature_ok(body, header, secrets):
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(store.note_unsigned, aid)
+                await asyncio.to_thread(webhooks.note_unsigned, wid)
             return _not_found()
-        if not _PER.allow(aid, now):
+        if not _PER.allow(wid, now):
             return JSONResponse({"detail": "slow down"}, status_code=429, headers=_NO_STORE)
         headers = {k.lower(): v for k, v in request.headers.items()}
-        task = asyncio.get_running_loop().create_task(
-            review_loop_runner.handle(aid, body, headers, registry=registry),
-            name=f"forgejo-hook:{aid}",
-        )
-        _TASKS.add(task)
-        task.add_done_callback(_TASKS.discard)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(
+                webhooks.note_delivery, wid, _event_label(headers), "received", shape=_shape(body)
+            )
+        aids = await asyncio.to_thread(targets)
+        for aid in aids:
+            task = asyncio.get_running_loop().create_task(
+                review_loop_runner.handle(aid, body, headers, registry=registry, source=wid),
+                name=f"webhook:{wid}:{aid}",
+            )
+            _TASKS.add(task)
+            task.add_done_callback(_TASKS.discard)
         return JSONResponse({"accepted": True}, status_code=202, headers=_NO_STORE)
+
+    @app.post(PREFIX + "{aid}")
+    async def forgejo_hook(aid: str, request: Request) -> JSONResponse:
+        # #2202's address: the review loop's own webhook, routed to THAT automation only.
+        wid = await asyncio.to_thread(_legacy_target, aid)
+        return await _deliver(request, wid, lambda: [aid] if wid else [])
+
+    @app.post(LIST_PREFIX + "{wid}")
+    async def list_hook(wid: str, request: Request) -> JSONResponse:
+        # A webhook from the list (#2221): accepted even before any automation uses it, so its
+        # first test delivery can teach the wizard its fields. Each enabled automation that
+        # picked it decides on its own.
+        known = _ID_RE.match(wid) and await asyncio.to_thread(webhooks.exists_pickable, wid)
+        target = wid if known else None
+        return await _deliver(request, target, lambda: webhooks.consumers(wid) if known else [])
 
 
 async def drain(timeout: float = 5.0) -> None:

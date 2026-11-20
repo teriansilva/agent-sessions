@@ -24,11 +24,15 @@ from agent_sessions import (
     forge_hook,
     review_loop,
     review_loop_runner,
+    webhooks,
 )
 from agent_sessions import automations as model
 from agent_sessions import automations_store as store
 from agent_sessions.routes import automations as routes
 from agent_sessions.routes import hooks
+
+#: The current test's list webhook: ``{"wid", "secret"}`` (set by `_world`).
+WH: dict = {}
 
 REPO = "example-org/shop"
 REVIEWER = "shop-reviewer-bot"
@@ -62,6 +66,9 @@ def _world(monkeypatch, tmp_path):
     monkeypatch.setattr(review_loop_runner, "check_save", lambda _c: None)
     automation_runner._TASKS.clear()
     hooks.reset_for_tests()
+    # A webhook from the list (#2221) for the automations these tests make.
+    pub, secret = webhooks.create("shop repo")
+    WH.update(wid=pub["id"], secret=secret)
     yield folder
     pending = [t for t in automation_runner._TASKS if not t.done()]
     automation_runner._TASKS.clear()
@@ -102,7 +109,7 @@ def _config(**action) -> dict:
     act.update(action)
     return {
         "name": "Review loop",
-        "trigger": {"kind": "webhook", "scheme": "forgejo"},
+        "trigger": {"kind": "webhook", "webhook_id": WH["wid"]},
         "action": act,
     }
 
@@ -361,7 +368,7 @@ def test_consent_lines_name_every_review_loop_field():
         "4 rounds per pull request and 5 per issue",
         "a terminal session gets nothing",
         "Never posts, merges or labels",
-        "Starts when Forgejo sends a signed event",
+        "Starts when the webhook “shop repo”",
         "opencode-api · example-gateway/model-pro",
     ):
         assert needle in text, needle
@@ -411,18 +418,25 @@ def test_run_now_is_refused_for_a_review_loop():
 
 
 def test_the_secret_is_shown_once_stored_encrypted_and_rotates_with_an_overlap():
+    pub, first = webhooks.create("ci", now=1000.0)
+    wid = pub["id"]
+    assert webhooks.secrets(wid, now=1000.0) == [first]
+    assert first.encode() not in store.db_path().read_bytes()  # only the AES-GCM envelope
+    second = webhooks.rotate(wid, now=2000.0)
+    assert set(webhooks.secrets(wid, now=2000.0)) == {first, second}
+    later = 2000.0 + webhooks.SECRET_OVERLAP_S + 1
+    assert webhooks.secrets(wid, now=later) == [second]
+    shown = webhooks.get(wid)
+    assert shown["path"] == f"/hooks/w/{wid}" and shown["secret_set"]
+    assert first not in json.dumps(shown) and second not in json.dumps(shown)
+
+
+def test_a_shared_webhook_is_rotated_on_its_own_page_never_through_an_automation():
     aid = _made()
-    first = store.new_hook_secret(aid, now=1000.0)
-    assert store.hook_secrets(aid, now=1000.0) == [first]
-    raw = store.db_path().read_bytes()
-    assert first.encode() not in raw  # only the AES-GCM envelope is stored
-    second = store.new_hook_secret(aid, now=2000.0)
-    assert set(store.hook_secrets(aid, now=2000.0)) == {first, second}
-    later = 2000.0 + store.SECRET_OVERLAP_S + 1
-    assert store.hook_secrets(aid, now=later) == [second]
+    with pytest.raises(store.StoreError, match="shared webhook"):
+        store.new_hook_secret(aid)
     pub = routes.public(store.get(aid))["webhook"]
-    assert pub["path"] == f"/hooks/a/{aid}" and pub["secret_set"]
-    assert first not in json.dumps(pub) and second not in json.dumps(pub)
+    assert pub["webhook_id"] == WH["wid"] and WH["secret"] not in json.dumps(pub)
 
 
 def test_only_a_webhook_automation_has_a_secret():
@@ -805,7 +819,7 @@ def client(monkeypatch):
     async def _nothing():
         return None
 
-    def handle(aid, body, headers, registry=None):
+    def handle(aid, body, headers, registry=None, source=None):
         # Recorded at the CALL, which the route makes before it answers; the coroutine it
         # schedules may run after the response.
         handled.append((aid, body, headers))
@@ -819,76 +833,165 @@ def client(monkeypatch):
         yield c
 
 
-def _post(c, aid, body: bytes, sig: str | None):
+def _post(c, wid, body: bytes, sig: str | None, *, legacy: bool = False, header=None):
     headers = {"Content-Type": "application/json", "X-Forgejo-Event": "pull_request"}
     if sig is not None:
-        headers["X-Forgejo-Signature"] = sig
-    return c.post(f"/hooks/a/{aid}", content=body, headers=headers)
+        name, prefix = header or ("X-Forgejo-Signature", "")
+        headers[name] = prefix + sig
+    base = "/hooks/a/" if legacy else "/hooks/w/"
+    return c.post(f"{base}{wid}", content=body, headers=headers)
 
 
-def test_a_signed_delivery_is_accepted_and_echoes_nothing(client):
-    aid = _made()
-    secret = store.new_hook_secret(aid)
+def _legacy(enabled: bool = True) -> tuple[str, str]:
+    """A #2202 review loop as the v3 migration leaves it: its own legacy webhook (same id),
+    a configuration in the old form, approved. Returns ``(automation id, secret)``."""
+    cfg = model.validate_config({**_config(), "trigger": {"kind": "webhook", "scheme": "forgejo"}})
+    row = store.create(cfg, model.compute_pins(cfg))
+    aid = row["id"]
+    import time as _t
+
+    with store._tx() as con:
+        con.execute(
+            "INSERT INTO webhooks (id, name, revision, legacy_automation, created_at, updated_at) "
+            "VALUES (?,?,1,?,?,?)",
+            (aid, "old review loop", aid, _t.time(), _t.time()),
+        )
+        secret = webhooks._seal(con, aid, _t.time())
+    if enabled:
+        pub = routes.public(store.get(aid))
+        routes._enable(
+            aid, {"revision": pub["revision"], "consent": True, "scope_digest": pub["scope_digest"]}
+        )
+    return aid, secret
+
+
+def test_a_signed_delivery_reaches_every_enabled_automation_that_picked_the_webhook(client):
+    a = _made()
+    b = _made()
+    off = _made(enabled=False)
     body = json.dumps(_pr()).encode()
-    r = _post(client, aid, body, _sign(body, secret))
+    r = _post(client, WH["wid"], body, _sign(body, WH["secret"]))
     assert r.status_code == 202 and r.json() == {"accepted": True}
     assert r.headers["cache-control"] == "no-store"
-    assert client.handled[0][0] == aid and client.handled[0][1] == body
+    assert sorted(h[0] for h in client.handled) == sorted([a, b])
+    assert off not in [h[0] for h in client.handled]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [("X-Forgejo-Signature", ""), ("X-Gitea-Signature", ""), ("X-Hub-Signature-256", "sha256=")],
+)
+def test_any_common_signature_header_works_no_provider_needed(client, header):
+    _made()
+    body = json.dumps(_pr()).encode()
+    r = _post(client, WH["wid"], body, _sign(body, WH["secret"]), header=header)
+    assert r.status_code == 202
+
+
+def test_a_list_webhook_accepts_a_test_delivery_before_any_automation_uses_it(client):
+    pub, secret = webhooks.create("new one")
+    body = json.dumps(_pr()).encode()
+    assert _post(client, pub["id"], body, _sign(body, secret)).status_code == 202
+    assert client.handled == []
+    seen = webhooks.get(pub["id"])
+    assert seen["last_delivery_at"] is not None and seen["last_event"] == "pull_request"
+    paths = {f["path"]: f["type"] for f in seen["last_shape"]}
+    assert paths["pull_request.number"] == "number" and paths["pull_request.draft"] == "yes/no"
+    # Names and types only: no value from the delivery is kept.
+    assert "Fix checkout totals" not in json.dumps(seen) and SHA_A not in json.dumps(seen)
+
+
+def test_the_old_address_still_routes_to_its_own_automation_only(client):
+    aid, secret = _legacy()
+    other = _made()
+    body = json.dumps(_pr()).encode()
+    r = _post(client, aid, body, _sign(body, secret), legacy=True)
+    assert r.status_code == 202
+    assert [h[0] for h in client.handled] == [aid] and other not in [h[0] for h in client.handled]
+    # It can't be picked by another automation.
+    assert not webhooks.exists_pickable(aid)
+    with pytest.raises(model.AutomationError, match="can't be picked"):
+        automation_runner.check_save(
+            model.validate_config({**_config(), "trigger": {"kind": "webhook", "webhook_id": aid}})
+        )
+
+
+def test_an_old_review_loops_config_needs_no_re_approval():
+    aid, _secret = _legacy()
+    row = store.get(aid)
+    assert row["consented_scope"] == model.scope_of(row["config"], row["pins"])
+    assert "webhook_source" not in row["consented_scope"]
 
 
 def test_every_refusal_is_the_same_404(client):
-    aid = _made()
-    secret = store.new_hook_secret(aid)
-    off = _made(enabled=False)
-    store.new_hook_secret(off)
-    no_secret = _made()
+    _made()
+    aid_old, secret_old = _legacy(enabled=False)
     body = json.dumps(_pr()).encode()
+    good = _sign(body, WH["secret"])
     answers = [
-        _post(client, "doesnotexist", body, _sign(body, secret)),
-        _post(client, "BAD-ID!", body, _sign(body, secret)),
-        _post(client, off, body, _sign(body, secret)),
-        _post(client, no_secret, body, _sign(body, secret)),
-        _post(client, aid, body, None),
-        _post(client, aid, body, _sign(body, "wrong")),
-        _post(client, aid, body + b" ", _sign(body, secret)),
+        _post(client, "doesnotexist", body, good),
+        _post(client, "BAD-ID!", body, good),
+        _post(client, aid_old, body, _sign(body, secret_old), legacy=True),  # disabled
+        _post(client, aid_old, body, _sign(body, secret_old)),  # legacy isn't a list webhook
+        _post(client, WH["wid"], body, None),
+        _post(client, WH["wid"], body, _sign(body, "wrong")),
+        _post(client, WH["wid"], body + b" ", good),
     ]
     assert {(r.status_code, r.text) for r in answers} == {(404, '{"detail":"Not Found"}')}
     assert client.handled == []
-    # The bad signatures for an existing automation are counted, never shown as runs.
-    assert store.hook_state(aid)["unsigned_24h"] == 3
-    assert _runs(aid) == []
+    # Bad signatures for an existing webhook are counted on it, never shown as runs.
+    assert webhooks.get(WH["wid"])["unsigned_24h"] == 3
 
 
 def test_an_oversized_body_is_413_before_anything_is_looked_up(client):
-    aid = _made()
-    store.new_hook_secret(aid)
-    r = _post(client, aid, b"x" * (forge_hook.BODY_MAX + 1), "0" * 64)
+    r = _post(client, WH["wid"], b"x" * (forge_hook.BODY_MAX + 1), "0" * 64)
     assert r.status_code == 413
 
 
 def test_the_kill_switch_refuses_every_delivery(client, monkeypatch):
-    aid = _made()
-    secret = store.new_hook_secret(aid)
+    _made()
     monkeypatch.setenv("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
     body = json.dumps(_pr()).encode()
-    assert _post(client, aid, body, _sign(body, secret)).status_code == 503
+    assert _post(client, WH["wid"], body, _sign(body, WH["secret"])).status_code == 503
     assert client.handled == []
 
 
-def test_deliveries_are_rate_limited_per_automation_after_the_signature(client, monkeypatch):
-    aid = _made()
-    secret = store.new_hook_secret(aid)
+def test_deliveries_are_rate_limited_per_webhook_after_the_signature(client, monkeypatch):
+    _made()
     monkeypatch.setattr(hooks._PER, "limit", 2)
     body = json.dumps(_pr()).encode()
-    codes = [_post(client, aid, body, _sign(body, secret)).status_code for _ in range(3)]
+    sig = _sign(body, WH["secret"])
+    codes = [_post(client, WH["wid"], body, sig).status_code for _ in range(3)]
     assert codes == [202, 202, 429]
 
 
-def test_the_secret_route_shows_it_once():
-    aid = _made()
-    first = store.new_hook_secret(aid)
-    pub = routes.public(store.get(aid))
-    assert first not in json.dumps(pub)
+def test_a_webhook_in_use_cannot_be_deleted():
+    _made()
+    with pytest.raises(webhooks.WebhookError, match="used by an automation"):
+        webhooks.delete(WH["wid"])
+    pub, _s = webhooks.create("spare")
+    webhooks.delete(pub["id"])
+    with pytest.raises(store.NotFound):
+        webhooks.get(pub["id"])
+
+
+def test_the_consent_names_the_webhook_and_a_different_one_needs_consent():
+    cfg = model.validate_config(_config())
+    scope = model.scope_of(cfg, model.compute_pins(cfg))
+    assert scope["webhook_source"] == WH["wid"]
+    assert any("“shop repo”" in line for line in model.describe(scope))
+    other, _s = webhooks.create("other")
+    cfg2 = model.validate_config(
+        {**_config(), "trigger": {"kind": "webhook", "webhook_id": other["id"]}}
+    )
+    assert "a different webhook" in model.widened(
+        scope, model.scope_of(cfg2, model.compute_pins(cfg2))
+    )
+
+
+def test_a_new_automation_cannot_use_the_old_per_automation_form():
+    with pytest.raises(model.AutomationError, match="pick a webhook"):
+        routes._create({**_config(), "trigger": {"kind": "webhook", "scheme": "forgejo"}})
 
 
 def test_the_hook_route_binds_nothing_but_its_id(auth_cfg):
@@ -899,12 +1002,14 @@ def test_the_hook_route_binds_nothing_but_its_id(auth_cfg):
     from agent_sessions.main import create_app
 
     app = create_app(auth_cfg)
-    found = [r for r in app.routes if getattr(r, "path", "").startswith(hooks.PREFIX)]
-    assert [r.path for r in found] == ["/hooks/a/{aid}"]
-    flat = get_flat_dependant(found[0].dependant)
-    assert not (flat.query_params or flat.body_params or flat.header_params or flat.cookie_params)
-    assert {p.name for p in flat.path_params} == {"aid"}
-    assert found[0].methods == {"POST"}
+    found = [r for r in app.routes if getattr(r, "path", "").startswith("/hooks/")]
+    assert sorted(r.path for r in found) == ["/hooks/a/{aid}", "/hooks/w/{wid}"]
+    for r in found:
+        flat = get_flat_dependant(r.dependant)
+        assert not (
+            flat.query_params or flat.body_params or flat.header_params or flat.cookie_params
+        )
+        assert len(flat.path_params) == 1 and r.methods == {"POST"}
 
 
 @pytest.mark.parametrize("head_repo", [REPO, "contributor/shop"])
@@ -1579,3 +1684,127 @@ def test_an_undelivered_alert_survives_a_lost_settlement_acknowledgement(spawned
     owed = automation_runner._lost_ack(again, run["id"])
     assert owed["alert"] == f"automation:{aid}:{run['id']}:undelivered"
     assert store.get(aid)["consecutive_failures"] == 0
+
+
+# ---- the delivery is bound to the webhook it came through (Hermes on #2225) ----------------------
+
+
+def _switch_to(aid, wid):
+    """Move automation ``aid`` to webhook ``wid`` and approve that, as the operator would."""
+    pub = routes.public(store.get(aid))
+    trig = {"kind": "webhook", "webhook_id": wid}
+    cfg = model.validate_config({**_config(), "trigger": trig})
+    scope = model.scope_of(cfg, model.compute_pins(cfg))
+    routes._patch(
+        aid,
+        {
+            "revision": pub["revision"],
+            "trigger": trig,
+            "consent": True,
+            "scope_digest": routes.scope_digest(scope),
+        },
+    )
+
+
+def test_a_delivery_never_runs_under_a_webhook_it_did_not_come_through(spawned, forge_says):
+    aid = _made()
+    old = WH["wid"]
+    new, _s = webhooks.create("other")
+    forge_says["pr#41"] = (SHA_A, True)
+    # Routed to `aid` through `old`; before the handler runs, the operator moves `aid` to `new`
+    # and approves it.
+    _switch_to(aid, new["id"])
+    asyncio.run(
+        review_loop_runner.handle(aid, json.dumps(_pr()).encode(), {}, registry=None, source=old)
+    )
+    assert spawned == [] and _runs(aid) == []
+    # Through the webhook it now listens on, the same delivery runs.
+    asyncio.run(
+        review_loop_runner.handle(
+            aid, json.dumps(_pr()).encode(), {}, registry=None, source=new["id"]
+        )
+    )
+    assert len(spawned) == 1
+
+
+def test_admission_refuses_a_delivery_from_another_webhook():
+    aid = _made()
+    other, _s = webhooks.create("other")
+    res = store.begin_review(
+        aid,
+        slot="review:x",
+        repo=REPO,
+        item="pr#41",
+        revision=SHA_A,
+        expect_revision=store.get(aid)["revision"],
+        inputs={},
+        source=other["id"],
+    )
+    assert res.get("stale_config") and res["run"] is None
+    assert (
+        store.record_delivery(
+            aid, slot="rejected:x", outcome="refused", reason="r", inputs={}, source=other["id"]
+        )
+        is None
+    )
+    assert _runs(aid) == []
+
+
+def test_a_webhook_and_a_reference_to_it_can_never_dangle():
+    gone, _s = webhooks.create("gone")
+    webhooks.delete(gone["id"])
+    cfg = model.validate_config(
+        {**_config(), "trigger": {"kind": "webhook", "webhook_id": gone["id"]}}
+    )
+    # Created (or retargeted) after the deletion: refused inside the writing transaction.
+    with pytest.raises(store.StoreError, match="doesn't exist"):
+        store.create(cfg, model.compute_pins(cfg))
+    aid = _made()
+    with pytest.raises(store.StoreError, match="doesn't exist"):
+        store.mutate(aid, lambda row: {"config": cfg})
+    # Deleted after a reference exists: refused inside the deleting transaction.
+    with pytest.raises(webhooks.WebhookError, match="used by an automation"):
+        webhooks.delete(WH["wid"])
+
+
+def test_deleting_an_old_review_loop_deletes_its_own_webhook_and_secret():
+    aid, secret = _legacy(enabled=False)
+    shared_user = _made(enabled=False)
+    assert webhooks.secrets(aid) == [secret]
+    store.delete(aid, expect_revision=store.get(aid)["revision"])
+    assert webhooks.secrets(aid) == []
+    with pytest.raises(store.NotFound):
+        webhooks.get(aid)
+    # A shared webhook used by another automation stays.
+    assert webhooks.get(WH["wid"])["used_by"] == [{"id": shared_user, "name": "Review loop"}]
+
+
+def test_a_rejected_delivery_racing_a_webhook_switch_charges_nothing(monkeypatch):
+    """The switch lands between the handler's reads and the recording transaction: no claim, no
+    run and no failure accounting under the newly approved webhook (Hermes on #2225)."""
+    aid = _made()
+    old = WH["wid"]
+    new, _s = webhooks.create("other")
+    real_tx = store._tx
+    switched = {"done": False}
+
+    def tx_then_switch():
+        if not switched["done"]:
+            switched["done"] = True
+            _switch_to(aid, new["id"])  # commits before the recording transaction starts
+        return real_tx()
+
+    monkeypatch.setattr(store, "_tx", tx_then_switch)
+    before = store.get(aid)["consecutive_failures"]
+    got = store.record_delivery(
+        aid, slot="rejected:race", outcome="refused", reason="rejected: x", inputs={}, source=old
+    )
+    monkeypatch.setattr(store, "_tx", real_tx)
+    assert got is None and switched["done"]
+    assert _runs(aid) == []
+    assert store.get(aid)["consecutive_failures"] == before
+    with store._read() as con:
+        assert not con.execute(
+            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?",
+            (aid, "rejected:race"),
+        ).fetchone()

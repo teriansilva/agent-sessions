@@ -243,6 +243,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Automations: a review loop's webhook secret (make or rotate, shown once) (#2202) | POST /api/automations/{aid}/webhook-secret | **never** (a credential) |
+| Webhooks (#2221): list, read (field names and types), rename, delete an unused one | GET/PATCH/DELETE /api/webhooks* | P7 R/W |
+| Webhooks (#2221): create, rotate (the secret is shown once) | POST /api/webhooks, POST /api/webhooks/{wid}/rotate | **never** (a credential) |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
 | Specialists (#1693): list | GET /api/specialists | have (`list_specialists`, #1910) |
@@ -718,6 +720,7 @@ GET    /change-password                                                         
 POST   /change-password                                                           never  # identity
 GET    /healthz                                                                   n/a  # diagnostics
 POST   /hooks/a/{aid}                                                             n/a  # the forge's signed webhook, not an operator action (#2202)
+POST   /hooks/w/{wid}                                                             n/a  # a list webhook's signed delivery, not an operator action (#2221)
 GET    /link/approve                                                              never  # identity
 POST   /link/approve                                                              never  # identity
 POST   /link/deny                                                                 never  # identity
@@ -814,6 +817,12 @@ DELETE /api/voice/calls/{call_id}                                               
 GET    /api/voice/local                                                           never  # the local speech server's status (#1625)
 POST   /api/voice/local/use                                                       never  # points call audio at a server and stores its token
 WS     /ws/voice/{call_id}                                                        n/a  # the call itself: speech for HQ's own turns
+GET    /api/webhooks                                                              P7  # read the webhook list (#2221; HQ drafts automations in P4 of #2221)
+POST   /api/webhooks                                                              never  # a credential, shown once (#2221)
+GET    /api/webhooks/{wid}                                                        P7  # read one webhook, its field names and types (#2221)
+PATCH  /api/webhooks/{wid}                                                        P7  # rename (#2221)
+DELETE /api/webhooks/{wid}                                                        P7  # delete an unused webhook (#2221)
+POST   /api/webhooks/{wid}/rotate                                                 never  # a credential, shown once (#2221)
 ```
 
 ## Prefs map (`POST /api/prefs`)

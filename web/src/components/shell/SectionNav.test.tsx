@@ -91,6 +91,10 @@ describe("activeSection", () => {
     ["/library/artifacts/5449-5592-2107-4372", "artifacts"],
     ["/library/artifactsx", null],
     ["/artifacts/5449-5592-2107-4372/", null],
+    ["/library/webhooks", "webhooks"],
+    ["/library/webhooks/new", "webhooks"],
+    ["/library/webhooks/0a1b2c3d4e5f6a7b", "webhooks"],
+    ["/library/webhooksx", null],
     ["/library/mission-plans", "mission-plans"],
     ["/library/mission-plans/plan-3fa9c1d2", "mission-plans"],
     ["/library/mission-plansx", null],
@@ -206,12 +210,14 @@ describe("SectionNav", () => {
       // #1932: what agents published, after Memory.
       ["Artifacts", "/library/artifacts"],
       ["Automations", "/mission/automations"],
+      // #2221: the webhooks automations pick as their trigger, right after them.
+      ["Webhooks", "/library/webhooks"],
       ["Skills", "/library/skills"],
       ["Specialists", "/library/specialists"],
       ["Playbooks", "/library/playbooks"],
       ["Mission plans", "/library/mission-plans"],
     ]);
-    expect(items[6]).toHaveAttribute("aria-current", "page");
+    expect(items[7]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

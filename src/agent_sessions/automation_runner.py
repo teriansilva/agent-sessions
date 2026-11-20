@@ -209,6 +209,12 @@ def check_save(config: dict) -> None:
     ``AutomationError``; blocking — run off the event loop."""
     template = model.check_template(config)
     action = config["action"]
+    trig = config["trigger"]
+    if trig["kind"] == "webhook" and trig.get("webhook_id"):
+        from . import webhooks
+
+        if not webhooks.exists_pickable(trig["webhook_id"]):
+            raise model.AutomationError("that webhook doesn't exist (or can't be picked)")
     if action["kind"] == "start_mission" and action.get("autonomy") != "propose":
         raise model.AutomationError(HQ_PLANS_DISPATCH)
     if action["kind"] == "start_session":
