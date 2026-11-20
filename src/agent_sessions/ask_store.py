@@ -1101,6 +1101,20 @@ def ensure_proposals_dir() -> Path:
     return d
 
 
+def has_proposals(cid: str) -> bool:
+    """Whether the conversation has a card sidecar at all (#2050): one without has no card state
+    to read. A path that cannot be checked counts as present, so its read says what it is."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    try:
+        os.lstat(_proposals_path(cid))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def read_proposals(cid: str) -> list[dict]:
     """The sidecar's entries, in order; ``[]`` when there is none. SidecarUnreadable otherwise —
     never a partial list, so nothing is decided on a guess."""

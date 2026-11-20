@@ -1544,6 +1544,15 @@ async def decide_locked(
             extras["_resumed"] = True
             if isinstance(row.get("committed"), dict):
                 extras["_committed"] = dict(row["committed"])
+        if op.follow_up:
+            # Where the card's turn stood when THIS tap was decided (#2050): read now, never when
+            # the card settles, so a Stop during the run does not turn an earlier confirm into
+            # "after the Stop", nor let it restart a turn the Commander stopped.
+            from . import ask_orchestrator
+
+            tapped = ask_orchestrator.tap_state(cid, row.get("turn_id"))
+        else:
+            tapped = None
         if op.run is not None:
             # A runner notes its progress on its own entry as it goes (#1786: what it committed).
             extras["_pid"] = row["id"]
@@ -1554,7 +1563,9 @@ async def decide_locked(
         )
         if row is None:
             raise ask_proposals.ProposalError(404, "no such proposal")
-        _TASKS[pid] = asyncio.create_task(_run(cid, dict(row), op, fd, operator, app, extras))
+        _TASKS[pid] = asyncio.create_task(
+            _run(cid, dict(row), op, fd, operator, app, extras, tapped=tapped)
+        )
         handed = True
         return 202, view(row)
     finally:
@@ -1583,7 +1594,15 @@ async def _route_once(op: Operation, row: dict, fields: dict, now, app, operator
 
 
 async def _run(
-    cid: str, row: dict, op: Operation, fd: int, operator, app, extras: dict | None = None
+    cid: str,
+    row: dict,
+    op: Operation,
+    fd: int,
+    operator,
+    app,
+    extras: dict | None = None,
+    *,
+    tapped: str | None = None,
 ) -> None:
     """Run the operation and write its outcome — whatever happened. Owns ``fd``."""
     import os
@@ -1628,7 +1647,7 @@ async def _run(
             from . import ask_orchestrator
 
             await ask_orchestrator.continue_after_card(
-                cid, {**row, **outcome}, op, operator=operator, app=app
+                cid, {**row, **outcome}, op, operator=operator, app=app, tapped=tapped
             )
         with contextlib.suppress(Exception):
             await asyncio.to_thread(

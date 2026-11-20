@@ -57,6 +57,11 @@ PROCEDURE_TITLE_MAX = 80
 #: The `procedure` field of a draft that applies none (a card staged before #2152: HQ now writes a
 #: flow when the project has no deployed playbook).
 NO_PROCEDURE = -1
+#: What a card staged before procedures could be attached says instead (#2050): neutral, never
+#: inferred from the missing field ("the project has no deployed playbook" may be false).
+LEGACY_NO_PROCEDURE = (
+    "This card was proposed before procedures could be attached; the draft is created without one"
+)
 #: The largest `propose_mission` call HQ may make (its flow rides in the arguments).
 FLOW_ARGS_MAX = 32 * 1024
 
@@ -103,6 +108,10 @@ def _describe(f: dict, facts: dict) -> str:
         if len(title) > room:
             title = title[: max(room - 1, 1)] + "…"
         what = frame.format(title)
+    elif "procedure" not in f:
+        # A card staged before procedures could be attached (#2050): its missing field says
+        # nothing about the project's playbook, so the card never claims there is none.
+        what = LEGACY_NO_PROCEDURE + "."
     else:
         what = "The project has no deployed playbook, so no procedure is applied."
     return f"{head}{what}{tail}"
@@ -204,6 +213,13 @@ async def _run(cid: str, target: str, fields: dict, facts: dict, app, operator) 
     if index == NO_PROCEDURE:
         # A card staged before #2152 (HQ now writes a flow when there is no deployment).
         state, said = _outcome(201, {"title": title}, facts)
+        if "procedure" not in fields:
+            # …or before procedures could be attached at all (#2050): neutral, never "the
+            # project has no deployed playbook", which its missing field does not say.
+            said = (
+                f"Draft mission created ({title}) without a procedure: this card was proposed "
+                "before procedures could be attached. Nothing runs until you press Begin."
+            )
         return {"state": state, "outcome": said, "mission_id": mid}
     proc = facts.get("procedure") or "the procedure"
     return await _apply(

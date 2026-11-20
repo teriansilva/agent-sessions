@@ -431,6 +431,9 @@ export function AskConsole({
   /** HQ's continuation after a draft-mission card (#1950): how often each `card:phase` was read
    *  again (`CONTINUE_RECHECKS`). */
   const continueSeen = useRef(new Map<string, number>());
+  /** The keys the last read armed a recheck for, and their limit: a recheck read that FAILS
+   *  re-arms the next one from these, within the same count (#2050). */
+  const continueArmed = useRef<{ keys: string[]; most: number } | null>(null);
   const [recheck, setRecheck] = useState(0);
   const [reconciling, setReconciling] = useState(false);
   const reconcileTimer = useRef<number | null>(null);
@@ -561,6 +564,20 @@ export function AskConsole({
     if (!current(id)) return;
     const g = ++gen.current;
     const fresh = () => current(id) && g === gen.current;
+    /** One more continuation recheck for each key the last read armed (`continueArmed`), each
+     *  within its limit: whether any was still owed one. */
+    const armContinue = () => {
+      const armed = continueArmed.current;
+      let again = false;
+      for (const key of armed?.keys ?? []) {
+        const n = continueSeen.current.get(key) ?? 0;
+        if (armed && n < armed.most) {
+          continueSeen.current.set(key, n + 1);
+          again = true;
+        }
+      }
+      return again;
+    };
     try {
       const c = await api.askConversation(id);
       if (!fresh()) return;
@@ -606,22 +623,18 @@ export function AskConsole({
       // stop reading and HQ would look stopped, so it reads again: once when such a card on the
       // newest turn turns done, and, once that turn has settled, until the continuation is the
       // newest turn — at most CONTINUE_RECHECKS times (no continuation may be coming at all).
+      // A STOPPED turn too (#2050): a card tapped after the Stop continues once it settled.
       const newest = (c.turns ?? [])[(c.turns ?? []).length - 1];
       const phase = newest?.status === "pending" ? "pending" : "settled";
-      // A turn the Commander stopped (#2076) owes no continuation: nothing to read again for.
-      const most = newest?.status === "stopped" ? 0 : phase === "pending" ? 1 : CONTINUE_RECHECKS;
-      let again = false;
+      const most = phase === "pending" ? 1 : CONTINUE_RECHECKS;
+      const keys: string[] = [];
       for (const p of newest?.proposals ?? []) {
         // Every mission card continues (#2152): a create, HQ's own flow, a plan of a draft.
         if (p.kind !== "operation" || !p.op.startsWith("mission.") || p.state !== "done") continue;
-        const key = `${p.action_id}:${phase}`;
-        const n = continueSeen.current.get(key) ?? 0;
-        if (n < most) {
-          continueSeen.current.set(key, n + 1);
-          again = true;
-        }
+        keys.push(`${p.action_id}:${phase}`);
       }
-      if (again) setRecheck((n) => n + 1);
+      continueArmed.current = keys.length ? { keys, most } : null;
+      if (armContinue()) setRecheck((n) => n + 1);
     } catch (e) {
       // No such conversation (#1776): the page says so — unknown, expired and deleted alike.
       if (fresh() && e instanceof ApiError && e.status === 404) {
@@ -630,6 +643,9 @@ export function AskConsole({
       }
       // Keep what is shown; a fresh array re-arms the poll of a still-pending turn.
       if (fresh()) setTurns((prev) => [...prev]);
+      // A failed read says nothing about the continuation: the recheck the last read armed is
+      // armed again, within the same CONTINUE_RECHECKS (#2050).
+      if (fresh() && armContinue()) setRecheck((n) => n + 1);
     }
     // `current` and `notify` read refs only; `reconcile` is stable.
 
@@ -659,6 +675,8 @@ export function AskConsole({
       setFollowsExhausted(false);
       setUnread(false);
       startedSeen.current = new Map();
+      continueSeen.current = new Map();
+      continueArmed.current = null;
       void load(id);
     },
     [load],
@@ -702,6 +720,8 @@ export function AskConsole({
     setFollowsExhausted(false);
     setUnread(false);
     startedSeen.current = new Map();
+    continueSeen.current = new Map();
+    continueArmed.current = null;
     inputRef.current?.focus();
   }, []);
 
@@ -1077,12 +1097,15 @@ export function AskConsole({
       if (!live.current || cidRef.current !== target.cid) return;
       const now = fromServer(r.turn);
       setTurns((prev) => prev.map((t) => (t.id === target.turn ? { ...now, live: t.live } : t)));
+      // Settled, yet a turn runs: HQ's continuation after a card tapped once Stop was pressed
+      // (#2050). Nothing else here is pending to read it, so the conversation is read again.
+      if (r.running && !now.pending) void load(target.cid);
     } catch {
       // Not stopped as far as this page knows: the button comes back, and the stream or the
       // next read says what became of the turn.
       if (live.current) mark(false);
     }
-  }, [stopCid, stopId]);
+  }, [stopCid, stopId, load]);
   /** A nudge card's decision goes to the SAME routes every decision uses; the card then reads
    *  the ledger's own verdict back (a 409 "out of date" is an outcome, not an error). */
   const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());

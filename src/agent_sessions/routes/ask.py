@@ -269,6 +269,16 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
     }
 
 
+def _cards_first(cid: str) -> tuple[str, dict[str, dict]]:
+    """The card states, read BEFORE the records (#1950): a card read `done` then has, in the
+    records read after it, the turn its tap started. A conversation with no card sidecar has none
+    to read (#2050), so the read is skipped; a card staged meanwhile is not in this (empty) read
+    and `with_live` reads it again, as for any card that appears during the read. Blocking."""
+    if not ask_store.has_proposals(cid):
+        return "ok", {}
+    return ask_proposals.views(cid)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _configured() -> bool:
         return bool(prefs.public_ai_review()["configured"])
@@ -312,7 +322,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _missing(cid)
         # The card states FIRST (#1950): a card read `done` then has, in the records read after
         # it, the turn its tap started — a client never sees "done, and HQ stopped".
-        cards = await asyncio.to_thread(ask_proposals.views, cid)
+        cards = await asyncio.to_thread(_cards_first, cid)
         try:
             records = await ask_orchestrator.read_conversation(cid)
         except ask_store.ConversationNotFound:
@@ -526,6 +536,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": "no such turn"}, status_code=404)
         try:
             await ask_orchestrator.stop(cid, turn_id)
+            # The card states first, as the conversation GET reads them (#2050): a card read
+            # `done` comes with the continuation its tap started.
+            cards = await asyncio.to_thread(_cards_first, cid)
             records = await ask_orchestrator.read_conversation(cid)
         except ask_store.ConversationNotFound:
             return _missing(cid)
@@ -536,7 +549,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             views = [t for t in ask_orchestrator.turn_views(records) if t["turn_id"] == turn_id]
             if not views:
                 return None
-            return ask_orchestrator.with_running(ask_orchestrator.with_live(views, cid), cid)[0]
+            live = ask_orchestrator.with_live(views, cid, cards)
+            return ask_orchestrator.with_running(live, cid)[0]
 
         turn = await asyncio.to_thread(view)
         if turn is None:

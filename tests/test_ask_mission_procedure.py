@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import re
 import shutil
 import time
@@ -1254,32 +1255,61 @@ def _a_newer_turn_settles_before_admission(monkeypatch, cid_box: list):
         if text.startswith("[BattleLab, not the Commander") and not done:
             done.append(1)
             tid = str(uuid.uuid4())
-            ask_store.append(
-                cid_box[0],
-                {
-                    "type": "user",
-                    "turn_id": tid,
-                    "text": "something else",
-                    "qd": real("x"),
-                    "contact": "off",
-                },
-                {"type": "assistant", "turn_id": tid, "text": "Done."},
-                {"type": "status", "turn_id": tid, "status": "done"},
-            )
+            # Admitted as any turn is (#2050): under the cross-process turn lock, which only a
+            # turn that is not running can take. It is free here: the card's turn has settled.
+            fd = ask_store.try_turn_lock(cid_box[0])
+            assert fd is not None, "the newer turn could not take the turn lock"
+            try:
+                ask_store.append(
+                    cid_box[0],
+                    {
+                        "type": "user",
+                        "turn_id": tid,
+                        "text": "something else",
+                        "qd": real("x"),
+                        "contact": "off",
+                    },
+                    {"type": "assistant", "turn_id": tid, "text": "Done."},
+                    {"type": "status", "turn_id": tid, "status": "done"},
+                )
+            finally:
+                os.close(fd)
         return real(text)
 
     monkeypatch.setattr(ask_store, "question_digest", digest)
     return done
 
 
+def _spy_continue(monkeypatch) -> list[tuple]:
+    """Every continuation attempt (`_continue`), once it decided: the card ids it was for and
+    what came of it (True: begun; False; or the refusal's detail). A positive signal: the card's
+    own `done` and its turn's settle both wait for it, so nothing is left to sleep for."""
+    real = ask_orchestrator._continue
+    seen: list[tuple] = []
+
+    async def spy(cid, cards, **kw):
+        ids = [str(row.get("id")) for row, _op in cards]
+        try:
+            got = await real(cid, cards, **kw)
+        except ask_orchestrator.TurnError as e:
+            seen.append((ids, e.detail))
+            raise
+        seen.append((ids, bool(got)))
+        return got
+
+    monkeypatch.setattr(ask_orchestrator, "_continue", spy)
+    return seen
+
+
 def test_a_newer_settled_turn_before_admission_starts_no_continuation(hq, monkeypatch):
     cid, card = _staged_card(hq, monkeypatch, answer("SHOULD NOT RUN"))
     hit = _a_newer_turn_settles_before_admission(monkeypatch, [cid])
+    seen = _spy_continue(monkeypatch)
     assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
     conv = _wait(hq, cid, lambda c: c["turns"][0]["proposals"][0]["state"] == "done")
-    time.sleep(1.0)
-    conv = hq.get(cid)
+    # Started BEFORE the card reads done: the attempt has already been refused.
     assert hit, "the probe did not hit"
+    assert seen == [([card["action_id"]], "the conversation moved on")]
     assert [t["via"] for t in conv["turns"]] == [None, None]
 
 
@@ -1309,6 +1339,7 @@ def test_a_newer_settled_turn_before_an_owed_continuation_starts_none(hq, monkey
     )
     cid = hq.new()
     hit = _a_newer_turn_settles_before_admission(monkeypatch, [cid])
+    seen = _spy_continue(monkeypatch)
     asked = threading.Thread(target=lambda: hq.ask(cid, "plan it"))
     asked.start()
     try:
@@ -1320,9 +1351,11 @@ def test_a_newer_settled_turn_before_an_owed_continuation_starts_none(hq, monkey
     finally:
         release.set()
         asked.join(30)
-    time.sleep(1.0)
+    # The ask returns once the turn's settle did, and the settle waits for its owed attempt.
+    assert not asked.is_alive()
     conv = _wait(hq, cid, _settled)
     assert hit, "the probe did not hit"
+    assert seen == [([card["action_id"]], "the conversation moved on")]
     assert [t["via"] for t in conv["turns"]] == [None, None]
     assert ask_orchestrator._PENDING_CONTINUE == {}
 
@@ -1352,6 +1385,7 @@ def test_a_stopped_cards_turn_drops_the_continuation_it_was_owed(hq, monkeypatch
         answer("SHOULD NOT RUN"),
     )
     cid = hq.new()
+    seen = _spy_continue(monkeypatch)
     asked = threading.Thread(target=lambda: hq.ask(cid, "plan it"))
     asked.start()
     try:
@@ -1377,7 +1411,730 @@ def test_a_stopped_cards_turn_drops_the_continuation_it_was_owed(hq, monkeypatch
     finally:
         release.set()
         asked.join(30)
-    time.sleep(1.0)
+    # The settle decided (the ask returned after it): the card owed before the Stop is dropped.
+    assert not asked.is_alive()
+    assert seen == [], "no attempt at all"
     conv = hq.get(cid)
     assert [t["via"] for t in conv["turns"]] == [None], conv["turns"]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+
+
+# ---- #2050: honest legacy cards, Stop and two-card continuations, the reads -------------------
+
+
+def _faked_create(monkeypatch, mid: str = "msn_" + "e" * 32):
+    """`POST /api/missions` answers 201 with ``mid``; the apply route is never reached."""
+    from agent_sessions import asgi_call
+
+    seen: list[str] = []
+
+    async def fake(app, operator, method, path, body, **kw):
+        seen.append(path)
+        assert path == "/api/missions", path
+        return asgi_call.Response(status=201, body={"id": mid, "title": "Apply"})
+
+    monkeypatch.setattr(asgi_call, "call", fake)
+    return seen
+
+
+def test_a_card_from_before_procedures_says_so_never_that_there_is_no_playbook(monkeypatch):
+    """No `procedure` field at all: the card predates procedures, which says nothing about the
+    project. The card's summary and its outcome are neutral; an explicit "none" stays truthful."""
+    from agent_sessions import ask_mission
+
+    legacy = {"instruction": "Apply"}
+    explicit = {"instruction": "Apply", "procedure": ask_mission.NO_PROCEDURE}
+    said = ask_mission._describe(legacy, {"name": "P"})
+    assert "no deployed playbook" not in said
+    assert "proposed before procedures could be attached" in said
+    assert len(ask_mission._describe({"instruction": "x" * 240}, {})) <= ask_operations.SUMMARY_MAX
+    assert "no deployed playbook" in ask_mission._describe(explicit, {"name": "P"})
+
+    _faked_create(monkeypatch)
+    out = asyncio.run(ask_mission._run("c", "p", legacy, {}, None, None))
+    assert out["state"] == "done" and out["mission_id"] == "msn_" + "e" * 32
+    assert "no deployed playbook" not in out["outcome"]
+    assert "proposed before procedures could be attached" in out["outcome"]
+    out = asyncio.run(ask_mission._run("c", "p", explicit, {}, None, None))
+    assert out["state"] == "done" and "the project has no deployed playbook" in out["outcome"]
+
+
+def test_a_legacy_card_on_a_project_with_a_playbook_is_created_honestly(hq, monkeypatch):
+    """The regression: a card staged before #2047 (no `procedure`) in a project that DOES have a
+    deployed playbook, tapped after the upgrade. Neither its text nor its outcome says the
+    project has none, and the draft is created without a procedure, as the card says."""
+    pid = _deploy(hq.folder, {"application": FLOW})
+    assert mission_procedures.project_listing(pid)["procedures"], "the project HAS a playbook"
+    real = ask_orchestrator._stage
+
+    async def staged_before_procedures(turn, op, target, title, fields, draft=None, **kw):
+        if op.id == "mission.create":  # the card as an older server staged it
+            fields = {k: v for k, v in fields.items() if k != "procedure"}
+            kw.pop("expected", None)
+        return await real(turn, op, target, title, fields, draft, **kw)
+
+    monkeypatch.setattr(ask_orchestrator, "_stage", staged_before_procedures)
+    _model(monkeypatch, *_first_turn(procedure_index=0), answer("Nothing is left."))
+    cid = hq.new()
+    assert hq.ask(cid, "plan it").status_code == 200
+    (card,) = _cards(hq, cid)
+    assert "procedure" not in ask_store.read_proposals(cid)[0]["fields"]
+    assert "no deployed playbook" not in card["text"]
+    assert "proposed before procedures could be attached" in card["text"]
+    assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
+    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 2 and _settled(c))
+    done = conv["turns"][0]["proposals"][0]
+    (m,) = missions.safe_list_missions()["missions"]
+    assert done["state"] == "done" and done["mission"] == {"id": m["id"]}
+    assert "no deployed playbook" not in done["summary"]
+    assert "proposed before procedures could be attached" in done["summary"]
+    assert _revision(m["id"]) is None, "created without a procedure, as the card said"
+
+
+def test_an_unusable_deployment_answers_its_reason_before_the_index_bounds(hq, monkeypatch):
+    """`procedure_index` 0 on a deployment that can't be applied (it lists no procedure, so 0 is
+    out of bounds): the deployment's own reason, `not_available`, never `bad_index`."""
+    pid = _deploy(hq.folder, {"application": FLOW})
+    unsettled = {"reason": "the deployment is not settled", "procedures": []}
+    model = _staging_turn(monkeypatch, pid, lambda out, n: {**out, **unsettled}, procedure_index=0)
+    cid = hq.new()
+    assert hq.ask(cid, "plan it").status_code == 200
+    err = model.result(3)["error"]
+    assert "can't be applied" in err and "not settled" in err
+    (rec,) = [
+        r for r in ask_store.read(cid) if r["type"] == "tool" and r["name"] == "propose_mission"
+    ]
+    assert rec["meta"]["error"] == "not_available"
+    assert _cards(hq, cid) == []
+
+
+def test_read_plan_and_read_pool_link_a_mission_only_once_it_was_read(monkeypatch):
+    from agent_sessions import asgi_call
+
+    mid = "msn_" + "c" * 32
+    answer_with: list = []
+
+    async def route(app, operator, method, path, body, **kw):
+        return answer_with[-1]
+
+    monkeypatch.setattr(asgi_call, "call", route)
+    t = _bare_turn(operator=object(), app=object())
+    t.mission_ids.add(mid)
+    ask_orchestrator._note_mission(t, mid, "Apply for the job", "draft")
+    t.team_plans[mid] = {"revision": 1, "steps": ["o1.cv"]}
+    answer_with.append(asgi_call.Response(status=404, body={"detail": "no such mission"}))
+    for tool, args in (
+        (ask_orchestrator._read_plan, {"mission_id": mid}),
+        (ask_orchestrator._read_pool, {"mission_id": mid, "step_index": 0}),
+    ):
+        with pytest.raises(ask_orchestrator._ToolRefused):
+            asyncio.run(tool(t, args))
+    assert t.focused == [], "a refused read links nothing"
+    answer_with.append(asgi_call.Response(status=200, body={"revision": None, "team": None}))
+    asyncio.run(ask_orchestrator._read_plan(t, {"mission_id": mid}))
+    assert t.focused == [mid]
+
+
+def _held_first_turn(monkeypatch, cards: int, *continuation):
+    """A first turn that stages ``cards`` draft cards and then holds its closing answer until
+    ``release``; ``answering`` says the held request is in flight."""
+    import threading
+
+    release, answering = threading.Event(), threading.Event()
+
+    async def held_answer(body):
+        answering.set()
+        await asyncio.to_thread(release.wait, 30)
+        return answer("Confirm the cards.")
+
+    proposals = [
+        call(
+            "propose_mission",
+            {"project_index": 0, "instruction": f"Apply, part {i + 1}", "procedure_index": 0},
+            cid=f"pm{i}",
+        )
+        for i in range(cards)
+    ]
+    model = _model(
+        monkeypatch,
+        calls(("list_missions", {"state": "draft"}), ("list_projects", {})),
+        call("list_procedures", {"project_index": 0}, cid="lp"),
+        *proposals,
+        held_answer,
+        *continuation,
+    )
+    return model, release, answering
+
+
+def _note_mids(body: dict) -> list[str]:
+    text = [m for m in body["messages"] if m["role"] == "user"][-1]["content"]
+    text = text if isinstance(text, str) else json.dumps(text)
+    return list(dict.fromkeys(MID_RE.findall(text)))
+
+
+def _spy_begun(monkeypatch) -> list[tuple]:
+    """The missions each server continuation was begun with (`continues_missions`)."""
+    real = ask_orchestrator.begin
+    begun: list[tuple] = []
+
+    async def spy(*a, **kw):
+        if kw.get("via") == "card":
+            begun.append(kw.get("continues_missions"))
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(ask_orchestrator, "begin", spy)
+    return begun
+
+
+def test_two_cards_tapped_during_one_turn_reach_one_continuation_with_both_missions(
+    hq, monkeypatch
+):
+    """Both cards are owed to the turn they were tapped in: ONE continuation, whose note and
+    tools carry BOTH new missions (each once) and nothing else, and only the card tools."""
+    import threading
+
+    _deploy(hq.folder, {"application": FLOW})
+    other = missions.create_mission("an unrelated draft", title="Unrelated")["id"]
+    model, release, answering = _held_first_turn(
+        monkeypatch,
+        2,
+        lambda b: calls(*(("read_plan", {"mission_id": m}) for m in _note_mids(b))),
+        calls(
+            ("read_plan", {"mission_id": other}), ("send_nudge", {"key": "claude:x", "text": "go"})
+        ),
+        answer("Both plans are read."),
+    )
+    begun = _spy_begun(monkeypatch)
+    seen = _spy_continue(monkeypatch)
+    cid = hq.new()
+    said: dict = {}
+    asked = threading.Thread(target=lambda: said.update(r=hq.ask(cid, "plan both")))
+    asked.start()
+    try:
+        conv = _wait(hq, cid, lambda c: len(_cards_of(c)) == 2 and _all_confirmable(c))
+        assert answering.wait(20)
+        ids = [p["action_id"] for p in _cards_of(conv)]
+        for pid in ids:
+            assert hq.decide(pid, {"decision": "confirm"}).status_code in (200, 202)
+            _wait(hq, cid, lambda c, pid=pid: _card(c, pid)["state"] == "done")
+        owed = ask_orchestrator._PENDING_CONTINUE[cid]
+        assert list(owed.cards) == ids
+    finally:
+        release.set()
+        asked.join(30)
+    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 2 and _settled(c))
+    first, cont = conv["turns"]
+    made = [_card(conv, pid)["mission"]["id"] for pid in ids]
+    assert len(set(made)) == 2
+    assert said["r"].json()["turn"].get("continued") is True
+    assert seen == [(ids, True)], "both cards, one attempt"
+    assert begun == [tuple(made)], "each mission admitted exactly once"
+    assert cont["via"] == "card" and cont["answer"] == "Both plans are read."
+    assert [x["id"] for x in cont["mission_matches"]] == made
+    # Both missions are usable: each read went through. A mission no card created is refused,
+    # and so is anything but a read or a card (the continuation's own admission).
+    n = len(model.bodies)
+    reads = [json.loads(m["content"]) for m in _tool_messages(model.bodies[n - 2])[-2:]]
+    assert [r.get("revision") for r in reads] == [1, 1], reads
+    other_read, nudge = (json.loads(m["content"]) for m in _tool_messages(model.bodies[n - 1])[-2:])
+    assert "use a mission id one of your tools returned" in other_read["error"]
+    assert "only reads and proposes" in nudge["error"]
+    assert {t["function"]["name"] for t in model.bodies[n - 3]["tools"]} == {
+        t["function"]["name"] for t in ask_orchestrator.tool_specs("card")
+    }
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+    assert len(hq.get(cid)["turns"]) == 2
+
+
+def _tool_messages(body: dict) -> list[dict]:
+    return [m for m in body["messages"] if m["role"] == "tool"]
+
+
+def _cards_of(conv) -> list[dict]:
+    return [p for p in conv["turns"][0]["proposals"]] if conv["turns"] else []
+
+
+def _all_confirmable(conv) -> bool:
+    return all(p.get("can_confirm") for p in _cards_of(conv))
+
+
+def _card(conv, pid) -> dict:
+    return next(p for t in conv["turns"] for p in t["proposals"] if p["action_id"] == pid)
+
+
+def test_a_card_reported_twice_is_owed_once_and_the_owed_cards_are_bounded():
+    """A duplicate confirmation or settlement report owes nothing more, and one continuation
+    carries at most CONTINUE_CARDS_MAX cards, so its note always fits the store whole."""
+    op = ask_operations.CATALOG["mission.create"]
+    cid = "ask_" + "d" * 32
+    turn = _bare_turn(cid=cid)
+    running = ask_orchestrator._Running(turn.turn_id, None, turn=turn)  # type: ignore[arg-type]
+    ask_orchestrator._RUNNING[cid] = running
+    try:
+        rows = [
+            {"id": f"{i:032x}", "turn_id": turn.turn_id, "outcome": '"' * 400}
+            for i in range(ask_orchestrator.CONTINUE_CARDS_MAX + 1)
+        ]
+
+        async def tap(row):
+            return await ask_orchestrator.continue_after_card(cid, row, op, operator=None, app=None)
+
+        assert asyncio.run(tap(rows[0])) is False
+        assert asyncio.run(tap(rows[0])) is False  # the same card again
+        owed = ask_orchestrator._PENDING_CONTINUE[cid]
+        assert list(owed.cards) == [rows[0]["id"]]
+        for row in rows[1:]:
+            asyncio.run(tap(row))
+        assert list(owed.cards) == [r["id"] for r in rows[: ask_orchestrator.CONTINUE_CARDS_MAX]]
+        assert [after for _r, _o, after in owed.cards.values()] == [False] * 3
+        # Tapped once the turn is being stopped: newer intent than the Stop.
+        del owed.cards[rows[2]["id"]]
+        turn.stop.set()
+        asyncio.run(tap(rows[2]))
+        assert owed.cards[rows[2]["id"]][2] is True
+    finally:
+        ask_orchestrator._RUNNING.pop(cid, None)
+        ask_orchestrator._PENDING_CONTINUE.pop(cid, None)
+
+
+def test_the_note_stays_whole_and_framed_even_with_control_characters():
+    """A control character quotes to six characters (`\\u0001`): three outcomes of them (each
+    at SUMMARY_MAX, as a mission or procedure title full of them makes) still give a note the
+    store keeps whole, its frame closed and every mission id in it (#2050 review)."""
+    mids = ["msn_" + ch * 32 for ch in "abc"]
+    for n in (1, ask_orchestrator.CONTINUE_CARDS_MAX):
+        worst = ask_orchestrator.continue_note_cards(
+            [("\x01" * 40, "\x01" * ask_operations.SUMMARY_MAX)] * n, mids[:n]
+        )
+        assert len(worst) <= ask_store.TEXT_MAX, len(worst)
+        assert ask_store.guard_text(worst, ask_store.TEXT_MAX) == worst, "cut by the store"
+        assert worst.startswith("[BattleLab, not the Commander")
+        assert worst.endswith(ask_orchestrator.CONTINUE_TAIL)
+        assert all(m in worst for m in mids[:n])
+        head = worst[: worst.index("]" + (" The new mission" if n else ""))]
+        quoted = re.findall(r'"(?:[^"\\]|\\.)*"', head)  # every literal closes
+        assert len(quoted) == 2 * n, quoted
+        for q in quoted:
+            json.loads(q)
+
+
+def _stop_held_at_settle(monkeypatch, question: str):
+    """Hold the turn asking ``question`` between its run and its settlement (`memory_capture`'s
+    intent, read just before the settlement fence): a Stop there has set the flag, and the
+    turn is still running. ``settling`` says it got there; ``go`` lets it settle."""
+    import threading
+
+    from agent_sessions import memory_capture
+
+    settling, go = threading.Event(), threading.Event()
+    real = memory_capture.intent
+
+    def intent(q, **kw):
+        if q == question:
+            settling.set()
+            go.wait(30)
+        return real(q, **kw)
+
+    monkeypatch.setattr(memory_capture, "intent", intent)
+    return settling, go
+
+
+def _tap_after_stop(hq, monkeypatch, *continuation, newer: bool = False):
+    """Stage a card, Stop its turn, and tap the card while the stopped turn has not settled."""
+    import threading
+
+    _deploy(hq.folder, {"application": FLOW})
+    model, release, answering = _held_first_turn(monkeypatch, 1, *continuation)
+    settling, go = _stop_held_at_settle(monkeypatch, "plan it")
+    seen = _spy_continue(monkeypatch)
+    begun = _spy_begun(monkeypatch)
+    cid = hq.new()
+    hit = _a_newer_turn_settles_before_admission(monkeypatch, [cid]) if newer else None
+    said: dict = {}
+    asked = threading.Thread(target=lambda: said.update(r=hq.ask(cid, "plan it")))
+    asked.start()
+    stopper = None
+    try:
+        conv = _wait(hq, cid, _confirmable)
+        (card,) = conv["turns"][0]["proposals"]
+        tid = conv["turns"][0]["turn_id"]
+        assert answering.wait(20)
+        url = f"/api/ask/conversations/{cid}/turns/{tid}/stop"
+        stopper = threading.Thread(target=lambda: hq.c.post(url, headers=hq.hdr))
+        stopper.start()
+        assert settling.wait(20), "the stopped turn never reached its settlement"
+        held = ask_orchestrator._RUNNING[cid].turn
+        assert held.stop.is_set() and not held.settled
+        assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
+        _wait(hq, cid, lambda c: c["turns"][0]["proposals"][0]["state"] == "done")
+        owed = ask_orchestrator._PENDING_CONTINUE[cid]
+        assert [after for _r, _o, after in owed.cards.values()] == [True]
+    finally:
+        go.set()
+        release.set()
+        asked.join(30)
+        if stopper is not None:
+            stopper.join(30)
+    assert not asked.is_alive()
+    return cid, card, said, seen, begun, model, hit
+
+
+def test_a_tap_after_stop_continues_once_the_stopped_turn_settles(hq, monkeypatch):
+    """Pressed Stop, THEN tapped the card while the stopped turn still settled: the tap is newer
+    intent than the Stop, so HQ continues once (with that card's mission), and the settled view
+    says `continued`, which makes the client read the conversation again."""
+    cid, card, said, seen, begun, model, _ = _tap_after_stop(
+        hq,
+        monkeypatch,
+        lambda b: call("read_plan", {"mission_id": _note_mid(b)}, cid="rp"),
+        answer("Read the plan."),
+    )
+    turn = said["r"].json()["turn"]
+    assert turn["status"] == "stopped" and turn.get("continued") is True
+    assert seen == [([card["action_id"]], True)]
+    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 2 and _settled(c))
+    first, cont = conv["turns"]
+    (m,) = missions.safe_list_missions()["missions"]
+    assert first["status"] == "stopped" and first["proposals"][0]["mission"] == {"id": m["id"]}
+    assert begun == [(m["id"],)]
+    assert cont["via"] == "card" and cont["answer"] == "Read the plan."
+    assert model.result(len(model.bodies) - 1)["revision"] == 1
+    assert [x["id"] for x in cont["mission_matches"]] == [m["id"]]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+    assert len(hq.get(cid)["turns"]) == 2, "once: never a second continuation"
+
+
+def test_a_tap_after_stop_still_yields_to_a_newer_turn(hq, monkeypatch):
+    cid, card, said, seen, begun, _, hit = _tap_after_stop(
+        hq, monkeypatch, answer("SHOULD NOT RUN"), newer=True
+    )
+    assert hit, "the probe did not hit"
+    assert seen == [([card["action_id"]], "the conversation moved on")]
+    assert "continued" not in said["r"].json()["turn"]
+    conv = _wait(hq, cid, _settled)
+    assert [t["via"] for t in conv["turns"]] == [None, None]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+
+
+def test_the_conversation_read_skips_the_card_store_when_there_is_none(hq, monkeypatch):
+    from agent_sessions import ask_proposals
+
+    _model(monkeypatch, answer("Nothing to stage."))
+    cid = hq.new()
+    assert hq.ask(cid, "hello").status_code == 200
+    assert not ask_store._proposals_path(cid).exists()
+    real = ask_proposals.views
+    reads: list[str] = []
+
+    def views(c):
+        reads.append(c)
+        return real(c)
+
+    monkeypatch.setattr(ask_proposals, "views", views)
+    assert hq.get(cid)["turns"][0]["answer"] == "Nothing to stage."
+    assert reads == [], "no sidecar, no card read"
+
+
+def test_a_card_staged_after_the_sidecar_check_is_still_read(hq, monkeypatch):
+    """The skipped read keeps the late-card re-read: a card staged between the check and the
+    records is read again, never `gone`."""
+    cid, card = _staged_card(hq, monkeypatch)
+    real = ask_store.has_proposals
+    first: list[int] = []
+
+    def has(c):
+        if not first:
+            first.append(1)
+            return False  # as if checked before the card was staged
+        return real(c)
+
+    monkeypatch.setattr(ask_store, "has_proposals", has)
+    (got,) = _cards(hq, cid)
+    assert first and got["state"] == "pending" and got["can_confirm"] is True
+
+
+def test_the_stop_route_reads_the_cards_before_the_records(hq, monkeypatch):
+    """Like the conversation GET: a card read `done` comes with the turn its tap began."""
+    from agent_sessions import ask_proposals
+
+    cid, card = _staged_card(hq, monkeypatch)
+    tid = hq.get(cid)["turns"][0]["turn_id"]
+    order: list[str] = []
+    real_views, real_read = ask_proposals.views, ask_orchestrator.read_conversation
+
+    def views(c):
+        order.append("cards")
+        return real_views(c)
+
+    async def read(c):
+        order.append("records")
+        return await real_read(c)
+
+    monkeypatch.setattr(ask_proposals, "views", views)
+    monkeypatch.setattr(ask_orchestrator, "read_conversation", read)
+    r = hq.c.post(f"/api/ask/conversations/{cid}/turns/{tid}/stop", headers=hq.hdr)
+    assert r.status_code == 200, r.text
+    assert order == ["cards", "records"]
+    assert r.json()["turn"]["proposals"][0]["action_id"] == card["action_id"]
+    assert r.json()["turn"]["proposals"][0]["state"] == "pending"
+
+
+def _held_create(monkeypatch):
+    """`POST /api/missions` waits for ``gate`` (``entered`` says it got there)."""
+    import threading
+
+    from agent_sessions import asgi_call
+
+    real = asgi_call.call
+    gate, entered = threading.Event(), threading.Event()
+
+    async def held(app, operator, method, path, body, **kw):
+        if (method, path) == ("POST", "/api/missions"):
+            entered.set()
+            await asyncio.to_thread(gate.wait, 30)
+        return await real(app, operator, method, path, body, **kw)
+
+    monkeypatch.setattr(asgi_call, "call", held)
+    return gate, entered
+
+
+def test_a_confirm_before_stop_does_not_continue_even_if_its_card_settles_after(hq, monkeypatch):
+    """Confirmed while the turn ran, THEN Stop, while the create is still in flight: the card
+    settles after the Stop, but the tap came before it, so HQ does not continue (#2050 review:
+    "before Stop" is when the tap was decided, not when the card settled)."""
+    import threading
+
+    _deploy(hq.folder, {"application": FLOW})
+    _model_, release, answering = _held_first_turn(monkeypatch, 1, answer("SHOULD NOT RUN"))
+    settling, go = _stop_held_at_settle(monkeypatch, "plan it")
+    gate, entered = _held_create(monkeypatch)
+    seen = _spy_continue(monkeypatch)
+    cid = hq.new()
+    said: dict = {}
+    asked = threading.Thread(target=lambda: said.update(r=hq.ask(cid, "plan it")))
+    asked.start()
+    stopper = None
+    try:
+        conv = _wait(hq, cid, _confirmable)
+        (card,) = conv["turns"][0]["proposals"]
+        tid = conv["turns"][0]["turn_id"]
+        assert answering.wait(20)
+        assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
+        assert entered.wait(20), "the create never started"
+        url = f"/api/ask/conversations/{cid}/turns/{tid}/stop"
+        stopper = threading.Thread(target=lambda: hq.c.post(url, headers=hq.hdr))
+        stopper.start()
+        assert settling.wait(20), "the stopped turn never reached its settlement"
+        assert ask_orchestrator._RUNNING[cid].turn.stop.is_set()
+        gate.set()  # the card settles now, after the Stop, its own turn still running
+        _wait(hq, cid, lambda c: c["turns"][0]["proposals"][0]["state"] == "done")
+        owed = ask_orchestrator._PENDING_CONTINUE[cid]
+        assert [after for _r, _o, after in owed.cards.values()] == [False]
+    finally:
+        gate.set()
+        go.set()
+        release.set()
+        asked.join(30)
+        if stopper is not None:
+            stopper.join(30)
+    assert not asked.is_alive()
+    assert seen == [], "a card confirmed before the Stop owes nothing"
+    assert "continued" not in said["r"].json()["turn"]
+    conv = hq.get(cid)
+    assert [t["status"] for t in conv["turns"]] == ["stopped"]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+
+
+def test_a_card_that_settles_while_the_owed_continuation_begins_joins_it_never_races(
+    hq, monkeypatch
+):
+    """Card A is owed to its turn; the turn settles and A's continuation is on its way into
+    `begin` when card B (same turn) settles. B never begins a second attempt beside it (one of
+    the two would lose its mission to a 409): it is owed to A's continuation and continues once
+    that settles (#2050 review). Held at the continuation's digest, deterministically."""
+    import threading
+
+    _deploy(hq.folder, {"application": FLOW})
+    _model_, release, answering = _held_first_turn(
+        monkeypatch, 2, answer("Continued the first."), answer("Continued the second.")
+    )
+    real = ask_store.question_digest
+    in_begin, resume = threading.Event(), threading.Event()
+
+    def digest(text):
+        if text.startswith("[BattleLab, not the Commander") and not in_begin.is_set():
+            in_begin.set()
+            resume.wait(30)
+        return real(text)
+
+    monkeypatch.setattr(ask_store, "question_digest", digest)
+    seen = _spy_continue(monkeypatch)
+    cid = hq.new()
+    asked = threading.Thread(target=lambda: hq.ask(cid, "plan both"))
+    asked.start()
+    try:
+        conv = _wait(hq, cid, lambda c: len(_cards_of(c)) == 2 and _all_confirmable(c))
+        assert answering.wait(20)
+        a, b = (p["action_id"] for p in _cards_of(conv))
+        assert hq.decide(a, {"decision": "confirm"}).status_code in (200, 202)
+        _wait(hq, cid, lambda c: _card(c, a)["state"] == "done")
+        release.set()  # the turn settles; A's continuation starts and is held inside `begin`
+        assert in_begin.wait(20), "A's continuation never reached begin"
+        assert hq.decide(b, {"decision": "confirm"}).status_code in (200, 202)
+        _wait(hq, cid, lambda c: _card(c, b)["state"] == "done")
+        assert ask_orchestrator._PENDING_CONTINUE[cid].continuing
+        assert set(ask_orchestrator._PENDING_CONTINUE[cid].cards) == {a, b}
+    finally:
+        release.set()
+        resume.set()
+        asked.join(30)
+    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 3 and _settled(c))
+    first, one, two = conv["turns"]
+    ma, mb = (_card(conv, x)["mission"]["id"] for x in (a, b))
+    assert seen == [([a], True), ([b], True)], "each card continued, neither attempt lost"
+    assert one["via"] == two["via"] == "card"
+    assert [x["id"] for x in one["mission_matches"]] == [ma]
+    assert [x["id"] for x in two["mission_matches"]] == [mb]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+
+
+def test_a_confirm_before_stop_whose_create_ends_after_the_stopped_turn_settled_starts_nothing(
+    hq, monkeypatch
+):
+    """The likelier ordering (#2050 re-review): confirmed while the turn ran, then Stop, which
+    cancels the model request so the turn settles `stopped` at once, and only THEN does the
+    card's create return. The card finds no turn running, but it was confirmed before the Stop:
+    HQ does not restart."""
+    import threading
+
+    _deploy(hq.folder, {"application": FLOW})
+    _model_, release, answering = _held_first_turn(monkeypatch, 1, answer("SHOULD NOT RUN"))
+    gate, entered = _held_create(monkeypatch)
+    seen = _spy_continue(monkeypatch)
+    cid = hq.new()
+    asked = threading.Thread(target=lambda: hq.ask(cid, "plan it"))
+    asked.start()
+    try:
+        conv = _wait(hq, cid, _confirmable)
+        (card,) = conv["turns"][0]["proposals"]
+        tid = conv["turns"][0]["turn_id"]
+        assert answering.wait(20)
+        assert hq.decide(card["action_id"], {"decision": "confirm"}).status_code in (200, 202)
+        assert entered.wait(20), "the create never started"
+        r = hq.c.post(f"/api/ask/conversations/{cid}/turns/{tid}/stop", headers=hq.hdr)
+        assert r.status_code == 200, r.text
+        asked.join(30)  # the stopped turn has fully settled: its ask returned
+        assert not asked.is_alive() and cid not in ask_orchestrator._RUNNING
+        assert hq.get(cid)["turns"][0]["status"] == "stopped"
+        gate.set()  # only now does the card's create return
+        conv = _wait(hq, cid, lambda c: c["turns"][0]["proposals"][0]["state"] == "done")
+    finally:
+        gate.set()
+        release.set()
+        asked.join(30)
+    # The continuation is decided before the card reads done.
+    assert conv["turns"][0]["proposals"][0]["state"] == "done"
+    assert seen == [], "a card confirmed before the Stop never restarts HQ"
+    assert [t["via"] for t in hq.get(cid)["turns"]] == [None]
+    assert ask_orchestrator._PENDING_CONTINUE == {}
+
+
+def test_a_card_confirmed_while_its_turn_ran_joins_the_continuation_being_begun(hq, monkeypatch):
+    """Cards A and B confirmed while their turn ran; A settles first (owed), B's create is still
+    in flight. The turn settles `done` and A's continuation is being begun when B settles: B
+    joins it at once, with no read in between in which A's `begin` could finish and leave B
+    behind (#2050 re-review). If B did read, that read lets A's begin finish (the probe)."""
+    import contextvars
+    import threading
+
+    from agent_sessions import asgi_call
+
+    _deploy(hq.folder, {"application": FLOW})
+    _model_, release, answering = _held_first_turn(
+        monkeypatch, 2, answer("Continued the first."), answer("Continued the second.")
+    )
+    real_call = asgi_call.call
+    creates: list[int] = []
+    gate, entered = threading.Event(), threading.Event()
+
+    async def held(app, operator, method, path, body, **kw):  # B's create (the second) waits
+        if (method, path) == ("POST", "/api/missions"):
+            creates.append(1)
+            if len(creates) == 2:
+                entered.set()
+                await asyncio.to_thread(gate.wait, 30)
+        return await real_call(app, operator, method, path, body, **kw)
+
+    monkeypatch.setattr(asgi_call, "call", held)
+    in_begin, resume, a_begun, b_done = (threading.Event() for _ in range(4))
+    real_digest = ask_store.question_digest
+
+    def digest(text):  # A's continuation is held inside `begin`
+        if text.startswith("[BattleLab, not the Commander") and not in_begin.is_set():
+            in_begin.set()
+            resume.wait(30)
+        return real_digest(text)
+
+    monkeypatch.setattr(ask_store, "question_digest", digest)
+    real_begin = ask_orchestrator.begin
+
+    async def begin(*a, **kw):
+        got = await real_begin(*a, **kw)
+        if kw.get("via") == "card":
+            a_begun.set()
+        return got
+
+    monkeypatch.setattr(ask_orchestrator, "begin", begin)
+    in_b: contextvars.ContextVar[bool] = contextvars.ContextVar("in_b", default=False)
+    real_cac = ask_orchestrator.continue_after_card
+    box: dict = {}
+
+    async def cac(cid, row, op, **kw):
+        if row.get("id") == box.get("b"):
+            in_b.set(True)
+            try:
+                return await real_cac(cid, row, op, **kw)
+            finally:
+                b_done.set()
+        return await real_cac(cid, row, op, **kw)
+
+    monkeypatch.setattr(ask_orchestrator, "continue_after_card", cac)
+    real_read = ask_store.read
+
+    def read(c, *a, **kw):  # B's read, if it makes one: A's begin finishes meanwhile
+        if in_b.get() and not resume.is_set():
+            resume.set()
+            a_begun.wait(20)
+        return real_read(c, *a, **kw)
+
+    monkeypatch.setattr(ask_store, "read", read)
+    seen = _spy_continue(monkeypatch)
+    cid = hq.new()
+    asked = threading.Thread(target=lambda: hq.ask(cid, "plan both"))
+    asked.start()
+    try:
+        conv = _wait(hq, cid, lambda c: len(_cards_of(c)) == 2 and _all_confirmable(c))
+        assert answering.wait(20)
+        a, b = (p["action_id"] for p in _cards_of(conv))
+        box["b"] = b
+        assert hq.decide(a, {"decision": "confirm"}).status_code in (200, 202)
+        _wait(hq, cid, lambda c: _card(c, a)["state"] == "done")
+        assert hq.decide(b, {"decision": "confirm"}).status_code in (200, 202)
+        assert entered.wait(20), "B's create never started"
+        release.set()  # the turn settles done; A's continuation is held inside begin
+        assert in_begin.wait(20), "A's continuation never reached begin"
+        gate.set()  # B settles now
+        assert b_done.wait(20), "B's continuation decision never came"
+        resume.set()
+    finally:
+        release.set()
+        gate.set()
+        resume.set()
+        asked.join(30)
+    conv = _wait(hq, cid, lambda c: len(c["turns"]) == 3 and _settled(c))
+    ma, mb = (_card(conv, x)["mission"]["id"] for x in (a, b))
+    assert seen == [([a], True), ([b], True)], seen
+    assert [t["via"] for t in conv["turns"]] == [None, "card", "card"]
+    assert [x["id"] for x in conv["turns"][1]["mission_matches"]] == [ma]
+    assert [x["id"] for x in conv["turns"][2]["mission_matches"]] == [mb]
     assert ask_orchestrator._PENDING_CONTINUE == {}
