@@ -285,6 +285,10 @@ export interface FederationGrant {
   end_reason: string | null;
   /** The session's title: only on the per-peer list (`?peer=`), which has no pane around it. */
   title?: string;
+  /** The peer read this session within the last 30 s (#2059): one bit, nothing more. */
+  watching?: boolean;
+  /** How many notes the thread with this peer shows (#2062). A number. */
+  notes?: number;
 }
 
 export interface FederationGrantList {
@@ -593,6 +597,10 @@ export interface RemoteSnapshot {
   pending_requests: { request_id: string; summary?: string }[];
   background?: boolean;
   can_send: false;
+  /** One bit (#2059): the owner's operator has this session's pane open. */
+  owner_present?: boolean;
+  /** Who settled the newest requests (#2059). Untrusted: read through `cleanDecisions`. */
+  decisions?: unknown;
 }
 
 export interface RemoteEventPage {

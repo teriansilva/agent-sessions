@@ -20,6 +20,9 @@ import {
 } from "../components/files/filePanelState";
 import type { FreshSession } from "../lib/termUrl";
 import { RuntimeGate } from "../components/terminal/RuntimeGate";
+import { StartedFromStrip } from "../components/federation/ContinueHereDialog";
+import together from "../components/federation/Together.module.css";
+import { startedFrom } from "../lib/federationTogether";
 
 /** Session view at "/s/:engine/:id" — the URL is the single source of truth for which
  *  session is open (deep-linkable, refresh-safe). When arrived at from the new-session
@@ -299,6 +302,7 @@ export function SessionView() {
   }, []);
 
   if (!shown.engine || !shown.id) return null;
+  const startedHere = startedFrom.get(sessionKey) !== null;
   // Only the full-screen route passes To map: a session already IN a window must not offer to
   // window itself (#936), and a phone can never host one.
   const toMap =
@@ -316,7 +320,10 @@ export function SessionView() {
   return (
     <div className={panel.sessionRow} ref={rowRef}>
       {mapFull && <MapFullNotice onDismiss={dismissMapFull} />}
-      <div className={panel.sessionTerm}>
+      <div className={`${panel.sessionTerm} ${startedHere ? together.startedHost : ""}`}>
+        {/* A session this tab started with Continue here (#2062): where its first message came
+            from. Present from the session's first render, so nothing below it ever moves. */}
+        {startedHere && <StartedFromStrip sessionKey={sessionKey} />}
         {/* The same host facts reach a non-terminal pane through the gate (#1332). */}
         <RuntimeGate
           engine={shown.engine}

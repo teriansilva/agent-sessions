@@ -674,6 +674,7 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
         # (`test_federation_together.py` drives each one against the same source scan).
         "access.request",
         "access.status",
+        "access.withdraw",
         "decision.answer",
         "note.list",
         "note.add",

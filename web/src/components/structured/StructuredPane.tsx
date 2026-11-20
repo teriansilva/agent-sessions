@@ -80,6 +80,21 @@ import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import { missionLink } from "../../lib/missionLink";
 import { SharePeerModal } from "../federation/SharePeerModal";
 import { PeerSuggestions } from "../federation/PeerSuggestions";
+import { ShareStrip } from "../federation/ShareStrip";
+import { SettledDecisionCard } from "../federation/PeerDecisions";
+import together from "../federation/Together.module.css";
+import type { FederationGrant } from "../../lib/federation";
+import {
+  cleanDecisions,
+  decisionKeyOf,
+  ownerRaceLine,
+  recordLabel,
+  seedParts,
+  sendPeers,
+  settledShown,
+  startedFrom,
+  type SeenRequest,
+} from "../../lib/federationTogether";
 import { PeerAttribution } from "../../share/Turns";
 import { ReplyShareModal } from "../shares/ReplyShareModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
@@ -520,6 +535,11 @@ function QuestionRequest({
   );
 }
 
+/** The owner's extra line on a pending request while a peer could also answer it (#2062):
+ *  "<peer> can send, so it may also approve this once or reject it. The first answer counts."
+ *  `null` when no live `send` grant exists. */
+const PeerRaceLine = createContext<string | null>(null);
+
 function RequestCard({
   req,
   agent,
@@ -543,6 +563,9 @@ function RequestCard({
   note?: string;
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
+  // Never on a background task's request: a peer is never offered one.
+  const raceLine = useContext(PeerRaceLine);
+  const peerLine = !readOnly && !req.background_task && !mine ? raceLine : null;
   const always = req.choices.includes("approve") ? (req.always ?? []) : [];
   const inline = inlineGrants(always);
   const [alwaysOpen, setAlwaysOpen] = useState(false);
@@ -702,6 +725,11 @@ function RequestCard({
             onClick={onInterrupt}>Reject and stop the turn</button>
         )}
       </div>
+      {peerLine && (
+        <p className={styles.originNote} data-testid="structured-peer-race">
+          {peerLine}
+        </p>
+      )}
       <details className={styles.requestDetails}>
         <summary>Details</summary>
         <div className={styles.detailsScroll}>
@@ -1155,6 +1183,37 @@ function turnAvatar(author: StructuredTurn["author"], operator: AvatarSpec): Ava
 }
 
 /** Opens **Share this reply** (#1956) for a finished reply; null where sharing isn't offered. */
+/** The instance a session's seed record came from, when this tab started it with Continue here
+ *  (#2062); `null` otherwise. Only the label of the record's frame reads it. */
+const RecordFrom = createContext<string | null>(null);
+
+/** An operator turn's text: characters, always. A turn that carries a record from another
+ *  instance (Continue here's seed, `handoff.REMOTE_OPEN` / `REMOTE_CLOSE`) shows that record as
+ *  a delimited, labelled block, so it never reads as the operator's own words. The text itself
+ *  is unchanged and is never markup. */
+function OperatorText({ text, truncated }: { text: string; truncated: boolean }) {
+  const from = useContext(RecordFrom);
+  const parts = seedParts(text);
+  if (parts.record === text)
+    return (
+      <div className={chat.txt}>
+        {text}
+        {truncated && "…"}
+      </div>
+    );
+  return (
+    <div className={chat.txt} data-testid="turn-record">
+      {parts.before && <p className={together.seedLine}>{parts.before}</p>}
+      <figure className={together.seedRecord}>
+        <figcaption>{recordLabel(from ?? "another instance")}</figcaption>
+        <pre>{parts.record}</pre>
+      </figure>
+      {parts.after && <p className={together.seedLine}>{parts.after}</p>}
+      {truncated && "…"}
+    </div>
+  );
+}
+
 const ReplyShareCtx = createContext<((turnId: string, trigger: HTMLElement) => void) | null>(null);
 
 function MessageHeader({ speaker, title, kind, ts, author, shareTurn }: {
@@ -1358,12 +1417,7 @@ function TurnView({
             ))}
           </div>
         )}
-        {!!turn.text && (
-          <div className={chat.txt}>
-            {turn.text}
-            {turn.text_truncated && "…"}
-          </div>
-        )}
+        {!!turn.text && <OperatorText text={turn.text} truncated={!!turn.text_truncated} />}
       </div>
       {activity(order ? order.lead : turn.tools)}
       <RequestQueue requests={requests} render={(r) => requestQuestions(r) ? (
@@ -1794,6 +1848,32 @@ export function StructuredPane({
   const [sharePeer, setSharePeer] = useState<{ open: boolean; trigger: HTMLElement | null }>({
     open: false,
     trigger: null,
+  });
+  // Working together (#2062): the live grants of this session, read by the share strip.
+  // Only the names of the peers that can send: a poll that changes nothing re-renders nothing.
+  const [sendNames, setSendNames] = useState<{ key: string; names: string[] }>({ key: "", names: [] });
+  const [paneNode, setPaneNode] = useState<HTMLDivElement | null>(null);
+  const bindPane = useCallback((el: HTMLDivElement | null) => {
+    paneRef.current = el;
+    setPaneNode(el);
+  }, []);
+  const onPeerGrants = useCallback(
+    (grants: FederationGrant[]) => {
+      const names = sendPeers(grants, Date.now() / 1000);
+      setSendNames((held) =>
+        held.key === actionKey && held.names.join("\u0000") === names.join("\u0000")
+          ? held
+          : { key: actionKey, names },
+      );
+    },
+    [actionKey],
+  );
+  // The requests this pane saw pending, and the ones the operator answered here: what a settled
+  // card says was asked, and whether this side's own answer came second. Memory only.
+  const seenRequests = useRef<{ key: string; map: Map<string, SeenRequest>; tried: Set<string> }>({
+    key: "",
+    map: new Map(),
+    tried: new Set(),
   });
   // "Adopt to mission" / "Open mission" (#948 P5, here since #2173): the header half of
   // session-side adoption. An API session is the only kind the server admits (#1902).
@@ -2442,6 +2522,7 @@ export function StructuredPane({
       phase: "sending",
     };
     setDeciding((all) => ({ ...all, [reqKey]: next }));
+    seenRequests.current.tried.add(decisionKeyOf(req.turn_id, req.request_id));
     setActionError(null);
     try {
       await act(api.structuredDecide(key, {
@@ -3687,6 +3768,28 @@ export function StructuredPane({
     endsAfter.set(end.after_turn, [...(endsAfter.get(end.after_turn) ?? []), end]);
   }
   const pending = snap?.pending_requests ?? [];
+  // Working together (#2062): a request a peer answered is shown answered, with the stored
+  // author. The owner's own answers are already in its conversation and get no card.
+  if (seenRequests.current.key !== actionKey)
+    seenRequests.current = { key: actionKey, map: new Map(), tried: new Set() };
+  for (const r of pending) {
+    if (r.background_task) continue;
+    const preview = questionPreview(r);
+    const asked = preview ? (preview[0]?.title ?? "") : null;
+    seenRequests.current.map.set(decisionKeyOf(r.turn_id, r.request_id), {
+      kind: r.kind,
+      summary: typeof r.summary === "string" ? r.summary : "",
+      question: asked,
+    });
+  }
+  const peerAnswered = settledShown(
+    cleanDecisions(snap?.decisions).filter((d) => d.author.via === "peer"),
+    new Set(pending.map((r) => decisionKeyOf(r.turn_id, r.request_id))),
+    seenRequests.current.map,
+    snap?.turns[snap.turns.length - 1]?.turn_id,
+  );
+  const raceLine =
+    !readOnly && sendNames.key === actionKey && !row?.mission ? ownerRaceLine(sendNames.names) : null;
   const operatorIds = new Map(operatorTurns(snap).map((t) => [t.turn_id, t.text ?? ""] as const));
   const pendingAnswerIds = new Set(
     pending.filter((r) => questionAnswerMode(r) === "message").flatMap((r) => questionAnswerIds(r)),
@@ -3742,13 +3845,23 @@ export function StructuredPane({
   );
   return (
     <div
-      ref={paneRef}
+      ref={bindPane}
       className={`${chat.pane} ${styles.pane}`}
       data-testid="structured-pane"
       onKeyDown={onPaneKey}
       style={railOpen && railMode === "dock" ? { paddingRight: railWidth } : undefined}
     >
       {header}
+      {/* Who this session is shared with, and whether that operator is looking (#2062). */}
+      {!readOnly && (
+        <ShareStrip
+          sessionKey={actionKey}
+          sharesOpen={sharePeer.open}
+          anchor={paneNode}
+          onOpenShare={(trigger) => setSharePeer({ open: true, trigger })}
+          onGrants={onPeerGrants}
+        />
+      )}
       {overlays}
       {snap?.permission_change?.state === "stopping" && !enablingPermissions && (
         <div className={styles.banner} role="status">
@@ -3908,6 +4021,8 @@ export function StructuredPane({
       )}
       {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
           heading is never inside the log's own live region or its busy state). */}
+      <RecordFrom.Provider value={startedFrom.get(actionKey)}>
+      <PeerRaceLine.Provider value={raceLine}>
       <ArrivalContext.Provider value={{ has: arrived.has, primed: painted.current }}>
       <OperatorAvatar.Provider value={operatorAvatar}>
       <ReplyShareCtx.Provider value={openReplyShare}>
@@ -4094,6 +4209,8 @@ export function StructuredPane({
       </ReplyShareCtx.Provider>
       </OperatorAvatar.Provider>
       </ArrivalContext.Provider>
+      </PeerRaceLine.Provider>
+      </RecordFrom.Provider>
       {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}
       <BackgroundStrip
         snap={snap}
@@ -4124,6 +4241,21 @@ export function StructuredPane({
         <p className={chat.sendError} role="alert" data-testid="structured-error">
           {sendError ?? actionError}
         </p>
+      )}
+      {/* A request a paired instance answered (#2062): the answer and its stored author. */}
+      {!readOnly && peerAnswered.length > 0 && (
+        <section className={together.zone} aria-label="Answered by a paired instance" data-testid="owner-decisions">
+          {peerAnswered.map((d) => (
+            <SettledDecisionCard
+              key={d.key}
+              decision={d}
+              seen={seenRequests.current.map.get(d.key)}
+              side="owner"
+              owner=""
+              lost={seenRequests.current.tried.has(d.key)}
+            />
+          ))}
+        </section>
       )}
       {/* What a paired instance suggests (#2061): above the composer, each one the operator's own
           decision. Not part of the conversation and not shown to the agent until approved. */}

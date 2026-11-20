@@ -178,6 +178,72 @@ test("two real instances pair through the page and list each other as connected"
     );
     await expect(beta.getByTestId("remote-pane")).not.toContainText(/not sent|did not (arrive|reach)/i);
     expect(writes).toEqual([]);
+
+    // #2062, against the real routes. Still no API session, so no grant: the notes round trip,
+    // an access request on a live grant, a peer's decision and Continue here's create are NOT
+    // shown here (their two-instance evidence is `tests/test_federation_together.py`,
+    // `tests/test_federation_notes.py` and `tests/test_federation_continue.py`). What two real
+    // servers CAN show:
+    // (1) the real pane of a share that does not exist offers none of the working-together
+    //     controls: no ⋯ menu (no Notes, no Ask for access, no Continue here), no presence line;
+    await expect(beta.getByTestId("remote-menu")).toHaveCount(0);
+    await expect(beta.getByTestId("remote-access-ask")).toHaveCount(0);
+    await expect(beta.getByTestId("remote-presence")).toHaveCount(0);
+    await expect(beta.getByTestId("notes-drawer")).toHaveCount(0);
+    // (2) every receiving route of #2059 / #2062 answers that share with the owner's one
+    //     refusal (404 `no_grant`), and nothing is created on either side;
+    const receiving = await beta.evaluate(async (base) => {
+      const config = (await (await fetch("/api/config")).json()) as { csrf: string };
+      const call = async (method: string, path: string, body?: Record<string, unknown>) => {
+        const r = await fetch(`${base}/${path}`, {
+          method,
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": config.csrf },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        return [r.status, ((await r.json().catch(() => ({}))) as { code?: string }).code];
+      };
+      const key = "0b9e3c1a-7f52-4c1d-9a6e-3d2f1b0a9c8d";
+      return {
+        accessRead: await call("GET", "access"),
+        ask: await call("POST", "access", { level: "send", note: "PLANTED request note" }),
+        withdraw: await call("POST", "access/withdraw"),
+        // (the route requires the snapshot's `offer` by shape before it asks the owner)
+        decide: await call("POST", "decisions", {
+          request_id: "req-1",
+          offer: "o".repeat(32),
+          choice: "approve",
+          client_key: key,
+        }),
+        notesRead: await call("GET", "notes?after=0"),
+        note: await call("POST", "notes", { client_key: key, text: "PLANTED note" }),
+        prepare: await call("POST", "continue", { target_engine: "codex-api", mode: "quick" }),
+      };
+    }, `/api/federation/remote/${alphaId}/g7Jx9aBcDeFgHiJkLmNoPq`);
+    for (const [name, answer] of Object.entries(receiving))
+      expect(answer, name).toEqual([404, "no_grant"]);
+    // (3) the owner's real reads: no access request, no grant to count notes for, and a thread
+    //     of a grant that does not exist is refused, never an empty thread.
+    const owner = await alpha.evaluate(async () => {
+      const config = (await (await fetch("/api/config")).json()) as { csrf: string };
+      const session = "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
+      const requests = await (await fetch(`/api/federation/access-requests?session=${session}`)).json();
+      const grants = await (await fetch(`/api/federation/grants?session=${session}`)).json();
+      const thread = await fetch("/api/federation/grants/g7Jx9aBcDeFgHiJkLmNoPq/notes");
+      const decline = await fetch("/api/federation/access-requests/r7Jx9aBcDeFgHiJkLmNoPq/decline", {
+        method: "POST",
+        headers: { "X-CSRF-Token": config.csrf },
+      });
+      return { requests, grants: grants.grants, thread: thread.status, decline: decline.status };
+    });
+    expect(owner.requests).toEqual({ access_requests: [] });
+    expect(owner.grants).toEqual([]);
+    expect(owner.thread).toBe(404);
+    expect(owner.decline).toBe(404);
+    // and nothing anyone typed above is in either browser's storage.
+    for (const page of [alpha, beta])
+      expect(await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]))).not.toContain(
+        "PLANTED",
+      );
   } catch (e) {
     console.error(`alpha:\n${pair.logs.alpha}\nbeta:\n${pair.logs.beta}`);
     throw e;

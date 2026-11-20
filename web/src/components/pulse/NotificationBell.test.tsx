@@ -283,3 +283,53 @@ test("a row arriving while the panel is open is marked as an arrival; the rows i
   );
   expect(within(panel).getByText("claude needs a decision").closest("li")!.className).toBe(plain);
 });
+
+// =============================================================================================
+// Working together (#2062): a row about a paired instance. Its title is the server's sentence,
+// its link is built from the action id, and its numbers never throw.
+// =============================================================================================
+
+test.each([1e300, Number.NaN, Number.POSITIVE_INFINITY, -1])(
+  "a paired instance's rows with a time of %s are drawn, linked and do not throw",
+  async (ts) => {
+    mockWidth(false);
+    const peer = "m5tr2kxwq7ahd3ny6bpev4czj2osu7fl";
+    const grant = "g7Jx9aBcDeFgHiJkLmNoPq";
+    vi.spyOn(api, "notifications").mockResolvedValue({
+      notifications: [
+        { ...NOTIFICATION, id: "p1", title: "gpu-box asks for Send access", project: "Tune", action_id: `peer-access:${"r".repeat(22)}`, ts },
+        { ...NOTIFICATION, id: "p2", title: "gpu-box left a note", project: "Tune", action_id: `peer-note:${grant}`, ts },
+        {
+          ...NOTIFICATION,
+          id: "p3",
+          title: "studio left a note",
+          project: "Shared",
+          session_id: "",
+          engine: "",
+          action_id: `peer-remote-note:${peer}:${grant}`,
+          ts,
+        },
+      ],
+      unread: 3,
+    });
+    render(
+      <MemoryRouter>
+        <NotificationBell />
+      </MemoryRouter>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+    const panel = screen.getByRole("dialog", { name: /notifications/i });
+    // The bell's shared row (`NotificationRow`, #2146) carries the test id; its title is the line.
+    const rows = await within(panel).findAllByTestId("bell-peer-notice");
+    expect(rows.map((r) => r.querySelector('[class*="title"]')?.textContent)).toEqual([
+      "gpu-box asks for Send access · Tune",
+      "gpu-box left a note · Tune",
+      "studio left a note · Shared",
+    ]);
+    // A fixed word for what it is, and no second line naming the session: the title has it.
+    expect(rows.map((r) => r.querySelector('[class*="reason"]')?.textContent)).toEqual(["Access request", "Note", "Note"]);
+    for (const r of rows) expect(r.querySelector('[class*="proj"]')).toBeNull();
+    expect(panel.querySelector(`a[href="/s/claude/abc?notes=${grant}"]`)).not.toBeNull();
+    expect(panel.querySelector(`a[href="/remote/${peer}/${grant}?notes=1"]`)).not.toBeNull();
+  },
+);

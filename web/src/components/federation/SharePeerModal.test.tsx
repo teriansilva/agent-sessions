@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
   createFederationGrant: vi.fn(),
   changeFederationGrant: vi.fn(),
   revokeFederationGrant: vi.fn(),
+  federationAccessRequests: vi.fn(),
+  declineFederationAccess: vi.fn(),
 }));
 vi.mock("../../lib/api", async (orig) => ({
   ...(await orig<typeof import("../../lib/api")>()),
@@ -762,3 +764,65 @@ test.each([1e300, Number.MAX_VALUE, Infinity, NaN, -1, 0])(
     expect(screen.getByTestId("share-peer-existing")).toHaveTextContent("until an unknown date");
   },
 );
+
+// ---- a peer's request for more access (#2062) -----------------------------------------------------
+
+const request = (over = {}) => ({
+  request_id: "r".repeat(22),
+  grant_id: "g7Jx9aBcDeFgHiJkLmNoPq",
+  session_key: KEY,
+  peer_id: GPU,
+  peer_name: "gpu-box",
+  level: "send",
+  note: "Please let me approve the deploy.",
+  state: "pending",
+  created_at: NOW - 60,
+  updated_at: NOW - 60,
+  expires_at: NOW + 86400,
+  ...over,
+});
+
+test("an API session's dialog shows a pending request as a card, its note as plain text", async () => {
+  api.federationAccessRequests.mockResolvedValue({ access_requests: [request({ note: "<b>hi</b> [x](http://e.vil)" })] });
+  open();
+  const card = await screen.findByTestId("access-request");
+  expect(within(card).getByTestId("access-request-asks")).toHaveTextContent("gpu-box asks to be able to send messages.");
+  const quote = within(card).getByTestId("access-request-note");
+  expect(quote).toHaveTextContent("<b>hi</b> [x](http://e.vil)");
+  expect(quote.querySelector("b, a")).toBeNull();
+  expect(api.federationAccessRequests).toHaveBeenCalledWith(KEY);
+});
+
+test.each([1e300, Number.NaN, Number.POSITIVE_INFINITY, -1, "never"])(
+  "a request whose times are %s is still its card, and the dialog does not throw",
+  async (t) => {
+    api.federationAccessRequests.mockResolvedValue({
+      access_requests: [request({ created_at: t, updated_at: t, expires_at: t })],
+    });
+    open();
+    expect(await screen.findByTestId("access-request")).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Peer" })).toBeInTheDocument();
+  },
+);
+
+test("a terminal's dialog asks for no access requests and shows no card, whatever the server says", async () => {
+  api.federationAccessRequests.mockResolvedValue({ access_requests: [request()] });
+  openTerminal();
+  await screen.findByTestId("share-peer-limit");
+  await waitFor(() => expect(api.federationGrants).toHaveBeenCalled());
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.queryByTestId("access-request")).toBeNull();
+  expect(api.federationAccessRequests).not.toHaveBeenCalled();
+});
+
+test("under StrictMode a pending request's card is read and shown", async () => {
+  api.federationAccessRequests.mockResolvedValue({ access_requests: [request()] });
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <SharePeerModal sessionKey={KEY} title="Refactor the importer" agent="API" onClose={vi.fn()} />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  expect(await screen.findByTestId("access-request")).toBeInTheDocument();
+});

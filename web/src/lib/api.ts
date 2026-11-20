@@ -1179,6 +1179,130 @@ export const api = {
       signal,
       NO_STORE,
     ),
+  // Working together on a shared session (#2059, #2062). The owner's side: what peers ask for,
+  // and the notes of one grant. A note and a request's note are text another operator wrote:
+  // shown as plain text, kept in component state, never written to storage.
+  federationAccessRequests: (session: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ access_requests: unknown[] }>(
+      `/api/federation/access-requests?session=${enc(session)}`,
+      signal,
+      NO_STORE,
+    ),
+  declineFederationAccess: (requestId: string) =>
+    mutateJson<{ access_request: unknown }>(
+      "POST",
+      `/api/federation/access-requests/${enc(requestId)}/decline`,
+    ),
+  federationNotes: (grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ notes: unknown[]; ended: boolean; seq: number; unread: number }>(
+      `/api/federation/grants/${enc(grantId)}/notes`,
+      signal,
+      NO_STORE,
+    ),
+  addFederationNote: (grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ note: unknown }>("POST", `/api/federation/grants/${enc(grantId)}/notes`, body),
+  editFederationNote: (grantId: string, noteId: string, text: string) =>
+    mutateJson<{ note: unknown }>(
+      "PATCH",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}`,
+      { text },
+    ),
+  deleteFederationNote: (grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "DELETE",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}`,
+    ),
+  hideFederationNote: (grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "POST",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}/hide`,
+    ),
+  readFederationNotes: (grantId: string, seq: number) =>
+    mutateJson<{ unread: number }>("POST", `/api/federation/grants/${enc(grantId)}/notes/read`, {
+      seq,
+    }),
+  // The receiving side. Every call is answered by the owning instance; none is retried here.
+  federationRemoteAccess: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<unknown>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access`,
+      signal,
+      NO_STORE,
+    ),
+  askFederationRemoteAccess: (peerId: string, grantId: string, body: { level: string; note?: string }) =>
+    mutateJson<unknown>("POST", `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access`, body),
+  withdrawFederationRemoteAccess: (peerId: string, grantId: string) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access/withdraw`,
+    ),
+  /** Answer ONE pending request of a shared session. `offer` is the snapshot's `offer` of that
+   *  same request, sent back unchanged (the owner requires it: it binds the answer to that exact
+   *  request). `choice` is a decision KIND and `options` are option INDEXES: no label and no text
+   *  is sent. */
+  federationRemoteDecide: (
+    peerId: string,
+    grantId: string,
+    body: { request_id: string; offer: string; choice: string; options?: number[][]; client_key: string },
+  ) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/decisions`,
+      body,
+    ),
+  federationRemoteNotes: (
+    peerId: string,
+    grantId: string,
+    after: number,
+    cursor?: string | null,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<unknown>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes?after=${after}${cursor ? `&cursor=${enc(cursor)}` : ""}`,
+      signal,
+      NO_STORE,
+    ),
+  addFederationRemoteNote: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ note: unknown; seq?: number }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes`,
+      body,
+    ),
+  editFederationRemoteNote: (peerId: string, grantId: string, noteId: string, text: string) =>
+    mutateJson<{ note: unknown }>(
+      "PATCH",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/${enc(noteId)}`,
+      { text },
+    ),
+  deleteFederationRemoteNote: (peerId: string, grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "DELETE",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/${enc(noteId)}`,
+    ),
+  readFederationRemoteNotes: (peerId: string, grantId: string, seq: number) =>
+    mutateJson<{ unread: number }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/read`,
+      { seq },
+    ),
+  /** Continue here: prepare a brief (creates nothing), then create from its handle. */
+  prepareFederationContinue: (
+    peerId: string,
+    grantId: string,
+    body: { target_engine: string; mode: "quick" | "ai" },
+    signal?: AbortSignal,
+  ) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/continue`,
+      body,
+      signal,
+    ),
+  createFederationContinue: (peerId: string, grantId: string, handle: string, cwd: string) =>
+    mutateJson<{ id: string; engine: string; native: string; cwd: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/continue/${enc(handle)}/create`,
+      { cwd },
+    ),
   federationRemote: (signal?: AbortSignal) =>
     getJsonWithDetail<{ remote: RemoteShare[] }>("/api/federation/remote", signal),
   federationRemoteSnapshot: (peerId: string, grantId: string, signal?: AbortSignal) =>

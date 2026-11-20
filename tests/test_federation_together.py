@@ -558,7 +558,11 @@ async def test_an_access_request_is_a_record_and_never_changes_a_grant(owner):
         names = _names(SRC / "federation" / f"{module}.py")
         assert not names & {"create_grant", "change_grant", "revoke_grant"}, module
     # …and the store's access methods write no grant row
-    for method in (store.Store.add_access_request, store.Store.decline_access_request):
+    for method in (
+        store.Store.add_access_request,
+        store.Store.decline_access_request,
+        store.Store.withdraw_access_request,
+    ):
         text = textwrap.dedent(inspect.getsource(method))
         assert "UPDATE grants" not in text and "INSERT INTO grants" not in text
 
@@ -579,6 +583,84 @@ async def test_one_request_is_pending_per_grant_and_a_second_replaces_nothing(ow
     assert len(owner.st.list_access_requests()) == 1
     await owner.quiet()
     assert [r["action_id"] for r in bell()] == [notices.access_key(first["request_id"])]
+
+
+@pytest.mark.anyio
+async def test_a_peer_withdraws_its_own_pending_request_and_nothing_else_changes(owner):
+    """#2062: the waiting state has Withdraw. It narrows: the request's row changes state, no
+    grant column does, the bell row goes, and asking again is a new request."""
+    made = owner.grant("view")
+    before = (owner.st.get_grant(made.grant_id), owner.st.generation())
+    # nothing pending: not an error, and nothing is created
+    none = await owner.call("access.withdraw", ref(made))
+    assert none == {"level": "view", "request": None}
+    assert owner.st.list_access_requests() == []
+    asked = await owner.call("access.request", ask(made, "send", note=NOTE))
+    await owner.quiet()
+    assert [r["action_id"] for r in bell()] == [notices.access_key(asked["request_id"])]
+    gone = await owner.call("access.withdraw", ref(made))
+    assert remote.check_access_status(gone) is gone
+    assert gone["level"] == "view" and gone["request"]["state"] == "withdrawn"
+    assert gone["request"]["request_id"] == asked["request_id"]
+    assert NOTE not in json.dumps(gone)
+    row = owner.st.get_access_request(asked["request_id"])
+    assert (row.state, row.end_reason) == ("withdrawn", "peer")
+    assert (owner.st.get_grant(made.grant_id), owner.st.generation()) == before
+    await owner.quiet()
+    assert bell() == []
+    # again: the same answer, still one row
+    assert (await owner.call("access.withdraw", ref(made)))["request"]["state"] == "withdrawn"
+    assert len(owner.st.list_access_requests()) == 1
+    # the operator cannot decline what was taken back, and a new request is a new record
+    with pytest.raises(store.StateConflict):
+        owner.st.decline_access_request(asked["request_id"])
+    fresh = await owner.call("access.request", ask(made, "suggest"))
+    assert fresh["request_id"] != asked["request_id"] and fresh["state"] == "pending"
+    # the verb takes a grant reference and nothing else
+    spec = verbs.PEER["access.withdraw"]
+    with pytest.raises(ch.BadArgs):
+        spec.validate({**ref(made), "request_id": asked["request_id"]})
+
+
+def test_the_grants_listing_counts_a_threads_notes_and_shows_none_of_them(auth_cfg, monkeypatch):
+    """#2062: the owner's strip says how many notes each grant's thread has. A number."""
+    monkeypatch.setattr(shares, "session_state", lambda prov, native: "live")
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    fed = c.app.state.federation
+    peer = trusted(fed.store, "GPU box")
+    made = c.post(
+        "/api/federation/grants", json={"session_key": api_key(), "peer_id": peer.peer_id},
+        headers=hdr,
+    ).json()["grant"]  # fmt: skip
+    gid = made["grant_id"]
+
+    def listed() -> dict:
+        (row,) = c.get("/api/federation/grants").json()["grants"]
+        return row
+
+    assert listed()["notes"] == 0
+    kept = c.post(
+        f"/api/federation/grants/{gid}/notes",
+        json={"client_key": str(uuid.uuid4()), "text": "PLANTED one"},
+        headers=hdr,
+    ).json()["note"]
+    dropped = c.post(
+        f"/api/federation/grants/{gid}/notes",
+        json={"client_key": str(uuid.uuid4()), "text": "PLANTED two"},
+        headers=hdr,
+    ).json()["note"]
+    assert listed()["notes"] == 2
+    assert (
+        c.delete(
+            f"/api/federation/grants/{gid}/notes/{dropped['note_id']}", headers=hdr
+        ).status_code
+        == 200
+    )
+    row = listed()
+    assert row["notes"] == 1 and kept["note_id"] not in json.dumps(row)
+    assert "PLANTED" not in c.get("/api/federation/grants").text
+    assert fed.store.note_counts([]) == {} and fed.store.note_counts(["x" * 22]) == {}
 
 
 @pytest.mark.anyio
@@ -1580,6 +1662,7 @@ async def test_a_peer_holds_at_most_four_decisions_in_flight_and_a_slow_one_time
 OWNER_VERBS = {
     "access.request": (together.access_request, None),
     "access.status": (together.access_status, None),
+    "access.withdraw": (together.access_withdraw, None),
     "decision.answer": (together.decision_answer, "send"),
     "note.list": (notes.note_list, None),
     "note.add": (notes.note_add, None),
@@ -1626,6 +1709,7 @@ def _calls(made: store.Grant, note_id: str) -> dict[str, dict]:
     return {
         "access.request": ask(made, "send"),
         "access.status": ref(made),
+        "access.withdraw": ref(made),
         "decision.answer": answer(made),
         "note.list": ref(made, after_seq=0),
         "note.add": ref(made, client_key=str(uuid.uuid4()), text="a note"),
@@ -1728,7 +1812,7 @@ async def test_the_access_row_names_the_peer_and_the_session_never_the_note(owne
     await owner.quiet()
     (row,) = bell()
     assert row["action_id"] == notices.access_key(asked["request_id"])
-    assert row["title"] == "GPU box asks for more access" and row["project"] == TITLE
+    assert row["title"] == "GPU box asks for Send access" and row["project"] == TITLE
     assert row["reason"] == notifications.EVENT_REASON["peer_access_request"]
     assert row["session_id"] == made.session_key
     (payload,) = pushed()
@@ -1890,6 +1974,56 @@ async def test_a_complete_refresh_announces_what_is_shared_changed_and_ended(rec
     )
     ended = rows[notices.remote_key("ended", pid, "g" * 22)]
     assert ended["title"] == "Alpha stopped sharing a session" and ended["project"] == "First"
+
+
+#: The working-together WRITES of the receiving routes (`routes/federation.py`), each with the
+#: validator its route passes: every one is `remote.read(…, retry=False)`.
+TOGETHER_WRITES = [
+    ("access.request", {"level": "send", "note": ""}, remote.check_access),
+    ("access.withdraw", {}, remote.check_access_status),
+    ("decision.answer", {"request_id": "req-1", "choice": "approve"}, remote.check_decision),
+    ("note.add", {"client_key": str(uuid.uuid4()), "text": "hi"}, remote.check_note),
+    ("note.edit", {"note_id": "n" * 22, "text": "hi"}, remote.check_note),
+    ("note.delete", {"note_id": "n" * 22}, remote.check_note),
+    ("note.read", {"seq": 1}, remote.check_unread),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("verb,extra,check", TOGETHER_WRITES, ids=[w[0] for w in TOGETHER_WRITES])
+async def test_a_working_together_write_whose_answer_is_lost_is_peer_lost_never_not_sent(
+    receiver, verb, extra, check
+):
+    """#2061's rule holds for every write this feature adds: an answer the owner withheld after
+    its handler ran (`answer_lost`), or a channel that ended after the request was queued, is
+    `peer_lost` (504): the effect may have happened. `peer_offline` (503) is only what provably
+    never left. Each is sent ONCE."""
+    from agent_sessions.routes import federation as fed_routes
+
+    r, pid = receiver, receiver.peer.peer_id
+    r.mirror(entry("g" * 22, "send", "First"))
+
+    async def code(failure) -> str:
+        r.calls.clear()
+        r.answers[verb] = failure
+        with pytest.raises(remote.ReadError) as exc:
+            await remote.read(r.fed, pid, "g" * 22, verb, extra, check=check, retry=False)
+        assert [v for v, _ in r.calls] == [verb]  # once: never repeated, never re-resolved
+        await r.quiet()
+        return exc.value.code
+
+    assert await code(ch.CallError(ch.ANSWER_LOST)) == remote.PEER_LOST
+    assert await code(ch.CallError("closed")) == remote.PEER_LOST
+    assert await code(ch.CallError("closed", dispatched=False)) == "peer_offline"
+    assert await code(ch.CallError("timeout")) == "timeout"
+    lost = fed_routes._read_error(remote.ReadError(remote.PEER_LOST))
+    assert (lost.status, lost.code) == (504, "peer_lost")
+    # no channel at all: nothing was sent
+    r.fed.channel_for = lambda peer_id: None
+    r.calls.clear()
+    with pytest.raises(remote.ReadError) as offline:
+        await remote.read(r.fed, pid, "g" * 22, verb, extra, check=check, retry=False)
+    assert offline.value.code == "peer_offline" and r.calls == []
 
 
 @pytest.mark.anyio
@@ -2153,6 +2287,7 @@ NEW_WRITES = [
     ("delete", f"{OWNER_NOTES}/{'n' * 22}", None),
     ("post", f"{OWNER_NOTES}/{'n' * 22}/hide", None),
     ("post", f"{REMOTE}/access", {"level": "send"}),
+    ("post", f"{REMOTE}/access/withdraw", None),
     ("post", f"{REMOTE}/decisions",
      {"request_id": "r", "offer": "o" * 32, "choice": "approve", "client_key": KEY}),
     ("post", f"{REMOTE}/notes", {"client_key": KEY, "text": "hi"}),
@@ -2231,7 +2366,7 @@ def test_every_new_route_needs_a_session_and_every_new_write_csrf_and_origin(
     for url in NEW_READS[2:4]:
         assert c.get(url).status_code == 404, url
     assert c.get(NEW_READS[4]).status_code == 410  # no such brief
-    for method, url, body in NEW_WRITES[:13]:
+    for method, url, body in NEW_WRITES[:14]:
         assert _request(c, method, url, body, hdr).status_code in (404, 422), url
     # what a route refuses by shape, before anything is called
     bad = [
@@ -2823,6 +2958,7 @@ NOTE_ANSWER = {
 TOGETHER_ROUTES = (
     ("POST", "access", {"level": "send"}, "access.request", "write"),
     ("GET", "access", None, "access.status", "read"),
+    ("POST", "access/withdraw", None, "access.withdraw", "write"),
     (
         "POST",
         "decisions",
@@ -2856,6 +2992,7 @@ def test_every_working_together_write_is_sent_once_and_every_read_is_re_resolved
     answers = {
         "access.request": {"request_id": "r" * 22, "level": "send", "state": "pending"},
         "access.status": {"level": "view", "request": None},
+        "access.withdraw": {"level": "view", "request": None},
         "decision.answer": {"outcome": "accepted", "author": {"via": "peer", "name": "Robin"}},
         "note.list": {
             "reset": False, "seq": 0, "changes": [], "more": False, "next": None, "unread": 0,

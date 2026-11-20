@@ -450,9 +450,13 @@ test("a remote row opens the read-only pane: no composer, no session actions", a
   await expect(pane.getByTestId("remote-view-only")).toHaveText(
     "View only. Ask gpu-box's operator for more access.",
   );
-  // Nothing to type into and nothing to act with: this is not the local pane.
+  // Nothing to type into and no session action: this is not the local pane. Its only buttons are
+  // the working-together ones (#2062): the ⋯ menu (Continue here, Notes, Ask for access) and Ask
+  // for access in the view-only foot. None of them archives, renames, tags or moves anything.
   await expect(pane.locator("textarea, input, [contenteditable='true']")).toHaveCount(0);
-  await expect(pane.getByRole("button")).toHaveCount(0);
+  await expect(pane.getByRole("button")).toHaveCount(2);
+  await expect(pane.getByTestId("remote-menu")).toBeVisible();
+  await expect(pane.getByTestId("remote-access-ask")).toHaveText(/Ask for access/i);
   await expect(page.getByTestId("structured-pane")).toHaveCount(0);
   await expect(page.getByTestId("head-actions-menu")).toHaveCount(0);
   await expect(page.locator("[data-head-action]")).toHaveCount(0);

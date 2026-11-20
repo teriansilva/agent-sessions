@@ -13,6 +13,7 @@ import {
   isPeerSuggestionNotice,
   peerSuggestionTitle,
 } from "../../lib/federationInput";
+import { peerNotice, peerNoticeTitle } from "../../lib/federationTogether";
 import { useEngineRoster } from "../../app/engineRoster";
 import { bellGroups } from "./notificationFeed";
 import { targetPath } from "./notificationLinks";
@@ -322,13 +323,17 @@ export function NotificationBell() {
               // the row's two server-written fields. The suggested text is not in the row and
               // is never shown here; the operator reads it on the session's own card.
               const peer = isPeerSuggestionNotice(n);
+              // What a paired instance did (#2062): the server's sentence and the session's
+              // title, and a fixed word for what it is. Never a note's text, a request's note,
+              // a question or a tool's payload: none of them is in the row.
+              const notice = peer ? null : peerNotice(n);
               return (
               <NotificationRow
                 key={n.id}
-                title={peer ? peerSuggestionTitle(n) : n.title}
-                reason={peer ? "Peer suggestion" : n.reason}
-                project={peer ? undefined : n.project}
-                testId={peer ? "bell-peer-suggestion" : undefined}
+                title={peer ? peerSuggestionTitle(n) : notice ? peerNoticeTitle(n) : n.title}
+                reason={peer ? "Peer suggestion" : notice ? notice.label : n.reason}
+                project={peer || notice ? undefined : n.project}
+                testId={peer ? "bell-peer-suggestion" : notice ? "bell-peer-notice" : undefined}
                 engine={n.engine}
                 ts={n.ts}
                 unread={!n.read}

@@ -1,13 +1,14 @@
 """Working together on a shared session: asking for more access, and answering a pending
 decision (#1246 §6 and §7, #2059).
 
-Three verbs answer here (``verbs.py`` holds their validators and the table):
+Four verbs answer here (``verbs.py`` holds their validators and the table):
 
 * ``access.request``: record that the peer asks for a higher level. **Only a record.** Nothing
   in this module changes a grant: approving is the operator changing the grant through the
   grant routes (with ``accept_risk`` for ``send``), and that change marks the request
   ``granted``;
 * ``access.status``: the grant's level and the caller's newest request, id and state;
+* ``access.withdraw`` (#2062): the peer takes its own pending request back. It narrows;
 * ``decision.answer``: answer ONE pending question or tool permission (grant level ``send``).
 
 **An answer is bound to the exact request the peer was shown.** A request id names nothing by
@@ -136,6 +137,32 @@ async def access_status(channel: ch.Channel, args: dict) -> dict:
         request = await asyncio.to_thread(fed.store.access_status, grant.grant_id)
     except store.StoreError:
         raise ch.VerbError(sharing.UNAVAILABLE) from None
+    answer = {"level": grant.level, "request": request}
+    # The second check, directly before the answer is returned: nothing may wait after it.
+    await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)
+    return answer
+
+
+async def access_withdraw(channel: ch.Channel, args: dict) -> dict:
+    """The peer takes its own pending request back (#2062). It narrows: a record changes
+    state, no grant does. Answers what ``access.status`` answers afterwards."""
+    fed, peer_id = channel.context
+    grant = await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)
+    try:
+        gone = await asyncio.to_thread(
+            fed.store.withdraw_access_request,
+            grant_id=grant.grant_id,
+            peer_id=peer_id,
+            revision=args["revision"],
+        )
+        request = await asyncio.to_thread(fed.store.access_status, grant.grant_id)
+    except store.NotGranted:
+        raise ch.VerbError(sharing.NO_GRANT) from None
+    except store.StoreError:
+        raise ch.VerbError(sharing.UNAVAILABLE) from None
+    if gone:
+        # Its bell row on this instance goes; in the background, as when it was raised.
+        fed.background(asyncio.to_thread(notices.retract, fed.store))
     answer = {"level": grant.level, "request": request}
     # The second check, directly before the answer is returned: nothing may wait after it.
     await sharing._authorize(fed, peer_id, args, kind=grants.KIND_API)

@@ -1,4 +1,6 @@
+import { Copy, Ellipsis, KeyRound, StickyNote } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { refreshRemoteShares, useRemoteShares } from "../../app/remoteShares";
 import { ApiError, api } from "../../lib/api";
 import {
@@ -32,13 +34,49 @@ import {
   type InputLevel,
   type OutboxRow,
 } from "../../lib/federation";
+import {
+  ACCESS_POLL_MS,
+  NOTES_QUERY,
+  accessFoot,
+  WITHDRAW_UNCONFIRMED,
+  accessFailure,
+  accessStatusIsOlder,
+  answerSignature,
+  lockedAnswer,
+  attemptKey,
+  heldAttempt,
+  cleanAccessStatus,
+  cleanDecisions,
+  cleanRequests,
+  decisionAnswered,
+  decisionCard,
+  decisionFailed,
+  mayGive,
+  notesInit,
+  notesReduce,
+  ownerHereLine,
+  remoteMenu,
+  seenOf,
+  settledShown,
+  threadOf,
+  type AccessStatus,
+  type RemoteRequest,
+  type SeenRequest,
+} from "../../lib/federationTogether";
 import { Avatar } from "../chat/Avatar";
-import { ShareApproval, ShareTurn } from "../../share/Turns";
+import { ShareTurn } from "../../share/Turns";
 import viewer from "../../share/ShareViewer.module.css";
 import { Led } from "../hud/Meters";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import btn from "../ui/actionButton.module.css";
+import menu from "../ui/menu.module.css";
+import { AskAccessDialog } from "./AskAccessDialog";
+import { ContinueHereDialog } from "./ContinueHereDialog";
+import { NotesDrawer } from "./NotesDrawer";
+import { PeerDecisionCard, SettledDecisionCard, type AnswerState } from "./PeerDecisions";
 import { RemoteFrame } from "./RemoteFrame";
 import styles from "./Remote.module.css";
+import together from "./Together.module.css";
 
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : 0);
 const codeOf = (e: unknown) =>
@@ -126,6 +164,10 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
   const now_ = useRef({ generation, target });
   now_.current = { generation, target };
   const current = (g: number, t: string) => now_.current.generation === g && now_.current.target === t;
+  // The journal cursor of the snapshot on screen: what a snapshot read OUTSIDE the loop below
+  // is compared with, so an older answer never replaces a newer one.
+  const heldCursor = useRef(0);
+  heldCursor.current = state.snapshot?.event_cursor ?? 0;
 
   useEffect(() => {
     if (startAfterMs === null) return; // gone: nothing is asked again
@@ -457,6 +499,394 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
   }, [revision, target]);
   const notices = reloadNotices(leftovers, state.status);
 
+  // ---- working together (#2062) ---------------------------------------------------------------
+  // Everything below is fenced as the rest of the pane is: an answer is used only under the
+  // generation and target it started in, and nothing of it is written to storage.
+  const paneEl = useRef<HTMLElement | null>(null);
+  const [paneNode, setPaneNode] = useState<HTMLElement | null>(null);
+  const bindPane = useCallback((el: HTMLElement | null) => {
+    paneEl.current = el;
+    setPaneNode(el);
+  }, []);
+  // **A terminal share has none of this** (#2060, #2062): no ⋯ menu, no presence line, no
+  // access request, no decision card, no notes and no Continue here. `RemoteSessionView` never
+  // draws this pane for one; if a row ever said so here, everything below stays off, and no
+  // working-together read or write is made for it.
+  const withPeer = !screenOnly;
+  const mirrored = expired || screenOnly ? null : (listed?.level ?? null);
+
+  // Asking for access: this instance's newest request, as the owner reports it.
+  const [asked, setAccess] = useState<{ target: string; generation: number; status: AccessStatus | null }>({
+    target,
+    generation,
+    status: null,
+  });
+  const accessNow = asked.target === target && asked.generation === generation ? asked.status : null;
+  // The access status has several readers (the poll, the read after an ask or a withdrawal) and
+  // one writer's answer (Withdraw). Each takes a number when it STARTS; an answer is applied
+  // only if nothing that started later was applied before it: an older answer never replaces a
+  // newer one.
+  const accessOrder = useRef({ started: 0, applied: 0 });
+  // The requests this pane was told are over. Start numbers order reads against reads; they
+  // cannot order a read against a WRITE (a read started after Withdraw may have been cut before
+  // it). The state can: `pending` never follows a final state of the same request.
+  const overAsks = useRef<{ target: string; ids: Set<string> }>({ target, ids: new Set() });
+  if (overAsks.current.target !== target) overAsks.current = { target, ids: new Set() };
+  const newerAccess = (n: number, status: AccessStatus | null) => {
+    if (n < accessOrder.current.applied) return false;
+    if (accessStatusIsOlder(overAsks.current.ids, status)) return false;
+    accessOrder.current.applied = n;
+    const r = status?.request;
+    if (r && r.state !== "pending") {
+      const ids = overAsks.current.ids;
+      ids.add(r.request_id);
+      if (ids.size > 32) ids.delete(ids.values().next().value as string);
+    }
+    return true;
+  };
+  const readAccess = useCallback(async () => {
+    const signal = signalRef.current;
+    if (!signal || signal.aborted) return null;
+    const g = generation;
+    const t = target;
+    const n = ++accessOrder.current.started;
+    try {
+      const answer = await api.federationRemoteAccess(peerId, grantId, signal);
+      const status = cleanAccessStatus(answer);
+      if (signal.aborted || !current(g, t) || !newerAccess(n, status)) return null;
+      setAccess({ target: t, generation: g, status });
+      return status;
+    } catch {
+      /* the pane's own reads say when the share is gone or the peer offline */
+      return null;
+    }
+  }, [peerId, grantId, generation, target]);
+  const canAsk = live && mirrored !== null && mirrored !== "send";
+  useEffect(() => {
+    if (canAsk) void readAccess();
+  }, [canAsk, mirrored, readAccess]);
+  const asking = accessNow?.request?.state === "pending";
+  useEffect(() => {
+    if (!canAsk || !asking) return;
+    // While a request waits, the owner is asked what became of it. A granted one also shows in
+    // the list read, which is what raises the banner's level and brings the composer.
+    const timer = setInterval(() => {
+      void readAccess();
+      void refreshRemoteShares();
+    }, ACCESS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [canAsk, asking, readAccess]);
+  const foot = accessFoot(accessNow, mirrored, peer);
+  const [askOpen, setAskOpen] = useState<{ target: string; trigger: HTMLElement | null } | null>(null);
+  const [withdrawingAsk, setWithdrawingAsk] = useState(false);
+  // What the last Withdraw was answered, when it was not taken: the server's real outcome, shown
+  // once. A write is never sent again by this pane; pressing Withdraw again is the operator's.
+  const [withdrawFailed, setWithdrawFailed] = useState<{ target: string; generation: number; text: string } | null>(
+    null,
+  );
+  const withdrawError =
+    withdrawFailed && withdrawFailed.target === target && withdrawFailed.generation === generation
+      ? withdrawFailed.text
+      : null;
+  const withdrawAsk = async () => {
+    if (withdrawingAsk || !withPeer) return;
+    const g = generation;
+    const t = target;
+    setWithdrawingAsk(true);
+    setWithdrawFailed(null);
+    const n = ++accessOrder.current.started;
+    try {
+      const answer = await api.withdrawFederationRemoteAccess(peerId, grantId);
+      const status = cleanAccessStatus(answer);
+      if (current(g, t) && newerAccess(n, status)) setAccess({ target: t, generation: g, status });
+    } catch (e) {
+      if (!current(g, t)) return;
+      const failure = accessFailure(statusOf(e), codeOf(e));
+      if (failure === "ended") {
+        // The owner refused it: the share ended or changed. Said here, and the list is read
+        // again (the pane follows it); the write itself is not sent again.
+        setWithdrawFailed({ target: t, generation: g, text: `Not withdrawn. ${peer} refused it: this share ended or changed.` });
+        dispatch({ type: "refused", generation: g, revision: listed?.revision ?? null });
+        void refreshRemoteShares();
+      } else if (failure === "offline") dispatch({ type: "failed", generation: g, status: 503 });
+      else {
+        // Proven (`rejected`): not withdrawn, in the server's words. Anything else (`504
+        // peer_lost`, a timeout, `429 busy`, no answer): neither "withdrawn" nor "not withdrawn".
+        setWithdrawFailed({
+          target: t,
+          generation: g,
+          text:
+            failure === "rejected"
+              ? `Not withdrawn. ${(e instanceof ApiError && e.message) || "The request was not taken back."}`
+              : WITHDRAW_UNCONFIRMED,
+        });
+        // A READ of what the owner holds now: never the write again.
+        void readAccess();
+      }
+    } finally {
+      setWithdrawingAsk(false);
+    }
+  };
+
+  // Notes: one thread (this grant's), read through the channel while the drawer is open.
+  const [notes, notesDispatch] = useReducer(notesReduce, notesInit);
+  const [notesOpen, setNotesOpen] = useState<{ target: string; trigger: HTMLElement | null } | null>(null);
+  const [continueOpen, setContinueOpen] = useState<{ target: string; trigger: HTMLElement | null } | null>(null);
+  // Another share on the same mounted route: no note, draft or dialog of the old one stays.
+  const [togetherFor, setTogetherFor] = useState(target);
+  if (togetherFor !== target) {
+    setTogetherFor(target);
+    notesDispatch({ type: "reset" });
+    setNotesOpen(null);
+    setAskOpen(null);
+    setContinueOpen(null);
+  }
+  // The pane cleared (the share ended, the peer went offline): the thread shows no note.
+  useEffect(() => {
+    if (state.status === "gone") notesDispatch({ type: "failed", grantId, status: 404 });
+    else if (state.status === "offline") notesDispatch({ type: "failed", grantId, status: 503 });
+  }, [state.status, grantId, generation]);
+  // A bell entry for a note opens the thread (`?notes=1`), once the pane is live.
+  const [params, setParams] = useSearchParams();
+  const wantsNotes = params.has(NOTES_QUERY);
+  const [notesAsked, setNotesAsked] = useState<string | null>(null);
+  if (wantsNotes && live && withPeer && notesAsked !== target) {
+    setNotesAsked(target);
+    setNotesOpen({ target, trigger: null });
+  } else if (!wantsNotes && notesAsked) setNotesAsked(null);
+  useEffect(() => {
+    if (notesAsked !== target || !params.has(NOTES_QUERY)) return;
+    const next = new URLSearchParams(params);
+    next.delete(NOTES_QUERY);
+    setParams(next, { replace: true });
+  }, [notesAsked, target, params, setParams]);
+
+  // Decisions: what this instance may answer of each pending request, and who answered.
+  const requests = cleanRequests(state.snapshot?.pending_requests);
+  const decided = cleanDecisions(state.snapshot?.decisions);
+  // What this pane saw pending, so a settled card can still say what was asked. Memory only.
+  const seen = useRef<{ target: string; generation: number; map: Map<string, SeenRequest> }>({
+    target,
+    generation,
+    map: new Map(),
+  });
+  if (seen.current.target !== target || seen.current.generation !== generation)
+    seen.current = { target, generation, map: new Map() };
+  for (const r of requests) seen.current.map.set(r.key, seenOf(r));
+  const [answers, setAnswers] = useState<{ target: string; generation: number; byKey: Record<string, AnswerState> }>({
+    target,
+    generation,
+    byKey: {},
+  });
+  const answered = answers.target === target && answers.generation === generation ? answers.byKey : {};
+  /** What this pane did about THIS request: an attempt made under another offer was about
+   *  another request of the same id (the owner replaced it), and says nothing about this one. */
+  const stateOf = (r: RemoteRequest): AnswerState | null => {
+    const held = answered[r.key];
+    return held && held.attempt.offer === r.offer ? held : null;
+  };
+  /** ONE answer, ONE request. Nothing here retries: a retry is the operator pressing the same
+   *  button again, and it carries the same key only for the same answer. */
+  const answer = async (request: RemoteRequest, choice: string, options: number[][] | null) => {
+    // The same gate the card drew its buttons from: a widening option never gets here.
+    if (!mayGive(decisionCard(request, mirrored, peer), choice)) return;
+    const before = stateOf(request);
+    if (before?.phase === "sending") return;
+    if (before?.outcome?.kind === "lost" || before?.outcome?.kind === "accepted") return;
+    // Not confirmed: the owner may have taken that answer. Only the SAME answer goes out again
+    // (its key and offer, replayed by the owner without a second effect); another one would be
+    // a second answer under a new key. The card disables it; this is the gate behind that.
+    const locked = lockedAnswer(before);
+    if (locked && answerSignature(locked.choice, locked.options) !== answerSignature(choice, options)) return;
+    const g = generation;
+    const t = target;
+    // The offer the snapshot shows for THIS request, as it came. None: nothing is sent (the card
+    // drew no control for it either).
+    const offer = request.offer;
+    if (offer === null) return;
+    const attempt = attemptKey(heldAttempt(before), request.key, answerSignature(choice, options), offer, uuid);
+    const put = (next: AnswerState) =>
+      setAnswers((all) => ({
+        target: t,
+        generation: g,
+        byKey: { ...(all.target === t && all.generation === g ? all.byKey : {}), [request.key]: next },
+      }));
+    put({ attempt, phase: "sending", outcome: null });
+    let outcome;
+    try {
+      const body = {
+        request_id: request.request_id,
+        // The attempt's own: a retry carries the offer and the key of its first delivery.
+        offer: attempt.offer,
+        choice,
+        client_key: attempt.client_key,
+        ...(options ? { options } : {}),
+      };
+      outcome = decisionAnswered(await api.federationRemoteDecide(peerId, grantId, body), peer);
+    } catch (e) {
+      outcome = decisionFailed(statusOf(e), codeOf(e), peer);
+    }
+    if (!current(g, t)) return; // a late answer: the pane it was for is gone
+    // Only over its own row: an answer to a request that has since been replaced (another offer,
+    // another attempt) must not take that newer attempt's state away.
+    setAnswers((all) => {
+      const mine = all.target === t && all.generation === g ? all.byKey : null;
+      const held = mine?.[request.key];
+      if (!mine || (held && held.attempt.client_key !== attempt.client_key)) return all;
+      return { target: t, generation: g, byKey: { ...mine, [request.key]: { attempt, phase: "done", outcome } } };
+    });
+    if (outcome.kind === "no_grant") {
+      dispatch({ type: "refused", generation: g, revision: listed?.revision ?? null });
+      void refreshRemoteShares();
+    } else if (outcome.kind === "offline") dispatch({ type: "failed", generation: g, status: 503 });
+    else if ((outcome.kind === "refused" && outcome.code === "not_pending") || outcome.kind === "unconfirmed") {
+      // A second reader beside the pane's own loop: its answer is applied only if it is not
+      // older than the snapshot the pane holds by then (the journal cursor only moves forward).
+      // The request this offer named is no longer waiting: read the session again, so the card
+      // shows what is pending NOW with its own offer. One read; nothing is answered by it.
+      // After an answer that was NOT CONFIRMED the same read is what settles it: a request the
+      // owner took leaves `pending_requests` and `decisions` names who answered.
+      try {
+        const snapshot = await api.federationRemoteSnapshot(peerId, grantId, signalRef.current ?? undefined);
+        if (current(g, t) && (snapshot.event_cursor ?? 0) >= heldCursor.current)
+          dispatch({ type: "snapshot", generation: g, snapshot });
+      } catch {
+        // The pane's own loop reads it at the next movement, and reports what fails.
+      }
+    }
+  };
+  const pendingKeys = new Set(requests.map((r) => r.key));
+  const settled = settledShown(decided, pendingKeys, seen.current.map, turns[turns.length - 1]?.turn_id);
+  const decisionZone = withPeer && (requests.length > 0 || settled.length > 0) && (
+    <section className={together.zone} aria-label="Decisions" data-testid="remote-decisions">
+      {settled.map((d) => (
+        <SettledDecisionCard
+          key={`done:${d.key}`}
+          decision={d}
+          seen={seen.current.map.get(d.key)}
+          side="peer"
+          owner={peer}
+          lost={answered[d.key]?.outcome?.kind === "lost"}
+        />
+      ))}
+      {requests.map((r) => (
+        <PeerDecisionCard
+          // By the OFFER too: a request replaced under the same ids is another card, so nothing
+          // picked for the old question is selected for the new one.
+          key={`${r.key}\u0000${r.offer ?? ""}`}
+          request={r}
+          level={mirrored}
+          owner={peer}
+          state={stateOf(r)}
+          onAnswer={(choice, options) => void answer(r, choice, options)}
+        />
+      ))}
+    </section>
+  );
+
+  const items = remoteMenu({ live, level: mirrored, pendingAsk: asking });
+  const menuView = items.length > 0 && (
+    <AnchoredMenu
+      label="Shared session"
+      trigger={<Ellipsis size={18} aria-hidden="true" />}
+      triggerClassName={`${btn.ghost} ${btn.icon} ${btn.compact}`}
+      triggerTestId="remote-menu"
+      menuTestId="remote-menu-items"
+      focus="first-item"
+      portal
+      classes={{ wrap: together.menuWrap, panel: together.menuPanel, items: together.menuItems }}
+    >
+      {(close, trigger) => {
+        const act = (open: (at: { target: string; trigger: HTMLElement | null }) => void) => () => {
+          close();
+          open({ target, trigger: trigger() });
+        };
+        return (
+          <>
+            {items.includes("continue") && (
+              <button type="button" role="menuitem" className={menu.item} onClick={act(setContinueOpen)}>
+                <Copy size={13} aria-hidden="true" className={menu.itemIcon} />
+                Continue here…
+              </button>
+            )}
+            {items.includes("notes") && (
+              <button type="button" role="menuitem" className={menu.item} onClick={act(setNotesOpen)}>
+                <StickyNote size={13} aria-hidden="true" className={menu.itemIcon} />
+                Notes
+              </button>
+            )}
+            {items.includes("ask") && (
+              <button type="button" role="menuitem" className={menu.item} onClick={act(setAskOpen)}>
+                <KeyRound size={13} aria-hidden="true" className={menu.itemIcon} />
+                Ask for access
+              </button>
+            )}
+          </>
+        );
+      }}
+    </AnchoredMenu>
+  );
+  const overlays = (
+    <>
+      {askOpen?.target === target && mirrored && (
+        <AskAccessDialog
+          peerId={peerId}
+          grantId={grantId}
+          owner={peer}
+          title={title}
+          level={mirrored}
+          onClose={() => setAskOpen(null)}
+          onAnswer={(result) => {
+            const g = generation;
+            const t = target;
+            if (!current(g, t)) return;
+            if (result.ok) void readAccess();
+            else if (result.failure === "ended") {
+              dispatch({ type: "refused", generation: g, revision: listed?.revision ?? null });
+              void refreshRemoteShares();
+            } else if (result.failure === "offline") dispatch({ type: "failed", generation: g, status: 503 });
+            else if (result.failure === "rejected") void readAccess();
+            else
+              // Not confirmed: neither "sent" nor "not sent". What the owner holds is read now;
+              // when it shows the request waiting, it arrived, and the dialog closes on the
+              // pane's own line. Otherwise the dialog stays, saying it could not confirm.
+              void readAccess().then((status) => {
+                if (status?.request?.state === "pending" && current(g, t)) setAskOpen(null);
+              });
+          }}
+          returnFocusTo={askOpen.trigger}
+        />
+      )}
+      {notesOpen?.target === target && withPeer && (
+        <NotesDrawer
+          key={target}
+          side="peer"
+          peerId={peerId}
+          grantId={grantId}
+          other={peer}
+          thread={threadOf(notes, grantId)}
+          dispatch={notesDispatch}
+          epoch={generation}
+          stillCurrent={(g) => current(g, target)}
+          anchor={paneNode}
+          onClose={() => setNotesOpen(null)}
+          returnFocusTo={notesOpen.trigger}
+        />
+      )}
+      {continueOpen?.target === target && withPeer && (
+        <ContinueHereDialog
+          peerId={peerId}
+          grantId={grantId}
+          owner={peer}
+          title={title}
+          onClose={() => setContinueOpen(null)}
+          returnFocusTo={continueOpen.trigger}
+        />
+      )}
+    </>
+  );
+  const presence = live && withPeer && state.snapshot?.owner_present === true ? ownerHereLine(peer) : null;
+
   const badge = remotePaneBadge(state.status, state.stalls > 0);
   const until = listed && state.status !== "gone" ? grantEnds(listed.expires_at, now) : null;
   const access = listed && state.status !== "gone" ? remoteAccessWords(expired ? "view" : listed.level) : null;
@@ -524,7 +954,13 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
         word={badge.word}
         empty={REMOTE_GONE}
         notices={notices}
-        foot={composerView}
+        foot={
+          <>
+            {composerView}
+            {overlays}
+          </>
+        }
+        paneRef={bindPane}
       />
     );
   if (state.status === "offline")
@@ -537,7 +973,13 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
         word={badge.word}
         empty={remoteOfflineText(peer)}
         notices={notices}
-        foot={composerView}
+        foot={
+          <>
+            {composerView}
+            {overlays}
+          </>
+        }
+        paneRef={bindPane}
       />
     );
 
@@ -554,8 +996,14 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
       led={badge.led}
       word={badge.word}
       notices={notices}
+      menu={menuView}
+      presence={presence}
+      paneRef={bindPane}
       foot={
         <>
+          {/* A pending decision, and who answered the last ones: above the composer, never in
+              the conversation. */}
+          {decisionZone}
           {mine.length > 0 && (
             <section className={styles.mine} aria-labelledby="remote-mine" data-testid="remote-suggestions">
               <h2 id="remote-mine" className={styles.mineHead}>
@@ -593,11 +1041,59 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
               </ul>
             </section>
           )}
-          {composerView || (
-            <p className={styles.viewOnly} data-testid="remote-view-only">
-              <b>View only.</b> {remoteViewOnlyText(peer)}
+          {/* Asking for more access: its state in the foot, for a view or suggest grant. */}
+          {foot.kind !== "none" && (
+            <p className={together.foot} data-testid="remote-access" data-state={foot.kind}>
+              <span className={together.footState}>
+                <Led tone="idle" />
+                <span data-testid="remote-access-text">{foot.text}</span>
+              </span>
+              {withdrawError && (
+                <span className={together.footError} role="alert" data-testid="remote-access-error">
+                  {withdrawError}
+                </span>
+              )}
+              {foot.kind === "waiting" ? (
+                <button
+                  type="button"
+                  className={`${btn.ghost} ${btn.compact}`}
+                  disabled={withdrawingAsk}
+                  data-testid="remote-access-withdraw"
+                  onClick={() => void withdrawAsk()}
+                >
+                  {withdrawingAsk ? "Withdrawing…" : "Withdraw"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`${btn.ghost} ${btn.compact}`}
+                  data-testid="remote-access-ask"
+                  onClick={(e) => setAskOpen({ target, trigger: e.currentTarget })}
+                >
+                  Ask for access
+                </button>
+              )}
             </p>
           )}
+          {composerView ||
+            (foot.kind === "none" && (
+              <p className={together.foot}>
+                <span className={together.footText} data-testid="remote-view-only">
+                  <b>View only.</b> {remoteViewOnlyText(peer)}
+                </span>
+                {canAsk && (
+                  <button
+                    type="button"
+                    className={`${btn.ghost} ${btn.compact}`}
+                    data-testid="remote-access-ask"
+                    onClick={(e) => setAskOpen({ target, trigger: e.currentTarget })}
+                  >
+                    Ask for access
+                  </button>
+                )}
+              </p>
+            ))}
+          {overlays}
         </>
       }
     >
@@ -659,9 +1155,6 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
               <Delivery row={row} busy={sending} onResend={() => void submit(row)} />
             </div>
           </section>
-        ))}
-        {(snap?.pending_requests ?? []).map((q, i) => (
-          <ShareApproval key={i} request={{ summary: typeof q?.summary === "string" ? q.summary : "" }} />
         ))}
       </div>
     </RemoteFrame>

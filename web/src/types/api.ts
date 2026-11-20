@@ -2320,6 +2320,9 @@ export interface StructuredSnapshot {
   /** Session-level OOM kills before the first turn (#1732); only while that turn is shown. */
   oom_kills_start?: number;
   pending_requests: StructuredRequest[];
+  /** Who settled the newest requests of a session this instance shares (#2059): the answer's
+   *  effect and its author. Read through `cleanDecisions`. Absent when nothing is recorded. */
+  decisions?: unknown;
   native?: {
     native_id: string | null;
     worker: string | null;

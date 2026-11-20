@@ -43,6 +43,12 @@ import {
   shareRequest,
   type GrantLevel,
 } from "../../lib/federationInput";
+import {
+  accessAsks,
+  accessReviewHint,
+  pendingAccess,
+  type AccessRequest,
+} from "../../lib/federationTogether";
 import { nowSeconds } from "../../lib/shareFormat";
 import { settingsPath } from "../../routes/settingsTabs";
 import dlg from "../HudDialog.module.css";
@@ -50,7 +56,10 @@ import { Seg } from "../hud/Controls";
 import { Led } from "../hud/Meters";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 import btn from "../ui/actionButton.module.css";
+import { PeerBadge } from "./PeerBadge";
+import card from "./PeerSuggestions.module.css";
 import styles from "./SharePeer.module.css";
+import together from "./Together.module.css";
 import { useAnswerFence } from "./useAnswerFence";
 
 function message(e: unknown, fallback: string): string {
@@ -72,6 +81,13 @@ type Stuck = { what: "share" } | { what: "revoke"; grant: FederationGrant };
  *  red risk box says what it means, its checkbox is required, Share is disabled until it is
  *  ticked, and the request carries `accept_risk: true` only then (`shareRequest`). The tick
  *  belongs to one choice: another peer, another level or a reopened dialog starts unticked.
+ *
+ *  **A peer's request for more access is a card at the top** (#2062): who asks for what, its
+ *  note as plain quoted text, *Review and grant* and *Decline*. **Review and grant changes
+ *  nothing by itself**: it selects that peer and that level in the controls below and scrolls to
+ *  them. For Send the risk box is then shown with its acknowledgement UNTICKED, and Share stays
+ *  disabled until the operator ticks it. Granting is the ordinary Share action; no other control
+ *  here grants a request.
  *
  *  What the other instance will see is stated in the dialog at all times, never behind a toggle.
  *  On a phone the body scrolls and the action row stays at the sheet's floor
@@ -123,6 +139,10 @@ export function SharePeerModal({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [now, setNow] = useState(nowSeconds);
+  // What peers ask for on this session (#2062), oldest first. `null` until the first read.
+  const [requests, setRequests] = useState<AccessRequest[]>([]);
+  const [declining, setDeclining] = useState<string | null>(null);
+  const controlsRef = useRef<HTMLSpanElement | null>(null);
   // An answer applies only while the dialog is open for the session it was asked for. Declared
   // before the loading effect, so it is armed when that runs (StrictMode replay included).
   const ticket = useAnswerFence(sessionKey);
@@ -141,8 +161,27 @@ export function SharePeerModal({
     );
   }, [sessionKey, ticket]);
 
+  // A terminal is View only for good (#2060): nobody can ask for more, so its dialog has no
+  // request cards and asks for none (#2062).
+  const askable = kind !== "terminal";
+  const loadRequests = useCallback(() => {
+    if (!askable) return Promise.resolve();
+    const current = ticket();
+    return Promise.resolve()
+      .then(() => api.federationAccessRequests(sessionKey))
+      .then(
+        (r) => {
+          if (current()) setRequests(pendingAccess(r?.access_requests));
+        },
+        () => {
+          /* the cards are an extra: the dialog's own controls work without them */
+        },
+      );
+  }, [sessionKey, ticket, askable]);
+
   useEffect(() => {
     const current = ticket();
+    void loadRequests();
     api.federation().then(
       (state) => {
         if (current()) setFed(state);
@@ -152,7 +191,7 @@ export function SharePeerModal({
       },
     );
     void loadGrants();
-  }, [loadGrants, ticket]);
+  }, [loadGrants, loadRequests, ticket]);
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -245,7 +284,49 @@ export function SharePeerModal({
     } finally {
       // Whatever happened, the list is the server's: a refused change may mean it moved.
       await loadGrants();
+      // A grant that now has what a request asked for marked it granted: its card goes.
+      await loadRequests();
       if (current()) setBusy(null);
+    }
+  };
+
+  /** **Review and grant: a preselection, and nothing else.** No request is sent. The peer and
+   *  the level the request names are chosen in the dialog's own controls, the acknowledgement is
+   *  cleared (so Send shows its risk box UNTICKED), and the controls are scrolled into view. */
+  const review = (request: AccessRequest) => {
+    // Only for the instance that asked: never a preselection for some other peer.
+    if (!peers?.some((p) => p.peer_id === request.peer_id)) {
+      setError("That instance is no longer paired. Nothing was selected.");
+      return;
+    }
+    setPicked(request.peer_id);
+    setLevel(request.level);
+    setAckFor(null);
+    setDone(null);
+    setError(null);
+    setStuck(null);
+    setNow(nowSeconds());
+    const controls = controlsRef.current;
+    controls?.scrollIntoView?.({ block: "start" });
+    controls?.parentElement
+      ?.querySelector<HTMLElement>(`[role="radio"][data-level="${request.level}"]`)
+      ?.focus({ preventScroll: true });
+  };
+
+  const decline = async (request: AccessRequest) => {
+    if (declining || busy) return;
+    const current = ticket();
+    setDeclining(request.request_id);
+    setError(null);
+    try {
+      await api.declineFederationAccess(request.request_id);
+    } catch (e) {
+      // Already answered (granted, withdrawn, expired) is not an error: the list says what it is.
+      if (current() && !(e instanceof ApiError && e.status === 409))
+        setError(message(e, "Couldn’t decline that request."));
+    } finally {
+      await loadRequests();
+      if (current()) setDeclining(null);
     }
   };
 
@@ -338,9 +419,60 @@ export function SharePeerModal({
               </Link>
             </div>
           )}
+          {askable &&
+            requests.map((r) => {
+            const name = r.peer_name || "A paired instance";
+            return (
+              <article
+                key={r.request_id}
+                className={`${card.card} ${together.request}`}
+                data-testid="access-request"
+                data-level={r.level}
+                aria-label={`${name} asks for access`}
+              >
+                <header className={card.head}>
+                  <Led tone="att" />
+                  <PeerBadge name={name} />
+                  <span>asks for access</span>
+                  <span className={card.word}>needs you</span>
+                </header>
+                <p className={together.requestLead} data-testid="access-request-asks">
+                  {accessAsks(name, r.level)}
+                </p>
+                {r.note && (
+                  // A TEXT NODE in a quoted block: what another operator wrote, as characters.
+                  <blockquote className={card.quote} data-testid="access-request-note">
+                    {r.note}
+                  </blockquote>
+                )}
+                <div className={card.actions}>
+                  <button
+                    type="button"
+                    className={btn.primary}
+                    disabled={declining !== null || busy !== null || peers === null}
+                    data-testid="access-request-review"
+                    onClick={() => review(r)}
+                  >
+                    Review and grant
+                  </button>
+                  <button
+                    type="button"
+                    className={btn.ghost}
+                    disabled={declining !== null || busy !== null}
+                    data-testid="access-request-decline"
+                    onClick={() => void decline(r)}
+                  >
+                    {declining === r.request_id ? "Declining…" : "Decline"}
+                  </button>
+                </div>
+                <p className={card.note}>{accessReviewHint(r.level)}</p>
+              </article>
+            );
+          })}
           {peers !== null && peers.length > 0 && (
             <>
               <span
+                ref={controlsRef}
                 className={`${dlg.label} ${styles.label} ${terminal ? "" : styles.first}`}
                 id="share-peer-who"
               >

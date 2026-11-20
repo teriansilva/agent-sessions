@@ -488,11 +488,19 @@ def test_a_revoke_during_the_summary_or_the_preview_stage_creates_no_session(
     assert spent.value.code == "expired" and nothing_was_created()
 
 
-@pytest.mark.parametrize("why", ["offline", "timeout", "bad_answer", "revision"])
+@pytest.mark.parametrize(
+    "why", ["offline", "timeout", "answer_lost", "peer_lost", "bad_answer", "revision"]
+)
 def test_an_offline_peer_or_a_moved_revision_at_create_creates_nothing(receiver, why):
     out = prepared(receiver)
     if why == "offline":
         receiver.fed.channel_for = lambda peer_id: None
+    elif why == "answer_lost":
+        # The owner withheld the answer of the pinned re-read (#2061). That read has no effect
+        # on the owner and the local session is created only AFTER it answers: nothing exists.
+        receiver.answers["session.events"] = ch.CallError(ch.ANSWER_LOST)
+    elif why == "peer_lost":
+        receiver.answers["session.events"] = ch.CallError("closed")  # after it was queued
     elif why == "timeout":
         receiver.answers["session.events"] = ch.CallError("timeout")
     elif why == "bad_answer":

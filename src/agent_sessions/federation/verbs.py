@@ -15,8 +15,9 @@ Input (#2057, handlers in :mod:`inputs`): ``input.suggest``, ``input.suggestions
 operation id (the owner mints them) and **no verb changes a grant**: none extends, raises or
 re-creates one.
 
-Working together (#2059, handlers in :mod:`together` and :mod:`notes`): ``access.request`` and
-``access.status`` (a request is a record; it changes no grant), ``decision.answer`` (the peer
+Working together (#2059, handlers in :mod:`together` and :mod:`notes`): ``access.request``,
+``access.status`` and ``access.withdraw`` (a request is a record; it changes no grant),
+``decision.answer`` (the peer
 names the request id it saw and a decision KIND, never a turn, a decision id, a payload or an
 option's text), and the five ``note.*`` verbs. ``note.changed`` and ``decision.changed`` are
 the OWNER's hints to the receiver: a grant id and nothing else, and the receiver reads the
@@ -468,6 +469,8 @@ PEER = _table(
     # Working together (#2059), answered by the OWNER. None of them changes a grant.
     ("access.request", _access_request_args, together.access_request),
     ("access.status", _access_status_args, together.access_status),
+    # The peer takes its own pending request back (#2062): it narrows.
+    ("access.withdraw", _access_status_args, together.access_withdraw),
     ("decision.answer", _decision_args, together.decision_answer),
     ("note.list", _note_list_args, notes.note_list),
     ("note.add", _note_add_args, notes.note_add),

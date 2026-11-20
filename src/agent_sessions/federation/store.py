@@ -1984,6 +1984,39 @@ class Store:
             out["state"] = "expired"
         return out
 
+    def withdraw_access_request(
+        self, *, grant_id: str, peer_id: str, revision: int, now: float | None = None
+    ) -> bool:
+        """THE PEER takes its pending request back (#2062): ``pending → withdrawn``. ONE
+        ``BEGIN IMMEDIATE`` transaction that re-reads the grant exactly as the request did.
+        It narrows: no grant column is written and nothing is created. ``True`` when a pending
+        request was withdrawn; ``False`` when there was none (already answered, or never
+        asked), which is not an error."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            self._serving(con, grant_id, peer_id, "view", now, revision)
+            cur = con.execute(
+                "UPDATE access_requests SET state = 'withdrawn', end_reason = 'peer',"
+                " updated_at = ? WHERE grant_id = ? AND state = 'pending' AND expires_at > ?",
+                (now, grant_id, now),
+            )
+            return cur.rowcount > 0
+
+    def note_counts(self, grant_ids: list[str]) -> dict[str, int]:
+        """``{grant_id: how many notes its thread shows}`` (tombstones excluded) for the
+        OPERATOR's own listing of its grants (#2062). A number per grant and nothing of any
+        note: no text, no author, no time."""
+        if not grant_ids or not self.db_path.exists():
+            return {}  # never used: reading creates nothing
+        marks = ",".join("?" for _ in grant_ids)
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT grant_id, COUNT(*) AS n FROM notes"  # noqa: S608 — placeholders only
+                f" WHERE deleted = 0 AND grant_id IN ({marks}) GROUP BY grant_id",
+                grant_ids,
+            ).fetchall()
+        return {r["grant_id"]: int(r["n"]) for r in rows}
+
     def decline_access_request(self, request_id: str, *, now: float | None = None) -> AccessRequest:
         """The operator declines: ``pending → declined``. Compare-and-set; a request that
         already ended raises :class:`StateConflict` naming how."""

@@ -60,7 +60,8 @@ minted here:
 Working together on a shared session (#2059). The owner's side:
 
 * ``GET    /api/federation/grants`` entries carry ``watching`` (the peer read the session within
-  the last 30 s; in memory, a bit, nothing more)
+  the last 30 s; in memory, a bit, nothing more) and ``notes`` (how many notes that grant's
+  thread shows, #2062; a number)
 * ``GET    /api/federation/access-requests?session=<key>`` — what peers ask for, with their note
 * ``POST   /api/federation/access-requests/{id}/decline`` — there is NO approve route: granting
   is the grant change above (``PATCH …/grants/{grant_id}``, ``accept_risk`` for ``send``)
@@ -77,6 +78,8 @@ request is stored here):
 
 * ``POST   /api/federation/remote/{peer_id}/{grant_id}/access`` — ``{level, note?}``
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/access``
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/access/withdraw`` — take the pending
+  request back (#2062); answers what the status read answers
 * ``POST   /api/federation/remote/{peer_id}/{grant_id}/decisions`` — ``{request_id, offer, choice,
   options?, client_key, actor?}``: answer one pending request; ``offer`` is the snapshot's
   ``offer`` of that request, sent back unchanged; ``choice`` is a decision KIND
@@ -93,17 +96,20 @@ request is stored here):
 
 No channel answers ``503 peer_offline``: for a write that is a statement that nothing was sent,
 so a write whose channel ended after the request was handed to it answers ``504 peer_lost``
-instead (it may have been carried out; ask ``…/operations/{client_key}``), as a write that timed
-out answers ``504 timeout``. A read answers ``503 peer_offline`` in both cases. An answer the
-owner withheld after its handler ran (``answer_lost``: its byte budget, a size cap) is
-``504 peer_lost`` for a write as well, and ``429 busy`` for a read.
+instead (it may have been carried out; ask ``…/operations/{client_key}``, or for a
+working-together write read what it changed: the snapshot's ``decisions``, the notes thread,
+``…/access``), as a write that timed out answers ``504 timeout``. A read answers
+``503 peer_offline`` in both cases. An answer the owner withheld after its handler ran
+(``answer_lost``: its byte budget, a size cap) is ``504 peer_lost`` for a write as well, and
+``429 busy`` for a read.
 
 A refusal by the owner to a READ is re-resolved once (the mirror is refreshed and the call
 repeated under the current revision); a grant that is still refused, or no longer listed,
 answers ``404``. A refused WRITE is never repeated: it answers ``404`` at once and the mirror
 is refreshed in the background. The writes: suggest, turns,
-withdraw, and of working together the access request, the decision answer, a note's add, edit,
-delete and read mark, and Continue here's create (pinned to its handle's revision). The reads:
+withdraw, and of working together the access request and its withdrawal (#2062), the decision
+answer, a note's add, edit, delete and read mark, and Continue here's create (pinned to its
+handle's revision). The reads:
 snapshot, events, history, frame, suggestions, a submitted message's status, access status, the
 notes thread, and Continue here's prepare (its handle is bound to the revision that ANSWERED).
 What a peer returns is validated (``federation/remote.py``) and passed on as data; it is never a
@@ -453,14 +459,21 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
         return await guarded(federation.revoke)(peer_id)
 
     # ── grants: what this instance shares with a peer (#2054) ─────────
-    def _grant_view(grant: store.Grant, peers: dict[str, store.Peer]) -> dict:
+    def _grant_view(
+        grant: store.Grant, peers: dict[str, store.Peer], counts: dict[str, int] | None = None
+    ) -> dict:
         peer = peers.get(grant.peer_id)
-        return {
+        view = {
             **grants.public(grant),
             "peer_name": peer.name if peer else "",
             # The peer read this session within the last 30 s (#2059). In memory; one bit.
             "watching": grant.state == "live" and federation.watching.watching(grant.grant_id),
         }
+        if counts is not None:
+            # How many notes the thread with this peer shows (#2062): a number for the
+            # operator's own strip, nothing of any note.
+            view["notes"] = counts.get(grant.grant_id, 0)
+        return view
 
     async def _changed(grant: store.Grant) -> dict:
         """After a grant change: tell the peer (a hint, best effort; on the event loop, where
@@ -489,7 +502,9 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 raise FederationError("not_found", "unknown peer", status=404)
             rows = grants.listing(federation.store, session or None)
             peers = {p.peer_id: p for p in federation.store.list_peers()}
-            views = [_grant_view(g, peers) for g in rows if not peer or g.peer_id == peer]
+            shown = [g for g in rows if not peer or g.peer_id == peer]
+            counts = federation.store.note_counts([g.grant_id for g in shown])
+            views = [_grant_view(g, peers, counts) for g in shown]
             if peer:
                 # The per-peer list is shown without its sessions' panes around it (Settings →
                 # Peers), so it carries each session's title: the operator's own, on their own
@@ -1001,6 +1016,26 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 {},
                 check=remote.check_access_status,
                 # A read: a refusal is re-resolved once, as for the other receiving reads.
+            )
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/access/withdraw",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_access_withdraw(peer_id: str, grant_id: str) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            # It narrows: this instance takes its own pending request back (#2062).
+            return await remote.read(
+                federation,
+                peer_id,
+                grant_id,
+                "access.withdraw",
+                {},
+                check=remote.check_access_status,
+                retry=False,  # a refused write is returned as it is, never repeated
             )
 
         return await guarded(run)()

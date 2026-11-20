@@ -47,6 +47,8 @@ NOTE_PREFIX = "peer-note:"
 REMOTE_PREFIX = "peer-remote-"
 REMOTE_KINDS = ("share", "ended", "decision", "note")
 UNNAMED_PEER = "A paired instance"
+#: The level a request asks for, as the bell says it. A fixed word per level.
+_LEVEL_WORDS = {"suggest": "Suggest", "send": "Send"}
 #: One announcement at a time: "is there a row" and "add the row" are two steps of one decision.
 _announcing = threading.Lock()
 
@@ -153,7 +155,12 @@ def announce_access(st: store.Store, request: store.AccessRequest) -> None:
     try:
         _post(
             key=access_key(request.request_id),
-            title=f"{_peer_name(st, request.peer_id)} asks for more access",
+            # The level is one of two server-validated words (`suggest`, `send`), never text
+            # the peer wrote (#2062: the row says what is asked for).
+            title=(
+                f"{_peer_name(st, request.peer_id)} asks for"
+                f" {_LEVEL_WORDS.get(request.level, 'more')} access"
+            ),
             project=_session_title(request.session_key),
             session_id=request.session_key,
             engine=request.session_key.partition(":")[0],

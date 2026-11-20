@@ -139,7 +139,8 @@ def test_the_operator_grants_changes_and_revokes_through_the_api(auth_cfg, monke
     second = _trusted_peer(c)
     mine = c.get(f"/api/federation/grants?peer={peer.peer_id}").json()
     assert [g["grant_id"] for g in mine["grants"]] == [grant["grant_id"]]
-    assert mine["grants"][0] == {**grant, "title": ""}  # no such session on disk: no title
+    # no such session on disk: no title; a listed grant also counts its thread's notes (#2062)
+    assert mine["grants"][0] == {**grant, "title": "", "notes": 0}
     monkeypatch.setattr(grants, "titles", lambda keys: {k: "Refactor the importer" for k in keys})
     mine = c.get(f"/api/federation/grants?peer={peer.peer_id}").json()
     assert mine["grants"][0]["title"] == "Refactor the importer"
