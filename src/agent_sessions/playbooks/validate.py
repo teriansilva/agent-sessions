@@ -866,8 +866,16 @@ def _check_graph(
                 raise _fail(f"{where}.rework.to", f"{rw['to']!r} is a note")
             if rw["to"] not in ancestors[sid]:
                 raise _fail(f"{where}.rework.to", f"{rw['to']!r} is not an ancestor of {sid!r}")
-            if rw["when"] not in {item["key"] for item in s["checklist"]}:
+            when = next((i for i in s["checklist"] if i["key"] == rw["when"]), None)
+            if when is None:
                 raise _fail(f"{where}.rework.when", "must name an item of this step's checklist")
+            if when["probe"] not in missions.REWORK_DRIVING_PROBES:
+                # A row that can never say "changes requested" can never drive the edge (#2035).
+                raise _fail(
+                    f"{where}.rework.when",
+                    f"{rw['when']!r} is checked by {when['probe']!r}, which can never ask for "
+                    "changes; a rework edge needs a supervisor_judged or forge_review item",
+                )
         for d in s["distinct_from"]:
             if d["step"] == sid:
                 raise _fail(f"{where}.distinct_from", "a step cannot be distinct from itself")

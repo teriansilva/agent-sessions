@@ -181,6 +181,9 @@ class JudgeInput:
     fingerprint: str = ""
     #: `screen:<key>` labels that COUNT as evidence — only an agent with no transcript (`shell`).
     screen_counts: set[str] = field(default_factory=set)
+    #: When the gather BEGAN (#2035): a verdict on this input is a read of the output as it was
+    #: from then on, so a reopened step's row settles from it only if it began in the new episode.
+    gathered_at: float | None = None
 
     @property
     def empty(self) -> bool:
@@ -297,7 +300,7 @@ def _checkout_diff(cwd: str | None) -> str:
 
 def gather(mission_id: str, cwd: str | None) -> JudgeInput:
     """Build the judge's input for one mission. Blocking — call it off the event loop."""
-    inp = JudgeInput()
+    inp = JudgeInput(gathered_at=time.time())
     per: list[str] = []
     for key in _recent_sessions(mission_id):
         try:
@@ -438,8 +441,14 @@ def verify_evidence(evidence: list[dict], inp: JudgeInput) -> tuple[list[dict], 
 # ---------------------------------------------------------------- eligibility
 
 
-def needs_judgment(row: dict, fp: str, *, now: float) -> bool:
-    """Should this row be judged NOW? The idle skip, applied to failures as well as verdicts."""
+def needs_judgment(row: dict, fp: str, *, now: float, lifted: frozenset[str] = frozenset()) -> bool:
+    """Should this row be judged NOW? The idle skip, applied to failures as well as verdicts.
+
+    `lifted`: the rows whose rework episode fence a read begun now would pass (`fence_lifted`).
+    A verdict the fence HELD (`awaits_rework_run`) is judged once more for such a row even on
+    unchanged output (#2035, Hermes on #2227): it was read before the new run started, so reusing
+    it would leave the row pending for ever. Once re-judged, its read began in the new episode,
+    so it is never held again for that reason: one more judgment, not one per pass."""
     if str(row.get("state") or "") == "waived":
         return False
     if row.get("judge_rejected_fp") and row["judge_rejected_fp"] == fp:
@@ -447,6 +456,8 @@ def needs_judgment(row: dict, fp: str, *, now: float) -> bool:
         return False
     obs = row.get("observed") if isinstance(row.get("observed"), dict) else {}
     rec = obs.get("judged") if isinstance(obs.get("judged"), dict) else {}
+    if obs.get("awaits_rework_run") and str(row.get("key") or "") in lifted:
+        return True
     if "fingerprint" in rec and not obs.get("stale") and rec["fingerprint"] == fp:
         return False
     if rec.get("attempted_fp") == fp:
@@ -456,6 +467,24 @@ def needs_judgment(row: dict, fp: str, *, now: float) -> bool:
         if isinstance(at, int | float) and now - float(at) < TRANSIENT_BACKOFF_S:
             return False
     return True
+
+
+def fence_lifted(mission_id: str, rows: list[dict], read_at: float, *, path=None) -> frozenset[str]:
+    """The keys of `rows` holding a verdict the rework fence held (`awaits_rework_run`) that a read
+    begun at `read_at` would no longer be held from settling (`missions.rework_fence_holds`).
+    Blocking; empty on doubt (the verdict is reused, as before)."""
+    held = [
+        str(r.get("key") or "")
+        for r in rows
+        if isinstance(r.get("observed"), dict) and r["observed"].get("awaits_rework_run")
+    ]
+    if not held:
+        return frozenset()
+    try:
+        still = missions.rework_fence_holds(mission_id, held, read_at, path=path)
+    except Exception:  # noqa: BLE001 — could not look: reuse the verdict, as before
+        return frozenset()
+    return frozenset(k for k in held if k not in still)
 
 
 # ---------------------------------------------------------------- staleness
@@ -505,6 +534,9 @@ def mark_stale_judgments(mission_id: str, wl: dict, inp: JudgeInput, threshold: 
             ):
                 out["stale"] += 1
         elif rec.get("threshold") != threshold and not obs.get("rejected_at"):
+            # The SAME read, re-scored against a new threshold: it began when that read began
+            # (#2035), so a verdict gathered in a reopened step's new episode still counts.
+            was = obs.get("read_at")
             if missions.observe_objective(
                 mission_id,
                 key,
@@ -515,6 +547,7 @@ def mark_stale_judgments(mission_id: str, wl: dict, inp: JudgeInput, threshold: 
                 expect_probe="supervisor_judged",
                 expect_incarnation=inc,
                 expect_title=str(row.get("title") or ""),
+                read_at=float(was) if isinstance(was, int | float) else None,
             ):
                 out["recomputed"] += 1
     return out
@@ -633,6 +666,7 @@ async def judge_row(mission_id: str, row: dict, inp: JudgeInput, instruction: st
                 # THE QUESTION THE JUDGE WAS ASKED. A retitle keeps the incarnation, so without this
                 # a verdict about the old title settles the new one (#1088 review, blocker 1).
                 expect_title=str(row.get("title") or ""),
+                read_at=inp.gathered_at,
             )
         except missions.MissionError as e:
             if e.status != 422:
@@ -768,7 +802,13 @@ async def judge_one(mission_id: str, budget: Budget, *, path=None) -> dict:
     prior = _take_phase1_input(mission_id)
     if prior is not None and not prior.empty:
         t0 = time.time()
-        if not any(needs_judgment(r, row_fingerprint(prior, r), now=t0) for r in wl["rows"]):
+        # Would a read begun NOW pass a held verdict's fence? (Phase 2's gather begins now.)
+        lifted = await missions.run_admitted(
+            lambda: fence_lifted(mission_id, wl["rows"], t0, path=path)
+        )
+        if not any(
+            needs_judgment(r, row_fingerprint(prior, r), now=t0, lifted=lifted) for r in wl["rows"]
+        ):
             report["skipped"] = "nothing due"
             return report
     inp = await missions.run_admitted(lambda: gather(mission_id, wl.get("cwd")))
@@ -790,7 +830,14 @@ async def judge_one(mission_id: str, budget: Budget, *, path=None) -> dict:
     if not wl:
         return report
     now = time.time()
-    due = [r for r in wl["rows"] if needs_judgment(r, row_fingerprint(inp, r), now=now)]
+    # A held verdict is judged again when THIS input's read would count (it began at
+    # `inp.gathered_at`, which is what the new verdict is stamped with).
+    lifted = await missions.run_admitted(
+        lambda: fence_lifted(mission_id, wl["rows"], inp.gathered_at, path=path)
+    )
+    due = [
+        r for r in wl["rows"] if needs_judgment(r, row_fingerprint(inp, r), now=now, lifted=lifted)
+    ]
     # GATES FIRST, THEN THE LEAST RECENTLY JUDGED (#1097 review 5040, finding 4).
     due.sort(key=lambda r: (not r.get("gate"), last_attempt(r), int(r.get("ord") or 0)))
     if not due:

@@ -1684,9 +1684,12 @@ def test_a_fresh_read_of_the_old_output_cannot_complete_a_reopened_step_before_i
     assert run2["run"]["rework_ref"] == f"{SRC}#1"
     got = missions.observe_objective(mid, key, observed=True, value=True, detail="branch is there")
     assert got["state"] == "pending", "a launch still being claimed lifted the fence"
-    # The new episode is running: now the same read counts.
+    # The new episode is running: a read BEGUN in it counts (#2035: evidence must belong to the
+    # new episode; the fact need not change).
     _set_run_state(run2["plan_id"], "running")
-    got = missions.observe_objective(mid, key, observed=True, value=True, detail="branch is there")
+    got = missions.observe_objective(
+        mid, key, observed=True, value=True, detail="branch is there", read_at=time.time()
+    )
     assert got["state"] == "met"
     # A step the reopen did not grant a new run (cover_letter is outside the span) is unfenced.
     letter = _step(doc, "o1.cover_letter")["evidence"][0]
@@ -1754,7 +1757,9 @@ def test_a_failed_relaunch_keeps_the_fence_until_a_new_episode_really_starts():
     run3 = _claim(mid, TO, "operator", None)
     assert run3["run"]["rework_ref"] is None
     _set_run_state(run3["plan_id"], "running")
-    got = missions.observe_objective(mid, key, observed=True, value=True, detail="still there")
+    got = missions.observe_objective(
+        mid, key, observed=True, value=True, detail="still there", read_at=time.time()
+    )
     assert got["state"] == "met"
 
 

@@ -5557,11 +5557,16 @@ def observe_objective(
     expect_incarnation: str | None = None,
     expect_title: str | None = None,
     stale_kind: str | None = None,
+    read_at: float | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict | None:
     """Record what a probe saw or the supervisor judged. **The only path that may write `met`
     from evidence (#891, #1088).**
+
+    ``read_at`` (#2035) is when the read BEGAN — a probe's request, the judge's gather — not when
+    its answer is written. A row a rework reopen reset settles only from a read that began after
+    the step's new episode started (`_rework_fenced_tx`); a read with no known start never does.
 
     `patch_objectives` — the operator's path — refuses `state` / `met_at` / `observed` outright, so
     an edit can never retroactively claim an objective holds. This is the other side of that rule:
@@ -5637,6 +5642,8 @@ def observe_objective(
         obs["value"] = bool(value)
     if rec is not None:
         obs["judged"] = rec
+    if read_at is not None:
+        obs["read_at"] = float(read_at)
     # THE EXTERNAL TARGET is ADJUDICATED here now, against the binding the row carries.
     #
     # Where a probe went is not row state — it is the configured forge plus the mission's checkout
@@ -5787,7 +5794,7 @@ def observe_objective(
                     blob_source = fit_judged(obs) if rec is not None else obs
             state = str(row["state"] or "")
             settle = observed and bool(obs.get("value")) and state not in ("met", "waived")
-            held = _rework_fenced_tx(con, mission_id, objective_key) if settle else None
+            held = _rework_fenced_tx(con, mission_id, objective_key, read_at) if settle else None
             if held is not None:
                 # THE REWORK EPISODE FENCE (#1951 §4, Hermes 8191/8193): this row was reset by a
                 # rework reopen that granted its step a NEW episode, and that episode has not
@@ -5797,7 +5804,8 @@ def observe_objective(
                 obs["value"] = False
                 obs["awaits_rework_run"] = held
                 obs["detail"] = _cap(
-                    f"{obs.get('detail') or ''} (counts once {held} runs again for its rework)",
+                    f"{obs.get('detail') or ''} (counts once read after {held} runs again for "
+                    "its rework)",
                     OBSERVED_DETAIL_MAX,
                 )
                 blob = _json_or_none(obs, OBSERVED_MAX, field="observed")
@@ -10631,13 +10639,29 @@ def claim_step(
                     "this step has run already, and HQ starts a step only once; start it again "
                     "yourself",
                 )
-            if authority != "operator" and approval_id is not None:
+            # The approval the bound is read from: the claim's own, or — for a launch admitted
+            # under a STANDING CONSENT — the approval that consent was given under (#2035), read
+            # in this transaction. A consent whose approval cannot be read fails closed below.
+            bound_approval = approval_id
+            if authority != "operator" and bound_approval is None and consent_id is not None:
+                crow = con.execute(
+                    "SELECT approval_id FROM mission_standing_consents "
+                    "WHERE id=? AND mission_id=?",
+                    (consent_id, mission_id),
+                ).fetchone()
+                bound_approval = str(crow["approval_id"]) if crow and crow["approval_id"] else ""
+            if authority != "operator" and bound_approval is not None:
                 # THE APPROVED BOUND (#1951 §4): under an approval a step runs at most 1 + the
                 # rounds of every rework edge whose span holds it. A reopen within it is inside the
                 # approval; one beyond it is a question, never a launch (the operator may still
-                # start it, by their own tap).
+                # start it, by their own tap). A consent-authorised launch is held to the bound of
+                # the approval its consent rests on (#2035).
                 # Pins that can't say fail CLOSED: the first run only, no rework beyond it.
-                bound = _approved_runs_tx(con, mission_id, approval_id, step_id, doc) or 1
+                bound = (
+                    _approved_runs_tx(con, mission_id, bound_approval, step_id, doc)
+                    if bound_approval
+                    else None
+                ) or 1
                 if bound is not None:
                     # Every episode but a refused one (it started nothing) spends an instance, as
                     # the once-only guard and the reopen's consumption count them: a `failed`
@@ -11310,18 +11334,41 @@ def rework_granted(row) -> list[str]:
     return list(rework_granted_episodes(row))
 
 
-#: The run states that mean a step's new episode actually STARTED: a `claimed` launch may still be
-#: refused or fail before any session works, and a `failed` one is the operator's to restart.
-REWORK_EPISODE_STARTED = ("running", "done", "stopped", "unknown")
+#: The run states that mean a step's new episode actually STARTED (#2035): a `claimed` launch may
+#: still be refused or fail before any session works, a `failed` one is the operator's to restart,
+#: and an `unknown` one may never have worked at all.
+REWORK_EPISODE_STARTED = ("running", "done", "stopped")
 
 
-def _rework_fenced_tx(con, mission_id: str, objective_key: str) -> str | None:
+def rework_fence_holds(
+    mission_id: str, keys: list[str], read_at: float | None, *, path: Path | None = None
+) -> set[str]:
+    """Of `keys`, the rows a read begun at `read_at` could NOT settle for the rework episode fence
+    (`_rework_fenced_tx`), in one read transaction. The judge asks it before reusing a verdict the
+    fence held (#2035, Hermes on #2227): once a read begun now would count, that verdict is judged
+    once more, even on unchanged output."""
+    validate_id(mission_id)
+    if not keys:
+        return set()
+    con = _ready(path)
+    try:
+        return {k for k in keys if _rework_fenced_tx(con, mission_id, k, read_at) is not None}
+    finally:
+        con.close()
+
+
+def _rework_fenced_tx(
+    con, mission_id: str, objective_key: str, read_at: float | None = None
+) -> str | None:
     """The step whose rework reopen fences `objective_key` from settling, or None. A reopen
-    GRANTED the step a new episode (`rework_granted_episodes`), and no run of it LATER than the
-    episode it had then has actually started (`REWORK_EPISODE_STARTED`): until one has, evidence
-    read from the old episode's output must not complete the step and skip the new session. A
-    claimed launch, or one that failed, does not lift it (the reopen's consumption is another
-    record: `_open_reopen_tx`). Cheap when the mission has no reopen."""
+    GRANTED the step a new episode (`rework_granted_episodes`); evidence read from the old
+    episode's output must not complete the step and skip the new session. So the row settles only
+    from a read that BEGAN after a run of the step LATER than the episode it had then was claimed,
+    and only once that run has actually started (`REWORK_EPISODE_STARTED`) — evidence must belong
+    to the new episode; the external fact need not change (#2035). A read with no known start
+    (`read_at` None), or one begun before that run, stays fenced: it may have read the old output.
+    A claimed launch, or one that failed or went unknown, does not lift it (the reopen's
+    consumption is another record: `_open_reopen_tx`). Cheap when the mission has no reopen."""
     rows = con.execute(
         "SELECT granted_json FROM mission_reworks WHERE mission_id=? AND outcome='reopened'",
         (mission_id,),
@@ -11347,11 +11394,12 @@ def _rework_fenced_tx(con, mission_id: str, objective_key: str) -> str | None:
         if owner not in episodes:
             continue
         started = con.execute(
-            f"SELECT 1 FROM mission_step_runs WHERE mission_id=? AND step_id=? "  # noqa: S608
-            f"AND episode > ? AND state IN ({marks}) LIMIT 1",
+            f"SELECT MIN(created_at) AS since FROM mission_step_runs WHERE mission_id=? "  # noqa: S608
+            f"AND step_id=? AND episode > ? AND state IN ({marks})",
             (mission_id, owner, int(episodes[owner]), *REWORK_EPISODE_STARTED),
         ).fetchone()
-        if not started:
+        since = started["since"] if started is not None else None
+        if since is None or read_at is None or float(read_at) <= float(since):
             return owner
     return None
 
@@ -11457,6 +11505,10 @@ def rework_reset_steps(doc: dict, edge_from: str, edge_to: str) -> list[str]:
 #: What a probe-backed rework `when` row's observation must say (`state`, a probe extra) to count
 #: as "changes requested" (#1951 §4): `forge_review`'s outstanding request for changes.
 REWORK_REQUEST_STATES = frozenset({"REQUEST_CHANGES", "CHANGES_REQUESTED"})
+#: The probe kinds whose `when` row can ever say "changes requested" (`rework_observation`): a
+#: judged verdict, or `forge_review`'s outstanding request. A rework edge on any other row can
+#: never fire, so plan validation refuses it (#2035).
+REWORK_DRIVING_PROBES = frozenset({"supervisor_judged", "forge_review"})
 
 
 def rework_observation(row: dict, since: float) -> str | None:

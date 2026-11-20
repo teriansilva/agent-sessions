@@ -725,7 +725,9 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
         if gen is None:
             continue
         # The SAME resolution the row is now bound to is handed to the probe. Re-resolving inside
-        # would ask about a destination nobody fenced.
+        # would ask about a destination nobody fenced. When the read BEGAN is recorded with the
+        # answer (#2035): a reopened step's row settles only from a read begun in its new episode.
+        read_at = time.time()
         fact = probe_one(mission, o, target=before)
         probed += 1
         if not fact.observed:
@@ -767,6 +769,7 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
                     # superseded — cannot settle the row.
                     expect_target=after.digest,
                     expect_gen=gen,
+                    read_at=read_at,
                     path=path,
                 )
             if row is None:
