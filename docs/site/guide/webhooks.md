@@ -8,7 +8,7 @@ opened, a deploy failed, a form was sent. In BattleLab a webhook is just three t
 - a **secret** the service signs its deliveries with.
 
 It doesn't care who sends to it. What a delivery *does* is up to the
-[automations](/guide/missions) that use the webhook. One webhook can serve several automations,
+[automations](/guide/automations) that use the webhook. One webhook can serve several automations,
 each with its own approval.
 
 ## Create one
@@ -44,8 +44,8 @@ these names. **The values themselves are not kept.**
 
 ## Choose which events, and fill values from them
 
-A webhook can start a review loop, start a session, or send a message to a session. Sessions must
-be API sessions.
+You do this in the [automation wizard](/guide/automations), steps 2 and 3. A webhook can start a
+review loop, start a session, or send a message to a session. Sessions must be API sessions.
 
 - **Which events.** If the webhook has received an event, BattleLab offers presets for common
   ones: *PR opened or pushed (drafts skipped)*, *Issue opened or edited*, *Review submitted*. You

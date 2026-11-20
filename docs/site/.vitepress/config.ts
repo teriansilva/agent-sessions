@@ -158,6 +158,7 @@ export default defineConfig({
           { text: "Projects", link: "/guide/projects" },
           { text: "Playbooks", link: "/guide/playbooks" },
           { text: "Specialists", link: "/guide/specialists" },
+          { text: "Automations", link: "/guide/automations" },
           { text: "Webhooks", link: "/guide/webhooks" },
           { text: "Review loop with Forgejo", link: "/guide/review-loop" },
           { text: "Mission plans", link: "/guide/mission-plans" },

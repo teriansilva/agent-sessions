@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import { errorWords } from "../../lib/automations";
-import type { Webhook } from "../../types/webhooks";
+import type { Webhook, WebhookDetail } from "../../types/webhooks";
 
 export function useWebhooks(): {
   list: Webhook[] | null;
@@ -42,4 +42,39 @@ export function useWebhooks(): {
     };
   }, [load]);
   return { list, error, loading, reload: load };
+}
+
+/** One webhook's detail — its last delivery's shape and the presets recognised from it (#2221 P2) —
+ *  read whenever `id` changes and again on `reload()`. `detail` is `null` while it loads; a failed
+ *  read is an error string. */
+export function useWebhookDetail(id: string): {
+  detail: WebhookDetail | null;
+  error: string;
+  reload: () => void;
+} {
+  const [state, setState] = useState<{ key: string; detail: WebhookDetail | null; error: string }>({
+    key: "",
+    detail: null,
+    error: "",
+  });
+  const [nonce, setNonce] = useState(0);
+  const key = id ? `${id}#${nonce}` : "";
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    api.webhook(id).then(
+      (d) => live && setState({ key, detail: d, error: "" }),
+      (e: unknown) =>
+        live && setState({ key, detail: null, error: errorWords(e, "Couldn’t read the webhook.") }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [id, key]);
+  const mine = state.key === key && !!id;
+  return {
+    detail: mine ? state.detail : null,
+    error: mine ? state.error : "",
+    reload: useCallback(() => setNonce((n) => n + 1), []),
+  };
 }

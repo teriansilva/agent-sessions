@@ -22,7 +22,11 @@ import type {
   AutomationState,
   Autonomy,
   Cadence,
+  ConditionOp,
+  ConditionScalar,
   ConsentRequired,
+  DeliveryMapping,
+  MappedType,
   ResultClass,
   ReviewLoopAction,
   RunSummary,
@@ -30,8 +34,11 @@ import type {
   Trigger,
   UnattendedEngine,
   Weekday,
+  WebhookCondition,
 } from "../types/automations";
+import type { Template } from "../types/api";
 import type { Specialist } from "../types/specialists";
+import type { ShapeField, WebhookPreset } from "../types/webhooks";
 
 /** A status tone, which is what decides the LED and the word's colour. `down` is ACTIVE failure
  *  only (docs/design.md §7); `degraded` is "needs you"; `idle` is off, skipped or unknown. */
@@ -556,6 +563,36 @@ export interface EditorForm {
   webhookId: string;
   /** A stored #2202 review loop's own webhook: saved back as it was, never converted. */
   legacyHook: boolean;
+  /** Which deliveries it acts on (#2221 P2): all must hold; empty = every signed delivery. */
+  when: ConditionDraft[];
+  /** Template fields filled from the delivery, by field name (#2221 P2). */
+  fromDelivery: Record<string, MappingDraft>;
+}
+
+/** A condition as the wizard edits it. Each value is its own element with its OWN type, kept as
+ *  TEXT so a half-typed value is never re-rendered under the operator's cursor; `conditionBody`
+ *  types each. One element for `is`, `is_not` and `contains`, one per value for `one_of`. Never a
+ *  joined string: a value may hold a comma, and a list may mix numbers, texts and yes/no. */
+export interface ConditionDraft {
+  path: string;
+  op: ConditionOp;
+  values: ValueDraft[];
+}
+export interface ValueDraft {
+  text: string;
+  type: ConditionValueType;
+  /** A row the operator added and has not typed into yet. Only this is "missing": an EMPTY text
+   *  is a value the server accepts (`is ""`), and one loaded from a stored automation is kept. */
+  unset?: true;
+}
+export type ConditionValueType = "text" | "number" | "yes_no";
+
+/** A template field mapped from the delivery, as the wizard edits it: one element per allowed
+ *  choice, never joined (a choice may hold a comma). */
+export interface MappingDraft {
+  path: string;
+  type: MappedType;
+  choices: string[];
 }
 
 /** The server's round bounds (`review_loop.ROUNDS_*`). */
@@ -601,24 +638,38 @@ export function blankForm(tz: string): EditorForm {
     returnToOrigin: true,
     webhookId: "",
     legacyHook: false,
+    when: [],
+    fromDelivery: {},
   };
 }
 
-/** A Forgejo webhook starts a review loop, and a review loop is started by one (the server refuses
- *  any other pairing). Choosing either side chooses the other; leaving either leaves both, back to
- *  the blank form's schedule + mission. A review loop's deliveries come in bursts (a push and an
- *  edit), so it defaults to running them side by side, as the server does. */
+/** What a trigger may start (#2221 P2, mirroring `automations.validate_config`):
+ *
+ *  - a review loop is started only by a webhook, and takes no conditions (it reads its own events);
+ *  - a webhook from the list starts a review loop, a session or a message to a session — never a
+ *    mission (that is a later phase);
+ *  - a #2202 review loop's own webhook (`legacyHook`) starts only that review loop;
+ *  - conditions and values from the delivery go only with a webhook from the list.
+ *
+ *  Choosing a side that the other can't pair with moves the other to the nearest choice that can,
+ *  so the form never holds a pairing the server refuses. A review loop's deliveries come in bursts
+ *  (a push and an edit), so it defaults to running them side by side, as the server does. */
 export function withTrigger(
   f: EditorForm,
   kind: EditorForm["triggerKind"],
   maxConcurrent: number,
 ): EditorForm {
   if (kind === f.triggerKind) return f;
-  if (kind === "webhook")
-    return intoLoop({ ...f, triggerKind: kind }, maxConcurrent);
-  if (f.triggerKind === "webhook")
-    return outOfLoop({ ...f, triggerKind: kind }, "trigger");
-  return { ...f, triggerKind: kind };
+  if (kind === "webhook") {
+    const next: EditorForm = { ...f, triggerKind: kind };
+    if (f.legacyHook) return intoLoop(next, maxConcurrent);
+    // A webhook never starts a mission: a session is the nearest it can start.
+    if (f.actionKind === "start_mission") next.actionKind = "start_session";
+    return next;
+  }
+  const next: EditorForm = { ...f, triggerKind: kind, when: [], fromDelivery: {} };
+  if (f.actionKind === "forge_review_loop") return outOfLoop(next, "trigger");
+  return next;
 }
 
 export function withAction(
@@ -629,9 +680,14 @@ export function withAction(
   if (kind === f.actionKind) return f;
   if (kind === "forge_review_loop")
     return intoLoop({ ...f, actionKind: kind }, maxConcurrent);
-  if (f.actionKind === "forge_review_loop")
-    return outOfLoop({ ...f, actionKind: kind }, "action");
-  return { ...f, actionKind: kind };
+  let next: EditorForm = { ...f, actionKind: kind };
+  if (f.actionKind === "forge_review_loop") next = outOfLoop(next, "action");
+  // A mission, or anything but the loop on a review loop's own webhook, can't be webhook-started.
+  if (next.triggerKind === "webhook" && (kind === "start_mission" || legacyTrigger(next))) {
+    const blank = blankForm(f.tz);
+    next = { ...next, triggerKind: blank.triggerKind, when: [], fromDelivery: {} };
+  }
+  return next;
 }
 
 function intoLoop(f: EditorForm, maxConcurrent: number): EditorForm {
@@ -639,6 +695,9 @@ function intoLoop(f: EditorForm, maxConcurrent: number): EditorForm {
     ...f,
     triggerKind: "webhook",
     actionKind: "forge_review_loop",
+    // A review loop picks its own events; it takes no conditions and no values.
+    when: [],
+    fromDelivery: {},
     concurrency: "allow",
     maxConcurrent: Math.max(2, maxConcurrent),
   };
@@ -648,7 +707,6 @@ function outOfLoop(f: EditorForm, chose: "trigger" | "action"): EditorForm {
   const blank = blankForm(f.tz);
   return {
     ...f,
-    triggerKind: chose === "trigger" ? f.triggerKind : blank.triggerKind,
     actionKind: chose === "action" ? f.actionKind : blank.actionKind,
     concurrency: blank.concurrency,
     maxConcurrent: blank.maxConcurrent,
@@ -667,8 +725,10 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.onceAt = t.at;
       f.tz = t.tz;
     } else if (t.kind === "webhook") {
-      if ("webhook_id" in t) f.webhookId = t.webhook_id;
-      else f.legacyHook = true; // #2202's own webhook: kept as it is, never converted here
+      if ("webhook_id" in t) {
+        f.webhookId = t.webhook_id;
+        f.when = (t.when ?? []).map(conditionDraft);
+      } else f.legacyHook = true; // #2202's own webhook: kept as it is, never converted here
     } else if (t.kind === "schedule") {
       f.tz = t.tz;
       const c = t.cadence;
@@ -706,6 +766,12 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.messageMode = "template";
       f.templateId = msg.template_id;
       f.values = { ...msg.values };
+      for (const [field, m] of Object.entries(msg.from_delivery ?? {}))
+        f.fromDelivery[field] = {
+          path: m.path,
+          type: m.type,
+          choices: [...(m.choices ?? [])],
+        };
     }
     if (act.kind === "start_mission") {
       f.projectId = act.project_id;
@@ -729,21 +795,41 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
   return f;
 }
 
+/** Whether the trigger IS a #2202 review loop's own webhook right now. `legacyHook` alone is the
+ *  stored identity, kept while the operator tries another trigger so switching back restores it. */
+export function legacyTrigger(f: EditorForm): boolean {
+  return f.triggerKind === "webhook" && f.legacyHook;
+}
+
+/** Whether this form takes values and conditions from a delivery: a webhook from the list. */
+export function fromListHook(f: EditorForm): boolean {
+  return f.triggerKind === "webhook" && !f.legacyHook;
+}
+
 function formMessage(f: EditorForm): AutomationMessage {
   if (f.messageMode === "text") return { text: f.text };
+  const mapped = fromListHook(f) ? mappingBody(f.fromDelivery) : {};
   // Only the fields the operator typed: a library field takes its value from the library at run
-  // time, and the server refuses a value sent for one.
+  // time, and the server refuses a value sent for one. A mapped field never has a fixed value.
   const values: Record<string, string> = {};
-  for (const [k, v] of Object.entries(f.values)) if (v !== "") values[k] = v;
-  return { template_id: f.templateId, values };
+  for (const [k, v] of Object.entries(f.values))
+    if (v !== "" && !(k in mapped)) values[k] = v;
+  return Object.keys(mapped).length
+    ? { template_id: f.templateId, values, from_delivery: mapped }
+    : { template_id: f.templateId, values };
 }
 
 export function formTrigger(f: EditorForm): Trigger {
   if (f.triggerKind === "manual") return { kind: "manual" };
-  if (f.triggerKind === "webhook")
-    return f.legacyHook
-      ? { kind: "webhook", scheme: "forgejo" }
+  if (f.triggerKind === "webhook") {
+    if (f.legacyHook) return { kind: "webhook", scheme: "forgejo" };
+    // A review loop picks its own events; the key is omitted when there are none.
+    const when =
+      f.actionKind === "forge_review_loop" ? [] : f.when.map(conditionBody);
+    return when.length
+      ? { kind: "webhook", webhook_id: f.webhookId, when }
       : { kind: "webhook", webhook_id: f.webhookId };
+  }
   if (f.triggerKind === "once") return { kind: "once", at: f.onceAt, tz: f.tz };
   let cadence: Cadence;
   if (f.cadenceKind === "interval")
@@ -819,10 +905,26 @@ export function bodyFromForm(f: EditorForm): AutomationConfig {
 }
 
 /** What the form still needs before Save can be pressed — client-side only for fields whose
- *  absence would make the server's refusal unhelpful. The server validates everything. */
+ *  absence would make the server's refusal unhelpful. The server validates everything. In the
+ *  wizard's step order, the name (asked last) first. */
 export function formProblems(f: EditorForm): string[] {
+  const by = stepProblems(f);
+  return [...by.review, ...by.when, ...by.events, ...by.what, ...by.limits];
+}
+
+/** The problems that hold each wizard step (#2221 P2b). */
+export function stepProblems(f: EditorForm): Record<WizardStepId, string[]> {
+  return {
+    when: whenProblems(f),
+    events: eventsProblems(f),
+    what: whatProblems(f),
+    limits: [],
+    review: f.name.trim() ? [] : ["Give it a name"],
+  };
+}
+
+function whenProblems(f: EditorForm): string[] {
   const out: string[] = [];
-  if (!f.name.trim()) out.push("Give it a name");
   if (f.triggerKind === "once" && !f.onceAt) out.push("Choose when it runs");
   if (
     f.triggerKind === "schedule" &&
@@ -830,6 +932,58 @@ export function formProblems(f: EditorForm): string[] {
     !f.days.length
   )
     out.push("Choose at least one day");
+  if (fromListHook(f) && !f.webhookId) out.push("Pick a webhook");
+  return out;
+}
+
+function eventsProblems(f: EditorForm): string[] {
+  if (!fromListHook(f) || f.actionKind === "forge_review_loop") return [];
+  const out: string[] = [];
+  if (f.when.length > CONDITIONS_MAX)
+    out.push(`At most ${CONDITIONS_MAX} conditions`);
+  f.when.forEach((c, i) => {
+    const what = `Condition ${i + 1}`;
+    if (!validPath(c.path)) {
+      out.push(`${what}: pick a field of the delivery (like pull_request.draft)`);
+      return;
+    }
+    const takes = OP_TAKES[c.op];
+    if (!takes) return;
+    const items = conditionValues(c);
+    // Missing: no value, a fresh row never typed into, or an empty value where the server needs
+    // text (`contains`) or a number / yes-no. An empty TEXT for is, is not or one of is a value.
+    const missing = (v: ValueDraft) =>
+      v.unset || (v.text === "" && (takes === "text" || v.type !== "text"));
+    if (!items.length || items.some(missing)) {
+      out.push(`${what}: give it a value`);
+      return;
+    }
+    if (takes === "list" && items.length > CHOICES_MAX)
+      out.push(`${what}: at most ${CHOICES_MAX} values`);
+    if (items.some((v) => v.text.length > VALUE_MAX || /\n/.test(v.text)))
+      out.push(`${what}: a value is one line of at most ${VALUE_MAX} characters`);
+    else {
+      const bad = items.find((v) => takes !== "text" && typedValue(v.text, v.type) === undefined);
+      if (bad)
+        out.push(
+          bad.type === "number"
+            ? `${what}: “${bad.text}” is not a number; give a number`
+            : `${what}: “${bad.text}” is not yes or no; answer yes or no`,
+        );
+    }
+  });
+  return out;
+}
+
+function whatProblems(f: EditorForm): string[] {
+  const out: string[] = [];
+  const hook = f.triggerKind === "webhook";
+  if (hook && f.actionKind === "start_mission")
+    out.push("A webhook can’t start a mission; start or message a session");
+  if (legacyTrigger(f) && f.actionKind !== "forge_review_loop")
+    out.push("A review loop’s own webhook starts only that review loop");
+  if (!hook && f.actionKind === "forge_review_loop")
+    out.push("A review loop starts from a webhook: pick one in step 1");
   if (f.actionKind === "start_mission" && !f.projectId)
     out.push("Choose a project");
   if (f.actionKind === "start_session" && !f.engine)
@@ -838,9 +992,9 @@ export function formProblems(f: EditorForm): string[] {
     out.push("Choose a folder");
   if (f.actionKind === "send_to_session" && !f.sessionKey)
     out.push("Choose a session");
+  if (fromListHook(f) && !apiTarget(f))
+    out.push("A webhook starts or messages an API session only; pick an API agent");
   if (f.actionKind === "forge_review_loop") {
-    if (f.triggerKind === "webhook" && !f.legacyHook && !f.webhookId)
-      out.push("Pick a webhook");
     if (!f.projectId) out.push("Choose a project");
     if (!REPO_RE.test(f.repo.trim()))
       out.push("Name the repository as owner/name");
@@ -865,7 +1019,347 @@ export function formProblems(f: EditorForm): string[] {
     );
   if (f.messageMode === "template" && !f.templateId)
     out.push("Choose a template");
+  if (f.messageMode === "template" && fromListHook(f)) out.push(...mappingProblems(f));
   return out;
+}
+
+function mappingProblems(f: EditorForm): string[] {
+  const out: string[] = [];
+  const entries = Object.entries(f.fromDelivery);
+  if (entries.length > MAPPED_MAX)
+    out.push(`At most ${MAPPED_MAX} fields from the delivery`);
+  for (const [field, m] of entries) {
+    if (!validPath(m.path)) {
+      out.push(`${field}: pick a field of the delivery`);
+      continue;
+    }
+    if (m.path.includes("[]"))
+      out.push(`${field}: a value comes from one field, not a list`);
+    if (m.type === "choice") {
+      const ch = m.choices;
+      if (!ch.length || ch.some((v) => v === ""))
+        out.push(`${field}: list the allowed values, none empty`);
+      else if (ch.length > CHOICES_MAX)
+        out.push(`${field}: at most ${CHOICES_MAX} allowed values`);
+      else if (ch.some((v) => v.length > TEXT_MAX || !TEXT_RE.test(v)))
+        out.push(
+          `${field}: each allowed value is a short plain text (letters, digits, spaces and _.,:;/#@()+-)`,
+        );
+    }
+  }
+  return out;
+}
+
+/** Whether the session a webhook starts or messages is an API client. Only a target the roster
+ *  KNOWS runs in a terminal fails: an unknown roster is left to the server's check at save. */
+function apiTarget(f: EditorForm): boolean {
+  if (f.actionKind === "start_session")
+    return !f.engine || runsInTerminal(f.engine) !== true;
+  if (f.actionKind === "send_to_session") {
+    const engine = sessionEngine(f.sessionKey);
+    return !engine || runsInTerminal(engine) !== true;
+  }
+  return true;
+}
+
+/** The engine of a session key (`<engine>:<native id>`), or "". */
+export function sessionEngine(key: string): string {
+  const i = key.indexOf(":");
+  return i > 0 ? key.slice(0, i) : "";
+}
+
+// ---- the wizard (#2221 P2b) ------------------------------------------------------------------------
+
+export type WizardStepId = "when" | "events" | "what" | "limits" | "review";
+
+/** The five steps, in order. Each fits one phone screen; advanced options are folded away. */
+export const WIZARD_STEPS: readonly { id: WizardStepId; label: string }[] = [
+  { id: "when", label: "When" },
+  { id: "events", label: "Events" },
+  { id: "what", label: "What" },
+  { id: "limits", label: "Limits" },
+  { id: "review", label: "Review & enable" },
+];
+
+/** A schedule, a once and Run now have no events to choose: step 2 is skipped. */
+export function eventsSkipped(f: EditorForm): boolean {
+  return f.triggerKind !== "webhook";
+}
+
+/** The server's bounds (`webhook_events`). */
+export const CONDITIONS_MAX = 8;
+export const CHOICES_MAX = 20;
+export const MAPPED_MAX = 16;
+const VALUE_MAX = 200;
+const TEXT_MAX = 200;
+const PATH_MAX = 160;
+const PATH_RE =
+  /^[A-Za-z0-9_-]{1,64}(\[\])?(\.[A-Za-z0-9_-]{1,64}(\[\])?){0,5}$/;
+const TEXT_RE = /^[A-Za-z0-9 _.,:;/#@()+-]*$/;
+
+/** Whether `path` is a field path the server accepts (`webhook_events.PATH_RE`). */
+export function validPath(path: string): boolean {
+  return path.length <= PATH_MAX && PATH_RE.test(path);
+}
+
+/** Which operators take a value, and what kind (`webhook_events.OPS`). */
+export const OP_TAKES: Record<ConditionOp, "one" | "list" | "text" | null> = {
+  is: "one",
+  is_not: "one",
+  one_of: "list",
+  contains: "text",
+  is_true: null,
+  is_false: null,
+  exists: null,
+  missing: null,
+};
+
+export const OP_WORDS: Record<ConditionOp, string> = {
+  is: "is",
+  is_not: "is not",
+  one_of: "is one of",
+  contains: "contains",
+  is_true: "is yes",
+  is_false: "is no",
+  exists: "is present",
+  missing: "is absent",
+};
+
+export const MAPPED_TYPE_WORDS: Record<MappedType, string> = {
+  number: "number",
+  choice: "choice",
+  text: "short text",
+  yes_no: "yes / no",
+};
+
+/** The values an operator reads: every element for `one_of`, the first for the others. */
+export function conditionValues(c: ConditionDraft): ValueDraft[] {
+  const takes = OP_TAKES[c.op];
+  if (!takes) return [];
+  return takes === "list" ? c.values : c.values.slice(0, 1);
+}
+
+/** How a delivery field's type (`webhooks._type_of`) reads a condition's value. */
+export function valueTypeOf(shapeType: string | undefined): ConditionValueType {
+  if (shapeType === "number") return "number";
+  if (shapeType === "yes/no") return "yes_no";
+  return "text";
+}
+
+/** One value text as its type, or `undefined` when it isn't one. */
+function typedValue(text: string, t: ConditionValueType): ConditionScalar | undefined {
+  const v = text.trim();
+  if (t === "number") {
+    if (v === "") return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (t === "yes_no") {
+    const w = v.toLowerCase();
+    if (w === "yes" || w === "true") return true;
+    if (w === "no" || w === "false") return false;
+    return undefined;
+  }
+  return text;
+}
+
+function scalarText(v: ConditionScalar): string {
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  return String(v);
+}
+
+/** A stored value as the wizard edits it: its text, and its own type. */
+export function valueDraft(v: ConditionScalar): ValueDraft {
+  return {
+    text: scalarText(v),
+    type: typeof v === "number" ? "number" : typeof v === "boolean" ? "yes_no" : "text",
+  };
+}
+
+/** A stored condition as the wizard edits it: each value its own element, with its own type. */
+export function conditionDraft(c: WebhookCondition): ConditionDraft {
+  const vals = Array.isArray(c.value) ? c.value : c.value === undefined ? [] : [c.value];
+  return { path: c.path, op: c.op, values: vals.map(valueDraft) };
+}
+
+/** One value as the server stores it: typed by its own type. One that doesn't read as its type is
+ *  sent as typed (the step holds it as a problem first). */
+function valueBody(v: ValueDraft): ConditionScalar {
+  return typedValue(v.text, v.type) ?? v.text;
+}
+
+/** The condition the server stores: each value typed, and only for an operator that takes one. */
+export function conditionBody(d: ConditionDraft): WebhookCondition {
+  const takes = OP_TAKES[d.op];
+  const path = d.path.trim();
+  if (!takes) return { path, op: d.op };
+  if (takes === "list") return { path, op: d.op, value: d.values.map(valueBody) };
+  const first = d.values[0] ?? { text: "", type: "text" as const };
+  // `contains` reads a text, whatever the field.
+  if (takes === "text") return { path, op: d.op, value: first.text };
+  return { path, op: d.op, value: valueBody(first) };
+}
+
+/** The mapping the server stores: choices only for a choice, and only non-empty. */
+export function mappingBody(
+  m: Record<string, MappingDraft>,
+): Record<string, DeliveryMapping> {
+  const out: Record<string, DeliveryMapping> = {};
+  for (const [field, d] of Object.entries(m)) {
+    out[field] =
+      d.type === "choice"
+        ? { path: d.path.trim(), type: d.type, choices: [...d.choices] }
+        : { path: d.path.trim(), type: d.type };
+  }
+  return out;
+}
+
+/** The preset the form's conditions ARE (`""` for none, so every signed delivery), or `null` when
+ *  they are the operator's own. */
+export function chosenPreset(
+  f: EditorForm,
+  presets: readonly WebhookPreset[],
+): string | null {
+  if (!f.when.length) return "";
+  const mine = JSON.stringify(f.when.map(conditionBody));
+  return presets.find((p) => JSON.stringify(p.when) === mine)?.id ?? null;
+}
+
+/** Choosing a preset COPIES its conditions into the automation: a later catalogue change can't
+ *  widen it. `null` = every signed delivery. */
+export function withPreset(f: EditorForm, preset: WebhookPreset | null): EditorForm {
+  return { ...f, when: preset ? preset.when.map(conditionDraft) : [] };
+}
+
+/** The template fields a delivery may fill: the template's own typed fields — never a library
+ *  field, never a secret. */
+export function mappableFields(t: Template | null): string[] {
+  return (t?.fields ?? [])
+    .filter((x) => x.source !== "library" && x.kind !== "secret")
+    .map((x) => x.name);
+}
+
+/** A field's value source: a fixed value, or from the delivery (an empty mapping to fill in). */
+export function withFieldSource(
+  f: EditorForm,
+  field: string,
+  source: "fixed" | "delivery",
+): EditorForm {
+  const values = { ...f.values };
+  const fromDelivery = { ...f.fromDelivery };
+  if (source === "delivery") {
+    delete values[field];
+    fromDelivery[field] ??= { path: "", type: "text", choices: [] };
+  } else delete fromDelivery[field];
+  return { ...f, values, fromDelivery };
+}
+
+/** What a field of the last delivery is, in words ("a number", "text"). */
+function shapeWord(t: string): string {
+  if (t === "number") return "a number";
+  if (t === "yes/no") return "yes or no";
+  if (t === "list") return "a list";
+  if (t === "object") return "an object";
+  if (t === "empty") return "empty";
+  return "text";
+}
+
+const MAPPED_FITS: Record<MappedType, string[]> = {
+  number: ["number"],
+  yes_no: ["yes/no"],
+  text: ["text"],
+  choice: ["text"],
+};
+
+/** What the last delivery's SHAPE says about the conditions and the mapping: a field it did not
+ *  have is a warning (it may never match; a run missing it is refused), a type that can't fit is a
+ *  problem that holds the step. No shape (no delivery yet) checks nothing. */
+export function deliveryChecks(
+  f: EditorForm,
+  shape: readonly ShapeField[] | null,
+): Record<"events" | "what", { problems: string[]; warnings: string[] }> {
+  const out = {
+    events: { problems: [] as string[], warnings: [] as string[] },
+    what: { problems: [] as string[], warnings: [] as string[] },
+  };
+  if (!fromListHook(f) || !shape || !shape.length) return out;
+  const types = new Map(shape.map((x) => [x.path, String(x.type)]));
+  if (f.actionKind !== "forge_review_loop")
+    f.when.forEach((c, i) => {
+      if (!validPath(c.path)) return;
+      const t = types.get(c.path);
+      if (t === undefined) {
+        if (c.op !== "missing")
+          out.events.warnings.push(
+            `“${c.path}” was not in the last delivery — it may never match.`,
+          );
+        return;
+      }
+      const what = `Condition ${i + 1}`;
+      if ((c.op === "is_true" || c.op === "is_false") && t !== "yes/no" && t !== "empty")
+        out.events.problems.push(
+          `${what}: ${c.path} is ${shapeWord(t)}, not yes or no. Use “is” or pick a yes/no field.`,
+        );
+      if (c.op === "contains" && t !== "text" && t !== "empty")
+        out.events.problems.push(`${what}: ${c.path} is ${shapeWord(t)}; “contains” needs a text field.`);
+    });
+  if (f.messageMode === "template" && f.actionKind !== "forge_review_loop")
+    for (const [field, m] of Object.entries(f.fromDelivery)) {
+      if (!validPath(m.path) || m.path.includes("[]")) continue;
+      const t = types.get(m.path);
+      if (t === undefined) {
+        out.what.warnings.push(
+          `${field}: “${m.path}” was not in the last delivery — a delivery without it is refused.`,
+        );
+        continue;
+      }
+      if (t === "empty") {
+        out.what.warnings.push(
+          `${field}: “${m.path}” was empty in the last delivery, so its type can’t be checked.`,
+        );
+        continue;
+      }
+      if (!MAPPED_FITS[m.type].includes(t))
+        out.what.problems.push(
+          `${field} is ${m.type === "number" ? "a number" : m.type === "yes_no" ? "yes or no" : m.type === "choice" ? "a choice" : "short text"}; ${m.path} is ${shapeWord(t)}. Pick ${
+            m.type === "number" ? "a number" : m.type === "yes_no" ? "a yes/no" : "a text"
+          } field, or change its type.`,
+        );
+    }
+  return out;
+}
+
+/** The limits in one line, for step 4 and the review. */
+export function limitsWords(f: EditorForm): string {
+  const conc =
+    f.concurrency === "skip"
+      ? "one run at a time"
+      : `up to ${f.maxConcurrent} runs at once`;
+  const ends =
+    f.expiresAt == null
+      ? "runs until you turn it off"
+      : `stops on ${new Date(f.expiresAt * 1000).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}`;
+  return `${conc} · at most ${f.maxRunsPerDay} runs a day · pauses after ${f.pauseAfterFailures} failures in a row · ${ends}`;
+}
+
+/** Which events it acts on, in words, for the review. */
+export function eventsWords(
+  f: EditorForm,
+  presets: readonly WebhookPreset[],
+): string {
+  if (!fromListHook(f) && f.triggerKind === "webhook")
+    return "the review loop’s own events";
+  if (f.triggerKind !== "webhook") return "";
+  if (f.actionKind === "forge_review_loop") return "the review loop picks its own events";
+  const p = chosenPreset(f, presets);
+  if (p === "") return "every signed delivery";
+  if (p) return presets.find((x) => x.id === p)?.label ?? p;
+  return f.when
+    .map(
+      (c) =>
+        `${c.path} ${OP_WORDS[c.op]}${OP_TAKES[c.op] ? ` ${conditionValues(c).map((v) => v.text).join(", ")}` : ""}`,
+    )
+    .join(" · ");
 }
 
 // ---- consent -------------------------------------------------------------------------------------

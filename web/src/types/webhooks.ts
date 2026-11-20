@@ -5,6 +5,8 @@
  *  (`WebhookCreated`, `WebhookRotated`) and nowhere else. A delivery's shape is field names and
  *  value types only — the server never keeps a value. */
 
+import type { WebhookCondition } from "./automations";
+
 /** An automation that picked this webhook (or, for a legacy one, the review loop that owns it). */
 export interface WebhookUser {
   id: string;
@@ -48,9 +50,19 @@ export interface ShapeField {
   type: ShapeType | string;
 }
 
+/** A common sender's events, recognised from the last delivery's shape (#2221 P2,
+ *  `webhook_events.presets`). Choosing one copies its conditions into the automation. */
+export interface WebhookPreset {
+  id: string;
+  label: string;
+  when: WebhookCondition[];
+}
+
 /** `GET /api/webhooks/{id}`. */
 export interface WebhookDetail extends Webhook {
   last_shape: ShapeField[];
+  /** Absent from a server that predates #2221 P2. An unknown sender gets none. */
+  presets?: WebhookPreset[];
 }
 
 export interface WebhookList {

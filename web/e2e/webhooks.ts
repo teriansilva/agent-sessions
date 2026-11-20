@@ -70,6 +70,53 @@ export const PR_SHAPE = [
   { path: "pull_request.merged_by", type: "empty" },
 ];
 
+/** `webhook_events.presets`: the catalogue's presets whose needed fields the last delivery had.
+ *  An unknown sender (no delivery yet, or another shape) gets none. */
+const CATALOGUE: { id: string; label: string; needs: string[]; when: Json[] }[] = [
+  {
+    id: "pr_opened_or_pushed",
+    label: "PR opened or pushed (drafts skipped)",
+    needs: ["action", "pull_request.draft"],
+    when: [
+      { path: "action", op: "one_of", value: ["opened", "reopened", "synchronized"] },
+      { path: "pull_request.draft", op: "is_false" },
+      { path: "review", op: "missing" },
+    ],
+  },
+  {
+    id: "issue_opened_or_edited",
+    label: "Issue opened or edited",
+    needs: ["action", "issue.number"],
+    when: [
+      { path: "action", op: "one_of", value: ["opened", "reopened", "edited"] },
+      { path: "issue.number", op: "exists" },
+      { path: "comment", op: "missing" },
+      { path: "pull_request", op: "missing" },
+    ],
+  },
+  {
+    id: "review_submitted",
+    label: "Review submitted",
+    needs: ["review.type", "pull_request.number"],
+    when: [
+      {
+        path: "review.type",
+        op: "one_of",
+        value: ["pull_request_review_approved", "pull_request_review_rejected", "pull_request_review_comment"],
+      },
+    ],
+  },
+];
+
+export function presetsFor(shape: { path: string }[]): Json[] {
+  const paths = new Set(shape.map((f) => f.path));
+  return CATALOGUE.filter((p) => p.needs.every((n) => paths.has(n))).map(({ id, label, when }) => ({
+    id,
+    label,
+    when,
+  }));
+}
+
 export interface HookFake {
   hooks: FakeHook[];
   requests: { method: string; path: string; body: Json | null }[];
@@ -115,7 +162,8 @@ export async function mockWebhooks(page: Page, initial: FakeHook[] = []): Promis
     }
     const h = fake.hooks.find((x) => x.id === parts[0]);
     if (!h) return json(404, { detail: "webhook not found" });
-    if (parts.length === 1 && method === "GET") return json(200, h);
+    if (parts.length === 1 && method === "GET")
+      return json(200, { ...h, presets: presetsFor(h.last_shape) });
     if (parts.length === 1 && method === "PATCH") {
       if (body?.revision != null && body.revision !== h.revision) return json(409, { detail: "conflict" });
       h.name = String(body?.name ?? h.name).trim();

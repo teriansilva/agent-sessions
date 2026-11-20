@@ -47,6 +47,7 @@ the same list.
 | `components/ask/AskShown.module.css` | css | 4 | done | popup:hq | none (a static row under the answer, #2102) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/automations/automations.module.css` | css | 10 | done | route:automations route:automations-list popup:automation-menu route:automation-runs route:automation-editor popup:consent | segments and weekdays light in the chrome on a short colour fade; the run row lights its edge; no ambient motion (the counters are static readouts) |
+| `components/automations/wizard/wizard.module.css` | css | 10 | done | route:automation-editor popup:consent | none: cards, presets and folds light in the chrome without a transition |
 | `components/chat/Avatar.module.css` | css | 6 | done | share:open route:settings-profile | none (static discs) |
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |

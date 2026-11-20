@@ -11,7 +11,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { AUTOMATION_NEW_PATH, AUTOMATIONS_PATH, automationEditPath, automationPath, NEW_SESSION_PATH } from "../src/lib/routes";
-import { automation, mockAutomations } from "./automations";
+import { automation, mockAutomations, toReview, toStep, wizardHeading } from "./automations";
 import { animationsSettled } from "./nightjarShell";
 
 const SESSION_ACTION = {
@@ -30,11 +30,13 @@ function lastRequest(fake: { requests: { method: string; path: string; body: unk
 test("create a schedule automation, enable it with consent, and the row reads ENABLED", async ({ page }) => {
   const fake = await mockAutomations(page);
   await page.goto(AUTOMATION_NEW_PATH);
-  await page.getByTestId("automation-name").fill("Nightly dependency audit");
   // Schedule · daily · 03:00 is the default; the action is a mission.
-  await expect(page.getByTestId("trigger-kind").locator('[aria-pressed="true"]')).toHaveText("Schedule");
+  await expect(page.getByTestId("trigger-kind").locator('[aria-pressed="true"]')).toContainText("On a schedule");
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-project").selectOption("p1");
   await page.getByTestId("message-text").fill("Audit the dependencies");
+  await toReview(page);
+  await page.getByTestId("automation-name").fill("Nightly dependency audit");
   await page.getByTestId("editor-save").click();
 
   await expect(page).toHaveURL(new RegExp(`${automationEditPath("new1")}$`));
@@ -73,7 +75,9 @@ test("a widening save names what widened and resends with the digest it showed",
     widenOnPatch: ["higher mission autonomy"],
   });
   await page.goto(automationEditPath("a1"));
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-autonomy").selectOption("dispatch");
+  await toReview(page);
   await page.getByTestId("editor-save").click();
 
   const dialog = page.getByTestId("consent-dialog");
@@ -214,17 +218,36 @@ for (const width of [320, 412]) {
     await targetsAndOverflow(page, '[data-testid="automations-page"]');
 
     await page.goto(automationEditPath("a1"));
-    await expect(page.getByTestId("automation-editor")).toBeVisible();
+    await expect(wizardHeading(page)).toBeVisible();
     await targetsAndOverflow(page, '[data-testid="automation-editor"]');
     // The session action's fields too: agent, model, folder, bypass.
-    await page.getByTestId("action-kind").getByRole("button", { name: "Start a session" }).click();
+    await toStep(page, "What does it do?");
+    await page.getByTestId("action-kind").getByRole("button", { name: /Start a session/ }).click();
     await expect(page.getByTestId("session-engine")).toBeVisible();
+    await page.getByTestId("session-more").locator("summary").click();
+    await targetsAndOverflow(page, '[data-testid="automation-editor"]');
+    // Back to the mission it is, so the step is complete again.
+    await page.getByTestId("action-kind-start_mission").click();
+    await toStep(page, "Limits");
+    await page.getByTestId("limits-more").locator("summary").click();
+    await targetsAndOverflow(page, '[data-testid="automation-editor"]');
+    await toReview(page);
     await targetsAndOverflow(page, '[data-testid="automation-editor"]');
 
     await page.goto(automationPath("a1"));
     await expect(page.getByTestId("runs-empty")).toBeVisible();
     await targetsAndOverflow(page, '[data-testid="automation-runs"]');
   });
+}
+
+/** Tab until the focused control reads `text` (a button with no test id: the wizard's Next). */
+async function tabToText(page: Page, text: string, max = 200) {
+  for (let i = 0; i < max; i++) {
+    const at = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+    if (at === text) return;
+    await page.keyboard.press("Tab");
+  }
+  throw new Error(`never reached "${text}" by Tab`);
 }
 
 /** Tab until `testId` has focus. Keyboard only: nothing here clicks. */
@@ -245,25 +268,32 @@ test("the editor can be filled and saved with the keyboard alone", async ({ page
   await tabTo(page, "automation-new");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`${AUTOMATION_NEW_PATH}$`));
-  await expect(page.getByTestId("automation-name")).toBeVisible();
+  await expect(wizardHeading(page)).toHaveText("When does it run?");
 
-  await tabTo(page, "automation-name");
-  await page.keyboard.type("Keyboard audit");
-  // Once: move to the trigger group and press its first button.
-  await page.keyboard.press("Tab");
-  await expect(page.locator(":focus")).toHaveText("Once");
-  await page.keyboard.press("Tab");
-  await page.keyboard.press("Tab");
-  await expect(page.locator(":focus")).toHaveText("Run now only");
+  // Step 1: Run now only — Tab to its card and press it.
+  await tabTo(page, "trigger-kind-manual");
   await page.keyboard.press("Space");
-  await expect(page.getByTestId("trigger-kind").locator('[aria-pressed="true"]')).toHaveText(
-    "Run now only",
+  await expect(page.getByTestId("trigger-kind").locator('[aria-pressed="true"]')).toContainText(
+    "Only when I press Run now",
   );
+  // Next skips step 2 (Run now has no events); focus lands on the step's heading.
+  await tabToText(page, "Next");
+  await page.keyboard.press("Enter");
+  await expect(wizardHeading(page)).toHaveText("What does it do?");
+  await expect(wizardHeading(page)).toBeFocused();
   await tabTo(page, "mission-project");
   await page.keyboard.press("ArrowDown");
   await expect(page.getByTestId("mission-project")).toHaveValue("p1");
   await tabTo(page, "message-text");
   await page.keyboard.type("Check the lockfile");
+  await tabToText(page, "Next");
+  await page.keyboard.press("Enter");
+  await expect(wizardHeading(page)).toHaveText("Limits");
+  await tabToText(page, "Next");
+  await page.keyboard.press("Enter");
+  await expect(wizardHeading(page)).toHaveText("Review and enable");
+  await tabTo(page, "automation-name");
+  await page.keyboard.type("Keyboard audit");
   await tabTo(page, "editor-save");
   await page.keyboard.press("Enter");
 
@@ -499,7 +529,9 @@ test("a save whose scope moved keeps naming what widened, and resends the new di
     patchScopeMovedOnce: true,
   });
   await page.goto(automationEditPath("a1"));
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-autonomy").selectOption("dispatch");
+  await toReview(page);
   await page.getByTestId("editor-save").click();
   const dialog = page.getByTestId("consent-dialog");
   await dialog.getByTestId("consent-agree").check();
@@ -567,7 +599,9 @@ test("when the server names what widened on a moved scope, its list wins", async
     patchScopeMovedWidened: ["higher mission autonomy", "the checklist changed"],
   });
   await page.goto(automationEditPath("a1"));
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-autonomy").selectOption("dispatch");
+  await toReview(page);
   await page.getByTestId("editor-save").click();
   const dialog = page.getByTestId("consent-dialog");
   await expect(dialog.getByTestId("consent-widened")).not.toContainText("the checklist changed");
@@ -647,6 +681,7 @@ test("inputs that can't be checked right now are said, never shown as a scope to
   await expect(dialog.getByTestId("consent-confirm")).toBeDisabled();
   await page.keyboard.press("Escape");
   await page.goto(automationEditPath("a1"));
+  await toReview(page);
   await expect(page.getByTestId("editor-scope-unavailable")).toBeVisible();
 });
 
@@ -664,7 +699,9 @@ test("a server that says nothing widens now wins over the old dialog's labels", 
     patchScopeMovedWidened: [],
   });
   await page.goto(automationEditPath("a1"));
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-autonomy").selectOption("dispatch");
+  await toReview(page);
   await page.getByTestId("editor-save").click();
   const dialog = page.getByTestId("consent-dialog");
   await expect(dialog.getByTestId("consent-widened")).toContainText("higher mission autonomy");
@@ -692,6 +729,7 @@ test("moving from one automation's editor to another's never saves into the firs
   // A's load is on the wire (and held) before the route moves to B.
   await expect.poll(() => fake.requests.some((r) => r.method === "GET" && r.path === "/a1")).toBe(true);
   await go(automationEditPath("a2"));
+  await toReview(page);
   await expect(page.getByTestId("automation-name")).toHaveValue("Second automation");
   // Let A's slow answer land, then edit and save what is on screen.
   await page.waitForTimeout(2000);
@@ -709,14 +747,16 @@ test("the form is locked while a save is in flight, and then shows what the serv
     patchDelayMs: 1500,
   });
   await page.goto(automationEditPath("a1"));
+  await toReview(page);
   const name = page.getByTestId("automation-name");
   await name.fill("Renamed while saving");
   await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("editor-saving")).toBeVisible();
   await expect(page.getByTestId("editor-fields")).toHaveAttribute("disabled", "");
   await expect(name).toBeDisabled();
-  await expect(page.getByTestId("message-text")).toBeDisabled();
   await expect(page.getByTestId("editor-save")).toBeDisabled();
+  // The wizard can't move to another step while the save is on the wire.
+  await expect(page.getByRole("button", { name: "Back", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("editor-notice")).toContainText("Saved");
   await expect(name).toBeEnabled();
   await expect(name).toHaveValue("Renamed while saving");
@@ -822,9 +862,11 @@ test("double-clicking Load older runs loads each page once, and every run stays 
 test("leaving the editor during a create never pulls the operator back", async ({ page }) => {
   await mockAutomations(page, { createDelayMs: 1500 });
   await page.goto(AUTOMATION_NEW_PATH);
-  await page.getByTestId("automation-name").fill("Made while leaving");
+  await toStep(page, "What does it do?");
   await page.getByTestId("mission-project").selectOption("p1");
   await page.getByTestId("message-text").fill("Audit the dependencies");
+  await toReview(page);
+  await page.getByTestId("automation-name").fill("Made while leaving");
   await page.getByTestId("editor-save").click();
   await page.evaluate((p) => {
     window.history.pushState({}, "", p);
@@ -875,8 +917,10 @@ test("an automation approved with a checklist edits with no checklist field, ask
     ],
   });
   await page.goto(automationEditPath("a1"));
-  await expect(page.getByTestId("automation-name")).toBeVisible();
+  await toStep(page, "What does it do?");
+  await expect(page.getByTestId("mission-project")).toBeVisible();
   await expect(page.getByTestId("mission-checklist")).toHaveCount(0);
+  await toReview(page);
   await page.getByTestId("automation-name").fill("Renamed so the form is dirty");
   await expect(page.getByTestId("editor-save")).toBeEnabled();
   await page.getByTestId("editor-save").click();

@@ -1,8 +1,8 @@
 /** The Forgejo review loop's UI (#2202 PR 3), in a real browser on desktop and phone, both themes.
  *
- *  The editor pairs the "Webhook" trigger with the "Review loop" action (choosing either
- *  chooses both; leaving either leaves both), offers only API-client specialists as the reviewer and
- *  pins the current version, and saves exactly the strict body the server validates — since #2221
+ *  The wizard (#2221 P2b) offers the "Review loop" action only on a webhook (choosing it chooses the
+ *  webhook trigger; leaving the webhook leaves the loop), offers only API-client specialists as the
+ *  reviewer and pins the current version, and saves exactly the strict body the server validates —
  *  with a webhook PICKED from the list (`webhook_id`; `./webhooks.spec.ts` covers the picker). A
  *  #2202 loop saved with its own webhook keeps it: "Connect Forgejo" shows the payload URL, reveals the secret ONCE after Create secret (Copy, then
  *  Done forgets it), and Rotate says the old one keeps working for 24 h. The run history shows the
@@ -12,7 +12,16 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { AUTOMATION_NEW_PATH, AUTOMATIONS_PATH, automationEditPath, automationPath } from "../src/lib/routes";
-import { automation, hookState, mockAutomations, type FakeOptions } from "./automations";
+import {
+  automation,
+  backTo,
+  hookState,
+  mockAutomations,
+  toReview,
+  toStep,
+  wizardHeading,
+  type FakeOptions,
+} from "./automations";
 import { animationsSettled } from "./nightjarShell";
 import { ROSTER, mockRoster } from "./roster";
 import { TOUCH_FLOOR } from "./touchTarget";
@@ -164,25 +173,30 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
   const fake = await setup(page);
   await mockWebhooks(page, [webhook({ id: "0a1b2c3d4e5f6a7b", name: "shop repo" })]);
   await page.goto(AUTOMATION_NEW_PATH);
-  await expect(page.getByTestId("automation-editor")).toBeVisible();
+  await expect(wizardHeading(page)).toHaveText("When does it run?");
   const trigger = page.getByTestId("trigger-kind");
   const action = page.getByTestId("action-kind");
 
-  // Choosing the trigger chooses the action…
-  await trigger.getByRole("button", { name: "Webhook" }).click();
-  await expect(action.getByRole("button", { name: "Review loop" })).toHaveAttribute("aria-pressed", "true");
+  // Step 1: the webhook, picked from the list.
+  await trigger.getByTestId("trigger-kind-webhook").click();
+  await expect(page.getByTestId("trigger-callout")).toContainText("There is no Run now");
+  await expect(page.getByTestId("webhook-pick-hint")).toBeVisible();
+  await page.getByTestId("trigger-webhook").selectOption("0a1b2c3d4e5f6a7b");
+  await expect(page.getByTestId("shared-webhook-panel")).toBeVisible();
+  await toStep(page, "What does it do?");
+  // A webhook starts a session by default; the review loop is one of its actions, never a mission.
+  await expect(action.getByTestId("action-kind-start_session")).toHaveAttribute("aria-pressed", "true");
+  await expect(action.getByTestId("action-kind-start_mission")).toHaveCount(0);
+  await action.getByTestId("action-kind-forge_review_loop").click();
   await expect(page.getByTestId("review-loop-fields")).toBeVisible();
   await expect(page.getByTestId("message-mode")).toHaveCount(0); // no message: BattleLab writes the brief
-  // …leaving the action leaves the trigger…
-  await action.getByRole("button", { name: "Start a mission" }).click();
-  await expect(trigger.getByRole("button", { name: "Schedule" })).toHaveAttribute("aria-pressed", "true");
+  // Leaving the loop keeps the webhook: a session is what it starts now…
+  await action.getByTestId("action-kind-send_to_session").click();
   await expect(page.getByTestId("review-loop-fields")).toHaveCount(0);
-  // …and choosing the action chooses the trigger.
-  await action.getByRole("button", { name: "Review loop" }).click();
-  await expect(trigger.getByRole("button", { name: "Webhook" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByTestId("trigger-callout")).toContainText("There is no Run now");
+  await expect(page.getByTestId("message-mode")).toBeVisible();
+  // …and back to the loop.
+  await action.getByTestId("action-kind-forge_review_loop").click();
 
-  await page.getByTestId("automation-name").fill("Review loop · example-org/shop");
   await page.getByTestId("loop-project").selectOption("p1");
   await page.getByTestId("loop-repo").fill("example-org/shop");
   // Only the API-client specialist is offered; the terminal one is not in the list at all.
@@ -194,9 +208,7 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
   await page.getByTestId("loop-login").fill("shop-reviewer-bot");
   await page.getByTestId("loop-issues").uncheck();
   await page.getByTestId("loop-rounds-pr").selectOption("6");
-  await expect(page.getByTestId("webhook-pick-hint")).toBeVisible();
-  await page.getByTestId("trigger-webhook").selectOption("0a1b2c3d4e5f6a7b");
-  await expect(page.getByTestId("editor-problems")).toHaveCount(0);
+  await expect(page.getByTestId("step-problems")).toHaveCount(0);
   await minHeight(page, [
     "loop-project",
     "loop-repo",
@@ -209,8 +221,9 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
     const label = page.getByTestId(id).locator("xpath=ancestor::label");
     expect((await label.boundingBox())!.height, `${id}'s label is a 44px target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
-  await expect(page.getByTestId("shared-webhook-panel")).toBeVisible();
-
+  await toReview(page);
+  await page.getByTestId("automation-name").fill("Review loop · example-org/shop");
+  await expect(page.getByTestId("editor-problems")).toHaveCount(0);
   await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("editor-notice")).toContainText("is off until you enable it");
   const create = fake.requests.find((r) => r.method === "POST" && r.path === "")!;
@@ -220,7 +233,8 @@ test("create a review loop: the trigger and action pair, only API reviewers, the
     action: { ...LOOP_ACTION, legs: { issues: false, pulls: true }, max_rounds: { issue: 5, pr: 6 } },
     policy: { concurrency: "allow", max_concurrent: 3, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
   });
-  // Saved: the picked webhook stays beside the form, read-only (its secret is on its own page).
+  // Saved: the picked webhook stays on step 1, read-only (its secret is on its own page).
+  await backTo(page, "When does it run?");
   await expect(page.getByTestId("shared-webhook-panel")).toBeVisible();
   await expect(page.getByTestId("webhook-panel")).toHaveCount(0);
 });
@@ -332,6 +346,7 @@ test("run history: ignored, capped and undelivered with leg and round; no Run no
 test("a review loop goes through the same server-authored consent to enable (#2202)", async ({ page }) => {
   const fake = await setup(page, { automations: [automation({ ...LOOP, enabled: false, state: "off", consented_at: null })] });
   await page.goto(automationEditPath("rv1"));
+  await toReview(page);
   await page.getByTestId("editor-enable").click();
   const consent = page.getByTestId("consent-dialog");
   await expect(consent).toContainText("Starts when Forgejo sends a signed event for example-org/shop");
@@ -350,9 +365,12 @@ test("at 390px: 44px targets and nothing clipped — editor with a revealed secr
     runs: { rv1: RUNS },
   });
   await page.goto(automationEditPath("rv1"));
-  await expect(page.getByTestId("review-loop-fields")).toBeVisible();
+  // Step 1 holds the loop's own webhook (Connect Forgejo); step 3 its fields.
   await page.getByTestId("webhook-make-secret").click();
   await expect(page.getByTestId("webhook-secret-value")).toBeVisible();
+  await targetsAndOverflow(page, '[data-testid="automation-editor"]');
+  await toStep(page, "What does it do?");
+  await expect(page.getByTestId("review-loop-fields")).toBeVisible();
   await targetsAndOverflow(page, '[data-testid="automation-editor"]');
 
   await page.goto(automationPath("rv1"));
@@ -370,11 +388,14 @@ for (const theme of ["dark", "light"] as const) {
       runs: { rv1: RUNS },
     });
     await page.goto(automationEditPath("rv1"));
-    await expect(page.getByTestId("review-loop-fields")).toBeVisible();
     await page.getByTestId("webhook-make-secret").click();
     await expect(page.getByTestId("webhook-secret-value")).toBeVisible();
     await animationsSettled(page);
     await page.screenshot({ path: info.outputPath(`impl-editor-${info.project.name}-${theme}.png`) });
+    await toStep(page, "What does it do?");
+    await expect(page.getByTestId("review-loop-fields")).toBeVisible();
+    await animationsSettled(page);
+    await page.screenshot({ path: info.outputPath(`impl-editor-loop-${info.project.name}-${theme}.png`) });
     await page.goto(automationPath("rv1"));
     await expect(page.getByTestId("run-row")).toHaveCount(4);
     await expect(page.getByTestId("run-detail")).toBeVisible();

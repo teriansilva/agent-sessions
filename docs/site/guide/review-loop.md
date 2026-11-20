@@ -45,15 +45,21 @@ credentials and the working session pushes with its own.
    - **Pull request synchronized**: a separate box. Without it, a push to an open pull request
      never starts the next review.
    - **Pull request reviewed**
-2. Open **Library → Automations → New automation**.
-3. Under **When**, choose **Webhook** and **pick the webhook** you created. Under **Do**,
-   **Review loop** is selected with it.
-4. Pick the **project**, then enter the **repository** (`owner/name`), the **reviewer specialist**
-   and the **reviewer account** (the forge login the reviewer posts as).
-5. Choose what to review (issues, pull requests or both) and how many reviews an item gets at
-   most. The defaults are 4 per pull request and 5 per issue, counted over the item's whole life.
-6. Save, then **Enable…**. The consent dialog lists everything the loop may do, including which
-   webhook starts it; confirm with **Enable automation**. Any later change asks again.
+2. Open **Library → Automations → New automation**. The [automation wizard](/guide/automations)
+   opens.
+3. **When:** choose **When a webhook delivers** and **pick the webhook** you created.
+4. **Which events:** nothing to choose. A review loop picks its own events (issues and pull
+   requests, as you set them in the next step), so this step only says so.
+5. **What:** choose **Review loop**. Pick the **project**, then enter the **repository**
+   (`owner/name`), the **reviewer specialist** and the **reviewer account** (the forge login the
+   reviewer posts as). Choose what to review (issues, pull requests or both) and how many reviews
+   an item gets at most. The defaults are 4 per pull request and 5 per issue, counted over the
+   item's whole life.
+6. **Limits:** the defaults are fine. A review loop runs deliveries side by side, because a push
+   and an edit often arrive together.
+7. **Review & enable:** name it, **Save**, then **Enable…**. The consent dialog lists everything
+   the loop may do, including which webhook starts it; confirm with **Enable automation**. Any
+   later change asks again.
 
 ### Behind a reverse proxy
 

@@ -102,22 +102,30 @@ function run(over: Partial<AutomationRun>): AutomationRun {
   };
 }
 
-describe("the trigger and the action come together (#2202)", () => {
-  test("choosing the webhook trigger chooses the review loop, and runs deliveries side by side", () => {
+describe("the trigger and the action pair as the server allows (#2202, #2221 P2)", () => {
+  test("a webhook no longer forces the review loop: a mission becomes a session, the nearest it can start", () => {
     const f = withTrigger(blankForm("UTC"), "webhook", 3);
     expect(f.triggerKind).toBe("webhook");
+    expect(f.actionKind).toBe("start_session");
+    expect(f.concurrency).toBe("skip");
+    const msg = withTrigger({ ...blankForm("UTC"), actionKind: "send_to_session" }, "webhook", 3);
+    expect(msg.actionKind).toBe("send_to_session");
+  });
+
+  test("choosing the review loop action chooses the webhook trigger, with no conditions, side by side", () => {
+    const withWhen = {
+      ...withTrigger(blankForm("UTC"), "webhook", 3),
+      when: [{ path: "action", op: "is" as const, values: [{ text: "opened", type: "text" as const }] }],
+    };
+    const f = withAction(withWhen, "forge_review_loop", 3);
+    expect(f.triggerKind).toBe("webhook");
     expect(f.actionKind).toBe("forge_review_loop");
+    expect(f.when).toEqual([]);
     expect(f.concurrency).toBe("allow");
     expect(f.maxConcurrent).toBe(3);
   });
 
-  test("choosing the review loop action chooses the webhook trigger", () => {
-    const f = withAction(blankForm("UTC"), "forge_review_loop", 3);
-    expect(f.triggerKind).toBe("webhook");
-    expect(f.actionKind).toBe("forge_review_loop");
-  });
-
-  test("leaving either side leaves both, back to the blank form's defaults", () => {
+  test("leaving the webhook leaves the loop; leaving the loop keeps the webhook for a session", () => {
     const loop = withAction(blankForm("UTC"), "forge_review_loop", 3);
     const byTrigger = withTrigger(loop, "manual", 3);
     expect(byTrigger.triggerKind).toBe("manual");
@@ -125,7 +133,27 @@ describe("the trigger and the action come together (#2202)", () => {
     expect(byTrigger.concurrency).toBe("skip");
     const byAction = withAction(loop, "send_to_session", 3);
     expect(byAction.actionKind).toBe("send_to_session");
-    expect(byAction.triggerKind).toBe("schedule");
+    expect(byAction.triggerKind).toBe("webhook");
+    expect(byAction.concurrency).toBe("skip");
+    // A webhook never starts a mission: choosing one moves the trigger off the webhook.
+    const mission = withAction(loop, "start_mission", 3);
+    expect(mission.triggerKind).toBe("schedule");
+  });
+
+  test("a review loop's own webhook starts only its loop", () => {
+    const legacy = { ...withAction(blankForm("UTC"), "forge_review_loop", 3), legacyHook: true };
+    expect(withAction(legacy, "start_session", 3).triggerKind).toBe("schedule");
+  });
+
+  test("leaving the webhook drops its conditions and its values from the delivery", () => {
+    const f = {
+      ...withTrigger(blankForm("UTC"), "webhook", 3),
+      when: [{ path: "action", op: "exists" as const, values: [{ text: "", type: "text" as const }] }],
+      fromDelivery: { pr: { path: "number", type: "number" as const, choices: [] } },
+    };
+    const g = withTrigger(f, "schedule", 3);
+    expect(g.when).toEqual([]);
+    expect(g.fromDelivery).toEqual({});
   });
 
   test("other choices are untouched by the pairing", () => {

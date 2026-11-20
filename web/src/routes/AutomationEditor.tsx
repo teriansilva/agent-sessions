@@ -1,156 +1,84 @@
-/** Library → Automations → New / Edit (#1201 board 2): a numbered form — name, trigger, action,
- *  limits — beside what the automation will do with nobody watching.
+/** Library → Automations → New / Edit: THE automation wizard (#2221 P2b), the only way to create or
+ *  edit one. Five steps, each one phone screen, in the app's one WizardShell (#1187):
+ *
+ *  1. **When** — a schedule (or once), Run now, or a webhook picked from Library → Webhooks.
+ *  2. **Which events** — presets recognised from the webhook's last delivery, or (Advanced) the
+ *     operator's own conditions on its fields. Skipped for a schedule or Run now, which have none.
+ *  3. **What** — start a session, message a session or a review loop (a schedule may also start a
+ *     mission). A template's fields take a fixed value or, from a webhook, a typed value from the
+ *     delivery.
+ *  4. **Limits** — the policy in one line, its fields folded behind it.
+ *  5. **Review & enable** — the name, the server's consent lines, Save (always OFF for a new one)
+ *     and the enable flow.
  *
  *  **The consent is the server's.** A save of an enabled automation that widens what it may do is a
  *  422 carrying the new scope's lines, what widened, and a digest; the consent dialog shows exactly
  *  that and resends with `consent: true` and THAT digest. Enabling asks the same question about the
- *  saved scope. The side panel shows the SAVED scope in the server's words; while the form has
- *  unsaved changes it also says, in the form's own words, what the draft would change — a preview,
- *  never what is consented to.
+ *  saved scope. Step 5 shows the SAVED scope in the server's words; while the form has unsaved
+ *  changes it also says, in the form's own words, what the draft would change — a preview, never
+ *  what is consented to.
  *
  *  **Agents come from the roster, gated by the server.** The agent picker lists the engines
  *  `GET /api/automations` reports with the unattended-start check's verdict; one that may not start
- *  unattended is shown disabled with its reason. The model is fixed to the agent's default until
- *  model selection lands (#1189): the server refuses anything else.
+ *  unattended is shown disabled with its reason, and a webhook starts or messages API clients only.
  *
- *  **A review loop (#2202) is a Forgejo webhook paired with the "Review loop" action**: choosing
- *  either selects the other, and leaving either leaves both (the server refuses any other pairing).
- *  Its reviewer is a specialist on an API client, pinned at its current version; once saved, the
- *  side panel connects the forge (payload URL, a secret shown once, the events to tick). The loop
- *  trigger is a later phase of #1201 and is not offered here.
- *
- *  **Since #2221 the webhook is PICKED from Library → Webhooks** (`trigger.webhook_id`); "+ New
- *  webhook…" opens the create flow with this draft in router state (the form only, never a secret)
- *  and comes back with the new webhook picked. A #2202 review loop saved with its own webhook
- *  (`scheme`) keeps it — saved back as it was, with its own Connect Forgejo panel — and is never
- *  converted here. */
+ *  **"+ New webhook…"** opens the create flow with this draft in router state (the form only, never
+ *  a secret) and comes back with the new webhook picked. A #2202 review loop saved with its own
+ *  webhook (`scheme`) keeps it — saved back as it was, with its own Connect Forgejo panel — and is
+ *  never converted here. */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Link, useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
-import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ConsentDialog } from "../components/automations/ConsentDialog";
-import {
-  InFlightNote,
-  KillSwitchNotice,
-  StateWord,
-} from "../components/automations/AutomationBits";
 import { useNowS, useProjects } from "../components/automations/useAutomations";
-import { WebhookPanel } from "../components/automations/WebhookPanel";
-import { SharedWebhookPanel } from "../components/webhooks/WebhookBits";
-import { WebhookPicker } from "../components/webhooks/WebhookPicker";
-import { useWebhooks } from "../components/webhooks/useWebhooks";
-import type { NewWebhookHandoff } from "./WebhookNew";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
-import { engineLabel, engineName, runsInTerminal, useEngineRoster } from "../app/engineRoster";
-import { LegacyTerminalStamp, SwitchToApiButton } from "../components/automations/SwitchToApi";
 import { useSwitchFlow } from "../components/automations/useSwitchFlow";
+import { StepEvents } from "../components/automations/wizard/StepEvents";
+import { StepLimits } from "../components/automations/wizard/StepLimits";
+import { StepReview } from "../components/automations/wizard/StepReview";
+import { StepWhat } from "../components/automations/wizard/StepWhat";
+import { StepWhen } from "../components/automations/wizard/StepWhen";
+import { timeZones } from "../components/automations/wizard/time";
+import wiz from "../components/automations/wizard/wizard.module.css";
+import { useWebhookDetail, useWebhooks } from "../components/webhooks/useWebhooks";
+import { WizardShell } from "../components/wizard/WizardShell";
+import { engineLabel, useEngineRoster } from "../app/engineRoster";
 import { ApiError, api } from "../lib/api";
 import {
-  AUTONOMY_WORDS,
-  ROUNDS_MAX,
-  ROUNDS_MIN,
   SCOPE_MOVED_NOTE,
-  WEEKDAYS,
-  actionLabel,
+  WIZARD_STEPS,
+  apiSwitchFor,
   blankForm,
   bodyFromForm,
-  apiSwitchFor,
   consentFromError,
+  deliveryChecks,
   errorWords,
+  eventsSkipped,
   formFromAutomation,
-  formProblems,
-  formTrigger,
   inFlightNote,
-  isLegacyHook,
   reconsent,
   reviewerOptions,
-  triggerWords,
-  withAction,
-  withTrigger,
+  stepProblems,
   type EditorForm,
+  type WizardStepId,
 } from "../lib/automations";
-import {
-  AUTOMATIONS_PATH,
-  WEBHOOK_NEW_PATH,
-  automationEditPath,
-  automationPath,
-} from "../lib/routes";
+import { AUTOMATIONS_PATH, WEBHOOK_NEW_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Session, Template, TemplateVariable } from "../types/api";
 import type { Specialist } from "../types/specialists";
-import type { Webhook } from "../types/webhooks";
-import type {
-  Automation,
-  AutomationList,
-  Autonomy,
-  ConsentRequired,
-  Weekday,
-} from "../types/automations";
+import type { Automation, AutomationList, ConsentRequired } from "../types/automations";
+import type { NewWebhookHandoff } from "./WebhookNew";
 import styles from "../components/automations/automations.module.css";
 
-const DAY_LABEL: Record<Weekday, string> = {
-  mon: "Mon",
-  tue: "Tue",
-  wed: "Wed",
-  thu: "Thu",
-  fri: "Fri",
-  sat: "Sat",
-  sun: "Sun",
+const HEADINGS: Record<WizardStepId, string> = {
+  when: "When does it run?",
+  events: "Which events start it?",
+  what: "What does it do?",
+  limits: "Limits",
+  review: "Review and enable",
 };
 
-/** Every IANA zone the browser knows, when it can say; otherwise the field is free text. */
-function timeZones(): string[] | null {
-  const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
-  try {
-    return intl.supportedValuesOf ? intl.supportedValuesOf("timeZone") : null;
-  } catch {
-    return null;
-  }
-}
-
-/** A unix time as a `datetime-local` value in the viewer's zone, and back. */
-function toLocalInput(ts: number | null): string {
-  if (ts == null) return "";
-  const d = new Date(ts * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-function fromLocalInput(v: string): number | null {
-  if (!v) return null;
-  const t = new Date(v).getTime();
-  return Number.isFinite(t) ? t / 1000 : null;
-}
-
-function Seg<T extends string>({
-  label,
-  value,
-  options,
-  onChange,
-  testId,
-}: {
-  label: string;
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-  testId?: string;
-}) {
-  return (
-    <div className={styles.segs} role="group" aria-label={label} data-testid={testId}>
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          className={styles.seg}
-          aria-pressed={value === o.value}
-          onClick={() => onChange(o.value)}
-          data-value={o.value}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
+const REVIEW = WIZARD_STEPS.findIndex((s) => s.id === "review");
 
 /** KEYED BY THE ROUTE'S ID (#1252 review): moving from one automation's editor to another's is a
  *  fresh mount with empty state, so nothing loaded — or saved — for A can land on B's page. */
@@ -191,10 +119,14 @@ function Editor({ routeId }: { routeId?: string }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
-  // A create lands on the new automation's edit route (a remount), carrying its notice with it.
+  // A create lands on the new automation's edit route (a remount), carrying its notice — and the
+  // step it was saved from — with it.
   const [inFlight, setInFlight] = useState("");
   const [notice, setNotice] = useState<string | null>(
     () => (location.state as { notice?: string } | null)?.notice ?? null,
+  );
+  const [step, setStep] = useState<number>(() =>
+    (location.state as { step?: string } | null)?.step === "review" ? REVIEW : 0,
   );
   const [consent, setConsent] = useState<ConsentRequired | null>(null);
   const [consentError, setConsentError] = useState<string | null>(null);
@@ -204,8 +136,9 @@ function Editor({ routeId }: { routeId?: string }) {
   const handedBack = useRef(
     (location.state as { webhookPick?: { id: string; draft: EditorForm } } | null)?.webhookPick ?? null,
   );
-  /** Set while handing the draft to the New webhook page: that leave is not a discard. */
-  const handingOff = useRef(false);
+  /** Set while handing the draft to the New webhook page: that leave is not a discard. The
+   *  navigation runs after the render that drops the leave guard. */
+  const [handoff, setHandoff] = useState<NewWebhookHandoff | null>(null);
   /** Where focus returns when a dialog closes: the control that opened it, captured on open. */
   const [returnTo, setReturnTo] = useState<HTMLElement | null>(null);
 
@@ -215,7 +148,7 @@ function Editor({ routeId }: { routeId?: string }) {
     const back = handedBack.current;
     handedBack.current = null;
     if (!back || typeof back.draft !== "object" || back.draft == null) return f;
-    const next: EditorForm = { ...f, ...back.draft, legacyHook: f.legacyHook };
+    const next: EditorForm = { ...blankForm(f.tz), ...f, ...back.draft, legacyHook: f.legacyHook };
     if (back.id) next.webhookId = back.id;
     return next;
   }, []);
@@ -225,6 +158,9 @@ function Editor({ routeId }: { routeId?: string }) {
       navigate(location.pathname, { replace: true, state: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (handoff) navigate(WEBHOOK_NEW_PATH, { state: { webhookHandoff: handoff } });
+  }, [handoff, navigate]);
 
   const load = useCallback(async () => {
     try {
@@ -281,14 +217,12 @@ function Editor({ routeId }: { routeId?: string }) {
     };
   }, []);
 
+  // The picked webhook's last delivery: its shape and the presets recognised from it (step 2, and
+  // step 3's fields from the delivery). Only a webhook from the list has one.
+  const hookId = form && form.triggerKind === "webhook" && !form.legacyHook ? form.webhookId : "";
+  const hook = useWebhookDetail(hookId);
+
   const dirty = form != null && JSON.stringify(form) !== pristine;
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) =>
-      dirty &&
-      !saving &&
-      !handingOff.current &&
-      currentLocation.pathname !== nextLocation.pathname,
-  );
 
   const enable = useEnableFlow(
     useCallback(
@@ -327,11 +261,9 @@ function Editor({ routeId }: { routeId?: string }) {
   const set = useCallback(<K extends keyof EditorForm>(k: K, v: EditorForm[K]) => {
     setForm((f) => (f ? { ...f, [k]: v } : f));
   }, []);
-
-  const template = useMemo(
-    () => (form && templates ? templates.find((t) => t.id === form.templateId) ?? null : null),
-    [form, templates],
-  );
+  const update = useCallback((fn: (f: EditorForm) => EditorForm) => {
+    setForm((f) => (f ? fn(f) : f));
+  }, []);
 
   async function save(consentDigest?: string) {
     if (!form) return;
@@ -374,7 +306,7 @@ function Editor({ routeId }: { routeId?: string }) {
       // Only while this editor is still the page: a create that lands after the operator moved on
       // is saved (and listed) but never navigates them back.
       if (!id && mounted.current)
-        navigate(automationEditPath(a.id), { replace: true, state: { notice: done } });
+        navigate(automationEditPath(a.id), { replace: true, state: { notice: done, step: "review" } });
     } catch (e) {
       const need = consentFromError(e);
       if (need && saved) {
@@ -436,794 +368,217 @@ function Editor({ routeId }: { routeId?: string }) {
     );
   }
 
-  const problems = formProblems(form);
   const engines = list.engines ?? [];
   const savedSwitch = saved ? apiSwitchFor(saved.action, engines) : null;
   const liveProjects = (projects ?? []).filter((p) => !p.archived || p.id === form.projectId);
-  const msgWord =
-    form.actionKind === "start_mission"
-      ? "Instruction"
-      : form.actionKind === "start_session"
-        ? "First message"
-        : "Message";
-  const sessionKnown = sessions?.some((s) => s.id === form.sessionKey);
-  const draftTrigger = triggerWords(formTrigger(form));
-  const maxConcurrent = list.limits.max_concurrent_max;
   const reviewers = reviewerOptions(specialists, engines, engineLabel);
   const reviewerChosen = reviewers.find((r) => r.id === form.reviewerId) ?? null;
-  const loop = form.actionKind === "forge_review_loop";
-  const pickedHook = pickedWebhook(form.webhookId, webhooks.list, saved);
   const f = (name: string) => `${uid}-${name}`;
+  const props = { form, set, update, f };
 
-  return (
-    <div className={styles.page} data-testid="automation-editor">
-      <div className={`${styles.stack} ${styles.editorGrid}`}>
-        <section className={styles.panel} aria-labelledby={f("title")}>
-          <div className={styles.headText}>
-            <span className={`nj-kicker ${styles.kicker}`}>
-              <span className="nj-notch" aria-hidden="true" />
-              <Link className={styles.link} to={AUTOMATIONS_PATH}>
-                Automations
-              </Link>
-              {saved ? " // edit" : " // new"}
-            </span>
-            <h1 id={f("title")} className={styles.title}>
-              {saved ? saved.name : "New automation"}
-            </h1>
-            {saved && (
-              <p className={styles.lede}>
-                <StateWord state={saved.state} /> · revision {saved.revision}
-                {saved.enabled
-                  ? ". A change that widens what it may do on its own asks for your consent again; until then it keeps the old scope."
-                  : ". It is off: nothing runs until you enable it."}
-              </p>
-            )}
-          </div>
-          {!list.loop.enabled && <KillSwitchNotice />}
+  // What holds each step: the form's own problems, plus what the last delivery's shape says.
+  const shape = hook.detail?.last_shape ?? null;
+  const byStep = stepProblems(form);
+  const checks = deliveryChecks(form, shape);
+  const skipped = eventsSkipped(form);
+  const problemsOf = (s: WizardStepId): string[] =>
+    s === "events" && skipped
+      ? []
+      : [...byStep[s], ...(s === "events" || s === "what" ? checks[s].problems : [])];
+  const allProblems = WIZARD_STEPS.flatMap((s) => problemsOf(s.id));
+  const stepId = WIZARD_STEPS[step].id;
+  const here = problemsOf(stepId);
+  const isSkipped = (i: number) => WIZARD_STEPS[i].id === "events" && skipped;
+  const go = (i: number) => {
+    if (saving) return;
+    setStep(i);
+  };
+  const neighbour = (dir: 1 | -1) => {
+    let i = step + dir;
+    while (i > 0 && i < WIZARD_STEPS.length - 1 && isSkipped(i)) i += dir;
+    return i;
+  };
+  // A step can be jumped to when it is not skipped and every step before it is complete.
+  const canJump = (i: number) =>
+    !saving &&
+    !isSkipped(i) &&
+    WIZARD_STEPS.slice(0, i).every((s) => problemsOf(s.id).length === 0);
 
-          <form
-            className={styles.form}
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!problems.length && !saving) void save();
+  const enableButton = saved && (!saved.enabled || saved.needs_reapproval) && (
+    <button
+      type="button"
+      className={styles.ghost}
+      disabled={dirty}
+      title={dirty ? "Save your changes first" : undefined}
+      onClick={() => enable.open(saved)}
+      data-testid="editor-enable"
+    >
+      {saved.needs_reapproval ? "Review and approve…" : "Enable…"}
+    </button>
+  );
+
+  const body = (() => {
+    switch (stepId) {
+      case "when":
+        return (
+          <StepWhen
+            {...props}
+            list={list}
+            zones={zones}
+            webhooks={webhooks}
+            nowS={nowS}
+            saved={saved}
+            onNewWebhook={() =>
+              setHandoff({ returnTo: location.pathname, draft: form })
+            }
+            onSavedWebhook={(w) => setSaved((x) => (x && x.id === saved?.id ? { ...x, webhook: w } : x))}
+          />
+        );
+      case "events":
+        return (
+          <StepEvents
+            {...props}
+            detail={hook.detail}
+            detailError={hook.error}
+            onReload={hook.reload}
+            problems={here}
+            warnings={checks.events.warnings}
+          />
+        );
+      case "what":
+        return (
+          <StepWhat
+            {...props}
+            list={list}
+            projects={liveProjects}
+            sessions={sessions}
+            templates={templates}
+            variables={variables}
+            reviewers={reviewers}
+            reviewerChosen={reviewerChosen}
+            specialistsLoaded={specialists != null}
+            switchButton={
+              saved && savedSwitch
+                ? {
+                    target: savedSwitch,
+                    blockedBy: dirty ? "Save or discard your changes first." : undefined,
+                    onSwitch: () => switchFlow.open(saved, savedSwitch.engine),
+                  }
+                : null
+            }
+            onPickFolder={(opener) => {
+              setReturnTo(opener);
+              setPicking(true);
             }}
-            aria-busy={saving || undefined}
-          >
-            {/* LOCKED WHILE A SAVE IS IN FLIGHT (#1252 review): an edit typed now would be replaced by
-                the server's answer, so the form cannot be edited until it arrives. */}
-            <fieldset className={styles.lock} disabled={saving} data-testid="editor-fields">
-            {/* 01 · name ------------------------------------------------------------------------ */}
-            <fieldset className={styles.section}>
-              <legend className={styles.sectionTitle}>
-                <span className={styles.sectionNum}>01</span>Name
-              </legend>
-              <div className={styles.field}>
-                <label className={styles.label} htmlFor={f("name")}>
-                  Name
-                </label>
-                <input
-                  id={f("name")}
-                  className={styles.control}
-                  value={form.name}
-                  maxLength={80}
-                  onChange={(e) => set("name", e.target.value)}
-                  data-testid="automation-name"
-                />
-              </div>
-            </fieldset>
-
-            {/* 02 · trigger --------------------------------------------------------------------- */}
-            <fieldset className={styles.section}>
-              <legend className={styles.sectionTitle}>
-                <span className={styles.sectionNum}>02</span>Trigger
-              </legend>
-              <Seg
-                label="Trigger"
-                value={form.triggerKind}
-                onChange={(v) => setForm((x) => (x ? withTrigger(x, v, maxConcurrent) : x))}
-                testId="trigger-kind"
-                options={[
-                  { value: "once", label: "Once" },
-                  { value: "schedule", label: "Schedule" },
-                  { value: "manual", label: "Run now only" },
-                  { value: "webhook", label: "Webhook" },
-                ]}
-              />
-              {form.triggerKind === "schedule" && (
-                <div className={styles.fields3}>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("repeats")}>
-                      Repeats
-                    </label>
-                    <select
-                      id={f("repeats")}
-                      className={styles.control}
-                      value={form.cadenceKind === "interval" ? `interval-${form.unit}` : form.cadenceKind}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        if (v.startsWith("interval-")) {
-                          setForm((x) =>
-                            x
-                              ? {
-                                  ...x,
-                                  cadenceKind: "interval",
-                                  unit: v === "interval-hours" ? "hours" : "minutes",
-                                  every: v === "interval-hours" ? Math.min(Math.max(1, x.every), 168) : Math.max(list.limits.interval_min_minutes, x.every),
-                                }
-                              : x,
-                          );
-                        } else set("cadenceKind", v as EditorForm["cadenceKind"]);
-                      }}
-                      data-testid="cadence-kind"
-                    >
-                      <option value="interval-minutes">Every N minutes</option>
-                      <option value="interval-hours">Every N hours</option>
-                      <option value="daily">Daily</option>
-                      <option value="weekly">Weekly</option>
-                      <option value="monthly">Monthly</option>
-                    </select>
-                  </div>
-                  {form.cadenceKind === "interval" ? (
-                    <div className={styles.field}>
-                      <label className={styles.label} htmlFor={f("every")}>
-                        Every ({form.unit})
-                      </label>
-                      <input
-                        id={f("every")}
-                        className={styles.control}
-                        type="number"
-                        min={form.unit === "minutes" ? list.limits.interval_min_minutes : 1}
-                        max={form.unit === "minutes" ? 1440 : 168}
-                        value={form.every}
-                        onChange={(e) => set("every", Number(e.target.value))}
-                      />
-                    </div>
-                  ) : (
-                    <div className={styles.field}>
-                      <label className={styles.label} htmlFor={f("time")}>
-                        At
-                      </label>
-                      <input
-                        id={f("time")}
-                        className={styles.control}
-                        type="time"
-                        value={form.time}
-                        onChange={(e) => set("time", e.target.value)}
-                        data-testid="cadence-time"
-                      />
-                    </div>
-                  )}
-                  <TzField id={f("tz")} zones={zones} value={form.tz} onChange={(v) => set("tz", v)} />
-                  {form.cadenceKind === "weekly" && (
-                    <div className={`${styles.field} ${styles.full}`}>
-                      <span className={styles.label} id={f("days")}>
-                        On
-                      </span>
-                      <div className={styles.days} role="group" aria-labelledby={f("days")}>
-                        {WEEKDAYS.map((d) => (
-                          <label key={d} className={styles.dayToggle}>
-                            <input
-                              type="checkbox"
-                              checked={form.days.includes(d)}
-                              onChange={(e) =>
-                                set(
-                                  "days",
-                                  e.target.checked ? [...form.days, d] : form.days.filter((x) => x !== d),
-                                )
-                              }
-                            />
-                            {DAY_LABEL[d]}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {form.cadenceKind === "monthly" && (
-                    <div className={styles.field}>
-                      <label className={styles.label} htmlFor={f("day")}>
-                        Day of the month
-                      </label>
-                      <input
-                        id={f("day")}
-                        className={styles.control}
-                        type="number"
-                        min={1}
-                        max={31}
-                        value={form.day}
-                        onChange={(e) => set("day", Number(e.target.value))}
-                      />
-                    </div>
+            shape={shape ?? []}
+            problems={here}
+            warnings={checks.what.warnings}
+          />
+        );
+      case "limits":
+        return <StepLimits {...props} list={list} />;
+      case "review":
+        return (
+          <StepReview
+            {...props}
+            list={list}
+            saved={saved}
+            dirty={dirty}
+            presets={hook.detail?.presets ?? []}
+            projectName={(pid) => liveProjects.find((p) => p.id === pid)?.name ?? pid}
+            problems={allProblems}
+            error={
+              error && (
+                <div className={styles.error} role="alert" data-testid="editor-error">
+                  {error}{" "}
+                  {stale && (
+                    <button type="button" className={styles.ghost} onClick={() => void load()}>
+                      Reload (discards your changes)
+                    </button>
                   )}
                 </div>
-              )}
-              {form.triggerKind === "webhook" &&
-                (form.legacyHook ? (
-                  <p className={styles.hint} data-testid="trigger-webhook-legacy">
-                    It keeps its own Forgejo webhook from before webhooks were a list: the same
-                    address and secret, beside the form. Editing it here does not move it.
-                  </p>
-                ) : (
-                  <WebhookPicker
-                    id={f("webhook")}
-                    value={form.webhookId}
-                    list={webhooks.list}
-                    error={webhooks.error}
-                    nowS={nowS}
-                    onPick={(v) => set("webhookId", v)}
-                    onNew={() => {
-                      const handoff: NewWebhookHandoff = { returnTo: location.pathname, draft: form };
-                      handingOff.current = true;
-                      navigate(WEBHOOK_NEW_PATH, { state: { webhookHandoff: handoff } });
-                    }}
-                  />
-                ))}
-              {form.triggerKind === "once" && (
-                <div className={styles.fields}>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("at")}>
-                      At
-                    </label>
-                    <input
-                      id={f("at")}
-                      className={styles.control}
-                      type="datetime-local"
-                      value={form.onceAt}
-                      onChange={(e) => set("onceAt", e.target.value.slice(0, 16))}
-                      data-testid="once-at"
-                    />
-                  </div>
-                  <TzField id={f("tz")} zones={zones} value={form.tz} onChange={(v) => set("tz", v)} />
-                </div>
-              )}
-              <p className={styles.callout} data-testid="trigger-callout">
-                {form.triggerKind === "webhook"
-                  ? form.legacyHook
-                    ? "It runs when Forgejo delivers a signed event for the repository, and only starts a review loop. Connect the forge beside the form: the payload URL, a secret shown once, and the events to tick. There is no Run now: only a delivery names the item to review."
-                    : "It runs when the picked webhook delivers a signed event for the repository, and only starts a review loop. There is no Run now: only a delivery names the item to review."
-                  : form.triggerKind === "manual"
-                    ? "It runs only when you press Run now."
-                    : `${draftTrigger.detail}. Every ${list.limits.interval_min_minutes} minutes is the shortest schedule. A time skipped by a clock change runs once, at the next valid minute. Runs missed while BattleLab was down collapse into one catch-up run.`}{" "}
-                Loop triggers come in a later release.
-              </p>
-            </fieldset>
-
-            {/* 03 · action ---------------------------------------------------------------------- */}
-            <fieldset className={styles.section}>
-              <legend className={styles.sectionTitle}>
-                <span className={styles.sectionNum}>03</span>Action
-              </legend>
-              <Seg
-                label="Action"
-                value={form.actionKind}
-                onChange={(v) => setForm((x) => (x ? withAction(x, v, maxConcurrent) : x))}
-                testId="action-kind"
-                options={[
-                  { value: "start_mission", label: "Start a mission" },
-                  { value: "start_session", label: "Start a session" },
-                  { value: "send_to_session", label: "Send to a session" },
-                  { value: "forge_review_loop", label: "Review loop" },
-                ]}
-              />
-
-              {loop && (
-                <ReviewLoopFields
-                  form={form}
-                  set={set}
-                  f={f}
-                  projects={liveProjects}
-                  reviewers={reviewers}
-                  reviewerChosen={reviewerChosen}
-                  specialistsLoaded={specialists != null}
-                />
-              )}
-
-              {form.actionKind === "start_mission" && (
-                <div className={styles.fields}>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("project")}>
-                      Project
-                    </label>
-                    <select
-                      id={f("project")}
-                      className={styles.control}
-                      value={form.projectId}
-                      onChange={(e) => set("projectId", e.target.value)}
-                      data-testid="mission-project"
-                    >
-                      <option value="">Choose a project…</option>
-                      {liveProjects.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                          {p.default_folder ? ` · ${p.default_folder}` : ""}
-                        </option>
-                      ))}
-                      {form.projectId && !liveProjects.some((p) => p.id === form.projectId) && (
-                        <option value={form.projectId}>{form.projectId}</option>
-                      )}
-                    </select>
-                  </div>
-                  <div className={`${styles.field} ${styles.full}`}>
-                    <label className={styles.label} htmlFor={f("autonomy")}>
-                      What the mission may do on its own
-                    </label>
-                    <select
-                      id={f("autonomy")}
-                      className={styles.control}
-                      value={form.autonomy}
-                      onChange={(e) => set("autonomy", e.target.value as Autonomy)}
-                      data-testid="mission-autonomy"
-                    >
-                      {(Object.keys(AUTONOMY_WORDS) as Autonomy[]).map((k) => (
-                        <option key={k} value={k}>
-                          {AUTONOMY_WORDS[k]}
-                        </option>
-                      ))}
-                    </select>
-                    <p className={styles.hint}>
-                      An automated mission never runs with permission bypass, and it can never
-                      raise your mission-control tier.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {form.actionKind === "start_session" && (
-                <div className={styles.fields}>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("engine")}>
-                      Agent
-                    </label>
-                    <select
-                      id={f("engine")}
-                      className={styles.control}
-                      value={form.engine}
-                      onChange={(e) => set("engine", e.target.value)}
-                      aria-describedby={f("engine-why")}
-                      data-testid="session-engine"
-                    >
-                      <option value="">Choose an agent…</option>
-                      {engines.map((e) => (
-                        <option key={e.id} value={e.id} disabled={!e.ok}>
-                          {engineName(e.id)}
-                          {e.ok ? "" : " — can’t start unattended"}
-                        </option>
-                      ))}
-                    </select>
-                    {form.engine && runsInTerminal(form.engine) === true && <LegacyTerminalStamp />}
-                    {saved && savedSwitch && (
-                      <SwitchToApiButton
-                        target={savedSwitch}
-                        blockedBy={dirty ? "Save or discard your changes first." : undefined}
-                        onSwitch={() => switchFlow.open(saved, savedSwitch.engine)}
-                      />
-                    )}
-                    <div id={f("engine-why")} className={styles.hint} data-testid="engine-reasons">
-                      {engines.filter((e) => !e.ok).map((e) => (
-                        <p key={e.id} className={styles.hint}>
-                          {engineName(e.id)}: {e.reason}
-                        </p>
-                      ))}
-                      {engines.length === 0 && "No agent can be started unattended on this server."}
-                    </div>
-                  </div>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("model")}>
-                      Model
-                    </label>
-                    <select id={f("model")} className={styles.control} disabled value="default" aria-describedby={f("model-hint")}>
-                      <option value="default">The agent’s default</option>
-                    </select>
-                    <p id={f("model-hint")} className={styles.hint}>
-                      Choosing a model per session comes in a later release; until then it runs the
-                      agent’s default.
-                    </p>
-                  </div>
-                  <div className={`${styles.field} ${styles.full}`}>
-                    <label className={styles.label} htmlFor={f("folder")}>
-                      Folder
-                    </label>
-                    <div className={styles.inline}>
-                      <input
-                        id={f("folder")}
-                        className={`${styles.control} ${styles.mono}`}
-                        value={form.folder}
-                        readOnly
-                        placeholder="Choose a folder…"
-                        data-testid="session-folder"
-                      />
-                      <button
-                        type="button"
-                        className={styles.ghost}
-                        onClick={(e) => {
-                          setReturnTo(e.currentTarget);
-                          setPicking(true);
-                        }}
-                      >
-                        Choose…
-                      </button>
-                    </div>
-                  </div>
-                  <div className={`${styles.field} ${styles.full}`}>
-                    <label className={styles.check}>
-                      <input
-                        type="checkbox"
-                        checked={form.bypass}
-                        onChange={(e) => set("bypass", e.target.checked)}
-                        data-testid="session-bypass"
-                      />
-                      Permission bypass — the agent runs without asking before each action
-                    </label>
-                    {form.bypass && (
-                      <p className={`${styles.notice} ${styles.noticeWarn}`}>
-                        <strong>Unattended with bypass</strong>
-                        <span>
-                          Sessions this starts will act without asking you, while you are away.
-                          Turning it on asks for your consent again.
-                        </span>
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {form.actionKind === "send_to_session" && (
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("session")}>
-                    Session
-                  </label>
-                  <select
-                    id={f("session")}
-                    className={styles.control}
-                    value={form.sessionKey}
-                    onChange={(e) => set("sessionKey", e.target.value)}
-                    data-testid="send-session"
-                  >
-                    <option value="">Choose a session…</option>
-                    {(sessions ?? []).map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.title || "(untitled)"} · {engineName(s.engine)}
-                        {s.running ? " · running" : ""}
-                      </option>
-                    ))}
-                    {form.sessionKey && !sessionKnown && (
-                      <option value={form.sessionKey}>{form.sessionKey}</option>
-                    )}
-                  </select>
-                  {form.sessionKey && (
-                    <p className={`${styles.hint} ${styles.mono}`} data-testid="send-session-key">
-                      {form.sessionKey}
-                    </p>
-                  )}
-                  <p className={styles.hint}>
-                    It types into that session as it is — with whatever permissions it already runs
-                    with. If the session isn’t running then, the run is refused and recorded; nothing
-                    is started in its place.
-                  </p>
-                </div>
-              )}
-
-              {!loop && (
+              )
+            }
+            notice={notice}
+            inFlight={inFlight}
+            actions={
               <>
-              <div className={styles.fields}>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("mode")}>
-                    {msgWord}
-                  </label>
-                  <select
-                    id={f("mode")}
-                    className={styles.control}
-                    value={form.messageMode}
-                    onChange={(e) => set("messageMode", e.target.value as EditorForm["messageMode"])}
-                    data-testid="message-mode"
+                {saved?.enabled && !saved.needs_reapproval && (
+                  <button
+                    type="button"
+                    className={styles.ghost}
+                    onClick={() => void verb(saved.paused ? "resume" : "pause")}
+                    data-testid="editor-pause"
                   >
-                    <option value="text">Plain text</option>
-                    <option value="template">Template</option>
-                  </select>
-                </div>
-                {form.messageMode === "template" && (
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("template")}>
-                      Template
-                    </label>
-                    <select
-                      id={f("template")}
-                      className={styles.control}
-                      value={form.templateId}
-                      onChange={(e) => setForm((x) => (x ? { ...x, templateId: e.target.value, values: {} } : x))}
-                      data-testid="message-template"
-                    >
-                      <option value="">Choose a template…</option>
-                      {(templates ?? []).map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                {form.messageMode === "text" && (
-                  <div className={`${styles.field} ${styles.full}`}>
-                    <label className={styles.label} htmlFor={f("text")}>
-                      {form.actionKind === "start_mission" ? "What the mission should do" : "What to send"}
-                    </label>
-                    <textarea
-                      id={f("text")}
-                      className={styles.control}
-                      value={form.text}
-                      onChange={(e) => set("text", e.target.value)}
-                      data-testid="message-text"
-                    />
-                  </div>
-                )}
-              </div>
-              {form.messageMode === "template" && template && (
-                <>
-                  <p className={styles.hint}>
-                    The template’s revision is pinned. If it is edited later, this automation pauses
-                    until you approve the new version.
-                  </p>
-                  <div className={styles.fields}>
-                    {template.fields.map((fld) => {
-                      const lib = variables.find((v) => v.name === fld.name);
-                      return (
-                        <div key={fld.name} className={styles.field}>
-                          <label className={styles.label} htmlFor={f(`v-${fld.name}`)}>
-                            {fld.label || fld.name}
-                          </label>
-                          <span className={styles.fieldSource}>
-                            {fld.source === "library"
-                              ? "from your variable library"
-                              : fld.kind === "secret"
-                                ? "a typed secret — an automation can’t keep one"
-                                : "fixed value"}
-                          </span>
-                          {fld.source === "library" ? (
-                            <input
-                              id={f(`v-${fld.name}`)}
-                              className={`${styles.control} ${styles.mono}`}
-                              readOnly
-                              value={
-                                lib?.kind === "secret"
-                                  ? `{{${fld.name}}} → [secret: ${fld.name}]`
-                                  : lib
-                                    ? `{{${fld.name}}} → ${lib.value ?? ""}`
-                                    : `{{${fld.name}}} → not in the library`
-                              }
-                            />
-                          ) : (
-                            <input
-                              id={f(`v-${fld.name}`)}
-                              className={styles.control}
-                              value={form.values[fld.name] ?? ""}
-                              placeholder={fld.default || undefined}
-                              disabled={fld.kind === "secret"}
-                              onChange={(e) => set("values", { ...form.values, [fld.name]: e.target.value })}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-              {form.actionKind !== "send_to_session" && (
-                <p className={styles.hint}>
-                  {form.actionKind === "start_mission" ? "Mission briefs" : "A new session’s first message"} never
-                  carry secrets: a template with a secret can only be sent to a running session.
-                </p>
-              )}
-              </>
-              )}
-            </fieldset>
-
-            {/* 04 · limits ---------------------------------------------------------------------- */}
-            <fieldset className={styles.section}>
-              <legend className={styles.sectionTitle}>
-                <span className={styles.sectionNum}>04</span>Limits
-              </legend>
-              <div className={styles.fields}>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("concurrency")}>
-                    If the previous run is still going
-                  </label>
-                  <select
-                    id={f("concurrency")}
-                    className={styles.control}
-                    value={form.concurrency === "skip" ? "skip" : `allow-${form.maxConcurrent}`}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setForm((x) =>
-                        x
-                          ? v === "skip"
-                            ? { ...x, concurrency: "skip" }
-                            : { ...x, concurrency: "allow", maxConcurrent: Number(v.split("-")[1]) }
-                          : x,
-                      );
-                    }}
-                  >
-                    <option value="skip">Skip this run and record why</option>
-                    {Array.from({ length: list.limits.max_concurrent_max - 1 }, (_, i) => i + 2).map((n) => (
-                      <option key={n} value={`allow-${n}`}>
-                        Run anyway, up to {n} at once
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("cap")}>
-                    At most, per day
-                  </label>
-                  <input
-                    id={f("cap")}
-                    className={styles.control}
-                    type="number"
-                    min={1}
-                    max={list.limits.max_runs_per_day_max}
-                    value={form.maxRunsPerDay}
-                    onChange={(e) => set("maxRunsPerDay", Number(e.target.value))}
-                  />
-                </div>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("pause")}>
-                    Pause after this many failures in a row
-                  </label>
-                  <input
-                    id={f("pause")}
-                    className={styles.control}
-                    type="number"
-                    min={1}
-                    max={list.limits.pause_after_failures_max}
-                    value={form.pauseAfterFailures}
-                    onChange={(e) => set("pauseAfterFailures", Number(e.target.value))}
-                  />
-                </div>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor={f("expires")}>
-                    Stop after (your time; empty = never)
-                  </label>
-                  <input
-                    id={f("expires")}
-                    className={styles.control}
-                    type="datetime-local"
-                    value={toLocalInput(form.expiresAt)}
-                    onChange={(e) => set("expiresAt", fromLocalInput(e.target.value))}
-                  />
-                </div>
-              </div>
-            </fieldset>
-
-            {problems.length > 0 && (
-              <ul className={styles.problems} data-testid="editor-problems">
-                {problems.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
-            )}
-            {error && (
-              <div className={styles.error} role="alert" data-testid="editor-error">
-                {error}{" "}
-                {stale && (
-                  <button type="button" className={styles.ghost} onClick={() => void load()}>
-                    Reload (discards your changes)
+                    {saved.paused ? "Resume" : "Pause"}
                   </button>
                 )}
-              </div>
-            )}
-            {notice && (
-              <div className={`${styles.notice} ${styles.noticeOk}`} role="status" data-testid="editor-notice">
-                {notice}
-                {inFlight && <InFlightNote text={inFlight} />}
-              </div>
-            )}
-            <div className={styles.formActions}>
-              <Link
-                className={styles.ghost}
-                to={saved ? automationPath(saved.id) : AUTOMATIONS_PATH}
-                aria-disabled={saving || undefined}
-                tabIndex={saving ? -1 : undefined}
-                onClick={(e) => saving && e.preventDefault()}
-              >
-                {dirty ? "Cancel" : "Back"}
-              </Link>
-              {saved?.enabled && !saved.needs_reapproval && (
+                {enableButton}
                 <button
-                  type="button"
-                  className={styles.ghost}
-                  onClick={() => void verb(saved.paused ? "resume" : "pause")}
-                  data-testid="editor-pause"
+                  type="submit"
+                  className={styles.primary}
+                  disabled={saving || allProblems.length > 0 || (!!saved && !dirty)}
+                  data-testid="editor-save"
                 >
-                  {saved.paused ? "Resume" : "Pause"}
+                  {saving ? "Saving…" : saved?.enabled ? "Save…" : saved ? "Save" : "Save (off)"}
                 </button>
-              )}
-              {saved && (!saved.enabled || saved.needs_reapproval) && (
-                <button
-                  type="button"
-                  className={styles.ghost}
-                  disabled={dirty}
-                  title={dirty ? "Save your changes first" : undefined}
-                  onClick={() => enable.open(saved)}
-                  data-testid="editor-enable"
-                >
-                  {saved.needs_reapproval ? "Review and approve…" : "Enable…"}
-                </button>
-              )}
-              <button
-                type="submit"
-                className={styles.primary}
-                disabled={saving || problems.length > 0 || (!!saved && !dirty)}
-                data-testid="editor-save"
-              >
-                {saving ? "Saving…" : saved?.enabled ? "Save…" : "Save"}
-              </button>
-            </div>
-            </fieldset>
-            {saving && (
-              <p className={styles.hint} role="status" data-testid="editor-saving">
-                Saving — the form is locked until the server answers.
-              </p>
-            )}
-          </form>
-        </section>
+              </>
+            }
+          />
+        );
+    }
+  })();
 
-        <aside className={styles.aside}>
-          <section className={styles.panel} aria-labelledby={f("scope")} data-testid="editor-scope">
-            <h2 id={f("scope")} className={styles.panelTitle}>
-              What this will do, unattended
-            </h2>
-            {saved && !saved.scope ? (
-              <p className={styles.hint} data-testid="editor-scope-unavailable">
-                Its inputs can’t be checked right now, so its scope can’t be shown. Nothing new is
-                approved until they can.
-              </p>
-            ) : saved && saved.scope_lines.length > 0 ? (
-              <ul className={styles.scopeLines} data-testid="editor-scope-lines">
-                {saved.scope_lines.map((l, i) => (
-                  <li key={i}>{l}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className={styles.hint}>
-                Save it to see its full scope in the server’s words. Nothing runs until you enable
-                it, and enabling shows this scope again for your consent.
-              </p>
-            )}
-            {saved && dirty && (
-              <div className={`${styles.notice} ${styles.noticeWarn} ${styles.more}`} data-testid="editor-draft">
-                <strong>Unsaved changes</strong>
-                <span>
-                  Above is what is saved. Your draft: {actionLabel(form.actionKind).toLowerCase()},{" "}
-                  {draftTrigger.label.toLowerCase()} ({draftTrigger.detail})
-                  {form.actionKind === "start_session" && form.bypass ? ", with permission bypass" : ""}.
-                  {saved.enabled ? " If saving widens what it may do, you are asked to consent first." : ""}
-                </span>
-              </div>
-            )}
-            <p className={`${styles.hint} ${styles.more}`}>
-              Anything that widens it — a new target, bypass on, more autonomy, a different schedule,
-              a higher cap, new content — asks for your consent again.
+  return (
+    <div className={wiz.root} data-testid="automation-editor">
+      <WizardShell
+        kicker={saved ? "Edit automation" : "New automation"}
+        steps={WIZARD_STEPS.map((s, i) => (isSkipped(i) ? { ...s, label: `${s.label} (skipped)` } : s))}
+        current={step}
+        canJump={canJump}
+        onJump={go}
+        heading={HEADINGS[stepId]}
+        onBack={step > 0 && !saving ? () => go(neighbour(-1)) : undefined}
+        onNext={stepId === "review" ? undefined : () => go(neighbour(1))}
+        nextDisabled={saving || here.length > 0}
+        nextNote={here.length ? here[0] : undefined}
+        secondary={
+          <Link
+            className={styles.ghost}
+            to={saved ? automationPath(saved.id) : AUTOMATIONS_PATH}
+            aria-disabled={saving || undefined}
+            tabIndex={saving ? -1 : undefined}
+            onClick={(e) => saving && e.preventDefault()}
+            data-testid="editor-cancel"
+          >
+            {dirty ? "Cancel" : "Back to the list"}
+          </Link>
+        }
+        leaveGuard={dirty && !saving && !handoff}
+        leaveTitle={form.name || saved?.name || "Automation"}
+        leaveMessage="Your changes to this automation are not saved."
+      >
+        <form
+          className={wiz.step}
+          data-step={stepId}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (stepId === "review" && !allProblems.length && !saving) void save();
+          }}
+          aria-busy={saving || undefined}
+        >
+          {/* LOCKED WHILE A SAVE IS IN FLIGHT (#1252 review): an edit typed now would be replaced by
+              the server's answer, so the form cannot be edited until it arrives. */}
+          <fieldset className={wiz.lock} disabled={saving} data-testid="editor-fields">
+            {body}
+          </fieldset>
+          {saving && (
+            <p className={styles.hint} role="status" data-testid="editor-saving">
+              Saving — the form is locked until the server answers.
             </p>
-          </section>
-          {saved?.webhook && isLegacyHook(saved.trigger) ? (
-            <WebhookPanel
-              automationId={saved.id}
-              webhook={saved.webhook}
-              nowS={nowS}
-              onWebhook={(w) => setSaved((x) => (x && x.id === saved.id ? { ...x, webhook: w } : x))}
-            />
-          ) : (
-            form.triggerKind === "webhook" &&
-            !form.legacyHook &&
-            (pickedHook ? (
-              <SharedWebhookPanel {...pickedHook} nowS={nowS} />
-            ) : (
-              <p className={`${styles.hint} ${styles.more}`} data-testid="webhook-pick-hint">
-                Pick a webhook: its address and last delivery show here. Its secret is on its own
-                page in Library → Webhooks.
-              </p>
-            ))
           )}
-        </aside>
-      </div>
+        </form>
+      </WizardShell>
 
       {switchFlow.dialog}
       {consent && saved && (
@@ -1254,302 +609,6 @@ function Editor({ routeId }: { routeId?: string }) {
           returnFocusTo={returnTo}
         />
       )}
-      {blocker.state === "blocked" && (
-        <ConfirmDialog
-          tag="Unsaved changes"
-          title={form.name || "Automation"}
-          cancelLabel="Keep editing"
-          confirmLabel="Discard and leave"
-          danger
-          onCancel={() => blocker.reset()}
-          onConfirm={() => blocker.proceed()}
-        >
-          <p>Your changes to this automation are not saved.</p>
-        </ConfirmDialog>
-      )}
     </div>
   );
-}
-
-/** A review loop's fields (#2202 board 1): where it reviews, who reviews, what it reviews, and
- *  whether the verdict goes back. Only specialists on an API client are offered. */
-function ReviewLoopFields({
-  form,
-  set,
-  f,
-  projects,
-  reviewers,
-  reviewerChosen,
-  specialistsLoaded,
-}: {
-  form: EditorForm;
-  set: <K extends keyof EditorForm>(k: K, v: EditorForm[K]) => void;
-  f: (name: string) => string;
-  projects: { id: string; name: string; default_folder?: string | null }[];
-  reviewers: ReturnType<typeof reviewerOptions>;
-  reviewerChosen: ReturnType<typeof reviewerOptions>[number] | null;
-  specialistsLoaded: boolean;
-}) {
-  const rounds = Array.from({ length: ROUNDS_MAX - ROUNDS_MIN + 1 }, (_, i) => i + ROUNDS_MIN);
-  const newer =
-    reviewerChosen && form.reviewerVersion != null && reviewerChosen.version !== form.reviewerVersion
-      ? reviewerChosen
-      : null;
-  return (
-    <div className={styles.fields} data-testid="review-loop-fields">
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-project")}>
-          Project
-        </label>
-        <select
-          id={f("loop-project")}
-          className={styles.control}
-          value={form.projectId}
-          onChange={(e) => set("projectId", e.target.value)}
-          data-testid="loop-project"
-        >
-          <option value="">Choose a project…</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-              {p.default_folder ? ` · ${p.default_folder}` : ""}
-            </option>
-          ))}
-          {form.projectId && !projects.some((p) => p.id === form.projectId) && (
-            <option value={form.projectId}>{form.projectId}</option>
-          )}
-        </select>
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-repo")}>
-          Repository
-        </label>
-        <input
-          id={f("loop-repo")}
-          className={`${styles.control} ${styles.mono}`}
-          value={form.repo}
-          maxLength={201}
-          placeholder="owner/name"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => set("repo", e.target.value)}
-          data-testid="loop-repo"
-        />
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-reviewer")}>
-          Reviewer specialist
-        </label>
-        <select
-          id={f("loop-reviewer")}
-          className={styles.control}
-          value={form.reviewerId}
-          onChange={(e) => {
-            const r = reviewers.find((x) => x.id === e.target.value);
-            set("reviewerId", e.target.value);
-            set("reviewerVersion", r ? r.version : null);
-          }}
-          aria-describedby={f("loop-reviewer-hint")}
-          data-testid="loop-reviewer"
-        >
-          <option value="">{specialistsLoaded ? "Choose a specialist…" : "Loading specialists…"}</option>
-          {reviewers.map((r) => (
-            <option key={r.id} value={r.id} disabled={!!r.blocked}>
-              {r.label}
-              {r.blocked ? " — can’t start unattended" : ""}
-            </option>
-          ))}
-          {form.reviewerId && !reviewerChosen && (
-            <option value={form.reviewerId}>
-              {form.reviewerId} v{form.reviewerVersion ?? "?"} — not offered now
-            </option>
-          )}
-        </select>
-        {form.reviewerId && form.reviewerVersion != null && (
-          <p className={styles.hint} data-testid="loop-reviewer-pin">
-            Pinned at version {form.reviewerVersion}. A newer version, or archiving it, pauses the
-            loop until you approve again.
-          </p>
-        )}
-        {newer && (
-          <button
-            type="button"
-            className={styles.ghost}
-            onClick={() => set("reviewerVersion", newer.version)}
-            data-testid="loop-reviewer-repin"
-          >
-            Pin version {newer.version}
-          </button>
-        )}
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-login")}>
-          Reviewer account
-        </label>
-        <input
-          id={f("loop-login")}
-          className={`${styles.control} ${styles.mono}`}
-          value={form.reviewerLogin}
-          maxLength={64}
-          placeholder="the forge login it posts as"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => set("reviewerLogin", e.target.value)}
-          data-testid="loop-login"
-        />
-      </div>
-      <div id={f("loop-reviewer-hint")} className={`${styles.hint} ${styles.full}`}>
-        Only specialists on an API client are offered: nothing unattended drives a terminal. The
-        specialist posts its verdict with its own forge credentials; BattleLab only starts it and
-        never writes to the forge. Only verdicts from the reviewer account are trusted.
-        {specialistsLoaded && reviewers.length === 0 && (
-          <strong data-testid="loop-no-reviewers"> No specialist runs on an API client yet: create one in Library → Specialists.</strong>
-        )}
-        {reviewers
-          .filter((r) => r.blocked)
-          .map((r) => (
-            <span key={r.id} className={styles.sub}>
-              {" "}
-              {r.label}: {r.blocked}.
-            </span>
-          ))}
-      </div>
-
-      <div className={`${styles.field} ${styles.full}`} role="group" aria-labelledby={f("loop-legs")}>
-        <span className={styles.label} id={f("loop-legs")}>
-          Review
-        </span>
-        <label className={styles.check}>
-          <input
-            type="checkbox"
-            checked={form.reviewIssues}
-            onChange={(e) => set("reviewIssues", e.target.checked)}
-            data-testid="loop-issues"
-          />
-          Issues — when opened, reopened or edited
-        </label>
-        <label className={styles.check}>
-          <input
-            type="checkbox"
-            checked={form.reviewPulls}
-            onChange={(e) => set("reviewPulls", e.target.checked)}
-            data-testid="loop-pulls"
-          />
-          Pull requests — when opened, reopened or pushed (drafts skipped)
-        </label>
-      </div>
-
-      <div className={`${styles.field} ${styles.full}`}>
-        <span className={styles.label}>Return the verdict</span>
-        <label className={styles.check}>
-          <input
-            type="checkbox"
-            checked={form.returnToOrigin}
-            onChange={(e) => set("returnToOrigin", e.target.checked)}
-            data-testid="loop-return"
-          />
-          Send the verdict to the API session that opened the issue or pull request
-        </label>
-        <p className={styles.hint}>A terminal session gets nothing: you are notified instead, with a link to it.</p>
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-rounds-pr")}>
-          Reviews per pull request
-        </label>
-        <select
-          id={f("loop-rounds-pr")}
-          className={styles.control}
-          value={form.roundsPr}
-          onChange={(e) => set("roundsPr", Number(e.target.value))}
-          data-testid="loop-rounds-pr"
-        >
-          {rounds.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor={f("loop-rounds-issue")}>
-          Reviews per issue
-        </label>
-        <select
-          id={f("loop-rounds-issue")}
-          className={styles.control}
-          value={form.roundsIssue}
-          onChange={(e) => set("roundsIssue", Number(e.target.value))}
-          data-testid="loop-rounds-issue"
-        >
-          {rounds.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </div>
-      <p className={`${styles.hint} ${styles.full}`}>
-        Counted over the item’s whole life. After the last one, no review starts and you get one
-        notification. Each review first checks the item’s current revision on your forge (Settings →
-        Forge).
-      </p>
-    </div>
-  );
-}
-
-function TzField({
-  id,
-  zones,
-  value,
-  onChange,
-}: {
-  id: string;
-  zones: string[] | null;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className={styles.field}>
-      <label className={styles.label} htmlFor={id}>
-        Time zone
-      </label>
-      {zones ? (
-        <select id={id} className={styles.control} value={value} onChange={(e) => onChange(e.target.value)}>
-          {!zones.includes(value) && <option value={value}>{value}</option>}
-          {zones.map((z) => (
-            <option key={z} value={z}>
-              {z}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input id={id} className={styles.control} value={value} onChange={(e) => onChange(e.target.value)} />
-      )}
-    </div>
-  );
-}
-
-/** The picked webhook's facts for the side panel: from the list, else from the saved row (the
- *  automation's own read carries the picked webhook's public view). `null` while none is picked. */
-function pickedWebhook(
-  webhookId: string,
-  list: Webhook[] | null,
-  saved: Automation | null,
-): Omit<Parameters<typeof SharedWebhookPanel>[0], "nowS"> | null {
-  if (!webhookId) return null;
-  const w = list?.find((x) => x.id === webhookId);
-  const fromRow = saved?.webhook?.webhook_id === webhookId ? saved.webhook : null;
-  const src = w ?? fromRow;
-  if (!src) return null;
-  return {
-    id: webhookId,
-    name: src.name ?? webhookId,
-    path: src.path,
-    lastDeliveryAt: src.last_delivery_at,
-    lastEvent: src.last_event,
-    lastNote: src.last_note,
-    unsigned24h: src.unsigned_24h,
-  };
 }

@@ -5,7 +5,7 @@
  *  the page SENT (the consent resend's digest), not only what it painted. Scope lines are the
  *  server's `describe()` wording for the configs used here, copied, so the widened highlight is
  *  exercised against real text. */
-import type { Page, Route } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 
 import { commonMocks } from "./mission-directions";
 import { mockMissions } from "./mission-console";
@@ -556,4 +556,87 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
     return json(405, { detail: `unmocked ${method} ${path}` });
   });
   return fake;
+}
+
+// ---- the wizard (#2221 P2b) ----------------------------------------------------------------------
+
+/** The wizard's step heading (WizardShell): it takes focus on every step change. */
+export const wizardHeading = (page: Page) => page.locator("#wizard-step-heading");
+
+/** Press the wizard's Next and wait for the step to change. */
+export async function wizardNext(page: Page): Promise<void> {
+  const heading = wizardHeading(page);
+  const before = await heading.textContent();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(heading).not.toHaveText(before ?? "");
+}
+
+/** Walk the wizard to step 5 (Review & enable), where the name, Save and Enable are. */
+export async function toReview(page: Page): Promise<void> {
+  const heading = wizardHeading(page);
+  await expect(heading).toBeVisible();
+  for (let i = 0; i < 5 && (await heading.textContent()) !== "Review and enable"; i++)
+    await wizardNext(page);
+  await expect(heading).toHaveText("Review and enable");
+}
+
+/** Walk the wizard to the step whose heading is `title`. */
+export async function toStep(page: Page, title: string): Promise<void> {
+  const heading = wizardHeading(page);
+  await expect(heading).toBeVisible();
+  for (let i = 0; i < 5 && (await heading.textContent()) !== title; i++) await wizardNext(page);
+  await expect(heading).toHaveText(title);
+}
+
+/** Every control in `root` is a ≥44 px target (a button also ≥44 px wide), and nothing overflows
+ *  horizontally. An inline link inside a sentence or a key/value list is exempt (WCAG 2.5.8). */
+export async function targetsAndOverflow(page: Page, root: string): Promise<void> {
+  const report = await page.evaluate((sel) => {
+    const scope = document.querySelector(sel)!;
+    const small: string[] = [];
+    for (const el of scope.querySelectorAll<HTMLElement>(
+      "button, select, input:not([type=checkbox]):not([type=radio]), a, summary",
+    )) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || getComputedStyle(el).visibility === "hidden") continue;
+      if (el.tagName === "A" && el.closest("p, dd, [role=status], [role=alert]")) continue;
+      const tooNarrow = el.tagName === "BUTTON" && r.width < 44;
+      if (r.height < 44 || tooNarrow)
+        small.push(
+          `${el.tagName} "${(el.textContent || el.getAttribute("aria-label") || "").trim().slice(0, 30)}" ${Math.round(r.width)}×${Math.round(r.height)}`,
+        );
+    }
+    // A radio or a checkbox is reached through its label: the label is the target.
+    for (const el of scope.querySelectorAll<HTMLElement>("label:has(input[type=radio]), label:has(input[type=checkbox])")) {
+      const r = el.getBoundingClientRect();
+      if (r.width && r.height < 44) small.push(`LABEL "${(el.textContent || "").trim().slice(0, 30)}" ${Math.round(r.width)}×${Math.round(r.height)}`);
+    }
+    const doc = document.scrollingElement!;
+    const page = scope as HTMLElement;
+    const clipped = [...scope.querySelectorAll<HTMLElement>("*")]
+      .filter((el) => el.getBoundingClientRect().right > window.innerWidth + 0.5 && el.getBoundingClientRect().width > 0)
+      .map((el) => `${el.tagName}.${el.className}`.slice(0, 60));
+    return {
+      small,
+      docOverflow: doc.scrollWidth - doc.clientWidth,
+      pageOverflow: page.scrollWidth - page.clientWidth,
+      clipped,
+    };
+  }, root);
+  expect(report.small, "controls under 44px").toEqual([]);
+  expect(report.docOverflow, "document overflows horizontally").toBeLessThanOrEqual(0);
+  expect(report.pageOverflow, "the page overflows horizontally").toBeLessThanOrEqual(0);
+  expect(report.clipped, "elements past the right edge").toEqual([]);
+}
+
+/** Walk the wizard BACK to the step whose heading is `title`. */
+export async function backTo(page: Page, title: string): Promise<void> {
+  const heading = wizardHeading(page);
+  await expect(heading).toBeVisible();
+  for (let i = 0; i < 5 && (await heading.textContent()) !== title; i++) {
+    const before = await heading.textContent();
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(heading).not.toHaveText(before ?? "");
+  }
+  await expect(heading).toHaveText(title);
 }

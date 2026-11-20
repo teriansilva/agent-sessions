@@ -27,16 +27,55 @@ export type Trigger =
   | { kind: "manual" }
   | { kind: "once"; at: string; tz: string }
   | { kind: "schedule"; cadence: Cadence; tz: string }
-  /** A webhook picked from Library → Webhooks (#2221). It pairs ONLY with a `forge_review_loop`
-   *  action. */
-  | { kind: "webhook"; webhook_id: string }
+  /** A webhook picked from Library → Webhooks (#2221). It starts a review loop, a session or a
+   *  message to a session (#2221 P2); `when` (omitted when empty) chooses which deliveries, and a
+   *  review loop takes none. */
+  | { kind: "webhook"; webhook_id: string; when?: WebhookCondition[] }
   /** #2202: a review loop's own Forgejo webhook. Read-only: an existing automation keeps it, but the
    *  server refuses creating a new one in this form. */
   | { kind: "webhook"; scheme: "forgejo" };
 
 export type AutomationMessage =
   | { text: string }
-  | { template_id: string; values: Record<string, string> };
+  | {
+      template_id: string;
+      values: Record<string, string>;
+      /** Template fields filled from each webhook delivery, typed (#2221 P2). Omitted when empty;
+       *  a field is never both here and in `values`. */
+      from_delivery?: Record<string, DeliveryMapping>;
+    };
+
+/** The closed set of condition operators (`webhook_events.OPS`). */
+export type ConditionOp =
+  | "is"
+  | "is_not"
+  | "one_of"
+  | "contains"
+  | "is_true"
+  | "is_false"
+  | "exists"
+  | "missing";
+
+export type ConditionScalar = string | number | boolean;
+
+/** One condition on a delivery's signed body: all of an automation's must hold. The path is a
+ *  dotted body path (`pull_request.draft`, `labels[].name`), never a header. */
+export interface WebhookCondition {
+  path: string;
+  op: ConditionOp;
+  value?: ConditionScalar | ConditionScalar[];
+}
+
+/** The types a delivery value may fill a template field with (`webhook_events.TYPES`). */
+export type MappedType = "number" | "choice" | "text" | "yes_no";
+
+/** A template field filled from the delivery: one field (never a list path), typed. */
+export interface DeliveryMapping {
+  path: string;
+  type: MappedType;
+  /** A choice's allowed values. */
+  choices?: string[];
+}
 
 export type Autonomy = "propose" | "dispatch" | "dispatch_auto_choose";
 

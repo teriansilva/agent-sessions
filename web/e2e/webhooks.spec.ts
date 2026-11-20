@@ -17,7 +17,7 @@ import {
   automationPath,
   webhookPath,
 } from "../src/lib/routes";
-import { automation, mockAutomations } from "./automations";
+import { automation, backTo, mockAutomations, toReview, toStep } from "./automations";
 import { animationsSettled } from "./nightjarShell";
 import { ROSTER, mockRoster } from "./roster";
 import { TOUCH_FLOOR } from "./touchTarget";
@@ -272,19 +272,23 @@ test("a legacy webhook: its old address and its loop, rotate allowed, never dele
 test("a review loop picks a webhook from the list and saves webhook_id; + New webhook… comes back with the draft (#2221)", async ({ page }) => {
   const { fake, hooks } = await setup(page, [SHOP, LEGACY]);
   await page.goto(AUTOMATION_NEW_PATH);
-  await page.getByTestId("trigger-kind").getByRole("button", { name: "Webhook" }).click();
-  await expect(page.getByTestId("action-kind").getByRole("button", { name: "Review loop" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("trigger-kind-webhook").click();
   const pick = page.getByTestId("trigger-webhook");
   // Only the pickable webhook is offered — never the legacy loop's own — plus "+ New webhook…".
   await expect(pick.locator("option")).toHaveText(["Choose a webhook…", /^shop repo · last: /, "+ New webhook…"]);
-  await expect(page.getByTestId("editor-problems")).toContainText("Pick a webhook");
+  await expect(page.getByRole("status").filter({ hasText: "Pick a webhook" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
   await expect(page.getByTestId("webhook-pick-hint")).toBeVisible();
+  await pick.selectOption(SHOP.id);
 
-  await page.getByTestId("automation-name").fill("Review every PR · shop");
+  // Step 3: the review loop's fields, filled before the handoff.
+  await toStep(page, "What does it do?");
+  await page.getByTestId("action-kind-forge_review_loop").click();
   await page.getByTestId("loop-project").selectOption("p1");
   await page.getByTestId("loop-repo").fill("example-org/shop");
   await page.getByTestId("loop-reviewer").selectOption("shop-reviewer");
   await page.getByTestId("loop-login").fill("shop-reviewer-bot");
+  await backTo(page, "When does it run?");
 
   // + New webhook… → the create flow, then back with the draft intact and the new one picked.
   await pick.selectOption({ label: "+ New webhook…" });
@@ -295,25 +299,30 @@ test("a review loop picks a webhook from the list and saves webhook_id; + New we
   await page.getByTestId("webhook-use-in-automation").click();
   await expect(page).toHaveURL(new RegExp(`${AUTOMATION_NEW_PATH}$`));
   const made = hooks.hooks.find((h) => h.name === "shop events")!;
-  await expect(page.getByTestId("automation-name")).toHaveValue("Review every PR · shop");
-  await expect(page.getByTestId("loop-repo")).toHaveValue("example-org/shop");
   await expect(pick).toHaveValue(made.id);
   await expect(page.locator("body")).not.toContainText(value);
   expect(await secretKept(page, value)).toBe(false);
-  // The side panel shows the picked webhook, read-only, linking to its page.
+  // The panel shows the picked webhook, read-only, linking to its page.
   const panel = page.getByTestId("shared-webhook-panel");
   await expect(panel.getByTestId("shared-webhook-link")).toHaveText("shop events");
   await expect(panel.getByTestId("webhook-copy-address")).toBeVisible();
   await expect(panel.getByTestId("webhook-make-secret")).toHaveCount(0);
 
-  // Switch to the existing one, and save: the body names the webhook, never the legacy scheme.
+  // Switch to the existing one: the draft came back whole.
   await pick.selectOption(SHOP.id);
   await expect(panel.getByTestId("shared-webhook-link")).toHaveText("shop repo");
-  await expect(page.getByTestId("editor-problems")).toHaveCount(0);
   for (const id of ["trigger-webhook", "webhook-copy-address", "shared-webhook-open"]) {
     const box = await page.getByTestId(id).first().boundingBox();
     expect(box!.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
+  await toStep(page, "What does it do?");
+  await expect(page.getByTestId("loop-repo")).toHaveValue("example-org/shop");
+  await expect(page.getByTestId("loop-login")).toHaveValue("shop-reviewer-bot");
+
+  // Save: the body names the webhook, never the legacy scheme.
+  await toReview(page);
+  await page.getByTestId("automation-name").fill("Review every PR · shop");
+  await expect(page.getByTestId("editor-problems")).toHaveCount(0);
   await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("editor-notice")).toContainText("is off until you enable it");
   const create = fake.requests.find((r) => r.method === "POST" && r.path === "")!;

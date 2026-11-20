@@ -10,7 +10,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { AUTOMATIONS_PATH, automationEditPath } from "../src/lib/routes";
-import { automation, mockAutomations, type FakeOptions } from "./automations";
+import { automation, backTo, mockAutomations, toReview, toStep, type FakeOptions } from "./automations";
 import { mockRoster } from "./roster";
 import { TOUCH_FLOOR } from "./touchTarget";
 
@@ -148,6 +148,7 @@ test("the editor labels a terminal target, keeps saving it, and never switches a
     ],
   });
   await page.goto(automationEditPath("a1"));
+  await toStep(page, "What does it do?");
   const engine = page.getByTestId("session-engine");
   await expect(engine).toHaveValue("claude");
   await expect(page.getByTestId("automation-legacy-terminal")).toBeVisible();
@@ -157,14 +158,17 @@ test("the editor labels a terminal target, keeps saving it, and never switches a
   await engine.selectOption("claude");
   await expect(page.getByTestId("automation-legacy-terminal")).toBeVisible();
   // An unsaved draft is never carried along by a switch.
-  await page.getByTestId("automation-name").fill("Morning triage, earlier");
+  await page.getByTestId("message-text").fill("Triage the inbox, earlier");
   await expect(page.getByTestId("automation-switch-api")).toBeDisabled();
   await expect(page.getByTestId("automation-switch-why")).toContainText("Save or discard your changes first");
-  // No cutoff in Phase 2: a console-target save goes through as it always did.
+  // No cutoff in Phase 2: a console-target save goes through as it always did (on a schedule; a
+  // webhook starts API sessions only).
+  await toReview(page);
   await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("editor-notice")).toContainText("Saved");
   const sent = lastPatch(fake)!.body as { action: Record<string, unknown> };
   expect(sent.action.engine).toBe("claude");
+  await backTo(page, "What does it do?");
   await expect(page.getByTestId("automation-switch-api")).toBeEnabled();
 });
 
@@ -176,6 +180,7 @@ for (const theme of ["dark", "light"] as const) {
       automations: [automation({ id: "a1", name: "Morning triage", action: TERMINAL_ACTION })],
     });
     await page.goto(automationEditPath("a1"));
+    await toStep(page, "What does it do?");
     await expect(page.getByTestId("automation-legacy-terminal")).toBeVisible();
     await expect(page.getByTestId("automation-switch-api")).toBeEnabled();
     await page.screenshot({ path: info.outputPath(`automation-legacy-${theme}.png`), fullPage: true });
