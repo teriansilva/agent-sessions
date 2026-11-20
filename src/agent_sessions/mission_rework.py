@@ -184,15 +184,6 @@ def _recorded_since(cand: dict, since: float) -> bool:
     return isinstance(at, int | float) and not isinstance(at, bool) and float(at) >= since
 
 
-def _snapshot(key: str) -> dict:
-    """One runtime snapshot of a session (`structured_runtime.snapshot`). Raises when it cannot be
-    read. Asked OUTSIDE the global lock for the output generation; inside it only through
-    `_idle_snapshot`, the one read the fence already made before #2230."""
-    from . import structured_runtime as runtime
-
-    return asyncio.run(runtime.snapshot(key))
-
-
 def _marker(snap: dict) -> tuple:
     """A session's output generation in one snapshot: its turn count, its last turn's id and
     status, and whether a turn or a background task runs. Any turn that starts, settles or is
@@ -276,7 +267,7 @@ async def _fresh(mission_id: str, cand: dict) -> dict | None:
         if await _output_generation(keys, source) != before:
             return []
         # The reviewer's own generation is checked once more in the fence, from the one snapshot
-        # `_idle_snapshot` reads there: a reviewer that answered again after the gather.
+        # `_idle_snapshot` validates there: a reviewer that answered again after the gather.
         seen["reviewer"] = next((m for k, m in before if k == source), None) if source else None
         return got
 
@@ -319,24 +310,28 @@ def _still_valid(mission_id: str, cand: dict) -> bool:
     return bool(cand.get("judged")) or _recorded_since(now[0], cand["fresh_at"])
 
 
-def _idle_snapshot(key: str) -> dict | None:
-    """The reviewer's snapshot when it is between turns with no background task, else None: the
-    ONE runtime read the fence makes (the read `mission_steps._idle` makes), so the reviewer's
-    output generation is compared from it and nothing new is read under the global lock."""
-    try:
-        snap = _snapshot(key)
-    except Exception:  # noqa: BLE001 — could not look: not idle
-        return None
-    if snap.get("active_turn") or (snap.get("native") or {}).get("background_active"):
-        return None
-    return snap
+async def _observe(key: str):
+    """The reviewer's pre-fence observation, awaited on the MAIN loop (`fence_idle.observe`,
+    #2232): no runtime snapshot is ever taken inside the fence."""
+    from . import fence_idle
+
+    return await fence_idle.observe(key)
 
 
-def _fence_ready(mission_id: str, key: str, cand: dict) -> bool:
-    """Asked INSIDE the fence: the reviewer is idle, a judged read's reviewer has not moved since
-    before the gather (its turn settled, a new one, the move to idle — Hermes on #2230), and the
-    store still says this round (`_still_valid`). One snapshot, then store reads."""
-    snap = _idle_snapshot(key)
+def _idle_snapshot(key: str, obs=None) -> dict | None:  # noqa: ARG001 — the key names the session
+    """The reviewer's OBSERVED snapshot when it was idle and has not moved since (#2232:
+    `fence_idle.validate`, lock-free and `asyncio`-free), else None. Asked inside the fence."""
+    from . import fence_idle
+
+    return fence_idle.validate(obs)
+
+
+def _fence_ready(mission_id: str, key: str, cand: dict, obs=None) -> bool:
+    """Asked INSIDE the fence: the reviewer is idle as observed before the fence and unchanged
+    since (#2232), a judged read's reviewer has not moved since before the gather (its turn
+    settled, a new one, the move to idle — Hermes on #2230), and the store still says this round
+    (`_still_valid`). A lock-free marker read, then store reads."""
+    snap = _idle_snapshot(key, obs)
     if snap is None:
         return False
     if cand.get("judged") and cand.get("reviewer_marker") != _marker(snap):
@@ -392,11 +387,12 @@ async def _settle_one(mission_id: str, cand: dict) -> dict | None:
 
         await missions.run_admitted(direct)
     else:
+        obs = await _observe(key)  # on this loop, BEFORE the fence (#2232)
         await mission_fence.fenced_step_stop(
             mission_id,
             key,
             settle,
-            idle=lambda: _fence_ready(mission_id, key, cand),
+            idle=lambda: _fence_ready(mission_id, key, cand, obs),
         )
     return got[0] if got else None
 

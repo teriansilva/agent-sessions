@@ -674,18 +674,23 @@ def _settled_runs(mission_id: str) -> list[tuple[dict, str]]:
     ]
 
 
-def _idle(key: str) -> bool:
-    """Is ``key``'s session between turns, with no background task running? Blocking: asked
-    INSIDE the fence (`fenced_step_stop(idle=…)`), where no guarded turn can be admitted. False
-    while a turn or task runs (evidence can land mid-turn, Hermes on #1581) and when it can't be
-    read: the next pass looks again."""
-    from . import structured_runtime as runtime
+async def _observe(key: str):
+    """The session's pre-fence observation, awaited on the MAIN loop (`fence_idle.observe`,
+    #2232): its snapshot is never taken inside the fence."""
+    from . import fence_idle
 
-    try:
-        snap = asyncio.run(runtime.snapshot(key))
-    except Exception:  # noqa: BLE001 — could not look: not idle
-        return False
-    return not (snap.get("active_turn") or (snap.get("native") or {}).get("background_active"))
+    return await fence_idle.observe(key)
+
+
+def _idle(key: str, obs=None) -> bool:
+    """Is ``key``'s session between turns, with no background task running, as observed before
+    the fence and unchanged since? Asked INSIDE the fence (`fenced_step_stop(idle=…)`), where no
+    guarded turn can be admitted: lock-free and `asyncio`-free (`fence_idle.validate`, #2232).
+    False while a turn or task runs (evidence can land mid-turn, Hermes on #1581), when it moved
+    since the observation, and when it can't be read: the next pass looks again."""
+    from . import fence_idle
+
+    return fence_idle.validate(obs) is not None
 
 
 async def finish_recorded_stops() -> int:
@@ -777,8 +782,9 @@ async def reconcile(mission_id: str) -> int:
             if not key:
                 await missions.run_admitted(lambda s=settle: s("stopped"))
             else:
+                obs = await _observe(key)  # on this loop, BEFORE the fence (#2232)
                 await mission_fence.fenced_step_stop(
-                    mission_id, key, settle, idle=lambda k=key: _idle(k)
+                    mission_id, key, settle, idle=lambda k=key, o=obs: _idle(k, o)
                 )
             n += 1 if any(settled) else 0
         except Exception:  # noqa: BLE001 — one run must not stop the others

@@ -264,7 +264,10 @@ async def fenced_step_stop(mission_id: str, key: str, settle, *, idle=None) -> s
     * ``detached`` / ``elsewhere`` / ``member`` — the operator detached it, another open mission
       holds it, or this mission holds it as another member: nothing is stopped;
     * ``busy`` — ``idle()`` (a blocking predicate, asked inside the fence) said a turn or task
-      still runs: nothing is stopped;
+      still runs: nothing is stopped. ``idle()`` must be lock-free and ``asyncio``-free: it may
+      not take a session's runtime snapshot here (a chat session's takes a main-loop
+      ``asyncio.Lock``); callers observe before the fence and validate inside it
+      (``fence_idle``, #2232);
     * ``leaked`` — the stop could not be proved, or ownership could not be read.
 
     The run's state never picks the path: the session's membership does (independent review on

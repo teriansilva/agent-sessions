@@ -166,7 +166,18 @@ def _fence(monkeypatch, *, idle: bool | None, outcome: str) -> list:
         return await asyncio.to_thread(run, key, settle, idle)
 
     if idle is not None:
-        monkeypatch.setattr(mission_steps, "_idle", lambda key: idle)
+        monkeypatch.setattr(mission_steps, "_idle", lambda key, obs=None: idle)
+
+        async def observed(key):
+            return None  # the fence's predicate above answers; no runtime to observe here
+
+        monkeypatch.setattr(mission_steps, "_observe", observed)
+    else:
+        # The real pre-fence observation (#2232) over the test's scripted `runtime.snapshot`;
+        # these sessions have no persisted runtime, so the lock-free marker is a stable stand-in.
+        from agent_sessions import fence_idle
+
+        monkeypatch.setattr(fence_idle, "marker_reader", lambda key: (lambda: ("stable",)))
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fenced)
     return seen
 

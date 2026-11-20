@@ -61,7 +61,8 @@ def _approve(mid: str) -> dict:
 
 #: The real fresh read, before the autouse fixture replaces it with a forge that repeats itself.
 REAL_READ_WHEN = mission_rework._read_when
-#: The real idle read the fence makes (it reads `_snapshot`, which a test controls).
+#: The real in-fence validation (it re-reads the observation's marker reader, which a test
+#: controls).
 REAL_IDLE_SNAPSHOT = mission_rework._idle_snapshot
 
 
@@ -89,11 +90,13 @@ def _src_run(mid: str) -> dict:
 
 
 def _fenced(monkeypatch, idle=lambda key: True) -> _Fence:
-    """The fence, with `idle(key)` a hook run inside it before its one runtime read."""
+    """The fence, with `idle(key)` a hook run inside it before its lock-free validation."""
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
     monkeypatch.setattr(
-        mission_rework, "_idle_snapshot", lambda key: REAL_IDLE_SNAPSHOT(key) if idle(key) else None
+        mission_rework,
+        "_idle_snapshot",
+        lambda key, obs=None: REAL_IDLE_SNAPSHOT(key, obs) if idle(key) else None,
     )
     return fence
 
@@ -440,14 +443,28 @@ def reviewer(monkeypatch):
     r = _Reviewer()
     r.others = {}
     r.keys = [KEY]
-    monkeypatch.setattr(mission_rework, "_snapshot", r.snapshot)
+    from agent_sessions import fence_idle
 
     async def on_the_loop(key):
         r.loops.append(asyncio.get_running_loop())
         return r.snapshot(key)
 
+    def marker(key):  # what the fence re-reads lock-free (#2232): the same scripted state
+        try:
+            # The class method, not the instance's (possibly counted) snapshot reader.
+            return ("t",) + mission_rework._marker(_Reviewer.snapshot(r, key))
+        except Exception:
+            return None
+
     r.loops = []
+    r.marker_reads = []
     monkeypatch.setattr(mission_rework, "_snapshot_async", on_the_loop)
+    monkeypatch.setattr(fence_idle, "_snapshot", on_the_loop)
+    monkeypatch.setattr(
+        fence_idle,
+        "marker_reader",
+        lambda key: lambda: (r.marker_reads.append(key), marker(key))[1],
+    )
     monkeypatch.setattr(mission_rework, "_gathered_keys", lambda m: list(r.keys))
     monkeypatch.setattr(mission_judge, "gather", lambda mid_, cwd: object())
     monkeypatch.setattr(mission_judge, "row_fingerprint", lambda inp, row: "fp")
@@ -547,33 +564,38 @@ async def test_a_different_set_of_sessions_after_the_gather_spends_no_round(monk
 
 
 @pytest.mark.anyio
-async def test_the_fence_makes_one_runtime_read_under_the_lock(monkeypatch, reviewer):
-    """Independent review of #2230: a chat snapshot waits on that session's own asyncio lock, so
-    the fence reads nothing new under the global lock — ONE snapshot (the reviewer's idle read),
-    whatever the number of gathered sessions."""
+async def test_the_fence_takes_no_runtime_snapshot_under_the_lock(monkeypatch, reviewer):
+    """#2232 (after the independent review of #2230): a chat snapshot waits on that session's own
+    asyncio lock, so the fence takes NO runtime snapshot under the global lock — only the
+    reviewer's lock-free marker is re-read there, whatever the number of gathered sessions."""
     mid, doc = _at_review_with_session()
     _judged_review(mid, doc)
     reviewer.keys = [KEY, OTHER]
-    under_lock: list[str] = []
+    snaps_under_lock: list[str] = []
     real = reviewer.snapshot
 
     def counted(key):
         if session_input._lock.locked():
-            under_lock.append(key)
+            snaps_under_lock.append(key)
         return real(key)
 
-    monkeypatch.setattr(mission_rework, "_snapshot", counted)
+    monkeypatch.setattr(reviewer, "snapshot", counted)
     real_ready = mission_rework._fence_ready
+    marker_reads_under_lock: list[str] = []
 
-    def ready_under_the_lock(m, key, cand):
+    def ready_under_the_lock(m, key, cand, obs=None):
         with session_input._lock:  # what the real fence holds around `idle()`
-            return real_ready(m, key, cand)
+            before = len(reviewer.marker_reads)
+            got = real_ready(m, key, cand, obs)
+            marker_reads_under_lock.extend(reviewer.marker_reads[before:])
+            return got
 
     monkeypatch.setattr(mission_rework, "_fence_ready", ready_under_the_lock)
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
     assert await mission_rework.sweep(mid) == 1 and fence.stopped == 1
-    assert under_lock == [KEY], under_lock
+    assert snaps_under_lock == [], snaps_under_lock
+    assert marker_reads_under_lock == [KEY], marker_reads_under_lock
 
 
 @pytest.mark.anyio
@@ -585,11 +607,7 @@ async def test_the_generation_is_read_on_the_main_loop_never_a_second_one(monkey
     _judged_review(mid, doc)
     reviewer.keys = [KEY, OTHER]
 
-    def no_second_loop(key):
-        raise AssertionError("a generation snapshot was driven through a worker-thread loop")
-
-    monkeypatch.setattr(mission_rework, "_snapshot", no_second_loop)
-    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key: {})  # the fence's own read
+    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key, obs=None: {})
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
     loop = asyncio.get_running_loop()
