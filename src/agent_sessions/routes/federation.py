@@ -172,6 +172,9 @@ NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/federation"
 WS_PATH = "/ws/fed"
 BODY_MAX = 16 * 1024
+#: The whole grants list's wait for a locked store, in seconds (#2228): shared by every read the
+#: handler makes, so a busy file answers `busy` inside it rather than one wait per read.
+GRANTS_READ_DEADLINE_S = 5.0
 
 
 def _json(payload: object, status: int = 200) -> JSONResponse:
@@ -401,6 +404,10 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 return _error(_read_error(exc))
             except continue_here.ContinueError as exc:
                 return _json({"detail": exc.detail, "code": exc.code}, exc.status)
+            except store.StoreBusy as exc:
+                # The FILE was locked longer than the request may wait (#2228): retryable, and
+                # its message names no path, SQL or lock.
+                return _json({"detail": str(exc), "code": "busy"}, exc.status)
             except store.StoreError as exc:
                 return _json({"detail": str(exc), "code": "store"}, exc.status)
 
@@ -509,6 +516,12 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
     @app.get(f"{PREFIX}/grants", dependencies=[Depends(logged_in)])
     async def federation_grants(session: str = "", peer: str = "") -> JSONResponse:
         def read() -> dict:
+            # ONE wait budget for every read below (#2228): a locked file answers `busy` within
+            # it, never one five-second wait per read.
+            with store.request_deadline(GRANTS_READ_DEADLINE_S):
+                return listing()
+
+        def listing() -> dict:
             if peer and not identity.PEER_ID_RE.fullmatch(peer):
                 raise FederationError("not_found", "unknown peer", status=404)
             rows = grants.listing(federation.store, session or None)

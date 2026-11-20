@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -56,8 +57,15 @@ from pathlib import Path
 
 from . import fence, identity
 
+log = logging.getLogger(__name__)
+
 SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
+#: A TRANSACTION held longer than this (a write from its `BEGIN IMMEDIATE`, a multi-statement
+#: read from its first lock) is logged with the store method that held it and for how long, and a
+#: wait that ended busy with the method that waited — names and durations only, never content
+#: (#2228: name what holds the file, never mistake a waiting reader for it).
+SLOW_HOLD_S = 1.0
 DB_FILE = "federation.db"
 PEERS_MAX = 64
 NAME_MAX = 64
@@ -389,6 +397,72 @@ class Busy(StoreError):
         super().__init__(message, status=503)
 
 
+class StoreBusy(StoreError):
+    """The store's FILE was locked by another connection for longer than this request may wait
+    (#2228): SQLite's "database is locked". Distinct from :class:`Busy`, a grant's delivery
+    fence. Nothing was committed. Retryable. The message names no path, SQL or lock."""
+
+    def __init__(self) -> None:
+        super().__init__("the sharing store is busy; try again", status=503)
+
+
+#: SQLite's primary result code for a lock another connection holds (``SQLITE_BUSY``). Not
+#: ``SQLITE_LOCKED``: without a shared cache that is a conflict on the SAME connection, a code bug,
+#: never a retryable busy answer.
+_SQLITE_BUSY = 5
+
+
+def _is_busy(exc: BaseException) -> bool:
+    """A lock/busy failure, and nothing else: a corrupt file, a full disk, a missing table and
+    every other ``OperationalError`` keep failing as they are."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return (code & 0xFF) == _SQLITE_BUSY
+    return str(exc).lower().startswith("database is locked")
+
+
+_deadline = threading.local()
+
+
+@contextlib.contextmanager
+def request_deadline(seconds: float) -> Iterator[None]:
+    """ONE wait budget for every store access this thread makes inside the block (#2228): each
+    connection's ``busy_timeout`` and the schema lock wait get what is LEFT of it, never a fresh
+    five seconds per read. Past it, an access that would wait raises :class:`StoreBusy`. Nests:
+    the innermost (earliest) deadline wins. No retries are made."""
+    outer = getattr(_deadline, "at", None)
+    at = time.monotonic() + max(0.0, float(seconds))
+    _deadline.at = at if outer is None else min(outer, at)
+    try:
+        yield
+    finally:
+        _deadline.at = outer
+
+
+def _remaining_s() -> float | None:
+    at = getattr(_deadline, "at", None)
+    return None if at is None else at - time.monotonic()
+
+
+def _cap_wait(con: sqlite3.Connection) -> None:
+    """Cap this connection's lock wait to what is left of a :func:`request_deadline`, from here
+    on (SQLite's `busy_timeout` applies to each later statement, and each may wait what was left
+    when it was set): asked before the caller's block and before `COMMIT`. A spent budget waits
+    1 ms — the statement still runs, and fails busy only if the file really is locked (no write
+    is refused just because its work ran past the deadline)."""
+    left = _remaining_s()
+    if left is None:
+        return
+    con.execute(f"PRAGMA busy_timeout={max(1, min(BUSY_TIMEOUT_MS, int(left * 1000)))}")
+
+
+def _log_slow(what: str, seconds: float) -> None:
+    if seconds > SLOW_HOLD_S:
+        log.warning("federation store: %s %s for %.1fs", _holder(), what, seconds)
+
+
 class StaleMirror(StoreError):
     """A peer's list was read before a leave this instance has since confirmed (#2201): nothing
     of it was written."""
@@ -694,10 +768,44 @@ def clean_name(raw: object, *, fallback: str = "") -> str:
 
 
 def _raw_connect(p: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(str(p), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    """A connection whose lock wait is the store's own ``BUSY_TIMEOUT_MS``, or what is left of a
+    :func:`request_deadline` when that is less (#2228). Past the deadline: :class:`StoreBusy`."""
+    wait_ms = BUSY_TIMEOUT_MS
+    left = _remaining_s()
+    if left is not None:
+        if left <= 0:
+            raise StoreBusy()
+        wait_ms = max(1, min(BUSY_TIMEOUT_MS, int(left * 1000)))
+    con = sqlite3.connect(str(p), timeout=wait_ms / 1000, isolation_level=None)
     con.row_factory = sqlite3.Row
-    con.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    con.execute(f"PRAGMA busy_timeout={int(wait_ms)}")
     return con
+
+
+def _holder() -> str:
+    """The store method a connection was opened for (the first frame outside this module's
+    plumbing): a NAME, never an argument or a value."""
+    import sys
+
+    frame = sys._getframe(1)
+    plumbing = {
+        "_holder",
+        "_log_slow",
+        "_connect",
+        "_read",
+        "_write",
+        "__exit__",
+        "__enter__",
+        "_with_fences",
+        "_ensure_schema",
+        "_ensure_schema_on",
+    }
+    while frame is not None:
+        name = frame.f_code.co_name
+        if name not in plumbing and not name.startswith("<"):
+            return name
+        frame = frame.f_back
+    return "unknown"
 
 
 def _version(con: sqlite3.Connection) -> int:
@@ -710,15 +818,36 @@ def _backup(p: Path, version: int) -> Path:
     never collide on the name."""
     dest = p.with_name(f"{p.name}.bak-v{version}-{int(time.time())}-{secrets.token_hex(3)}")
     os.close(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))
-    src = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+
+    def within_deadline(status: int, remaining: int, total: int) -> None:  # noqa: ARG001
+        # SQLite's backup retries a busy source with no end of its own: inside a
+        # `request_deadline` it gives up with the deadline (#2228, Hermes on #2236).
+        left = _remaining_s()
+        if left is not None and left <= 0:
+            raise StoreBusy()
+
     try:
-        out = sqlite3.connect(str(dest))
+        left = _remaining_s()
+        wait_s = BUSY_TIMEOUT_MS / 1000
+        if left is not None:
+            wait_s = max(0.001, min(left, wait_s))
+        src = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=wait_s)
         try:
-            src.backup(out)
+            out = sqlite3.connect(str(dest))
+            try:
+                # The WHOLE file in one step (`pages=-1`, as before): a stepwise copy releases the
+                # source between steps and restarts on every write in between, so under steady
+                # writes it never finishes. A busy whole-file step still returns BUSY, and the
+                # progress callback aborts it at the deadline.
+                src.backup(out, pages=-1, progress=within_deadline, sleep=0.05)
+            finally:
+                out.close()
         finally:
-            out.close()
-    finally:
-        src.close()
+            src.close()
+    except BaseException:
+        with contextlib.suppress(OSError):
+            dest.unlink()  # a partial copy is no backup
+        raise
     return dest
 
 
@@ -792,80 +921,134 @@ class Store:
             os.close(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))
         con = _raw_connect(p)
         try:
-            # Asked BEFORE anything that writes: a file from a newer build is refused untouched.
-            v = _version(con)
-            if v > SCHEMA_VERSION:
-                raise StoreUnsupported(v)
-            if v == SCHEMA_VERSION:
-                return
-            if v > 0:
-                # BEFORE the first migrating statement: a complete copy of the existing file.
-                _backup(p, v)
-            con.execute("BEGIN IMMEDIATE")
-            try:
-                v = _version(
-                    con
-                )  # re-read under the write lock: another process may have created it
-                if v > SCHEMA_VERSION:
-                    raise StoreUnsupported(v)
-                if v < SCHEMA_VERSION:
-                    # A new file gets every step; an existing one the steps it lacks, in place.
-                    for step, statements in (
-                        (1, _SCHEMA_V1),
-                        (2, _SCHEMA_V2),
-                        (3, _SCHEMA_V3),
-                        (4, _SCHEMA_V4),
-                        (5, _SCHEMA_V5),
-                    ):
-                        if v < step:
-                            for stmt in statements:
-                                con.execute(stmt)
-                    con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                con.execute("COMMIT")
-            except BaseException:
-                con.execute("ROLLBACK")
-                raise
+            self._ensure_schema_on(con, p)
+        except sqlite3.OperationalError as exc:
+            if _is_busy(exc):
+                raise StoreBusy() from exc
+            raise
         finally:
             con.close()
 
+    def _ensure_schema_on(self, con: sqlite3.Connection, p: Path) -> None:
+        """The body of :meth:`_ensure_schema`, on its connection (#2228: its caller translates
+        a lock it could not get into :class:`StoreBusy`)."""
+        # Asked BEFORE anything that writes: a file from a newer build is refused untouched.
+        v = _version(con)
+        if v > SCHEMA_VERSION:
+            raise StoreUnsupported(v)
+        if v == SCHEMA_VERSION:
+            return
+        if v > 0:
+            # BEFORE the first migrating statement: a complete copy of the existing file.
+            _backup(p, v)
+        _cap_wait(con)  # what is left of a request deadline, not the probe's stale wait
+        con.execute("BEGIN IMMEDIATE")
+        had = time.monotonic()
+        try:
+            v = _version(con)  # re-read under the write lock: another process may have created it
+            if v > SCHEMA_VERSION:
+                raise StoreUnsupported(v)
+            if v < SCHEMA_VERSION:
+                # A new file gets every step; an existing one the steps it lacks, in place.
+                for step, statements in (
+                    (1, _SCHEMA_V1),
+                    (2, _SCHEMA_V2),
+                    (3, _SCHEMA_V3),
+                    (4, _SCHEMA_V4),
+                    (5, _SCHEMA_V5),
+                ):
+                    if v < step:
+                        for stmt in statements:
+                            con.execute(stmt)
+                con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            _cap_wait(con)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            _log_slow("held the schema migration", time.monotonic() - had)
+
+    @contextlib.contextmanager
+    def _schema_locked(self) -> Iterator[None]:
+        """The schema lock, waited on no longer than a :func:`request_deadline` allows."""
+        left = _remaining_s()
+        if left is None:
+            self._schema_lock.acquire()
+        elif left <= 0 or not self._schema_lock.acquire(timeout=left):
+            raise StoreBusy()
+        try:
+            yield
+        finally:
+            self._schema_lock.release()
+
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        """One connection, its schema checked. A lock the file could not be had for — at either
+        version probe or anywhere in the caller's block — raises :class:`StoreBusy` (#2228); every
+        other error is unchanged. A wait that ended busy is logged as a WAIT; holds are timed by
+        :meth:`_write` and :meth:`_read`, from when their lock was had."""
         p = self.db_path
-        with self._schema_lock:
+        with self._schema_locked():
             if not self._schema_done or not p.exists():
                 self._ensure_schema(p)
                 self._schema_done = True
         con = _raw_connect(p)
+        opened = time.monotonic()
         try:
-            # A newer build may have migrated the file after this object checked it.
-            v = _version(con)
-            if v > SCHEMA_VERSION:
-                raise StoreUnsupported(v)
-            if v < SCHEMA_VERSION:  # replaced under this object by an older file: migrate again
-                with self._schema_lock:
-                    self._ensure_schema(p)
-            yield con
+            try:
+                # A newer build may have migrated the file after this object checked it.
+                v = _version(con)
+                if v > SCHEMA_VERSION:
+                    raise StoreUnsupported(v)
+                if v < SCHEMA_VERSION:  # replaced under this object by an older file: migrate
+                    with self._schema_locked():
+                        self._ensure_schema(p)
+                _cap_wait(con)
+                yield con
+            except sqlite3.OperationalError as exc:
+                if _is_busy(exc):
+                    raise StoreBusy() from exc
+                raise
+        except StoreBusy:
+            # The method that WAITED, never logged as a holder.
+            _log_slow("waited for the database and gave up", time.monotonic() - opened)
+            raise
         finally:
             con.close()
 
     @contextlib.contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction. Its HOLD is timed from when `BEGIN IMMEDIATE` returned (the
+        reserved lock is had) to its `COMMIT` or `ROLLBACK`, and logged past :data:`SLOW_HOLD_S`
+        (#2228)."""
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            had = time.monotonic()
             try:
                 yield con
+                _cap_wait(con)
                 con.execute("COMMIT")
             except BaseException:
                 con.execute("ROLLBACK")
                 raise
+            finally:
+                _log_slow("held a write transaction", time.monotonic() - had)
 
     @contextlib.contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
-        """One consistent read of several statements (a deferred transaction, rolled back)."""
+        """One consistent read of several statements (a deferred transaction, rolled back). Its
+        shared lock is taken FIRST, so the hold it logs past :data:`SLOW_HOLD_S` starts when the
+        lock was had, never while it waited (#2228)."""
         with self._connect() as con:
             con.execute("BEGIN")
             try:
-                yield con
+                con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()  # the shared lock
+                had = time.monotonic()
+                try:
+                    yield con
+                finally:
+                    _log_slow("held a read transaction", time.monotonic() - had)
             finally:
                 con.execute("ROLLBACK")
 

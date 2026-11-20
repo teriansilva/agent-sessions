@@ -272,7 +272,7 @@ def _refused(exc: store.StoreError) -> inputs.InputError:
         return inputs.InputError(NOT_FOUND, str(exc), status=404)
     if isinstance(exc, store.Conflict):
         return inputs.InputError("conflict", str(exc), status=409)
-    return inputs.InputError("store", str(exc), exc.status)
+    return inputs.InputError(inputs.store_code(exc), str(exc), exc.status)
 
 
 def _ids(grant_id: object, note_id: object = "x" * 22) -> None:

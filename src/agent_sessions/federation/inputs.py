@@ -77,6 +77,12 @@ _AUDIT_TEXT = {
 }
 
 
+def store_code(exc: store.StoreError) -> str:
+    """The code a store failure answers with: `busy` when the store's file was locked (#2228),
+    retryable like the delivery fence's `busy`; `store` otherwise."""
+    return "busy" if isinstance(exc, store.StoreBusy) else "store"
+
+
 class InputError(Exception):
     """An operator request about a suggestion that is refused. ``status`` is the HTTP status;
     ``state`` is the suggestion's state when another decision won."""
@@ -410,7 +416,7 @@ def _begin_approval(st: store.Store, suggestion_id: str, text: str | None, appro
             "ended", "the share this was suggested under has ended", status=409
         ) from None
     except store.StoreError as exc:
-        raise InputError("store", str(exc), exc.status) from None
+        raise InputError(store_code(exc), str(exc), exc.status) from None
     _audit(
         "approved",
         session_key=made.session_key,
@@ -481,7 +487,7 @@ async def _deliver_approved(st: store.Store, suggestion_id: str) -> store.Sugges
         # Still `approving`: the next approve call replays it with the same operation id.
         raise InputError("runtime", exc.detail, exc.status) from None
     except store.StoreError as exc:
-        raise InputError("store", str(exc), exc.status) from None
+        raise InputError(store_code(exc), str(exc), exc.status) from None
 
     def finish() -> store.Suggestion:
         try:
@@ -583,7 +589,7 @@ async def decide_reject(fed, suggestion_id: object, *, approver: str) -> store.S
         except store.StateConflict as exc:
             raise _decided(exc.state) from None
         except store.StoreError as exc:
-            raise InputError("store", str(exc), exc.status) from None
+            raise InputError(store_code(exc), str(exc), exc.status) from None
         _audit(
             "rejected",
             session_key=gone.session_key,

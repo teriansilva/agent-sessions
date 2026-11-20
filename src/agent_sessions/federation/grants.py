@@ -249,8 +249,8 @@ def _code(exc: store.StoreError) -> str:
         return "not_found"
     if isinstance(exc, store.Conflict):
         return "conflict"
-    if isinstance(exc, store.Busy):
-        return "busy"
+    if isinstance(exc, store.Busy | store.StoreBusy):
+        return "busy"  # a delivery under the grant, or the store's file locked (#2228)
     return "store"
 
 
