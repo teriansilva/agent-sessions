@@ -37,7 +37,11 @@ import { Led } from "../components/hud/Meters";
 import { Loader } from "../components/hud/Loader";
 import { RowMenu, type RowMenuEntry } from "../components/sidebar/RowMenu";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
-import { KindTag, VisibilityTag } from "../components/artifacts/ArtifactBits";
+import {
+  KindTag,
+  LinkFacts,
+  VisibilityTag,
+} from "../components/artifacts/ArtifactBits";
 import {
   PublicOffDialog,
   SharePubliclyDialog,
@@ -416,10 +420,18 @@ export default function ArtifactDetail() {
                       Copy
                     </button>
                   </div>
+                  <LinkFacts artifact={a} />
                   <p className={styles.note}>
                     {a.public_since ? `Shared ${when(a.public_since)}. ` : ""}
-                    Anyone with this link can open it, no sign-in. It serves the
-                    latest revision.
+                    {a.public_has_password
+                      ? "Anyone with this link and its password can open it, no sign-in."
+                      : "Anyone with this link can open it, no sign-in."}{" "}
+                    It serves the latest revision.
+                    {a.public_has_password ||
+                    a.public_expires_at ||
+                    a.public_header === false
+                      ? " To change the password, expiry or header, revoke and share again: that makes a new link."
+                      : ""}
                   </p>
                   <div>
                     <button
@@ -454,6 +466,16 @@ export default function ArtifactDetail() {
                       Copy
                     </button>
                   </div>
+                  {a.public_expired && (
+                    <div data-testid="artifact-link-expired">
+                      <LinkFacts artifact={a} />
+                      <p className={styles.note}>
+                        The public link stopped working at its expiry. Your
+                        private link is unchanged; sharing again makes a new
+                        link.
+                      </p>
+                    </div>
+                  )}
                   {offHere ? (
                     <div className={styles.offBox}>
                       <Ban size={14} aria-hidden="true" />

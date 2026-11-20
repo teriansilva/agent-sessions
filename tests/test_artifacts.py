@@ -850,6 +850,11 @@ def test_the_access_log_never_keeps_a_view_token_or_public_id():
     )
     assert shares.redact("/artifacts/p/Vq8Lz3N0cR2yWb6hT1eKpA/") == "/artifacts/p/<redacted>/"
     assert shares.redact("/artifacts/5449-5592-2107-4372/") == "/artifacts/5449-5592-2107-4372/"
+    # A password link's unlock token (#2217) sits after the id: both are masked.
+    assert (
+        shares.redact("/artifacts/p/Vq8Lz3N0cR2yWb6hT1eKpA/~u/eyJwIjoi.Zz-_9.sig/a.css")
+        == "/artifacts/p/<redacted>/~u/<redacted>/a.css"
+    )
 
 
 # ---- independent review of #1933: bytes, ownership, races, the judge ---------------------------
@@ -1457,7 +1462,8 @@ def test_the_public_link_is_the_battlelab_viewer_page(viewer_client, auth_cfg, o
     # Its one fetch: the title, kind and time of a LIVE link — nothing else.
     meta = visitor.get(path + "~meta")
     assert meta.status_code == 200
-    assert set(meta.json()) == {"title", "kind", "updated_at"}
+    assert set(meta.json()) == {"title", "kind", "updated_at", "header"}
+    assert meta.json()["header"] is True
     assert meta.json()["title"] == "Hi" and meta.json()["kind"] == "site"
     assert meta.headers["cache-control"] == "no-store"
     # The artifact's own files live under ~/, sandboxed, with relative links beneath it.
@@ -1707,3 +1713,324 @@ def test_the_e2e_markdown_page_fixture_is_the_servers_own_output():
     if os.environ.get("AGENT_SESSIONS_REGEN_FIXTURES") == "1":
         out.write_text(page, encoding="utf-8")
     assert out.read_text(encoding="utf-8") == page, "stale fixture: see the comment above"
+
+
+# ---- link options: password, expiry, header (#2217) -------------------------------------------
+
+
+def _share_with(client, auth_cfg, origin, proj, **options) -> tuple[dict, dict, str]:
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    r = client.post(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(client, auth_cfg), json=options
+    )
+    assert r.status_code == 200, r.text
+    shared = r.json()
+    return a, shared, shared["public_url"].split("your-domain.example", 1)[1]
+
+
+def _visitor(client) -> TestClient:
+    return TestClient(client.app, base_url="https://your-domain.example")
+
+
+def _unlock(visitor, path, password, origin="https://your-domain.example"):
+    return visitor.post(path + "~unlock", json={"password": password}, headers={"Origin": origin})
+
+
+def test_a_password_link_shows_nothing_until_the_password(viewer_client, auth_cfg, origin, proj):
+    a, shared, path = _share_with(viewer_client, auth_cfg, origin, proj, password="s3cret pass")
+    assert shared["public_has_password"] is True
+    assert "s3cret" not in json.dumps(shared) and "pbkdf2" not in json.dumps(shared)
+    visitor = _visitor(viewer_client)
+    # The page itself is served (it asks); its meta says only that a password is needed.
+    assert visitor.get(path).status_code == 200
+    meta = visitor.get(path + "~meta")
+    # Only that a password is needed and whether the page wears the header: no title, kind, time.
+    assert meta.status_code == 401 and meta.json() == {
+        "detail": "password required",
+        "password_required": True,
+        "header": True,
+    }
+    # The content is never under ~/ for a password link.
+    assert visitor.get(path + "~/").status_code == 404
+    assert visitor.get(path + "~/docs/").status_code == 404
+    # A wrong password, no password, or another origin opens nothing.
+    wrong = _unlock(visitor, path, "nope")
+    assert wrong.status_code == 401 and wrong.json()["tries_left"] == 4
+    assert "token" not in wrong.json() and "title" not in wrong.json()
+    assert _unlock(visitor, path, "").status_code == 401
+    # A lone surrogate is valid escaped JSON but no UTF-8 text: a wrong password, never a 500.
+    surrogate = visitor.post(
+        path + "~unlock",
+        content=b'{"password": "\\ud800"}',
+        headers={"Origin": "https://your-domain.example", "Content-Type": "application/json"},
+    )
+    assert surrogate.status_code == 401 and surrogate.json()["password_required"] is True
+    # A body that is not a JSON object is the share route's 422, not a password answer.
+    bad = visitor.post(
+        path + "~unlock", content=b"[1]", headers={"Origin": "https://your-domain.example"}
+    )
+    assert bad.status_code == 422
+    assert _unlock(visitor, path, "s3cret pass", origin="https://evil.example").status_code == 403
+    # The right one answers the meta and a token; the files are under ~u/<token>/.
+    ok = _unlock(visitor, path, "s3cret pass")
+    assert ok.status_code == 200 and ok.headers["cache-control"] == "no-store"
+    body = ok.json()
+    assert body["title"] == "Hi" and body["header"] is True
+    unlocked = f"{path}~u/{body['token']}/"
+    page = visitor.get(unlocked)
+    assert page.status_code == 200 and "<h1>hi</h1>" in page.text
+    csp = page.headers["content-security-policy"]
+    assert csp.startswith("sandbox ") and "allow-same-origin" not in csp
+    assert page.headers["cache-control"] == "no-store"
+    assert visitor.get(unlocked + "docs/").text == "docs"
+    bare = visitor.get(unlocked.rstrip("/"), follow_redirects=False)
+    assert bare.status_code == 308 and bare.headers["location"] == unlocked
+    # A forged token, or one for another link, opens nothing; nor does its bare form redirect.
+    assert visitor.get(f"{path}~u/{body['token']}x/").status_code == 404
+    forged_bare = visitor.get(f"{path}~u/{body['token']}x", follow_redirects=False)
+    assert forged_bare.status_code == 404
+    from agent_sessions.routes import artifacts as routes
+
+    other = routes.unlock_token(auth_cfg, "B" * 22)
+    assert visitor.get(f"{path}~u/{other}/").status_code == 404
+    # Revoke ends the unlocked token on the next request.
+    viewer_client.delete(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(viewer_client, auth_cfg)
+    )
+    assert visitor.get(unlocked).status_code == 404
+    assert _unlock(visitor, path, "s3cret pass").status_code == 404
+
+
+def test_an_unlock_token_expires(viewer_client, auth_cfg, origin, proj, monkeypatch):
+    _, _, path = _share_with(viewer_client, auth_cfg, origin, proj, password="pw")
+    visitor = _visitor(viewer_client)
+    token = _unlock(visitor, path, "pw").json()["token"]
+    assert visitor.get(f"{path}~u/{token}/").status_code == 200
+    from agent_sessions.routes import artifacts as routes
+
+    monkeypatch.setattr(routes, "UNLOCK_TTL_S", -1)
+    assert visitor.get(f"{path}~u/{token}/").status_code == 404
+
+
+def test_a_password_less_link_has_no_unlock_and_no_token_route(
+    viewer_client, auth_cfg, origin, proj
+):
+    _, _, path = _share_with(viewer_client, auth_cfg, origin, proj)
+    visitor = _visitor(viewer_client)
+    assert _unlock(visitor, path, "anything").status_code == 404
+    from agent_sessions.routes import artifacts as routes
+
+    token = routes.unlock_token(auth_cfg, path.split("/")[3])
+    assert visitor.get(f"{path}~u/{token}/").status_code == 404
+    assert visitor.get(path + "~/").status_code == 200
+
+
+def test_wrong_passwords_are_throttled_before_the_check(
+    viewer_client, auth_cfg, origin, proj, monkeypatch
+):
+    from agent_sessions import auth
+
+    _, _, path = _share_with(viewer_client, auth_cfg, origin, proj, password="right")
+    checks = []
+    real = auth.verify_password
+
+    def counted(pw, encoded):
+        checks.append(pw)
+        return real(pw, encoded) if pw == "right" else False
+
+    monkeypatch.setattr(auth, "verify_password", counted)
+    visitor = _visitor(viewer_client)
+    for left in (4, 3, 2, 1, 0):
+        assert _unlock(visitor, path, "wrong").json()["tries_left"] == left
+    paused = _unlock(visitor, path, "right")
+    assert paused.status_code == 429 and paused.headers["retry-after"] == "900"
+    assert len(checks) == 5  # the paused attempt never reached the slow check
+
+
+def test_an_expired_link_is_the_same_404_everywhere(viewer_client, auth_cfg, origin, proj):
+    import time
+
+    a, shared, path = _share_with(
+        viewer_client, auth_cfg, origin, proj, expires_at=time.time() + 3600
+    )
+    assert shared["public_expires_at"] > time.time() and shared["public_expired"] is False
+    visitor = _visitor(viewer_client)
+    assert visitor.get(path + "~/").status_code == 200
+    # Time passes (the row's expiry moved into the past, as the clock would).
+    with artifact_store._tx() as con:
+        con.execute(
+            "UPDATE artifacts SET public_expires_at=? WHERE id=?", (time.time() - 1, a["id"])
+        )
+    assert visitor.get(path + "~/").status_code == 404
+    assert visitor.get(path + "~meta").status_code == 404
+    assert _unlock(visitor, path, "x").status_code == 404
+    # The operator sees that it expired; it counts and lists as private.
+    got = viewer_client.get(f"/api/artifacts/{a['id']}").json()
+    assert got["visibility"] == "private" and got["public_url"] is None
+    assert got["public_expired"] is True and got["public_expires_at"] < time.time()
+    assert viewer_client.get("/api/artifacts?visibility=public").json()["total"] == 0
+    assert viewer_client.get("/api/artifacts?visibility=private").json()["total"] == 1
+    assert viewer_client.get("/api/artifacts/settings").json()["public"] == 0
+    # Sharing again mints a NEW link; the expired one never comes back.
+    again = viewer_client.post(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(viewer_client, auth_cfg)
+    ).json()
+    assert again["public_url"] != shared["public_url"] and again["public_expired"] is False
+    assert again["public_expires_at"] is None
+    assert visitor.get(path + "~/").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "options, word",
+    [
+        ({"expires_at": 1.0}, "past"),
+        ({"expires_at": 9e12}, "too far"),
+        ({"expires_at": "tomorrow"}, "seconds"),
+        ({"expires_at": True}, "seconds"),
+        ({"header": "no"}, "header"),
+        ({"password": 5}, "text"),
+        ({"password": "x" * 257}, "too long"),
+        ({"colour": "red"}, "unknown option"),
+        ({"expires_at": 10**400}, "too far"),
+        ({"expires_at": -(10**400)}, "past"),
+    ],
+)
+def test_bad_options_are_refused_with_words(client, auth_cfg, origin, proj, options, word):
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    r = client.post(
+        f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(client, auth_cfg), json=options
+    )
+    assert r.status_code == 422 and word in r.json()["detail"]
+    assert client.get(f"/api/artifacts/{a['id']}").json()["visibility"] == "private"
+
+
+def test_a_non_finite_expiry_is_refused():
+    with pytest.raises(ValueError, match="too far"):
+        artifact_store.check_expiry(float("inf"))
+    # A JSON integer beyond float range (Hermes on PR #2220): a refusal, never an OverflowError.
+    with pytest.raises(ValueError, match="too far"):
+        artifact_store.check_expiry(10**400)
+    with pytest.raises(ValueError, match="past"):
+        artifact_store.check_expiry(-(10**400))
+    with pytest.raises(ValueError):
+        artifact_store.check_expiry(float("nan"))
+
+
+def test_a_headerless_link_says_so_in_its_meta_and_unlock(viewer_client, auth_cfg, origin, proj):
+    _, shared, path = _share_with(viewer_client, auth_cfg, origin, proj, header=False)
+    assert shared["public_header"] is False
+    visitor = _visitor(viewer_client)
+    assert visitor.get(path + "~meta").json()["header"] is False
+    assert visitor.get(path + "~/").status_code == 200  # the content itself is unchanged
+
+
+def test_a_locked_headerless_link_says_so_before_the_password(
+    viewer_client, auth_cfg, origin, proj
+):
+    _, _, path = _share_with(viewer_client, auth_cfg, origin, proj, header=False, password="pw")
+    visitor = _visitor(viewer_client)
+    locked = visitor.get(path + "~meta")
+    assert locked.status_code == 401 and locked.json()["header"] is False
+    assert "title" not in locked.json()
+    assert _unlock(visitor, path, "pw").json()["header"] is False
+
+
+def test_a_relay_hosted_share_refuses_options_it_cannot_honour(
+    client, auth_cfg, origin, proj, monkeypatch
+):
+    """Home Free (#2190): the public copy lives on the relay, which has no password, expiry or
+    header switch yet. Asking for one is refused with words, never an unprotected link."""
+    from agent_sessions import artifact_relay
+
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    calls = []
+
+    async def fake_share(aid):
+        calls.append(aid)
+        return artifact_store.get(aid)
+
+    monkeypatch.setattr(artifact_relay, "share", fake_share)
+    monkeypatch.setattr(artifact_store, "PUBLIC_AVAILABLE", False)
+    h = _csrf_headers(client, auth_cfg)
+    import time
+
+    soon = time.time() + 3600
+    for options in ({"password": "pw"}, {"expires_at": soon}, {"header": False}):
+        r = client.post(f"/api/artifacts/{a['id']}/share", headers=h, json=options)
+        assert r.status_code == 422 and "relay" in r.json()["detail"], options
+    assert calls == []
+    # The defaults, spelled out or not, still share through the relay as before.
+    assert client.post(f"/api/artifacts/{a['id']}/share", headers=h).status_code == 200
+    ok = client.post(
+        f"/api/artifacts/{a['id']}/share",
+        headers=h,
+        json={"password": "", "expires_at": None, "header": True},
+    )
+    assert ok.status_code == 200 and calls == [a["id"], a["id"]]
+
+
+def test_options_are_set_only_when_a_link_is_minted(origin, proj):
+    """The agent's option-less share (or a second operator share) never resets an operator's
+    password, expiry or header on a live link."""
+    import time
+
+    a = _published(origin, proj)
+    pw = artifact_store.hash_public_password("pw")
+    exp = time.time() + 600
+    first = artifact_store.share(a["id"], password_hash=pw, expires_at=exp, header=False)
+    second = artifact_store.share(a["id"])  # what artifact_share_public does
+    assert second["public_url"] == first["public_url"]
+    assert second["public_has_password"] is True
+    assert second["public_expires_at"] == exp and second["public_header"] is False
+    # Revoke takes the options (and the hash) with the link.
+    artifact_store.revoke(a["id"])
+    with artifact_store._con() as con:
+        row = con.execute("SELECT * FROM artifacts WHERE id=?", (a["id"],)).fetchone()
+    assert row["public_password_hash"] is None and row["public_expires_at"] is None
+    assert row["public_header"] == 1
+
+
+def test_a_version_1_store_gains_the_option_columns(origin, proj):
+    a = _published(origin, proj)
+    path = artifact_store.db_path()
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.executescript(
+        "CREATE TABLE old AS SELECT id, title, why, kind, engine, session_key, phys_key, cwd,"
+        " project_id, mission_id, created_at, updated_at, latest, public_id, public_since"
+        " FROM artifacts; PRAGMA foreign_keys=OFF; DROP TABLE artifacts;"
+        " ALTER TABLE old RENAME TO artifacts; PRAGMA user_version=1;"
+    )
+    con.close()
+    artifact_store.reset_for_tests()
+    shared = artifact_store.share(a["id"], header=False)
+    assert shared["visibility"] == "public" and shared["public_header"] is False
+
+
+def test_an_unencodable_password_is_refused_when_sharing(client, auth_cfg, origin, proj):
+    """The operator's share with a lone-surrogate password (Hermes on PR #2220): a 422 with words,
+    no link minted, never a 500."""
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    h = {**_csrf_headers(client, auth_cfg), "Content-Type": "application/json"}
+    r = client.post(
+        f"/api/artifacts/{a['id']}/share", headers=h, content=b'{"password": "\\ud800"}'
+    )
+    assert r.status_code == 422 and "not valid text" in r.json()["detail"]
+    got = client.get(f"/api/artifacts/{a['id']}").json()
+    assert got["visibility"] == "private" and got["public_url"] is None
+    with pytest.raises(ValueError, match="not valid text"):
+        artifact_store.hash_public_password("\ud800")
+
+
+def test_an_unencodable_password_never_matches(password_hash):
+    """`auth.verify_password` answers False for a lone surrogate (Hermes on PR #2220), which also
+    closes the same 500 on the session links' `/api/public/unlock`."""
+    from agent_sessions import auth
+
+    assert auth.verify_password("\ud800", password_hash) is False
+    assert auth.verify_password("hunter2", password_hash) is True

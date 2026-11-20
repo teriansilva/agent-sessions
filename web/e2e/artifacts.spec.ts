@@ -213,12 +213,21 @@ async function mockArtifacts(
           visibility: "public",
           public_url: `/artifacts/p/NEW${item.id.replace(/-/g, "")}xyzab/`,
           public_since: NOW,
+          // The link's options as the server keeps them (#2217): never the password itself.
+          public_has_password: Boolean(body?.password),
+          public_expires_at: body?.expires_at ?? null,
+          public_expired: false,
+          public_header: body?.header !== false,
         });
       } else {
         Object.assign(item, {
           visibility: "private",
           public_url: null,
           public_since: null,
+          public_has_password: false,
+          public_expires_at: null,
+          public_expired: false,
+          public_header: true,
         });
       }
       return route.fulfill({ json: view(item) });
@@ -443,6 +452,101 @@ test("share publicly needs 'I checked the files', then revoke ends the link", as
   expect(
     st.calls.filter((c) => c.method === "DELETE" && c.path.endsWith("/share")),
   ).toHaveLength(1);
+});
+
+test("a password, an expiry and no header go with the share, and the page shows what the link carries (#2217)", async ({
+  page,
+}) => {
+  await mockBase(page);
+  const st = await mockArtifacts(page);
+  await page.goto(artifactPath(SITE_ID));
+  await page.getByTestId("artifact-share").click();
+  const dialog = page.getByTestId("artifact-share-dialog");
+  await expect(dialog).toContainText("No expiry.");
+  await page.getByTestId("artifact-share-password").fill("open sesame");
+  await dialog.getByRole("button", { name: "7 days" }).click();
+  await page.getByTestId("artifact-share-header").uncheck();
+  await expect(page.getByTestId("artifact-share-summary")).toContainText(
+    "Anyone with the link and the password can open it.",
+  );
+  await expect(page.getByTestId("artifact-share-expiry-hint")).toContainText(
+    "Ends ",
+  );
+  await page.getByTestId("artifact-share-checked").check();
+  await page.getByTestId("artifact-share-confirm").click();
+  await expect(dialog).toBeHidden();
+  const posts = st.calls.filter(
+    (c) => c.method === "POST" && c.path.endsWith("/share"),
+  );
+  expect(posts).toHaveLength(1);
+  const sent = posts[0].body as {
+    password: string;
+    expires_at: number;
+    header: boolean;
+  };
+  expect(sent.password).toBe("open sesame");
+  expect(sent.header).toBe(false);
+  expect(sent.expires_at - Date.now() / 1000).toBeGreaterThan(7 * 86400 - 120);
+  const facts = page
+    .getByTestId("artifact-sharing")
+    .getByTestId("artifact-link-facts");
+  await expect(facts).toContainText("Password");
+  await expect(facts).toContainText(/Expires in [67]d/);
+  await expect(facts).toContainText("No header");
+  // The password is never shown back.
+  await expect(page.getByTestId("artifact-sharing")).not.toContainText(
+    "open sesame",
+  );
+});
+
+test("an expired link reads private, says when it ended, and shares again as a new link (#2217)", async ({
+  page,
+}) => {
+  await mockBase(page);
+  const st = await mockArtifacts(page);
+  const item = st.items.find((i) => i.id === SITE_ID)!;
+  Object.assign(item, {
+    visibility: "private",
+    public_url: null,
+    public_expired: true,
+    public_expires_at: NOW - 3600,
+  });
+  await page.goto(artifactPath(SITE_ID));
+  const sharing = page.getByTestId("artifact-sharing");
+  await expect(sharing).toContainText("Private");
+  await expect(page.getByTestId("artifact-link-expired")).toContainText(
+    "The public link stopped working at its expiry.",
+  );
+  await expect(page.getByTestId("artifact-link-expired")).toContainText(
+    /Expired /i,
+  );
+  await page.goto(ARTIFACTS_PATH);
+  await expect(
+    page.locator(`[data-artifact="${SITE_ID}"]`).getByTestId("artifact-link-facts").first(),
+  ).toContainText(/Link expired/i);
+});
+
+test("on a Home Free box the link's options are disabled, with the reason, and the share sends none (#2217)", async ({
+  page,
+}) => {
+  await mockBase(page, "none", { artifact_relay: true });
+  const st = await mockArtifacts(page);
+  await page.goto(artifactPath(SITE_ID));
+  await page.getByTestId("artifact-share").click();
+  const opts = page.getByTestId("artifact-share-options");
+  // A disabled fieldset disables every control in it (toBeDisabled reads native controls only).
+  await expect(opts).toHaveAttribute("disabled", "");
+  await expect(opts).toContainText("hosted on the BattleLab relay");
+  await expect(opts.getByRole("button", { name: "Show" })).toBeDisabled();
+  await expect(page.getByTestId("artifact-share-password")).toBeDisabled();
+  await page.getByTestId("artifact-share-checked").check();
+  await page.getByTestId("artifact-share-confirm").click();
+  await expect(page.getByTestId("artifact-share-dialog")).toBeHidden();
+  const posts = st.calls.filter(
+    (c) => c.method === "POST" && c.path.endsWith("/share"),
+  );
+  expect(posts).toHaveLength(1);
+  expect(posts[0].body).toBeNull();
 });
 
 test("without a login, Share publicly explains why public links are off — and asks the server nothing", async ({

@@ -990,14 +990,21 @@ _P_PATH = re.compile(r"/p/[A-Za-z0-9_-]+")
 REDACTED_PATH = "/p/<redacted>"
 _V_PATH = re.compile(r"/artifacts/v/[A-Za-z0-9_.-]+")
 REDACTED_VIEW_PATH = "/artifacts/v/<redacted>"
+# A password-protected public artifact's unlock token, `/artifacts/p/<id>/~u/<token>/…`: the `/p/`
+# rule masks the id, this one the token after it.
+_U_PATH = re.compile(r"/~u/[A-Za-z0-9_.-]+")
+REDACTED_UNLOCK_PATH = "/~u/<redacted>"
 
 
 def redact(text: str) -> str:
-    return _V_PATH.sub(REDACTED_VIEW_PATH, _P_PATH.sub(REDACTED_PATH, text))
+    text = _P_PATH.sub(REDACTED_PATH, text)
+    return _U_PATH.sub(REDACTED_UNLOCK_PATH, _V_PATH.sub(REDACTED_VIEW_PATH, text))
 
 
-_P_UNREDACTED = re.compile(r"/p/(?!<redacted>)[A-Za-z0-9_-]+|/artifacts/v/(?!<redacted>)[\w.-]+")
-_MARKERS = ("/p/", "/artifacts/v/")
+_P_UNREDACTED = re.compile(
+    r"/p/(?!<redacted>)[A-Za-z0-9_-]+|/artifacts/v/(?!<redacted>)[\w.-]+|/~u/(?!<redacted>)[\w.-]+"
+)
+_MARKERS = ("/p/", "/artifacts/v/", "/~u/")
 
 
 class RedactShareTokens(logging.Filter):

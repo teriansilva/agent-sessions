@@ -65,6 +65,7 @@ import type {
   ArtifactPage,
   ArtifactQuery,
   ArtifactSettings,
+  ArtifactShareOptions,
 } from "../types/artifacts";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
@@ -1898,7 +1899,8 @@ export const api = {
     getJsonWithDetail<ArtifactPage>("/api/artifacts" + artifactQueryString(query), signal),
   artifact: (id: string) => getJsonWithDetail<ArtifactDetail>(`/api/artifacts/${enc(id)}`),
   deleteArtifact: (id: string) => mutateJson<{ deleted: string }>("DELETE", `/api/artifacts/${enc(id)}`),
-  shareArtifact: (id: string) => mutateJson<Artifact>("POST", `/api/artifacts/${enc(id)}/share`),
+  shareArtifact: (id: string, options?: ArtifactShareOptions) =>
+    mutateJson<Artifact>("POST", `/api/artifacts/${enc(id)}/share`, options),
   revokeArtifact: (id: string) => mutateJson<Artifact>("DELETE", `/api/artifacts/${enc(id)}/share`),
   artifactSettings: () => getJsonWithDetail<ArtifactSettings>("/api/artifacts/settings"),
   setArtifactsEnabled: (enabled: boolean) =>

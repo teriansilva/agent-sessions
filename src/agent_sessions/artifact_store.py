@@ -296,7 +296,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
   updated_at REAL NOT NULL,
   latest INTEGER NOT NULL,
   public_id TEXT UNIQUE,
-  public_since REAL
+  public_since REAL,
+  public_password_hash TEXT,
+  public_expires_at REAL,
+  public_header INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS artifacts_session ON artifacts(session_key);
 CREATE INDEX IF NOT EXISTS artifacts_updated ON artifacts(updated_at);
@@ -390,6 +393,10 @@ def _add_relay_columns(con: sqlite3.Connection) -> None:
         # A first upload to the relay may be in flight or may have landed unacknowledged: set
         # BEFORE the upload, cleared only on a definite outcome (#2190).
         ("relay_pending", "INTEGER"),
+        # The box-hosted public link's options (#2217): a password hash, an expiry, the header.
+        ("public_password_hash", "TEXT"),
+        ("public_expires_at", "REAL"),
+        ("public_header", "INTEGER NOT NULL DEFAULT 1"),
     ):
         if col not in have:
             con.execute(f"ALTER TABLE artifacts ADD COLUMN {col} {kind}")
@@ -1026,6 +1033,7 @@ def public_url(public_id: str) -> str:
 def view(row: dict) -> dict:
     """An artifact as the operator API, the agent's tool and HQ see it. The public URL is only
     present while the artifact is shared."""
+    live = _live(row)
     out = {
         "id": row["id"],
         "title": row["title"],
@@ -1042,9 +1050,10 @@ def view(row: dict) -> dict:
             "mission_id": row["mission_id"],
         },
         # A relay copy that may exist (an unacknowledged first upload) is never called private.
+        # A box link past its expiry (#2217) is: it opens nothing.
         "visibility": (
             "public"
-            if row.get("public_id") or row.get("relay_public_id") or row.get("relay_pending")
+            if live or row.get("relay_public_id") or row.get("relay_pending")
             else "private"
         ),
         "url": operator_url(row["id"]),
@@ -1052,18 +1061,24 @@ def view(row: dict) -> dict:
             row["relay_url"]
             if row.get("relay_public_id")
             else public_url(row["public_id"])
-            if row.get("public_id")
+            if live
             else None
         ),
         # Where the public copy lives: this box, or the BattleLab relay (Home Free, #2190).
         "hosted_on": "relay"
         if row.get("relay_public_id") or row.get("relay_pending")
         else "box"
-        if row.get("public_id")
+        if live
         else None,
         # True while a first relay upload's outcome is unknown: revoke (or share again) settles it.
         "relay_uncertain": bool(row.get("relay_pending")) and not row.get("relay_public_id"),
-        "public_since": row.get("public_since"),
+        "public_since": row.get("public_since") if live else None,
+        # The box link's options (#2217), never the hash. An expired link keeps its row so the
+        # operator sees WHEN it ended; a re-share mints a new link.
+        "public_has_password": bool(row.get("public_password_hash")) if live else False,
+        "public_expires_at": row.get("public_expires_at") if row.get("public_id") else None,
+        "public_expired": bool(row.get("public_id")) and not live,
+        "public_header": bool(row.get("public_header", 1)) if live else True,
     }
     return out
 
@@ -1133,12 +1148,14 @@ def list_artifacts(
         if visibility not in VISIBILITIES:
             raise ValueError("bad visibility")
         # Public on the box OR as a relay-hosted copy (#2190); private is neither.
-        where.append(
-            "(a.public_id IS NOT NULL OR a.relay_public_id IS NOT NULL OR a.relay_pending = 1)"
-            if visibility == "public"
-            else "(a.public_id IS NULL AND a.relay_public_id IS NULL"
-            " AND COALESCE(a.relay_pending, 0) = 0)"
-        )
+        # A box link past its expiry (#2217) is private: it opens nothing.
+        public = (
+            "((a.public_id IS NOT NULL"
+            " AND (a.public_expires_at IS NULL OR a.public_expires_at > ?))"
+            " OR a.relay_public_id IS NOT NULL OR COALESCE(a.relay_pending, 0) = 1)"
+        )  # never NULL, so NOT (…) is exactly the rest
+        where.append(public if visibility == "public" else f"NOT {public}")
+        params.append(time.time())
     if q:
         needle = f"%{q.strip().lower()[:200]}%"
         where.append("(lower(a.title) LIKE ? OR lower(a.why) LIKE ? OR lower(a.cwd) LIKE ?)")
@@ -1258,9 +1275,79 @@ PUBLIC_OFF_REASON = (
 )
 
 
-def share(aid: str) -> dict:
-    """Mint the artifact's public link (a fresh 128-bit id); the artifact as the API sees it. An
-    already shared artifact keeps its link (the same answer twice). Raises `ArtifactRefused`."""
+#: A link's password is at most this long (`shares.MAX_PASSWORD`'s rule); a link lasts at most
+#: `MAX_EXPIRY_S` (ten years, as session links).
+PUBLIC_PASSWORD_MAX = 256
+MAX_EXPIRY_S = 10 * 365 * 86400
+
+
+def _live(row: dict, now: float | None = None) -> bool:
+    """A public link that may be opened right now: minted and not expired."""
+    if not row.get("public_id"):
+        return False
+    exp = row.get("public_expires_at")
+    return exp is None or exp > (time.time() if now is None else now)
+
+
+def hash_public_password(password: object) -> str | None:
+    """Validate and hash a public link's password (None/empty = none). Slow (PBKDF2): the share
+    route runs it before the write transaction. Raises `ValueError`."""
+    if password is None or password == "":
+        return None
+    if not isinstance(password, str):
+        raise ValueError("the password must be text")
+    if len(password) > PUBLIC_PASSWORD_MAX:
+        raise ValueError("the password is too long")
+    check_password_text(password)
+    from . import auth
+
+    return auth.hash_password(password)
+
+
+def check_password_text(password: str) -> None:
+    """A password is hashed as UTF-8; a lone surrogate (valid escaped JSON) is not. Refused, never
+    silently dropped (Hermes on PR #2220)."""
+    try:
+        password.encode()
+    except UnicodeEncodeError:
+        raise ValueError("the password has a character that is not valid text") from None
+
+
+def check_expiry(expires_at: object, now: float | None = None) -> float | None:
+    """A share's expiry: None (never) or epoch seconds in the future, at most `MAX_EXPIRY_S` away.
+    Raises `ValueError`."""
+    if expires_at is None:
+        return None
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int | float):
+        raise ValueError("the expiry must be a time in seconds")
+    now = time.time() if now is None else now
+    try:
+        value = float(expires_at)
+    except OverflowError:  # a JSON integer beyond float range: never a real time
+        raise ValueError(
+            "the expiry is too far away" if expires_at > 0 else "the expiry is in the past"
+        ) from None
+    if value != value or value <= now:  # NaN, or the past
+        raise ValueError("the expiry is in the past")
+    if value > now + MAX_EXPIRY_S:
+        raise ValueError("the expiry is too far away")
+    return value
+
+
+def share(
+    aid: str,
+    *,
+    password_hash: str | None = None,
+    expires_at: float | None = None,
+    header: bool = True,
+) -> dict:
+    """Mint the artifact's public link (a fresh 128-bit id); the artifact as the API sees it.
+
+    The options (``password_hash`` from `hash_public_password`, ``expires_at`` from
+    `check_expiry`, ``header``) are written ONLY when a link is minted. A live link keeps its link
+    AND its options (the same answer twice), so the agent's option-less share can never reset a
+    password the operator set; changing an option is revoke + share again. An expired link is
+    replaced by a NEW id: the old one never comes back. Raises `ArtifactRefused`."""
     validate_id(aid)
     if not PUBLIC_AVAILABLE:
         raise ArtifactRefused("public_off", status=409)
@@ -1268,10 +1355,11 @@ def share(aid: str) -> dict:
         row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
         if row is None:
             raise ArtifactRefused("unknown_artifact", status=404)
-        if row["public_id"] is None:
+        if not _live(dict(row)):
             con.execute(
-                "UPDATE artifacts SET public_id=?, public_since=? WHERE id=?",
-                (new_public_id(), time.time(), aid),
+                "UPDATE artifacts SET public_id=?, public_since=?, public_password_hash=?,"
+                " public_expires_at=?, public_header=? WHERE id=?",
+                (new_public_id(), time.time(), password_hash, expires_at, 1 if header else 0, aid),
             )
             row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
     return view(dict(row))
@@ -1279,11 +1367,14 @@ def share(aid: str) -> dict:
 
 def revoke(aid: str) -> dict:
     """End the artifact's public link now: the next request to it is a 404. A later share mints a
-    NEW link; the old one never comes back."""
+    NEW link; the old one never comes back. The link's options (its password hash included) go
+    with it."""
     validate_id(aid)
     with _tx() as con:
         cur = con.execute(
-            "UPDATE artifacts SET public_id=NULL, public_since=NULL WHERE id=?", (aid,)
+            "UPDATE artifacts SET public_id=NULL, public_since=NULL, public_password_hash=NULL,"
+            " public_expires_at=NULL, public_header=1 WHERE id=?",
+            (aid,),
         )
         if cur.rowcount == 0:
             raise ArtifactRefused("unknown_artifact", status=404)
@@ -1355,29 +1446,63 @@ def set_relay(
     return view(dict(row))
 
 
-def by_public_id(public_id: str) -> str | None:
-    """The artifact a live public link names, re-read on every request; None when there is none,
-    it was revoked, or public links are off."""
-    if not PUBLIC_AVAILABLE or not PUBLIC_ID_RE.fullmatch(public_id or "") or _absent():
-        return None
-    with _con() as con:
-        row = con.execute("SELECT id FROM artifacts WHERE public_id=?", (public_id,)).fetchone()
-    return row["id"] if row else None
+@dataclass(frozen=True)
+class PublicLink:
+    """A live public link as the public routes need it. ``password_hash`` never leaves the server:
+    the routes verify against it and answer nothing of it."""
+
+    artifact_id: str
+    title: str
+    kind: str
+    updated_at: float
+    header: bool
+    password_hash: str | None
 
 
-def public_meta(public_id: str) -> dict | None:
-    """What the public viewer page shows of a live public link (#2068): the title, the kind and
-    when it last changed. Nothing else — no session, folder, why or files. None when there is no
-    such live link (or public links are off)."""
+def public_link(public_id: str) -> PublicLink | None:
+    """The live link ``public_id`` names, re-read on every request; None when there is none, it
+    was revoked, it has expired, or public links are off. All four are one answer."""
     if not PUBLIC_AVAILABLE or not PUBLIC_ID_RE.fullmatch(public_id or "") or _absent():
         return None
     with _con() as con:
         row = con.execute(
-            "SELECT title, kind, updated_at FROM artifacts WHERE public_id=?", (public_id,)
+            "SELECT id, title, kind, updated_at, public_id, public_password_hash,"
+            " public_expires_at, public_header FROM artifacts WHERE public_id=?",
+            (public_id,),
         ).fetchone()
-    if row is None:
+    if row is None or not _live(dict(row)):
         return None
-    return {"title": row["title"], "kind": row["kind"], "updated_at": row["updated_at"]}
+    return PublicLink(
+        artifact_id=row["id"],
+        title=row["title"],
+        kind=row["kind"],
+        updated_at=row["updated_at"],
+        header=bool(row["public_header"]),
+        password_hash=row["public_password_hash"] or None,
+    )
+
+
+def by_public_id(public_id: str) -> str | None:
+    """The artifact a live public link names, re-read on every request; None when there is none,
+    it was revoked, it expired, or public links are off."""
+    link = public_link(public_id)
+    return link.artifact_id if link else None
+
+
+def public_meta(public_id: str) -> dict | None:
+    """What the public viewer page shows of a live public link (#2068): the title, the kind, when
+    it last changed and whether the header is shown. Nothing else — no session, folder, why or
+    files. None when there is no such live link (or public links are off). The CALLER withholds
+    it from a password link until the password is given."""
+    link = public_link(public_id)
+    if link is None:
+        return None
+    return {
+        "title": link.title,
+        "kind": link.kind,
+        "updated_at": link.updated_at,
+        "header": link.header,
+    }
 
 
 def delete(aid: str) -> bool:
@@ -1400,8 +1525,10 @@ def usage() -> dict:
             held = _stored_bytes(con)
             count = con.execute("SELECT count(*) FROM artifacts").fetchone()[0]
             public = con.execute(
-                "SELECT count(*) FROM artifacts WHERE public_id IS NOT NULL"
-                " OR relay_public_id IS NOT NULL OR relay_pending = 1"
+                "SELECT count(*) FROM artifacts WHERE (public_id IS NOT NULL"
+                " AND (public_expires_at IS NULL OR public_expires_at > ?))"
+                " OR relay_public_id IS NOT NULL OR relay_pending = 1",
+                (time.time(),),
             ).fetchone()[0]
     return {
         "artifacts": count,

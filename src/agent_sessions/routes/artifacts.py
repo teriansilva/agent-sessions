@@ -23,8 +23,16 @@ names exactly one artifact (and optionally one revision) and expires after `VIEW
 links stay under the token's prefix. The token reads that one artifact and nothing else.
 
 **Public links** (``/artifacts/p/<public_id>/``, P3) need no account. The row is re-read on every
-request, so a revoke ends the link on the next one; the link follows the latest revision. In
-``AUTH_MODE=none`` every public route is a 404 and sharing is refused (`public-shares.md`'s rule).
+request, so a revoke or the link's expiry ends it on the next one; the link follows the latest
+revision. In ``AUTH_MODE=none`` every public route is a 404 and sharing is refused
+(`public-shares.md`'s rule).
+
+**A password link** (#2217) answers nothing of itself before the password: ``~meta`` is a 401
+naming only whether the header is shown, and ``~/`` a 404. ``~unlock`` checks the password
+(attempts reserved before the slow check, the session links' `shares.UnlockThrottle`) and answers
+an unlock token, signed under its own salt and naming the link. The content is then served under
+``~u/<token>/``, in the path for the same reason as the view token: the sandboxed frame sends no
+cookie.
 """
 
 from __future__ import annotations
@@ -40,8 +48,8 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import artifact_relay, artifact_store
-from ..auth import AuthConfig, session_uid
+from .. import artifact_relay, artifact_store, auth, shares
+from ..auth import AuthConfig, enforce_origin, session_uid
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 VIEW_TTL_S = 12 * 3600
@@ -74,6 +82,27 @@ def _serializer(cfg: AuthConfig) -> URLSafeTimedSerializer:
 
 def view_token(cfg: AuthConfig, aid: str, revision: int | None) -> str:
     return _serializer(cfg).dumps({"a": aid, "r": revision})
+
+
+#: A password link's unlock token: its own salt (never a view token, session or share cookie), the
+#: link's public id inside, the session links' unlock lifetime. The link's own expiry and revoke are
+#: checked on every request beside it, so the token never outlives the link.
+UNLOCK_TTL_S = 12 * 3600
+_UNLOCK_SALT = "agent-sessions:artifact-public-unlock"
+
+
+def unlock_token(cfg: AuthConfig, public_id: str) -> str:
+    return URLSafeTimedSerializer(cfg.secret_key, salt=_UNLOCK_SALT).dumps({"p": public_id})
+
+
+def _read_unlock(cfg: AuthConfig, token: str, public_id: str) -> bool:
+    try:
+        data = URLSafeTimedSerializer(cfg.secret_key, salt=_UNLOCK_SALT).loads(
+            token, max_age=UNLOCK_TTL_S
+        )
+    except (BadSignature, SignatureExpired):
+        return False
+    return isinstance(data, dict) and data.get("p") == public_id
 
 
 def _read_token(cfg: AuthConfig, token: str) -> tuple[str, int | None] | None:
@@ -353,12 +382,58 @@ async def _json_body(request: Request) -> dict | None:
 _VIEWER_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 #: The prefix a public artifact's own files live under, beneath the viewer page (#2068).
 CONTENT_PREFIX = "~/"
+#: A password link's files live under ``~u/<unlock token>/`` instead (#2217).
+UNLOCKED_PREFIX = "~u/"
+#: The words for a relay-hosted share asked for options it does not have yet (#2217).
+RELAY_NO_OPTIONS = (
+    "A password, an expiry and hiding the header are not available yet for a public copy hosted"
+    " on the BattleLab relay (Home Free). Share without them, or turn sign-in on to host the link"
+    " on this box."
+)
+
+
+def _share_options(body: dict) -> tuple[str | None, float | None, bool]:
+    """``{password?, expires_at?, header?}`` → (password, expires_at, header). Raises
+    `ValueError` with words the dialog can show."""
+    unknown = set(body) - {"password", "expires_at", "header"}
+    if unknown:
+        raise ValueError(f"unknown option: {sorted(unknown)[0]}")
+    header = body.get("header", True)
+    if not isinstance(header, bool):
+        raise ValueError("header must be true or false")
+    password = body.get("password")
+    if password is not None and not isinstance(password, str):
+        raise ValueError("the password must be text")
+    if password and len(password) > artifact_store.PUBLIC_PASSWORD_MAX:
+        raise ValueError("the password is too long")
+    if password:
+        artifact_store.check_password_text(password)
+    return password or None, artifact_store.check_expiry(body.get("expires_at")), header
+
+
+async def _public_link(public_id: str) -> artifact_store.PublicLink | None:
+    try:
+        return await asyncio.to_thread(artifact_store.public_link, public_id)
+    except artifact_store.ArtifactsUnavailable:
+        return None
+
+
+def _meta(link: artifact_store.PublicLink) -> dict:
+    return {
+        "title": link.title,
+        "kind": link.kind,
+        "updated_at": link.updated_at,
+        "header": link.header,
+    }
 
 
 def register(
     app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard, web_dist: Path | None = None
 ) -> None:
     artifact_store.PUBLIC_AVAILABLE = cfg.auth_mode != "none"
+    # Wrong passwords on public artifact links, counted like session links' (`public-shares.md`):
+    # 5 per (link, client), 20 per link, then 15 minutes' pause.
+    throttle = shares.UnlockThrottle()
     global _RENDERER_DIR
     _RENDERER_DIR = (web_dist / "assets") if web_dist is not None else None
     # ---- the operator API -----------------------------------------------------------------
@@ -482,10 +557,38 @@ def register(
 
     @app.post("/api/artifacts/{aid}/share")
     async def artifact_share(
-        aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+        aid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         """Mint (or return) the artifact's public link. In ``none`` mode (Home Free) the public copy
-        is hosted on the BattleLab relay instead (#2190); 409 with the reason when it can't be."""
+        is hosted on the BattleLab relay instead (#2190); 409 with the reason when it can't be.
+
+        An optional body ``{password?, expires_at?, header?}`` (#2217) sets a box link's options;
+        they apply only when a link is minted (a live link keeps its own). A relay-hosted copy
+        has none of them yet: asking for one there is refused, never silently dropped."""
+        options: dict = {}
+        if await request.body():
+            body = await _json_body(request)
+            if body is None:
+                return JSONResponse(
+                    {"detail": "a JSON object is required"}, status_code=422, headers=_NO_STORE
+                )
+            try:
+                password, expires_at, header = _share_options(body)
+            except ValueError as e:
+                return _fail(e)
+            if not artifact_store.PUBLIC_AVAILABLE and (password or expires_at or not header):
+                return JSONResponse(
+                    {"detail": RELAY_NO_OPTIONS}, status_code=422, headers=_NO_STORE
+                )
+            # The slow PBKDF2 runs before the store's write transaction.
+            try:
+                pw_hash = await asyncio.to_thread(artifact_store.hash_public_password, password)
+            except ValueError as e:
+                return _fail(e)
+            options = {"password_hash": pw_hash, "expires_at": expires_at, "header": header}
         if not artifact_store.PUBLIC_AVAILABLE:
             try:
                 out = await artifact_relay.share(aid)
@@ -495,7 +598,7 @@ def register(
                 return _fail(e)
             return JSONResponse(out, headers=_NO_STORE)
         try:
-            out = await asyncio.to_thread(artifact_store.share, aid)
+            out = await asyncio.to_thread(lambda: artifact_store.share(aid, **options))
         except artifact_store.ArtifactRefused as e:
             if e.code == "public_off":
                 return JSONResponse(
@@ -527,27 +630,112 @@ def register(
 
     @app.get("/artifacts/p/{public_id}/~meta")
     async def hosted_public_meta(public_id: str) -> Response:
-        """The viewer page's one fetch (#2068): `{title, kind, updated_at}` of a live link, else 404
-        (the same answer for unknown, revoked and `none` mode)."""
-        try:
-            meta = await asyncio.to_thread(artifact_store.public_meta, public_id)
-        except artifact_store.ArtifactsUnavailable:
-            meta = None
-        if meta is None:
+        """The viewer page's first fetch (#2068): `{title, kind, updated_at, header}` of a live
+        link, else 404 (the same answer for unknown, revoked, expired and `none` mode). A password
+        link answers 401 `{password_required: true, header}`: before the password, nothing of the
+        artifact (no title, kind or time), only whether the page wears the header around its
+        password card."""
+        link = await _public_link(public_id)
+        if link is None:
             return JSONResponse({"detail": "not found"}, status_code=404, headers=_VIEWER_HEADERS)
-        return JSONResponse(meta, headers=_VIEWER_HEADERS)
+        if link.password_hash:
+            return JSONResponse(
+                {"detail": "password required", "password_required": True, "header": link.header},
+                status_code=401,
+                headers=_VIEWER_HEADERS,
+            )
+        return JSONResponse(_meta(link), headers=_VIEWER_HEADERS)
+
+    @app.post("/artifacts/p/{public_id}/~unlock")
+    async def hosted_public_unlock(public_id: str, request: Request) -> Response:
+        """Trade a password link's password for its meta and an unlock token (#2217). Only the
+        viewer page itself may ask (Origin). Each attempt is reserved from the throttle before the
+        slow check; a correct one hands it back. Unknown, revoked, expired and password-less links
+        are all the one 404."""
+        if not artifact_store.PUBLIC_AVAILABLE:
+            return JSONResponse({"detail": "not found"}, status_code=404, headers=_VIEWER_HEADERS)
+        enforce_origin(cfg, request)
+        body = await _json_body(request)
+        if body is None:
+            return JSONResponse(
+                {"detail": "a JSON object is required"}, status_code=422, headers=_VIEWER_HEADERS
+            )
+        password = body.get("password")
+        link = await _public_link(public_id)
+        if link is None or not link.password_hash:
+            return JSONResponse({"detail": "not found"}, status_code=404, headers=_VIEWER_HEADERS)
+        if not isinstance(password, str) or password == "":
+            return JSONResponse(
+                {"detail": "password required", "password_required": True},
+                status_code=401,
+                headers=_VIEWER_HEADERS,
+            )
+        from .shares import _client_ip
+
+        ip = _client_ip(request)
+        bucket = f"artifact:{public_id}"
+        stamp = throttle.reserve(bucket, ip)
+        if stamp is None:
+            return JSONResponse(
+                {
+                    "detail": "too many wrong passwords — try again later",
+                    "retry_after": shares.PAUSE_S,
+                },
+                status_code=429,
+                headers={**_VIEWER_HEADERS, "Retry-After": str(shares.PAUSE_S)},
+            )
+        ok = len(password) <= artifact_store.PUBLIC_PASSWORD_MAX and await asyncio.to_thread(
+            auth.verify_password, password, link.password_hash
+        )
+        if not ok:
+            return JSONResponse(
+                {
+                    "detail": "wrong password",
+                    "password_required": True,
+                    "tries_left": throttle.tries_left(bucket, ip),
+                },
+                status_code=401,
+                headers=_VIEWER_HEADERS,
+            )
+        throttle.succeed(bucket, ip, stamp)
+        return JSONResponse(
+            {**_meta(link), "token": unlock_token(cfg, public_id)}, headers=_VIEWER_HEADERS
+        )
+
+    @app.get("/artifacts/p/{public_id}/~u/{token}/{rest:path}")
+    async def hosted_public_unlocked(
+        public_id: str, token: str, rest: str, request: Request
+    ) -> Response:
+        """A password link's files, for a holder of its unlock token. The row is re-read now: a
+        revoke or the link's expiry ends the token on the next request."""
+        link = await _public_link(public_id)
+        if link is None or not link.password_hash or not _read_unlock(cfg, token, public_id):
+            return _hosted_error(404, "not found")
+        resp = await _serve(link.artifact_id, rest, None, request)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/artifacts/p/{public_id}/~u/{token}")
+    async def hosted_public_unlocked_bare(public_id: str, token: str) -> Response:
+        # The same one 404 as the content route for a bad, foreign or ended token.
+        link = await _public_link(public_id)
+        if link is None or not link.password_hash or not _read_unlock(cfg, token, public_id):
+            return _hosted_error(404, "not found")
+        return RedirectResponse(
+            f"/artifacts/p/{quote(public_id)}/{UNLOCKED_PREFIX}{quote(token)}/",
+            status_code=308,
+            headers=SANDBOX_HEADERS,
+        )
 
     @app.get("/artifacts/p/{public_id}/~/{rest:path}")
     async def hosted_public(public_id: str, rest: str, request: Request) -> Response:
         """A public link's own files: no account, the row re-read now, the latest revision, under
-        the sandbox headers. The viewer page frames ``~/``; relative links stay beneath it."""
-        try:
-            aid = await asyncio.to_thread(artifact_store.by_public_id, public_id)
-        except artifact_store.ArtifactsUnavailable:
-            aid = None
-        if aid is None:
+        the sandbox headers. The viewer page frames ``~/``; relative links stay beneath it. A
+        password link's files are never here: only under ``~u/<token>/``."""
+        link = await _public_link(public_id)
+        if link is None or link.password_hash:
             return _hosted_error(404, "not found")
-        resp = await _serve(aid, rest, None, request)
+        resp = await _serve(link.artifact_id, rest, None, request)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

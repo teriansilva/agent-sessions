@@ -33,11 +33,26 @@ export interface Artifact {
    *  without its link being known here. Revoke (or share again) settles it. */
   relay_uncertain?: boolean;
   public_since: number | null;
+  /** A box link's options (#2217). Absent on a server from before them. */
+  public_has_password?: boolean;
+  /** When the box link stops (or stopped) working; null = never. */
+  public_expires_at?: number | null;
+  /** The box link reached its expiry: it opens nothing and the artifact is private again. */
+  public_expired?: boolean;
+  /** False: the link opens without the BattleLab header. */
+  public_header?: boolean;
   files: number;
   bytes: number;
   /** The file the stable link opens (null for a site without an index.html). Absent on a server
    *  from before #1932 P2. */
   entry?: string | null;
+}
+
+/** A public link's options (#2217), set when the link is made. Omitted = today's link. */
+export interface ArtifactShareOptions {
+  password?: string;
+  expires_at?: number | null;
+  header?: boolean;
 }
 
 export interface ArtifactRevision {

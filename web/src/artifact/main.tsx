@@ -9,7 +9,8 @@ import { ArtifactViewer } from "./ArtifactViewer";
  *
  *  Its own small bundle, like the session-share and reply viewers: no service worker, no operator
  *  session, no cookie. It reads the link's `~meta` and frames the artifact's `~/` content in a
- *  sandbox. `artifactBundle.test.ts` keeps it that way. */
+ *  sandbox; a password link (#2217) first posts `~unlock` and frames `~u/<token>/` instead.
+ *  `artifactBundle.test.ts` keeps it that way. */
 bootPageTheme();
 applyMotion(resolveMotion("system", prefersReducedMotion()));
 createRoot(document.getElementById("root")!).render(

@@ -101,7 +101,107 @@ test("Share publicly stays off until the files are checked, then shares once", a
   expect(confirm).toBeEnabled();
   await userEvent.click(confirm);
   await waitFor(() => expect(onShared).toHaveBeenCalledTimes(1));
-  expect(api.shareArtifact).toHaveBeenCalledWith(A.id);
+  // The defaults (#2217): no password, never expires, the header on — today's link.
+  expect(api.shareArtifact).toHaveBeenCalledWith(A.id, {
+    expires_at: null,
+    header: true,
+  });
+});
+
+test("the link's options: a password, an expiry and no header travel with the share (#2217)", async () => {
+  vi.mocked(api.shareArtifact).mockResolvedValue({
+    ...A,
+    files: 1,
+    bytes: 10,
+    visibility: "public",
+    public_url: "/artifacts/p/x/",
+  });
+  render(
+    <MemoryRouter>
+      <SharePubliclyDialog
+        artifact={A}
+        files={1}
+        bytes={10}
+        onCancel={() => {}}
+        onShared={() => {}}
+        onPublicOff={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("artifact-share-summary")).toHaveTextContent(
+    /Anyone with the link can open it\. No sign-in\. No expiry\./,
+  );
+  await userEvent.type(screen.getByTestId("artifact-share-password"), "pw 1");
+  await userEvent.click(screen.getByRole("button", { name: "7 days" }));
+  await userEvent.click(screen.getByTestId("artifact-share-header"));
+  expect(screen.getByTestId("artifact-share-summary")).toHaveTextContent(
+    /Anyone with the link and the password can open it\. No sign-in\. It stops working/,
+  );
+  expect(screen.getByTestId("artifact-share-expiry-hint")).toHaveTextContent(
+    /^Ends /,
+  );
+  await userEvent.click(screen.getByTestId("artifact-share-checked"));
+  const before = Date.now() / 1000;
+  await userEvent.click(screen.getByTestId("artifact-share-confirm"));
+  await waitFor(() => expect(api.shareArtifact).toHaveBeenCalledTimes(1));
+  const [, options] = vi.mocked(api.shareArtifact).mock.calls[0];
+  expect(options).toMatchObject({ password: "pw 1", header: false });
+  const exp = options!.expires_at as number;
+  expect(exp).toBeGreaterThanOrEqual(Math.floor(before) + 7 * 86400 - 1);
+  expect(exp).toBeLessThanOrEqual(Date.now() / 1000 + 7 * 86400 + 1);
+});
+
+test("a picked date that is not in the future keeps the share off (#2217)", async () => {
+  render(
+    <MemoryRouter>
+      <SharePubliclyDialog
+        artifact={A}
+        files={1}
+        bytes={10}
+        onCancel={() => {}}
+        onShared={() => {}}
+        onPublicOff={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  await userEvent.click(screen.getByTestId("artifact-share-checked"));
+  await userEvent.click(screen.getByRole("button", { name: "Pick a date…" }));
+  expect(screen.getByTestId("artifact-share-confirm")).toBeDisabled();
+  expect(screen.getByTestId("artifact-share-expiry-hint")).toHaveTextContent(
+    "Pick a date and time in the future.",
+  );
+});
+
+test("on a Home Free box the options are disabled, with the reason, and the share is option-less (#2217)", async () => {
+  vi.mocked(api.shareArtifact).mockResolvedValue({
+    ...A,
+    files: 1,
+    bytes: 10,
+    visibility: "public",
+    public_url: "https://x.artifacts.battlelabos.com/",
+  });
+  render(
+    <MemoryRouter>
+      <SharePubliclyDialog
+        artifact={A}
+        files={1}
+        bytes={10}
+        viaRelay
+        onCancel={() => {}}
+        onShared={() => {}}
+        onPublicOff={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  const opts = screen.getByTestId("artifact-share-options");
+  expect(opts).toBeDisabled();
+  expect(screen.getByTestId("artifact-share-password")).toBeDisabled();
+  expect(opts).toHaveAccessibleDescription(/hosted on the BattleLab relay/);
+  await userEvent.click(screen.getByTestId("artifact-share-checked"));
+  await userEvent.click(screen.getByTestId("artifact-share-confirm"));
+  await waitFor(() =>
+    expect(api.shareArtifact).toHaveBeenCalledWith(A.id, undefined),
+  );
 });
 
 test("the server's 409 public_off hands over to the off dialog with its reason", async () => {

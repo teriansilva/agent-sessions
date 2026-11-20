@@ -103,7 +103,12 @@ def verify_password(password: str, encoded: str) -> bool:
         expected = bytes.fromhex(key_hex)
     except ValueError:
         return False
-    got = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iters, _PBKDF2_DKLEN)
+    try:
+        raw = password.encode()
+    except UnicodeEncodeError:
+        # A lone surrogate is valid escaped JSON ("\ud800") but no UTF-8 string; it can't match.
+        return False
+    got = hashlib.pbkdf2_hmac("sha256", raw, salt, iters, _PBKDF2_DKLEN)
     return hmac.compare_digest(got, expected)
 
 

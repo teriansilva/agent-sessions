@@ -41,7 +41,11 @@ import { Loader } from "../components/hud/Loader";
 import { Readout } from "../components/hud/Meters";
 import { RowMenu, type RowMenuEntry } from "../components/sidebar/RowMenu";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
-import { KindTag, VisibilityTag } from "../components/artifacts/ArtifactBits";
+import {
+  KindTag,
+  LinkFacts,
+  VisibilityTag,
+} from "../components/artifacts/ArtifactBits";
 import { StoreGauge } from "../components/artifacts/StoreGauge";
 import { useArtifactNames } from "../components/artifacts/useArtifactNames";
 import {
@@ -670,10 +674,16 @@ export default function Artifacts() {
                         <small>{filesLabel(a.files)}</small>
                       </div>
                       <div className={styles.visCol}>
-                        <VisibilityTag visibility={a.visibility} />
+                        <span className={styles.visStack}>
+                          <VisibilityTag visibility={a.visibility} />
+                          <LinkFacts artifact={a} compact />
+                        </span>
                       </div>
                       <div className={styles.visM}>
-                        <VisibilityTag visibility={a.visibility} />
+                        <span className={styles.visStack}>
+                          <VisibilityTag visibility={a.visibility} />
+                          <LinkFacts artifact={a} compact />
+                        </span>
                       </div>
                       <div className={styles.acts}>
                         <a

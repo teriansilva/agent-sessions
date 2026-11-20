@@ -53,13 +53,21 @@ const ALLOWED_OUTSIDE = new Set([
   "lib/shareFormat.ts",
 ]);
 
-const SPEC = /(?:import|export)\s[^'"]*?from\s*["']([^"']+)["']|import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
-const CSS_SPEC = /@import\s+["']([^"']+)["']|composes:[^;]*from\s+["']([^"']+)["']/g;
+const SPEC =
+  /(?:import|export)\s[^'"]*?from\s*["']([^"']+)["']|import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
+const CSS_SPEC =
+  /@import\s+["']([^"']+)["']|composes:[^;]*from\s+["']([^"']+)["']/g;
 
 function resolveLocal(from: string, spec: string): string | null {
   if (!spec.startsWith(".")) return null; // a package (react, react-markdown, lucide-react…)
   const base = resolve(dirname(from), spec);
-  for (const cand of [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx")]) {
+  for (const cand of [
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    join(base, "index.ts"),
+    join(base, "index.tsx"),
+  ]) {
     if (existsSync(cand) && statSync(cand).isFile()) return cand;
   }
   throw new Error(`unresolved import ${spec} from ${relative(SRC, from)}`);
@@ -96,10 +104,14 @@ function walk(): Set<string> {
 }
 
 describe("the public artifact viewer bundle (#2068)", () => {
-  const reached = [...walk()].map((f) => relative(SRC, f).split("\\").join("/"));
+  const reached = [...walk()].map((f) =>
+    relative(SRC, f).split("\\").join("/"),
+  );
 
   test("reaches only its own modules and the allowlisted pure ones", () => {
-    const outside = reached.filter((f) => !f.startsWith("artifact/") && !ALLOWED_OUTSIDE.has(f));
+    const outside = reached.filter(
+      (f) => !f.startsWith("artifact/") && !ALLOWED_OUTSIDE.has(f),
+    );
     expect(outside).toEqual([]);
   });
 
@@ -115,7 +127,7 @@ describe("the public artifact viewer bundle (#2068)", () => {
     expect(reached).toContain("components/public/PublicBar.tsx");
   });
 
-  test("talks to no /api route: its one read is the link's ~meta", () => {
+  test("talks to no /api route: it reads the link's ~meta and, for a password link, ~unlock", () => {
     const viewer = reached.filter((f) => /\.tsx?$/.test(f));
     const code = viewer
       .map((f) => readFileSync(join(SRC, f), "utf8"))
@@ -123,16 +135,24 @@ describe("the public artifact viewer bundle (#2068)", () => {
       .replace(/\/\*[\s\S]*?\*\//g, "") // comments may NAME a route; code may not call one
       .replace(/^\s*\/\/.*$/gm, "");
     expect(code).not.toMatch(/["'`]\/api\//);
-    // Exactly one fetch, of the metadata, cookie-less.
-    expect(code.match(/\bfetch\(/g) ?? []).toHaveLength(1);
+    // Exactly two fetches, both of the link's own routes, both cookie-less (#2217): the metadata,
+    // and the password unlock.
+    expect(code.match(/\bfetch\(/g) ?? []).toHaveLength(2);
     expect(code).toMatch(/fetch\(`\/artifacts\/p\/\$\{id\}\/~meta`/);
-    expect(code).toMatch(/credentials: "omit"/);
+    expect(code).toMatch(/fetch\(`\/artifacts\/p\/\$\{id\}\/~unlock`/);
+    expect(code).toMatch(/const OPTS: RequestInit = \{\s*credentials: "omit"/);
+    expect(code.match(/\.\.\.OPTS/g) ?? []).toHaveLength(2);
     // No other way out: no WebSocket, beacon, operator page or socket path.
-    expect(code).not.toMatch(/new WebSocket|sendBeacon|["'`]\/(ws|login|logout|link)\b/);
+    expect(code).not.toMatch(
+      /new WebSocket|sendBeacon|["'`]\/(ws|login|logout|link)\b/,
+    );
   });
 
   test("the frame never gets allow-same-origin", () => {
-    const viewer = readFileSync(join(SRC, "artifact", "ArtifactViewer.tsx"), "utf8");
+    const viewer = readFileSync(
+      join(SRC, "artifact", "ArtifactViewer.tsx"),
+      "utf8",
+    );
     expect(viewer).toMatch(/sandbox=\{FRAME_SANDBOX\}/);
     expect(FRAME_SANDBOX.split(/\s+/)).not.toContain("allow-same-origin");
     expect(FRAME_SANDBOX.split(/\s+/)).toContain("allow-scripts");

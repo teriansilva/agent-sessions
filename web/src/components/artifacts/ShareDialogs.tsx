@@ -8,14 +8,28 @@
  *    says so plainly: the copy leaves this box.
  *  - **Public links are off** (`AUTH_MODE=none`, no relay): the dialog says why, keeps the private
  *    link one tap away and points at Security settings. It opens either from the config before any
- *    request, or from the server's 409 `public_off` (with the relay's reason when it refused). */
+ *    request, or from the server's 409 `public_off` (with the relay's reason when it refused).
+ *  - **The link's options** (#2217): a password, an expiry and the BattleLab header, set when the
+ *    link is made. The defaults are the link as it always was. A relay copy has none of them yet
+ *    (#2219), so on a Home Free box they show disabled with the reason. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Ban, Copy, ShieldCheck, TriangleAlert } from "lucide-react";
 
 import { api } from "../../lib/api";
+import {
+  EXPIRY_PRESETS,
+  expiryFor,
+  formatWhen,
+  nowSeconds,
+  type ExpiryPreset,
+} from "../../lib/shareFormat";
 import { settingsPath } from "../../routes/settingsTabs";
-import type { Artifact, ArtifactDetail } from "../../types/artifacts";
+import type {
+  Artifact,
+  ArtifactDetail,
+  ArtifactShareOptions,
+} from "../../types/artifacts";
 import { ConfirmDialog } from "../templates/ConfirmDialog";
 import { ArtifactDialog } from "./ArtifactDialog";
 import {
@@ -52,12 +66,32 @@ export function SharePubliclyDialog({
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [preset, setPreset] = useState<ExpiryPreset>("never");
+  const [picked, setPicked] = useState("");
+  const [header, setHeader] = useState(true);
+  const [now, setNow] = useState(nowSeconds);
   const origin = window.location.origin;
+  const expiresAt = viaRelay ? null : expiryFor(preset, now, picked);
+  const badDate =
+    typeof expiresAt === "number" &&
+    (!Number.isFinite(expiresAt) || expiresAt <= nowSeconds());
+  const withPassword = !viaRelay && password !== "";
   const confirm = async () => {
+    if (badDate) return;
     setBusy(true);
     setError("");
+    // A relay copy (#2219) takes no options: the call stays the option-less one it always was.
+    const options: ArtifactShareOptions | undefined = viaRelay
+      ? undefined
+      : {
+          ...(withPassword ? { password } : {}),
+          expires_at: expiryFor(preset, nowSeconds(), picked),
+          header,
+        };
     try {
-      onShared(await api.shareArtifact(artifact.id));
+      onShared(await api.shareArtifact(artifact.id, options));
     } catch (e) {
       if (isPublicOff(e)) {
         const rec = (e as { record?: { reason?: string } }).record;
@@ -74,7 +108,7 @@ export function SharePubliclyDialog({
       tag={`Share publicly // ${kindLabel(artifact.kind, artifact.entry)}`}
       title={`Share “${artifact.title}” publicly?`}
       confirmLabel={busy ? "Sharing…" : "Share publicly"}
-      confirmDisabled={!checked}
+      confirmDisabled={!checked || badDate}
       busy={busy}
       onCancel={onCancel}
       onConfirm={() => void confirm()}
@@ -87,10 +121,20 @@ export function SharePubliclyDialog({
     >
       <div className={styles.warn}>
         <TriangleAlert size={16} aria-hidden="true" />
-        <p>
-          <b>Anyone with the link can open it.</b> No sign-in, no expiry. Search
-          engines are asked not to index it, but a link that gets passed on
-          cannot be taken back, only revoked.
+        <p data-testid="artifact-share-summary">
+          <b>
+            {withPassword
+              ? "Anyone with the link and the password can open it."
+              : "Anyone with the link can open it."}
+          </b>{" "}
+          No sign-in.{" "}
+          {expiresAt == null
+            ? "No expiry."
+            : badDate
+              ? ""
+              : `It stops working ${formatWhen(expiresAt)}, or when you revoke it.`}{" "}
+          Search engines are asked not to index it, but a link that gets passed
+          on cannot be taken back, only revoked.
         </p>
         <ul className={styles.bullets}>
           <li>
@@ -127,6 +171,106 @@ export function SharePubliclyDialog({
           </li>
         </ul>
       </div>
+      <fieldset
+        className={styles.linkOpts}
+        disabled={busy || viaRelay}
+        aria-describedby={viaRelay ? "artifact-share-relay-why" : undefined}
+        data-testid="artifact-share-options"
+      >
+        <legend className={styles.lbl}>Link options</legend>
+        <span className={styles.optLbl} id="artifact-share-pw-label">
+          Password
+        </span>
+        <div className={styles.optRow}>
+          <input
+            id="artifact-share-pw"
+            aria-labelledby="artifact-share-pw-label"
+            className={styles.optInput}
+            type={showPw ? "text" : "password"}
+            autoComplete="new-password"
+            placeholder={viaRelay ? "Not available here" : "Optional"}
+            maxLength={256}
+            value={viaRelay ? "" : password}
+            onChange={(e) => setPassword(e.target.value)}
+            data-testid="artifact-share-password"
+          />
+          <button
+            type="button"
+            className={styles.ghost}
+            aria-pressed={showPw}
+            onClick={() => setShowPw((v) => !v)}
+          >
+            {showPw ? "Hide" : "Show"}
+          </button>
+        </div>
+        {!viaRelay && (
+          <p className={styles.note}>
+            BattleLab keeps only a hash: tell the visitor yourself, you can’t
+            see it again.
+          </p>
+        )}
+        <span className={styles.optLbl} id="artifact-share-expiry">
+          Expires
+        </span>
+        <div
+          className={styles.presets}
+          role="group"
+          aria-labelledby="artifact-share-expiry"
+        >
+          {(viaRelay
+            ? EXPIRY_PRESETS.filter((p) => p.id === "never")
+            : EXPIRY_PRESETS
+          ).map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              aria-pressed={viaRelay ? true : preset === p.id}
+              className={styles.preset}
+              onClick={() => {
+                setPreset(p.id);
+                setNow(nowSeconds());
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {!viaRelay && preset === "date" && (
+          <input
+            className={styles.optInput}
+            type="datetime-local"
+            aria-label="Link ends at"
+            value={picked}
+            onChange={(e) => setPicked(e.target.value)}
+          />
+        )}
+        {!viaRelay && (
+          <p className={styles.note} data-testid="artifact-share-expiry-hint">
+            {expiresAt == null
+              ? "Never expires. You can revoke it at any time."
+              : badDate
+                ? "Pick a date and time in the future."
+                : `Ends ${formatWhen(expiresAt)}. After that the link answers “This link no longer works”.`}
+          </p>
+        )}
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={viaRelay ? true : header}
+            onChange={(e) => setHeader(e.target.checked)}
+            data-testid="artifact-share-header"
+          />
+          <span>Show the BattleLab header above it</span>
+        </label>
+        <p
+          className={styles.note}
+          id={viaRelay ? "artifact-share-relay-why" : undefined}
+        >
+          {viaRelay
+            ? "This box runs without sign-in, so the public copy is hosted on the BattleLab relay, which has no password, expiry or header switch yet. Turn sign-in on to host the link on this box with them."
+            : "Off: the artifact fills the whole page, with no BattleLab title bar. It stays sandboxed."}
+        </p>
+      </fieldset>
       <div className={styles.target}>
         <span className={styles.lbl}>Public link</span>
         <span className={styles.mono}>
