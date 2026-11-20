@@ -129,6 +129,8 @@ class Event:
     sender: str = ""
     head_sha: str = ""
     head_ref: str = ""
+    #: The PR head's repository (``owner/name``) — a fork for a contributor's PR, else the base.
+    head_repo: str = ""
     draft: bool = False
     revision: str = ""
     review_type: str = ""
@@ -182,6 +184,18 @@ def _repo(payload: dict) -> str:
     parts = full.split("/")
     if len(parts) != 2 or not all(_NAME_RE.match(p) for p in parts):
         raise Rejected("repository name is not well-formed")
+    return full
+
+
+def _head_repo(head: dict) -> str:
+    """``head.repo.full_name`` when Forgejo sends it (well-formed), else "" — never a guess."""
+    repo = head.get("repo")
+    full = repo.get("full_name") if isinstance(repo, dict) else None
+    if not isinstance(full, str):
+        return ""
+    parts = full.split("/")
+    if len(parts) != 2 or not all(_NAME_RE.match(p) for p in parts):
+        raise Rejected("head repository name is not well-formed")
     return full
 
 
@@ -258,6 +272,7 @@ def parse(body: bytes) -> Event:
             "sender": sender,
             "head_sha": _str(head.get("sha"), "head sha", _SHA_RE),
             "head_ref": _str(head.get("ref"), "head ref", _REF_RE),
+            "head_repo": _head_repo(head),
             "draft": bool(pr.get("draft") is True)
             or _text(pr.get("title"), "title").lstrip().upper().startswith(("WIP:", "[WIP]")),
             "session_marker": session_marker(SESSION_PR_MARKER_RE, _text(pr.get("body"), "body")),

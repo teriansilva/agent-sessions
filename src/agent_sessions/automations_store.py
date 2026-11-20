@@ -69,6 +69,10 @@ OUTCOME_CLASS = {
     # duplicate, and a revision past the item's lifetime review cap. Neither is a failure.
     "ignored": "skipped",
     "capped": "skipped",
+    # A verdict that could not reach the session that opened the item (no session record, a
+    # terminal session, a busy or ended one). Shown as a failure and announced once on its own,
+    # but not counted toward pause_after_failures: the review itself worked.
+    "undelivered": "failed",
 }
 PARTIAL_REASON = "text was typed but not submitted — check the terminal"
 #: Outcomes that count toward `pause_after_failures` and open a failure episode. `interrupted` is
@@ -886,6 +890,8 @@ def _settle(con, aid: str, run_id: str, outcome: str) -> dict:
             updates["paused_reason"] = PARTIAL_REASON
             paused = True
         alert = f"automation:{aid}:{run_id}:partial"
+    elif outcome == "undelivered":
+        alert = f"automation:{aid}:{run_id}:undelivered"
     elif outcome in FAILURE_OUTCOMES:
         n = row["consecutive_failures"] + 1
         updates["consecutive_failures"] = n
@@ -1465,3 +1471,171 @@ def review_count(aid: str, item: str) -> int:
             (aid, item),
         ).fetchone()
     return int(r["reviews"]) if r else 0
+
+
+def accept_verdict(
+    aid: str,
+    *,
+    slot: str,
+    repo: str,
+    expect_revision: int,
+    record: str,
+    item: str,
+    revision: str,
+    verdict: str,
+    current: str,
+    inputs: dict,
+    now: float | None = None,
+) -> dict:
+    """The return leg's acceptance (#2202 PR 2) — ONE transaction, before any send.
+
+    A verdict counts only when ``record`` is a review record THIS automation dispatched for
+    ``item``, its revision is the marker's ``revision`` AND the forge's ``current`` one, and it is
+    still ``dispatched`` (never superseded, never already answered). Then the record becomes
+    ``verdict_accepted`` and the run is recorded: ``dispatching`` when the verdict is to be
+    ``deliver``-ed to the originating session, else finished ``ok``. Anything else is a finished
+    ``ignored`` run with its reason. ``slot`` (one per record) makes a second verdict for the same
+    record — even under another signed body — record nothing at all.
+
+    Bound, like `begin_review`, to the automation revision the delivery was classified against
+    (``expect_revision``): a change since answers ``stale_config`` and claims nothing. Whether the
+    verdict is delivered comes from THIS transaction's configuration. The record is looked up by the
+    repository-qualified item key.
+
+    Returns ``{"run", "claimed", "reason", "accepted"}``."""
+    from .review_loop import item_key
+
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        row = _get(con, aid)
+        action = (row["config"] or {}).get("action") or {}
+        if (
+            row["revision"] != expect_revision
+            or action.get("kind") != "forge_review_loop"
+            or str(action.get("repo", "")).lower() != repo.lower()
+        ):
+            return {
+                "run": None,
+                "claimed": False,
+                "stale_config": True,
+                "reason": "the automation changed while the delivery was being checked",
+            }
+        deliver = bool(action.get("return_to_origin"))
+        key = item_key(repo, item)
+        if con.execute(
+            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
+        ).fetchone():
+            return {"run": None, "claimed": False, "reason": "this review already has a verdict"}
+        verdict_ok, reason = _eligibility(con, row, manual=False, now=ts)
+        if verdict_ok == "no":
+            return {"run": None, "claimed": False, "reason": reason}
+        if verdict_ok == "skip":
+            # The consented limits (daily cap, concurrency) hold for returns too: recorded as
+            # skipped, NOT claimed and NOT accepted, so a redelivery can return it once eligible.
+            sid = uuid.uuid4().hex
+            con.execute(
+                "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
+                "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
+                "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    sid,
+                    aid,
+                    "webhook",
+                    slot,
+                    None,
+                    0,
+                    1,
+                    "done",
+                    "skipped",
+                    reason,
+                    json.dumps({"consented_scope": row["consented_scope"]}),
+                    json.dumps({**inputs, "leg": "return", "record": record}),
+                    0,
+                    "",
+                    ts,
+                    ts,
+                ),
+            )
+            _step(con, sid, "skipped", reason)
+            got = con.execute("SELECT * FROM automation_runs WHERE id=?", (sid,)).fetchone()
+            return {"run": _run(got), "claimed": False, "reason": reason, "accepted": False}
+        rec = con.execute(
+            "SELECT * FROM automation_review_records WHERE id=? AND automation_id=?",
+            (record, aid),
+        ).fetchone()
+        why = ""
+        if rec is None or rec["item"] != key:
+            why = f"ignored: {item} has no review {record} from this automation"
+        elif rec["state"] == "verdict_accepted":
+            why = f"ignored: review {record} already has a verdict ({rec['verdict']})"
+        elif rec["state"] != "dispatched":
+            why = f"ignored: stale verdict — review {record} was superseded by a newer revision"
+        elif rec["revision"] != revision:
+            why = (
+                f"ignored: the verdict names {revision}, but review {record} was for "
+                f"{rec['revision']}"
+            )
+        elif current != revision:
+            why = (
+                f"ignored: stale verdict — it is for {item} at {revision}, but the forge says the "
+                f"current revision is {current}"
+            )
+        run_id = uuid.uuid4().hex
+        scope = {
+            "config": row["config"],
+            "pins": row["pins"],
+            "consented_scope": row["consented_scope"],
+            "consented_at": row["consented_at"],
+            "revision": row["revision"],
+        }
+        accepted = not why
+        if accepted:
+            con.execute(
+                "UPDATE automation_review_records SET state='verdict_accepted', verdict=?, "
+                "accepted_at=? WHERE id=?",
+                (verdict, ts, record),
+            )
+            run_inputs = {
+                **inputs,
+                "leg": "return",
+                "record": record,
+                "round": int(rec["round"]),
+                "reviewer_session": rec["session_key"],
+            }
+        else:
+            run_inputs = {**inputs, "leg": "return", "record": record}
+        dispatching = accepted and deliver
+        outcome = "" if dispatching else ("ok" if accepted else "ignored")
+        if accepted and not deliver:
+            why = f"{verdict} on {item} at {revision}: recorded (this loop returns no verdicts)"
+        con.execute(
+            "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
+            "VALUES (?,?,?,?,?)",
+            (aid, slot, None, ts, run_id),
+        )
+        con.execute(
+            "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
+            "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
+            "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                aid,
+                "webhook",
+                slot,
+                None,
+                0,
+                1,
+                "dispatching" if dispatching else "done",
+                outcome,
+                why,
+                json.dumps(scope),
+                json.dumps(run_inputs),
+                1 if dispatching else 0,
+                owner_token() if dispatching else "",
+                ts,
+                None if dispatching else ts,
+            ),
+        )
+        _step(con, run_id, "claimed" if dispatching else outcome, why or f"{verdict} accepted")
+        got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        return {"run": _run(got), "claimed": True, "reason": why, "accepted": accepted}

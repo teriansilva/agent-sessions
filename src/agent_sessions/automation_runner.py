@@ -729,7 +729,9 @@ _API_SEND_OUTCOME = {
 }
 
 
-async def _send_structured(run: dict, config: dict, pins: dict) -> tuple[str, str]:
+async def _send_structured(
+    run: dict, config: dict, pins: dict, *, keep_inputs: dict | None = None
+) -> tuple[str, str]:
     """A send into an API session (#1901): ONE guarded turn, on the loop under the effect lock.
 
     Never through `session_input.is_live` or the PTY send lock, which no API session has. The
@@ -784,7 +786,9 @@ async def _send_structured(run: dict, config: dict, pins: dict) -> tuple[str, st
             )
         except RunRefused as e:
             return "refused", e.detail
-        await asyncio.to_thread(store.set_inputs, rid, inputs)  # recorded BEFORE the turn
+        # Recorded BEFORE the turn. A caller's journal (`keep_inputs`, a review loop's accepted
+        # verdict, #2202) is kept beside it: recovery reads those facts after a crash mid-send.
+        await asyncio.to_thread(store.set_inputs, rid, {**(keep_inputs or {}), **inputs})
         stop = await asyncio.to_thread(_authority_outcome, run)
         if stop:
             return stop
@@ -865,6 +869,11 @@ async def execute(run: dict, *, registry) -> dict:
         outcome, reason = done or ("interrupted", store.INTERRUPTED_REASON)
         with contextlib.suppress(Exception):
             await asyncio.shield(asyncio.to_thread(store.finish_run, rid, outcome, reason))
+        if outcome == "interrupted":
+            # Settled HERE, so orphan recovery never sees it: a review loop's cut-off verdict is
+            # announced now (#2202). Synchronous and best-effort — we are being cancelled.
+            with contextlib.suppress(Exception):
+                announce_interrupted_return(rid)
         raise
     except Exception as e:  # noqa: BLE001 — a crash in one run must not take the loop down
         done = _DELIVERED.get(rid)
@@ -1021,6 +1030,10 @@ def _lost_ack(res: dict, rid: str) -> dict:
         out["episode"] = ("open", key)
     if run.get("outcome") == "partial" and not _in_bell(f"{key}:partial"):
         out["alert"] = f"{key}:partial"
+    if run.get("outcome") == "undelivered" and not _in_bell(f"{key}:undelivered"):
+        # A review loop's verdict that did not reach its session (#2202): it opens no failure
+        # episode, so this row is the operator's only notice — owed again after a lost ack.
+        out["alert"] = f"{key}:undelivered"
     return out
 
 
@@ -1065,7 +1078,14 @@ def notify(result: dict) -> None:
     run = result.get("run") or {}
     name = auto.get("name") or "automation"
     alert = result.get("alert")
-    if alert:
+    if alert and run.get("outcome") == "undelivered":
+        # A review loop's verdict that did not reach its session (#2202): one row of its own,
+        # never counted as a failure — the review itself worked.
+        try:
+            _announce(f"Review verdict not delivered: {name}", run.get("reason") or "", alert)
+        except Exception:  # noqa: BLE001
+            log.warning("automation notification for %s failed", alert, exc_info=True)
+    elif alert:
         # A PARTIAL send: one notification of its own. The automation is already paused.
         try:
             _announce(f"Automation typed but did not submit: {name}", store.PARTIAL_REASON, alert)
@@ -1095,6 +1115,27 @@ def notify(result: dict) -> None:
             notifications.dismiss_for_action(key)
     except Exception:  # noqa: BLE001 — the run is recorded; the bell must not undo that
         log.warning("automation notification for %s failed", key, exc_info=True)
+
+
+def announce_interrupted_return(rid: str) -> bool:
+    """One bell row for a review loop's verdict whose delivery was cut off (#2202): accepted and
+    counted before the send, never resent. ``True`` when it announced. The key is per run, so the
+    cancellation path and orphan recovery can never announce the same run twice."""
+    run = store.get_run(rid)
+    inputs = run.get("inputs") or {}
+    if inputs.get("leg") != "return" or run.get("outcome") != "interrupted":
+        return False
+    key = f"automation:{run['automation_id']}:{rid}:interrupted"
+    if _in_bell(key):
+        return False
+    auto = store.get(run["automation_id"])
+    _announce(
+        f"Review verdict may not have been delivered: {auto['name']}",
+        f"the app stopped while sending the verdict on {inputs.get('item')}; it is never "
+        "resent — check the session that opened it",
+        key,
+    )
+    return True
 
 
 def retract(key: str) -> None:

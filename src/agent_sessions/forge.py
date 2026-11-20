@@ -448,6 +448,46 @@ class ForgeClient:
             revision=issue_revision(title, body or ""),
         )
 
+    #: Pages of an issue's comments read for its session record (#2202), newest pages first.
+    COMMENT_PAGE = 50
+    COMMENT_MAX_PAGES = 4
+
+    def issue_session_marker(self, repo: str, number: int) -> Fact:
+        """The NEWEST ``agent-session:`` / ``agent-session-author:`` record in an issue's comments
+        (#2202's return leg): ``extra["session"] = "engine:id"`` or ``""``. Bounded pages through
+        `_get`; no comment text leaves this method."""
+        from .forge_hook import SESSION_ISSUE_MARKER_RE, session_marker
+
+        base = f"{self._api}{self._repo_path(repo)}/issues/{int(number)}/comments"
+        found = ""
+        complete = False
+        try:
+            for page in range(1, self.COMMENT_MAX_PAGES + 1):
+                data = self._get(base, {"limit": self.COMMENT_PAGE, "page": page})
+                if not isinstance(data, list):
+                    return Fact.unknown("forge answered an unexpected shape")
+                for c in data:
+                    body = c.get("body") if isinstance(c, dict) else None
+                    if isinstance(body, str):
+                        got = session_marker(SESSION_ISSUE_MARKER_RE, body, newest=True)
+                        found = got or found
+                # A short page is the last one; a page LONGER than asked for means the forge
+                # ignored paging and sent the whole thread. Either way the read is complete.
+                if len(data) != self.COMMENT_PAGE:
+                    complete = True
+                    break
+        except (ForgeError, ValueError) as e:
+            return Fact.unknown(str(e) if isinstance(e, ForgeError) else "bad issue number")
+        except httpx.HTTPError as e:
+            return Fact.unknown(_why(e))
+        if not complete:
+            # The bound ran out before the thread did: a newer record (a takeover) may sit beyond
+            # it, so the last one seen is NOT proved the newest. Fail closed (Hermes on #2213).
+            return Fact.unknown("the issue has too many comments to find its newest session record")
+        return Fact.seen(
+            bool(found), "session record found" if found else "no session record", session=found
+        )
+
     def pull_request(
         self,
         repo: str,

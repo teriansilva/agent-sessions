@@ -931,6 +931,428 @@ def test_the_current_head_is_read_for_same_repo_and_fork_prs(head_repo):
         forge.set_transport_for_test(None)
 
 
+# ==== PR 2: the return leg =======================================================================
+
+
+def _review_payload(record, rev=SHA_A, verdict="changes", rtype=None, number=41, **over):
+    marker = (
+        f"<!-- battlelab-review: record={record} item=pr#{number} rev={rev} verdict={verdict} -->"
+    )
+    rtype = rtype or (
+        "pull_request_review_approved" if verdict == "approve" else "pull_request_review_rejected"
+    )
+    return _pr(
+        number=number,
+        sha=rev,
+        action="reviewed",
+        review={"type": rtype, "content": f"Looks off.\n{marker}"},
+        sender={"login": REVIEWER},
+        **over,
+    )
+
+
+def _dispatched(aid, rev=SHA_A, item="pr#41", n=None):
+    res = store.begin_review(
+        aid,
+        slot=f"review:{REPO}:{item}:{rev}",
+        repo=REPO,
+        item=item,
+        revision=rev,
+        expect_revision=store.get(aid)["revision"],
+        inputs={"item": item, "revision": rev},
+    )
+    return res["record"]
+
+
+def _returns(spawned):
+    return [r for r in spawned if (r.get("inputs") or {}).get("leg") == "return"]
+
+
+def test_an_accepted_verdict_is_journaled_before_any_send(spawned, forge_says):
+    aid = _made()
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    _deliver(aid, _review_payload(rec))
+    (run,) = _returns(spawned)
+    assert run["state"] == "dispatching"
+    assert run["inputs"]["verdict"] == "changes" and run["inputs"]["round"] == 1
+    assert run["inputs"]["session_marker"] == "claude-api:abc-123"
+    (r,) = store.review_records(aid, _key("pr#41"))
+    assert r["state"] == "verdict_accepted" and r["verdict"] == "changes"
+    # Review text never travels: only the typed facts.
+    assert "Looks off" not in json.dumps(run["inputs"])
+
+
+def test_a_second_verdict_for_the_same_review_changes_nothing(spawned, forge_says):
+    aid = _made()
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    _deliver(aid, _review_payload(rec, verdict="approve"))
+    # Approval then rejection for the same record, under another signed body: nothing at all.
+    _deliver(aid, _review_payload(rec, verdict="changes"))
+    assert len(_returns(spawned)) == 1
+    assert store.review_records(aid, _key("pr#41"))[0]["verdict"] == "approve"
+
+
+def test_a_verdict_for_a_superseded_review_is_ignored_as_stale(spawned, forge_says):
+    aid = _made()
+    old = _dispatched(aid, rev=SHA_A)
+    _dispatched(aid, rev=SHA_B)  # a push dispatched B
+    forge_says["pr#41"] = (SHA_B, True)
+    _deliver(aid, _review_payload(old, rev=SHA_A))
+    assert _returns(spawned) == []
+    (run,) = [r for r in _runs(aid) if r["outcome"] == "ignored"]
+    assert "superseded" in run["reason"]
+
+
+def test_a_verdict_before_the_next_webhook_is_stale_because_the_forge_moved(spawned, forge_says):
+    aid = _made()
+    rec = _dispatched(aid, rev=SHA_A)
+    forge_says["pr#41"] = (SHA_B, True)  # B was pushed; its webhook has not arrived yet
+    _deliver(aid, _review_payload(rec, rev=SHA_A))
+    assert _returns(spawned) == []
+    assert "the forge says the current revision is" in _runs(aid)[0]["reason"]
+    assert store.review_records(aid, _key("pr#41"))[0]["state"] == "dispatched"
+
+
+@pytest.mark.parametrize(
+    "payload_of, why",
+    [
+        (lambda rec: _review_payload("nosuchrecord"), "has no review nosuchrecord"),
+        (lambda rec: _review_payload(rec, rev=SHA_B), "was for"),
+        (
+            lambda rec: _review_payload(
+                rec, verdict="approve", rtype="pull_request_review_rejected"
+            ),
+            "submitted as rejected",
+        ),
+        (
+            lambda rec: _review_payload(rec, rtype="pull_request_review_comment"),
+            "comment-only review",
+        ),
+    ],
+)
+def test_verdicts_that_do_not_bind_to_a_dispatched_review_are_ignored(
+    payload_of, why, spawned, forge_says
+):
+    aid = _made()
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    forge_says.setdefault("pr#41", (SHA_A, True))
+    if "was for" in why:
+        forge_says["pr#41"] = (SHA_B, True)
+    _deliver(aid, payload_of(rec))
+    assert _returns(spawned) == []
+    assert any(why in r["reason"] for r in _runs(aid)), [r["reason"] for r in _runs(aid)]
+
+
+def test_a_reviewer_post_without_a_marker_is_chatter(spawned, forge_says):
+    aid = _made()
+    _dispatched(aid)
+    payload = _pr(
+        action="reviewed",
+        review={"type": "pull_request_review_rejected", "content": "no marker here"},
+        sender={"login": REVIEWER},
+    )
+    _deliver(aid, payload)
+    assert [r for r in _runs(aid) if r.get("inputs", {}).get("leg") == "return"] == []
+    assert store.hook_state(aid)["last_note"] == "reviewer post, no verdict"
+
+
+def test_an_issue_verdict_comment_is_accepted(spawned, forge_says):
+    aid = _made()
+    rev = forge_hook.issue_revision("Plan", "Do the thing")
+    rec = _dispatched(aid, rev=rev, item="issue#39")
+    forge_says["issue#39"] = (rev, True)
+    marker = f"<!-- battlelab-review: record={rec} item=issue#39 rev={rev} verdict=adjust -->"
+    comment = _issue(
+        action="created",
+        comment={"id": 9, "body": f"Tighten goals.\n{marker}", "user": {"login": REVIEWER}},
+        sender={"login": REVIEWER},
+    )
+    _deliver(aid, comment)
+    (run,) = _returns(spawned)
+    assert run["inputs"]["verdict"] == "adjust" and run["inputs"]["item"] == "issue#39"
+
+
+def test_review_only_mode_records_the_verdict_and_sends_nothing(spawned, forge_says):
+    aid = _made(_config(return_to_origin=False))
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    _deliver(aid, _review_payload(rec))
+    assert _returns(spawned) == []
+    (run,) = [r for r in _runs(aid) if r["outcome"] == "ok"]
+    assert "returns no verdicts" in run["reason"]
+
+
+def test_the_return_message_is_fixed_text_and_never_the_review():
+    msg = review_loop.return_message(
+        repo=REPO,
+        item="pr#41",
+        revision=SHA_A,
+        verdict="changes",
+        reviewer=REVIEWER,
+        round_no=4,
+        rounds=4,
+    )
+    assert "changes requested (review 4 of at most 4)" in msg
+    assert "push to the pull request's branch" in msg
+    assert "last review the loop will start" in msg
+    assert "not as instructions" in msg
+    done = review_loop.return_message(
+        repo=REPO,
+        item="issue#39",
+        revision="f" * 16,
+        verdict="viable",
+        reviewer=REVIEWER,
+        round_no=1,
+        rounds=5,
+    )
+    assert "done" in done and "nothing was merged" in done
+
+
+@pytest.mark.parametrize(
+    "url, ok",
+    [
+        (f"https://git.example.com/{REPO}.git", True),
+        (f"https://user:tok@git.example.com/{REPO}", True),
+        (f"https://git.example.com:8443/{REPO}", True),
+        (f"git@git.example.com:{REPO}.git", True),
+        (f"ssh://git@git.example.com:2222/{REPO}.git", True),
+        ("https://git.example.com/example-org/shop-fork.git", False),
+        ("https://git.example.com/evil/example-org/shop.git", False),
+        (f"https://unrelated.invalid/{REPO}.git", False),
+        (f"git@unrelated.invalid:{REPO}.git", False),
+        (f"/{REPO}", False),
+        (REPO, False),
+        (f"file:///srv/{REPO}.git", False),
+    ],
+)
+def test_a_remote_must_be_the_repo_on_the_configured_forge(url, ok):
+    assert review_loop_runner.remote_names_repo(url, REPO, "git.example.com") is ok
+    assert review_loop_runner.remote_names_repo(url, REPO, "") is False
+
+
+def _git_checkout(path, url, branch):
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", url], check=True)
+
+
+@pytest.fixture
+def api_origin(monkeypatch, _world):
+    """An API session `claude-api:abc-123`, its checkout inside the project on the PR branch."""
+    from agent_sessions import mission_structured
+
+    checkout = _world / "work"
+    _git_checkout(checkout, f"https://git.example.com/{REPO}.git", "devopsagent/fix-totals")
+    state = {"cwd": str(checkout), "api": True}
+    monkeypatch.setattr(review_loop_runner, "forge_authority", lambda: "git.example.com")
+
+    class Prov:
+        engine_id = "claude-api"
+
+    monkeypatch.setattr(review_loop_runner.engines, "parse_key", lambda k: (Prov(), "abc-123"))
+    monkeypatch.setattr(mission_structured, "is_api", lambda _p: state["api"])
+
+    async def target(_key):
+        return {"cwd": state["cwd"], "state": "idle", "live": True}
+
+    monkeypatch.setattr(mission_structured, "automation_target", target)
+    return state
+
+
+def _pins(folder) -> dict:
+    return {"cwd": {"real": str(folder)}}
+
+
+def _resolve(inputs, folder):
+    action = model.validate_action(_config()["action"])
+    return asyncio.run(review_loop_runner.resolve_origin(inputs, action, _pins(folder)))
+
+
+PR_INPUTS = {
+    "item": "pr#41",
+    "head_ref": "devopsagent/fix-totals",
+    "session_marker": "claude-api:abc-123",
+}
+
+
+def test_the_origin_is_the_marked_api_session_on_the_prs_branch(api_origin, _world):
+    assert _resolve(PR_INPUTS, _world) == ("claude-api:abc-123", "", False)
+
+
+def test_a_terminal_origin_gets_nothing(api_origin, _world):
+    api_origin["api"] = False
+    key, why, terminal = _resolve(PR_INPUTS, _world)
+    assert terminal and "terminal session" in why
+
+
+def test_an_origin_outside_the_project_or_on_another_branch_is_refused(
+    api_origin, _world, tmp_path
+):
+    other = tmp_path / "elsewhere"
+    _git_checkout(other, f"https://git.example.com/{REPO}.git", "devopsagent/fix-totals")
+    api_origin["cwd"] = str(other)
+    assert "outside the review loop's project" in _resolve(PR_INPUTS, _world)[1]
+    api_origin["cwd"] = str(_world / "work")
+    assert (
+        "not on devopsagent/other"
+        in _resolve({**PR_INPUTS, "head_ref": "devopsagent/other"}, _world)[1]
+    )
+    fork = _world / "fork"
+    _git_checkout(fork, "https://git.example.com/someone/shop.git", "devopsagent/fix-totals")
+    api_origin["cwd"] = str(fork)
+    assert "not a clone of" in _resolve(PR_INPUTS, _world)[1]
+
+
+def test_without_a_marker_one_branch_match_is_used_and_two_are_ambiguous(
+    api_origin, _world, monkeypatch
+):
+    no_marker = {**PR_INPUTS, "session_marker": ""}
+    monkeypatch.setattr(review_loop_runner, "_branch_candidates", lambda *a: ["claude-api:abc-123"])
+    assert _resolve(no_marker, _world)[0] == "claude-api:abc-123"
+    monkeypatch.setattr(
+        review_loop_runner, "_branch_candidates", lambda *a: ["claude-api:a", "claude-api:b"]
+    )
+    key, why, _t = _resolve(no_marker, _world)
+    assert key is None and "2 API sessions" in why
+    monkeypatch.setattr(review_loop_runner, "_branch_candidates", lambda *a: [])
+    assert "no session record" in _resolve(no_marker, _world)[1]
+
+
+def test_an_issue_origin_comes_from_its_newest_session_record(api_origin, _world, monkeypatch):
+    class Client:
+        def issue_session_marker(self, repo, number):
+            return forge.Fact.seen(True, "", session="claude-api:abc-123")
+
+    monkeypatch.setattr(review_loop_runner, "forge_client", lambda *a: (Client(), ""))
+    key, why, _t = _resolve({"item": "issue#39", "session_marker": "ignored:x"}, _world)
+    assert (key, why) == ("claude-api:abc-123", "")
+
+
+def _accepted_return_run(aid, forge_says, spawned, verdict="changes"):
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    _deliver(aid, _review_payload(rec, verdict=verdict))
+    (run,) = _returns(spawned)
+    return run
+
+
+def test_the_verdict_is_sent_as_one_guarded_api_turn(spawned, forge_says, monkeypatch):
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+    sent: dict = {}
+
+    async def resolve(inputs, action, pins):
+        return "claude-api:abc-123", "", False
+
+    async def send(r, cfg, pins, **_kw):
+        sent.update(cfg["action"])
+        automation_runner._delivered(r["id"], "ok", "delivered as a structured turn")
+        return "ok", "delivered as a structured turn"
+
+    monkeypatch.setattr(review_loop_runner, "resolve_origin", resolve)
+    monkeypatch.setattr(automation_runner, "_send_structured", send)
+    res = asyncio.run(automation_runner.execute(run, registry=None))
+    assert res["run"]["outcome"] == "ok"
+    assert sent["session_key"] == "claude-api:abc-123"
+    assert "changes requested" in sent["message"]["text"]
+    assert "Looks off" not in sent["message"]["text"]
+
+
+def test_an_undelivered_verdict_is_announced_once_and_never_counted(
+    spawned, forge_says, monkeypatch
+):
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+    announced: list = []
+
+    async def resolve(inputs, action, pins):
+        return "claude:terminal", "it is a terminal session: nothing unattended is typed", True
+
+    monkeypatch.setattr(review_loop_runner, "resolve_origin", resolve)
+    monkeypatch.setattr(automation_runner, "_announce", lambda *a, **k: announced.append(a))
+    res = asyncio.run(automation_runner.execute(run, registry=None))
+    assert res["run"]["outcome"] == "undelivered"
+    assert "open that session and tell it yourself" in res["run"]["reason"]
+    assert len(announced) == 1 and announced[0][0].startswith("Review verdict not delivered")
+    assert store.get(aid)["consecutive_failures"] == 0
+
+
+def test_a_busy_origin_is_undelivered_not_retried(spawned, forge_says, monkeypatch):
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+
+    async def resolve(inputs, action, pins):
+        return "claude-api:abc-123", "", False
+
+    async def send(r, cfg, pins, **_kw):
+        return "refused", "the session was busy"
+
+    monkeypatch.setattr(review_loop_runner, "resolve_origin", resolve)
+    monkeypatch.setattr(automation_runner, "_send_structured", send)
+    monkeypatch.setattr(automation_runner, "_announce", lambda *a, **k: None)
+    res = asyncio.run(automation_runner.execute(run, registry=None))
+    assert res["run"]["outcome"] == "undelivered" and "busy" in res["run"]["reason"]
+
+
+def test_a_crash_between_acceptance_and_send_is_interrupted_announced_and_never_resent(
+    spawned, forge_says, monkeypatch
+):
+    from agent_sessions import automation_loop
+
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+    # The owner process is gone: recovery marks it interrupted, and nothing replays it.
+    monkeypatch.setattr(store, "owner_alive", lambda _t: False)
+    ids = store.recover_interrupted()
+    assert run["id"] in ids  # (the admitted review's own run is recovered too, silently)
+    announced: list = []
+    monkeypatch.setattr(automation_runner, "_announce", lambda *a, **k: announced.append(a))
+    automation_loop._announce_interrupted_returns(ids)
+    assert len(announced) == 1 and "may not have been delivered" in announced[0][0]
+    assert store.get_run(run["id"])["outcome"] == "interrupted"
+    # The review stays counted and the record stays answered: a redelivery sends nothing.
+    _deliver(aid, _review_payload(store.review_records(aid, _key("pr#41"))[0]["id"]))
+    assert len(_returns(spawned)) == 1
+    assert store.review_count(aid, _key("pr#41")) == 1
+
+
+def test_a_capped_item_raises_one_bell_row(spawned, forge_says, monkeypatch):
+    aid = _made(_config(max_rounds={"pr": 1}))
+    announced: list = []
+    monkeypatch.setattr(automation_runner, "_announce", lambda *a, **k: announced.append(a))
+    monkeypatch.setattr(automation_runner, "_in_bell", lambda k: any(x[2] == k for x in announced))
+    for sha in (SHA_A, SHA_B, "c" * 40):
+        forge_says["pr#41"] = (sha, True)
+        _deliver(aid, _pr(sha=sha))
+    assert len(spawned) == 1
+    assert len(announced) == 1 and "reached its limit" in announced[0][0]
+
+
+def test_the_forge_reads_an_issues_newest_session_record_without_its_text(monkeypatch):
+    import httpx
+
+    old = "<!-- agent-session: engine=claude-api id=old-1 -->"
+    new = "<!-- agent-session-author: engine=claude-api id=new-2 -->"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/api/v1/repos/{REPO}/issues/39/comments"
+        return httpx.Response(200, json=[{"body": old}, {"body": "chat"}, {"body": new}])
+
+    forge.set_transport_for_test(httpx.MockTransport(handler))
+    try:
+        c = forge.ForgeClient(kind="forgejo", base_url="https://git.example.com")
+        fact = c.issue_session_marker(REPO, 39)
+        assert fact.observed and fact.extra == {"session": "claude-api:new-2"}
+    finally:
+        forge.set_transport_for_test(None)
+
+
 def test_a_pr_targeting_another_repository_is_not_this_items():
     import httpx
 
@@ -950,3 +1372,210 @@ def test_a_pr_targeting_another_repository_is_not_this_items():
         assert not c.review_pull(REPO, 41).observed
     finally:
         forge.set_transport_for_test(None)
+
+
+def test_verdict_acceptance_is_bound_to_the_classified_revision_and_repository():
+    aid = _made()
+    rec = _dispatched(aid)
+    seen = store.get(aid)["revision"]
+    pub = routes.public(store.get(aid))
+    routes._patch(aid, {"revision": pub["revision"], "name": "renamed"})
+    res = store.accept_verdict(
+        aid,
+        slot=f"verdict:{REPO}:pr:41:{rec}",
+        repo=REPO,
+        expect_revision=seen,
+        record=rec,
+        item="pr#41",
+        revision=SHA_A,
+        verdict="changes",
+        current=SHA_A,
+        inputs={},
+    )
+    assert res.get("stale_config") and res["run"] is None
+    assert store.review_records(aid, _key())[0]["state"] == "dispatched"
+    # Another repository's item never matches this record, whatever its number.
+    res = store.accept_verdict(
+        aid,
+        slot=f"verdict:example-org/other:pr:41:{rec}",
+        repo="example-org/other",
+        expect_revision=store.get(aid)["revision"],
+        record=rec,
+        item="pr#41",
+        revision=SHA_A,
+        verdict="changes",
+        current=SHA_A,
+        inputs={},
+    )
+    assert res.get("stale_config")  # the automation is not for that repository at all
+
+
+def test_a_fork_prs_origin_may_be_a_clone_of_the_fork(api_origin, _world):
+    fork = _world / "forkwork"
+    _git_checkout(fork, "https://git.example.com/contributor/shop.git", "devopsagent/fix-totals")
+    api_origin["cwd"] = str(fork)
+    assert "not a clone of" in _resolve(PR_INPUTS, _world)[1]
+    with_fork = {**PR_INPUTS, "head_repo": "contributor/shop"}
+    assert _resolve(with_fork, _world) == ("claude-api:abc-123", "", False)
+
+
+def test_parse_reads_the_head_repository_and_refuses_a_malformed_one():
+    p = _pr()
+    p["pull_request"]["head"]["repo"] = {"full_name": "contributor/shop"}
+    assert forge_hook.parse(json.dumps(p).encode()).head_repo == "contributor/shop"
+    p["pull_request"]["head"]["repo"] = {"full_name": "a/b/c"}
+    with pytest.raises(forge_hook.Rejected, match="head repository"):
+        forge_hook.parse(json.dumps(p).encode())
+
+
+def test_a_checkout_on_another_server_never_fits(api_origin, _world):
+    elsewhere = _world / "mirror"
+    _git_checkout(elsewhere, f"https://unrelated.invalid/{REPO}.git", "devopsagent/fix-totals")
+    api_origin["cwd"] = str(elsewhere)
+    assert "not a clone of" in _resolve(PR_INPUTS, _world)[1]
+
+
+@pytest.mark.parametrize("item", ["pr#41", "issue#39"])
+def test_a_late_verdict_on_a_closed_item_is_ignored(item, spawned, forge_says):
+    aid = _made()
+    if item == "pr#41":
+        rec = _dispatched(aid)
+        forge_says[item] = (SHA_A, False)  # merged or closed since
+        _deliver(aid, _review_payload(rec))
+    else:
+        rev = forge_hook.issue_revision("Plan", "Do the thing")
+        rec = _dispatched(aid, rev=rev, item=item)
+        forge_says[item] = (rev, False)
+        marker = f"<!-- battlelab-review: record={rec} item={item} rev={rev} verdict=adjust -->"
+        _deliver(
+            aid,
+            _issue(
+                action="created",
+                comment={"id": 9, "body": marker, "user": {"login": REVIEWER}},
+                sender={"login": REVIEWER},
+            ),
+        )
+    assert _returns(spawned) == []
+    assert any("is closed on the forge" in r["reason"] for r in _runs(aid))
+    assert store.review_records(aid, _key(item))[0]["state"] == "dispatched"
+
+
+def test_a_crash_inside_the_real_send_keeps_the_journal_and_announces_it(
+    spawned, forge_says, monkeypatch, _world
+):
+    """Through the REAL `_send_structured`: the transport dies mid-send. The run's journal still
+    names the return leg, so recovery announces it — and it is never resent."""
+    from agent_sessions import automation_loop, mission_structured
+
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+
+    class Prov:
+        engine_id = "claude-api"
+
+    async def resolve(inputs, action, pins):
+        return "claude-api:abc-123", "", False
+
+    async def target(_key):
+        return {"cwd": str(_world), "state": "idle", "live": True}
+
+    async def send(**kw):
+        raise asyncio.CancelledError  # the app stops while the turn is in flight
+
+    monkeypatch.setattr(review_loop_runner, "resolve_origin", resolve)
+    monkeypatch.setattr(automation_runner.engines, "parse_key", lambda k: (Prov(), "abc-123"))
+    monkeypatch.setattr(automation_runner, "target_state", lambda _e: (True, ""))
+    monkeypatch.setattr(automation_runner, "scope_ok", lambda _c: True)
+    monkeypatch.setattr(mission_structured, "automation_target", target)
+    monkeypatch.setattr(mission_structured, "automation_send", send)
+    announced: list = []
+    monkeypatch.setattr(automation_runner, "_announce", lambda *a, **k: announced.append(a))
+    monkeypatch.setattr(automation_runner, "_in_bell", lambda k: any(x[2] == k for x in announced))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(automation_runner.execute(run, registry=None))
+    after = store.get_run(run["id"])
+    assert after["outcome"] == "interrupted"
+    assert after["inputs"]["leg"] == "return" and after["inputs"]["item"] == "pr#41"
+    assert "changes requested" in after["inputs"]["message"]  # the masked message rides along
+    # Announced by the CANCELLATION path itself — orphan recovery never sees a settled run.
+    assert len(announced) == 1 and "may not have been delivered" in announced[0][0]
+    assert run["id"] not in store.recover_interrupted()
+    automation_loop._announce_interrupted_returns([run["id"]])  # and never twice
+    assert len(announced) == 1
+
+
+def _comment_pages(pages):
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        return httpx.Response(200, json=pages[page - 1] if page <= len(pages) else [])
+
+    return httpx.MockTransport(handler)
+
+
+def test_the_newest_session_record_is_read_across_pages():
+    full = forge.ForgeClient.COMMENT_PAGE
+    old = {"body": "<!-- agent-session: engine=claude-api id=old-1 -->"}
+    new = {"body": "<!-- agent-session: engine=claude-api id=new-2 -->"}
+    pages = [[old] + [{"body": "x"}] * (full - 1), [{"body": "y"}, new]]
+    forge.set_transport_for_test(_comment_pages(pages))
+    try:
+        c = forge.ForgeClient(kind="forgejo", base_url="https://git.example.com")
+        assert c.issue_session_marker(REPO, 39).extra == {"session": "claude-api:new-2"}
+    finally:
+        forge.set_transport_for_test(None)
+
+
+def test_a_thread_longer_than_the_bound_fails_closed():
+    full = forge.ForgeClient.COMMENT_PAGE
+    old = {"body": "<!-- agent-session: engine=claude-api id=old-1 -->"}
+    pages = [[old] + [{"body": "x"}] * (full - 1)] + [[{"body": "x"}] * full] * 4
+    pages.append([{"body": "<!-- agent-session: engine=claude-api id=takeover -->"}])
+    forge.set_transport_for_test(_comment_pages(pages))
+    try:
+        c = forge.ForgeClient(kind="forgejo", base_url="https://git.example.com")
+        fact = c.issue_session_marker(REPO, 39)
+        assert not fact.observed and "too many comments" in fact.detail
+    finally:
+        forge.set_transport_for_test(None)
+
+
+def test_a_forge_that_ignores_paging_returns_the_whole_thread_at_once():
+    full = forge.ForgeClient.COMMENT_PAGE
+    thread = [{"body": "x"}] * (full + 20) + [
+        {"body": "<!-- agent-session: engine=claude-api id=last -->"}
+    ]
+    forge.set_transport_for_test(_comment_pages([thread] * 9))
+    try:
+        c = forge.ForgeClient(kind="forgejo", base_url="https://git.example.com")
+        assert c.issue_session_marker(REPO, 39).extra == {"session": "claude-api:last"}
+    finally:
+        forge.set_transport_for_test(None)
+
+
+def test_a_verdict_respects_the_daily_cap_and_can_be_redelivered(spawned, forge_says, monkeypatch):
+    aid = _made()
+    rec = _dispatched(aid)
+    forge_says["pr#41"] = (SHA_A, True)
+    real = store._eligibility
+    monkeypatch.setattr(store, "_eligibility", lambda *a, **k: ("skip", "skipped: daily cap"))
+    _deliver(aid, _review_payload(rec))
+    assert _returns(spawned) == []
+    assert any(r["outcome"] == "skipped" and r["inputs"].get("leg") == "return" for r in _runs(aid))
+    assert store.review_records(aid, _key())[0]["state"] == "dispatched"
+    monkeypatch.setattr(store, "_eligibility", real)
+    _deliver(aid, _review_payload(rec))  # redelivered once eligible: accepted now
+    assert len(_returns(spawned)) == 1
+
+
+def test_an_undelivered_alert_survives_a_lost_settlement_acknowledgement(spawned, forge_says):
+    aid = _made()
+    run = _accepted_return_run(aid, forge_says, spawned)
+    first = store.finish_run(run["id"], "undelivered", "no session record")
+    assert first["alert"] == f"automation:{aid}:{run['id']}:undelivered"
+    again = store.finish_run(run["id"], "undelivered", "no session record")
+    assert again["settled"] is False and not again.get("alert")
+    owed = automation_runner._lost_ack(again, run["id"])
+    assert owed["alert"] == f"automation:{aid}:{run['id']}:undelivered"
+    assert store.get(aid)["consecutive_failures"] == 0
