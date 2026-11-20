@@ -200,6 +200,25 @@ def client_settings_state(action: dict) -> tuple[bool, str]:
     return True, ""
 
 
+#: What a webhook delivery may start or message (#2221 P2): an API session only. A delivery is
+#: unattended, third-party-triggered work, and unattended work runs on API clients (operating model
+#: §7), whose structured turns run under the #1897 guard.
+WEBHOOK_API_ONLY = "a webhook starts or messages an API session only; pick an API agent"
+
+
+def webhook_target_api(action: dict) -> bool:
+    """Whether a webhook-started action's target is an API client (asked of the engine, never
+    named): the new session's agent, or the session's own."""
+    if action["kind"] == "start_session":
+        prov = engines.get(action["engine"])
+    else:
+        try:
+            prov, _native = engines.parse_key(action["session_key"])
+        except Exception:  # noqa: BLE001 — not addressable: not an API session
+            return False
+    return prov is not None and bool(_structured().is_api(prov))
+
+
 #: A template carrying a secret has no structured sink yet (#1901): refused for an API target.
 NO_API_SINK = "a template with a secret can't be sent to an API session yet"
 
@@ -217,6 +236,12 @@ def check_save(config: dict) -> None:
             raise model.AutomationError("that webhook doesn't exist (or can't be picked)")
     if action["kind"] == "start_mission" and action.get("autonomy") != "propose":
         raise model.AutomationError(HQ_PLANS_DISPATCH)
+    if (
+        trig["kind"] == "webhook"
+        and action["kind"] in ("start_session", "send_to_session")
+        and not webhook_target_api(action)
+    ):
+        raise model.AutomationError(WEBHOOK_API_ONLY)
     if action["kind"] == "start_session":
         ok, why = client_settings_state(action)
         if not ok:
@@ -860,7 +885,34 @@ async def _execute(run: dict, *, registry) -> tuple[str, str]:
     if drift:
         await asyncio.to_thread(_flag, run, drift)
         return "refused", f"{drift} — it needs your approval again"
+    try:
+        config = with_delivered(config, run)
+    except RunRefused as e:
+        return "refused", e.detail
     return await _ACTIONS[config["action"]["kind"]](run, config, pins, registry=registry)
+
+
+def with_delivered(config: dict, run: dict) -> dict:
+    """The approved config with the values its webhook delivery filled (#2221 P2): exactly the
+    mapped fields, typed when the delivery was admitted (`webhook_actions`), merged into the
+    template's values for this run only. Anything else — a missing value, an unmapped one — is
+    refused: nothing is partly filled."""
+    action = config["action"]
+    if action["kind"] not in ("start_session", "send_to_session"):
+        return config
+    msg = action["message"]
+    mapped = msg.get("from_delivery") or {}
+    delivered = (run.get("inputs") or {}).get("delivered") or {}
+    if not mapped:
+        if delivered:
+            raise RunRefused(409, "this run carries delivery values its automation does not map")
+        return config
+    if set(delivered) != set(mapped) or not all(isinstance(v, str) for v in delivered.values()):
+        raise RunRefused(409, "this run's delivery values don't match what its automation maps")
+    values = {**msg["values"], **delivered}
+    filled = {k: v for k, v in msg.items() if k != "from_delivery"}
+    filled["values"] = dict(sorted(values.items()))
+    return {**config, "action": {**action, "message": filled}}
 
 
 async def execute(run: dict, *, registry) -> dict:
@@ -986,8 +1038,9 @@ async def run_now(aid: str, *, registry) -> dict:
         row = await asyncio.to_thread(store.get, aid)
         kind = ((row.get("config") or {}).get("trigger") or {}).get("kind")
     if kind == "webhook":
-        # A review loop acts on an item's revision, which only a delivery names (#2202).
-        raise RunRefused(409, "a review loop runs only when its webhook delivers an event")
+        # It acts on a delivery (a review loop on an item's revision, #2202; a session on the
+        # values a delivery fills, #2221): Run now has none.
+        raise RunRefused(409, "a webhook automation runs only when its webhook delivers an event")
     res = await asyncio.to_thread(
         store.begin_run, aid, trigger="manual", slot=f"manual:{uuid.uuid4().hex}", fire_at=None
     )

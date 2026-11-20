@@ -361,6 +361,10 @@ def _public(r, ts: float, users: list[dict], *, detail: bool) -> dict:
     }
     if detail:
         out["last_shape"] = store._loads(r["last_shape"], []) or []
+        # The event presets that fit its last delivery (#2221 P2): the wizard's step 2.
+        from . import webhook_events
+
+        out["presets"] = webhook_events.presets(out["last_shape"])
     return out
 
 

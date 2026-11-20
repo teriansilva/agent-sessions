@@ -39,6 +39,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import webhook_events
+
 NAME_MAX = 80
 TEXT_MAX = 16000
 VALUE_MAX = 4000
@@ -58,6 +60,8 @@ TRIGGER_KINDS = ("once", "schedule", "manual", "webhook")
 #: Reserved for later phases. Accepted as a NAME so the refusal can say why; never stored.
 RESERVED_TRIGGERS = {"loop": "Phase 2"}
 ACTION_KINDS = ("start_mission", "start_session", "send_to_session", "forge_review_loop")
+#: The actions a webhook delivery may start (#2221 P2).
+WEBHOOK_ACTIONS = ("forge_review_loop", "start_session", "send_to_session")
 #: The webhook signature schemes. Only Forgejo's for now (#2202); `github`/`battlelab` are #1201's.
 WEBHOOK_SCHEMES = ("forgejo",)
 #: A forge repository ``owner/name`` and a forge login (Forgejo's alphabets, bounded).
@@ -223,7 +227,9 @@ def _hhmm(raw: object) -> str:
 
 
 def validate_trigger(raw: object, *, now: float | None = None) -> dict:
-    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence", "scheme", "webhook_id"}, {"kind"})
+    t = _obj(
+        raw, "trigger", {"kind", "at", "tz", "cadence", "scheme", "webhook_id", "when"}, {"kind"}
+    )
     kind = _word(t["kind"], "trigger kind")
     if kind in RESERVED_TRIGGERS:
         raise AutomationError(
@@ -236,11 +242,17 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
         # A webhook picked from the list (#2221), or — read-only — a #2202 review loop's own
         # (`scheme`), which lives on at its old address until #2222 moves it over.
         if "webhook_id" in t:
-            _obj(t, "a webhook trigger", {"kind", "webhook_id"}, {"webhook_id"})
+            _obj(t, "a webhook trigger", {"kind", "webhook_id", "when"}, {"webhook_id"})
             wid = t["webhook_id"]
             if not isinstance(wid, str) or not _ID_RE.match(wid):
                 raise AutomationError("webhook_id must be a webhook id")
-            return {"kind": "webhook", "webhook_id": wid}
+            # Which events it acts on (#2221 P2): only when some were chosen, so a stored trigger
+            # without conditions keeps its exact shape (and its consent receipt).
+            try:
+                when = webhook_events.validate_conditions(t.get("when"))
+            except webhook_events.EventError as e:
+                raise AutomationError(str(e)) from None
+            return {"kind": "webhook", "webhook_id": wid, **({"when": when} if when else {})}
         _obj(t, "a webhook trigger", {"kind", "scheme"}, {"scheme"})
         scheme = _word(t["scheme"], "webhook scheme")
         if scheme not in WEBHOOK_SCHEMES:
@@ -269,11 +281,11 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
 
 
 def validate_message(raw: object, what: str) -> dict:
-    m = _obj(raw, what, {"text", "template_id", "values"})
+    m = _obj(raw, what, {"text", "template_id", "values", "from_delivery"})
     if ("text" in m) == ("template_id" in m):
         raise AutomationError(f"{what} is either {{text}} or {{template_id, values}}")
     if "text" in m:
-        if "values" in m:
+        if "values" in m or "from_delivery" in m:
             raise AutomationError(f"{what}: values go with a template")
         text = _text(m["text"], f"{what} text", TEXT_MAX, multiline=True)
         if not text.strip():
@@ -290,7 +302,16 @@ def validate_message(raw: object, what: str) -> dict:
         if not isinstance(k, str) or not _FIELD_RE.match(k):
             raise AutomationError(f"{what}: {k!r} is not a field name")
         clean[k] = _text(v, f"{what} value {k}", VALUE_MAX, multiline=True)
-    return {"template_id": tid, "values": dict(sorted(clean.items()))}
+    # Template fields filled from each webhook delivery, typed (#2221 P2). Only when some are.
+    try:
+        mapped = webhook_events.validate_mapping(m.get("from_delivery"))
+    except webhook_events.EventError as e:
+        raise AutomationError(f"{what}: {e}") from None
+    both = sorted(set(mapped) & set(clean))
+    if both:
+        raise AutomationError(f"{what}: {both} has a fixed value and a value from the delivery")
+    out = {"template_id": tid, "values": dict(sorted(clean.items()))}
+    return {**out, "from_delivery": mapped} if mapped else out
 
 
 def validate_action(raw: object) -> dict:
@@ -529,15 +550,25 @@ def validate_config(raw: object, *, now: float | None = None) -> dict:
         "action": validate_action(c["action"]),
         "policy": validate_policy(c.get("policy")),
     }
-    # The webhook trigger and the review loop come together, and only together (#2202): a webhook
-    # cannot fill a generic action (no variable mapping exists), and a review loop has no schedule.
-    hook = out["trigger"]["kind"] == "webhook"
-    loop = out["action"]["kind"] == "forge_review_loop"
-    if hook != loop:
+    # What a webhook may start (#2221 P2): a review loop (#2202), a new session, or a message to a
+    # session. A review loop is started only by a webhook, reads its events itself (no
+    # conditions), and a mission from a webhook is P3's (a playbook run through its own seam).
+    trig, kind = out["trigger"], out["action"]["kind"]
+    hook = trig["kind"] == "webhook"
+    if kind == "forge_review_loop" and not hook:
+        raise AutomationError("a review loop is started by a webhook")
+    if kind == "forge_review_loop" and trig.get("when"):
+        raise AutomationError("a review loop picks its own events; it takes no conditions")
+    if trig.get("scheme") and kind != "forge_review_loop":
+        raise AutomationError("a review loop's own webhook starts only that review loop")
+    if hook and kind not in WEBHOOK_ACTIONS:
         raise AutomationError(
-            "a Forgejo webhook starts a review loop, and a review loop is started by a Forgejo "
-            "webhook"
+            "a webhook can start a review loop, start a session or message a session"
         )
+    if trig.get("when") and not trig.get("webhook_id"):
+        raise AutomationError("conditions go with a webhook from the list")
+    if message_of(out["action"]).get("from_delivery") and not hook:
+        raise AutomationError("only a webhook delivery can fill a value from the delivery")
     return out
 
 
@@ -903,12 +934,16 @@ def check_template(config: dict) -> dict | None:
     except tstore.TemplateNotFound:
         raise AutomationError("unknown template", status=404) from None
     fields = {f["name"]: f for f in t["fields"]}
-    unknown = sorted(set(msg["values"]) - set(fields))
+    mapped = msg.get("from_delivery") or {}
+    unknown = sorted((set(msg["values"]) | set(mapped)) - set(fields))
     if unknown:
         raise AutomationError(f"values for fields this template does not declare: {unknown}")
-    for name in msg["values"]:
+    for name in [*msg["values"], *mapped]:
         if fields[name]["source"] == "library":
             raise AutomationError(f"{name} takes its value from the variable library")
+    for name in mapped:
+        if fields[name]["kind"] == "secret":
+            raise AutomationError(f"{name} is a secret; a delivery never fills a secret")
     for f in t["fields"]:
         if f["kind"] == "secret" and f["source"] != "library":
             raise AutomationError(
@@ -1005,10 +1040,14 @@ def scope_of(config: dict, pins: dict) -> dict:
         "checklist_default": bool((pins.get("checklist") or {}).get("default")),
         # Phase 3 fields, fixed here so a later phase widens against a real baseline.
         "webhook": trigger["kind"] == "webhook",
-        "mapped": [],
+        # The template fields a delivery fills, typed (#2221 P2): a ladder — a new or changed
+        # entry widens, a removed one narrows.
+        "mapped": webhook_events.mapping_lines(message_of(action).get("from_delivery") or {}),
         # Which webhook from the list (#2221): only when one was picked, so a #2202 review loop's
         # stored receipt (which has no such field) still equals its scope.
         **({"webhook_source": trigger["webhook_id"]} if trigger.get("webhook_id") else {}),
+        # Which events it acts on (#2221 P2): an equality field, only when some were chosen.
+        **({"when": trigger["when"]} if trigger.get("when") else {}),
     }
 
 
@@ -1036,6 +1075,7 @@ _CHANGED = {
     "model": "a different agent or model",
     "trigger": "a different trigger",
     "webhook_source": "a different webhook",
+    "when": "which events it acts on changed",
     # ANY change of when it runs — time, days, day of month, interval, zone, or a once's `at` — is
     # re-approved: "runs at 03:00" and "runs at 14:00" are different grants.
     "cadence": "the schedule changed",
@@ -1211,6 +1251,14 @@ def _message_lines(scope: dict, preview: str | None = None) -> list[str]:
         out.append(f"{word}: template “{name}” ({msg.get('template_id')}), revision {rev}")
         for k, v in sorted((msg.get("values") or {}).items()):
             out.append(f"  {k} = {v}")
+        for k, m in sorted((msg.get("from_delivery") or {}).items()):
+            if not isinstance(m, dict):
+                out.append(f"  {k} = from the delivery: {m!r}")
+                continue
+            kind = m.get("type")
+            if kind == "choice":
+                kind = "one of " + ", ".join(map(str, m.get("choices") or []))
+            out.append(f"  {k} = from the delivery's {m.get('path')} ({kind})")
         if preview is not None:
             # The template as it would be sent NOW: its body with these values and the library's
             # text values filled in, and every secret as `[secret: name]` (`message_preview`).
@@ -1402,6 +1450,14 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
             f"Starts when the webhook “{webhooks.name_of(wid)}” ({wid}) delivers a signed event"
             + (f" for {t.get('repo')}" if t.get("repo") else "")
         )
+        when = scope.get("when")
+        if isinstance(when, list) and when:
+            lines.append("Only when every one of these holds:")
+            for c in when:
+                if isinstance(c, dict):
+                    lines.append(f"  {webhook_events.describe_condition(c)}")
+                else:
+                    lines.append(f"  {c!r}")
     elif trig == "webhook":
         lines.append(f"Starts when Forgejo sends a signed event for {t.get('repo')}")
     elif trig == "manual":

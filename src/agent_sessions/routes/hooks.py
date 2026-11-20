@@ -14,7 +14,7 @@ header form (`webhooks.signature_header`). No provider is configured or needed.
   rate limit runs before anything is looked up (429), a per-webhook one after the signature.
 * **Recorded once, decided per automation.** A verified delivery updates the webhook's last delivery
   (time, event label, and its SHAPE — field names and types, never values), then each target
-  automation decides on its own (`review_loop_runner.handle`). A list webhook accepts deliveries
+  automation decides on its own (`webhook_actions.handle`). A list webhook accepts deliveries
   before any automation uses it, so a test delivery can teach the wizard its fields.
 * **No echo.** 202 ``{"accepted": true}``. **Kill switch:** ``AGENT_SESSIONS_AUTOMATION_LOOP=0``
   refuses every delivery (503).
@@ -34,7 +34,7 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import automation_runner, forge_hook, review_loop_runner, webhooks
+from .. import automation_runner, forge_hook, webhook_actions, webhooks
 from .. import automations_store as store
 
 log = logging.getLogger("agent_sessions.routes.hooks")
@@ -181,7 +181,7 @@ def register(app: FastAPI, *, registry=None) -> None:
         aids = await asyncio.to_thread(targets)
         for aid in aids:
             task = asyncio.get_running_loop().create_task(
-                review_loop_runner.handle(aid, body, headers, registry=registry, source=wid),
+                webhook_actions.handle(aid, body, headers, registry=registry, source=wid),
                 name=f"webhook:{wid}:{aid}",
             )
             _TASKS.add(task)

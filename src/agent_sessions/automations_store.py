@@ -1331,6 +1331,7 @@ def record_delivery(
     reason: str,
     inputs: dict,
     source: str | None = None,
+    expect_revision: int | None = None,
     now: float | None = None,
 ) -> dict | None:
     """A signed delivery that becomes a FINISHED run without an effect (``rejected`` → refused,
@@ -1344,6 +1345,10 @@ def record_delivery(
     ts = time.time() if now is None else now
     with _tx() as con:
         row = _get(con, aid)
+        if expect_revision is not None and row["revision"] != expect_revision:
+            # Decided against a configuration that has since changed (#2221 P2): nothing is
+            # claimed or counted; the caller decides again against the current one.
+            return {"stale_config": True}
         if source is not None and source_of(aid, row["config"]) != source:
             return None  # the automation no longer listens on that webhook: not its delivery
         if con.execute(
@@ -1394,6 +1399,95 @@ def record_delivery(
             _settle(con, aid, run_id, outcome)
         got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
         return _run(got)
+
+
+#: The actions a generic webhook delivery starts through `begin_delivery` (#2221 P2).
+DELIVERY_ACTIONS = ("start_session", "send_to_session")
+
+
+def begin_delivery(
+    aid: str,
+    *,
+    slot: str,
+    expect_revision: int,
+    inputs: dict,
+    source: str,
+    now: float | None = None,
+) -> dict:
+    """A generic webhook delivery's admission (#2221 P2) — ONE transaction, before any effect.
+
+    Bound to the configuration the delivery was matched against (``expect_revision``) and to the
+    webhook it came through (``source``): either changed → nothing is claimed and the answer
+    carries ``stale_config``, so the caller matches the delivery again. Then it claims ``slot``
+    (the body's fingerprint: a redelivered or duplicate body claims nothing twice), re-reads the
+    consent / pause / expiry / daily cap / concurrency like every run (`_eligibility`), and records
+    the run ``dispatching`` with ``inputs`` (the event label and the typed delivered values). A
+    daily-cap or concurrency SKIP records the run WITHOUT consuming the claim, so a redeliver can
+    still run. Returns ``{"run", "claimed", "reason"}``."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        row = _get(con, aid)
+        config = row["config"] or {}
+        if (
+            row["revision"] != expect_revision
+            or (config.get("action") or {}).get("kind") not in DELIVERY_ACTIONS
+            or source_of(aid, row["config"]) != source
+        ):
+            return {
+                "run": None,
+                "claimed": False,
+                "stale_config": True,
+                "reason": "the automation changed while the delivery was being checked",
+            }
+        if con.execute(
+            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
+        ).fetchone():
+            return {"run": None, "claimed": False, "reason": "this delivery was already handled"}
+        verdict, reason = _eligibility(con, row, manual=False, now=ts)
+        if verdict == "no":
+            return {"run": None, "claimed": False, "reason": reason}
+        run_id = uuid.uuid4().hex
+        scope = {
+            "config": row["config"],
+            "pins": row["pins"],
+            "consented_scope": row["consented_scope"],
+            "consented_at": row["consented_at"],
+            "revision": row["revision"],
+        }
+        run = verdict == "run"
+        if run:
+            con.execute(
+                "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
+                "VALUES (?,?,?,?,?)",
+                (aid, slot, None, ts, run_id),
+            )
+        con.execute(
+            "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
+            "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
+            "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                aid,
+                "webhook",
+                slot,
+                None,
+                0,
+                1,
+                "dispatching" if run else "done",
+                "" if run else "skipped",
+                reason,
+                json.dumps(scope),
+                json.dumps(inputs),
+                1 if run else 0,
+                owner_token() if run else "",
+                ts,
+                None if run else ts,
+            ),
+        )
+        # Recorded, NOT claimed when skipped: the delivery may come again (redeliver) and then run.
+        _step(con, run_id, "claimed" if run else "skipped", reason or "a webhook delivery")
+        got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        return {"run": _run(got), "claimed": run, "reason": reason}
 
 
 def begin_review(

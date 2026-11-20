@@ -24,6 +24,7 @@ from agent_sessions import (
     forge_hook,
     review_loop,
     review_loop_runner,
+    webhook_actions,
     webhooks,
 )
 from agent_sessions import automations as model
@@ -322,12 +323,19 @@ def test_the_brief_carries_only_typed_values_and_the_exact_marker():
 # ---- the model: config, consent, pins -----------------------------------------------------------
 
 
-def test_a_webhook_trigger_and_a_review_loop_come_only_together():
-    with pytest.raises(model.AutomationError, match="started by a Forgejo webhook"):
+def test_a_review_loop_is_started_only_by_a_webhook_and_its_own_webhook_starts_only_it():
+    with pytest.raises(model.AutomationError, match="started by a webhook"):
         model.validate_config({**_config(), "trigger": {"kind": "manual"}})
     send = {"kind": "send_to_session", "session_key": "claude:x", "message": {"text": "go"}}
-    with pytest.raises(model.AutomationError, match="started by a Forgejo webhook"):
-        model.validate_config({**_config(), "action": send})
+    legacy = {"kind": "webhook", "scheme": "forgejo"}
+    with pytest.raises(model.AutomationError, match="starts only that review loop"):
+        model.validate_config({**_config(), "trigger": legacy, "action": send})
+    # A webhook from the list may also start a session or message one (#2221 P2), not a mission.
+    picked = {"kind": "webhook", "webhook_id": "wh1"}
+    assert model.validate_config({**_config(), "trigger": picked, "action": send})
+    mission = {"kind": "start_mission", "project_id": "p1", "instruction": {"text": "go"}}
+    with pytest.raises(model.AutomationError, match="start a session or message a session"):
+        model.validate_config({**_config(), "trigger": picked, "action": mission})
 
 
 @pytest.mark.parametrize(
@@ -825,7 +833,9 @@ def client(monkeypatch):
         handled.append((aid, body, headers))
         return _nothing()
 
-    monkeypatch.setattr(review_loop_runner, "handle", handle)
+    # The route hands each delivery to `webhook_actions.handle` (#2221 P2), which passes a
+    # review loop's on to `review_loop_runner.handle`.
+    monkeypatch.setattr(webhook_actions, "handle", handle)
     app = FastAPI()
     hooks.register(app)
     with TestClient(app) as c:

@@ -42,6 +42,22 @@ For the last delivery, BattleLab keeps **the names and types of its fields**, fo
 `pull_request.number · number` or `action · text`. When you set up an automation, you pick from
 these names. **The values themselves are not kept.**
 
+## Choose which events, and fill values from them
+
+A webhook can start a review loop, start a session, or send a message to a session. Sessions must
+be API sessions.
+
+- **Which events.** If the webhook has received an event, BattleLab offers presets for common
+  ones: *PR opened or pushed (drafts skipped)*, *Issue opened or edited*, *Review submitted*. You
+  can also add your own conditions on the delivery's fields (*is*, *is not*, *is one of*,
+  *contains*, *is yes / no*, *is present / absent*). Conditions read the signed body only, never
+  a header.
+- **Fill a template from the delivery.** Each template field can take a value from a field of the
+  delivery, with a type: a number, a choice from a list you give, a short plain text (up to 200
+  characters), or yes / no. If a delivery's value doesn't fit its type, nothing starts, and the
+  run history says which field failed.
+- **The same delivery never runs twice**, even when it is delivered again.
+
 ## Rotate, rename, delete
 
 - **Rotate secret** makes a new secret, shown once. The old one keeps working for 24 hours, so you
