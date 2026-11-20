@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+import time as _real_time
 
 import httpx
 import pytest
@@ -555,14 +556,29 @@ def test_gallery_missing_statement_floor_refuses_an_older_replay(keys, gallery, 
     assert not floor.exists()
 
 
+class _FeedClock:
+    """The feed module's clock pinned at NOW, everything else real. `time` is one module, so
+    patching `time.time` itself would also move the signed-in call's clock; this replaces only
+    `feed`'s reference to it. Without it the cut is read at REAL time, and a cut that expires
+    at NOW + 60 days reads as stale before its damaged floor is ever looked at (2026-11-20)."""
+
+    def __getattr__(self, name):
+        return getattr(_real_time, name)
+
+    @staticmethod
+    def time() -> float:
+        return float(NOW)
+
+
 def test_a_damaged_statement_floor_leaves_the_agent_list_available(keys, api, monkeypatch):  # noqa: F811
     from agent_sessions import agent_catalog
 
     data, doc = cut()
     feed.accept(data, keys.content(data), statement=bundle(keys, stmt(data, doc)), now=NOW)
-    with monkeypatch.context() as at:  # `time` is one module: unpatch before the signed-in call
-        at.setattr(feed.time, "time", lambda: NOW)
-        assert agent_catalog.current().stale is False
+    # Every catalog read below, the API route's included, sees the cut at NOW; the signed-in
+    # call keeps the real clock.
+    monkeypatch.setattr(feed, "time", _FeedClock())
+    assert agent_catalog.current().stale is False
     storage.write(ag_floor(), {"damaged": True})
     catalog = agent_catalog.current()
     assert catalog.source == "unavailable" and catalog.error
