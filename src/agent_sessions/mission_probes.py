@@ -652,6 +652,125 @@ def _eligible(mission: dict) -> list[dict]:
     return out
 
 
+def _probe_and_record(mission: dict, o: dict, *, path=None) -> dict:
+    """Ask ONE objective's probe and record the answer through the fenced bind → request →
+    settle path (the body of :func:`run_for_mission`'s loop, shared with :func:`probe_row`).
+    ``{probed, unknown, settled, row}``; never raises for one row."""
+    from . import session_input
+
+    mission_id = str(mission["id"])
+    out: dict = {"probed": False, "unknown": False, "settled": False, "row": None}
+    key = str(o["key"])
+    # BIND FIRST, then ask. `bind_probe_target` writes the fully resolved destination and a
+    # fresh generation onto the row, in its own transaction, before a single byte goes out —
+    # so what this answer will be adjudicated against is durable, visible to any other runner,
+    # and survives a restart. `None` means the objective moved (or went) between selecting it
+    # and issuing the request, and the right response is not to issue one.
+    before = resolve_target(mission, o)
+    # FENCED against byte one (#983): the binding is part of what a pending supervisor nudge's
+    # facts rest on. Lock order: session_input._lock → authfence → missions._write_lock.
+    # Only the store write is fenced; the forge request below runs outside it.
+    try:
+        with _fact_fence():
+            gen = missions.bind_probe_target(
+                mission_id,
+                key,
+                target=before.digest,
+                expect_probe=str(o.get("probe") or ""),
+                expect_args=o.get("probe_args"),
+                path=path,
+            )
+    except session_input.AuthorityFenceBusy:
+        # Could not be ordered against a delivery: issue no request, the next pass retries.
+        log.debug("probe for %s/%s skipped: the authorization fence was busy", mission_id, key)
+        return out
+    if gen is None:
+        return out
+    # The SAME resolution the row is now bound to is handed to the probe. Re-resolving inside
+    # would ask about a destination nobody fenced. When the read BEGAN is recorded with the
+    # answer (#2035): a reopened step's row settles only from a read begun in its new episode.
+    read_at = time.time()
+    fact = probe_one(mission, o, target=before)
+    out["probed"] = True
+    if not fact.observed:
+        out["unknown"] = True
+    # RE-RESOLVED AFTER THE ANSWER, and adjudicated inside the settling transaction rather
+    # than here. The forge config and the checkout are both part of where this answer came
+    # FROM, neither appears in `probe_args`, and both can be changed by the operator
+    # mid-flight — but the store cannot read either, so the comparison is split: the caller
+    # supplies the two digests, the transaction requires them to be the same value the row is
+    # bound to, at the generation it was bound at. A pre/post pair held in this loop's locals
+    # (what this replaces) could not see a second runner and left the gap between the
+    # comparison and the write unguarded (#897 re-review, finding 2).
+    after = resolve_target(mission, o)
+    try:
+        was = str(o.get("state") or "")
+        # FENCED against byte one (#983), after the request has returned — never across it.
+        # Lock order: session_input._lock → authfence → missions._write_lock. A busy fence
+        # raises here and lands in the `except` below: the answer is discarded, not settled.
+        with _fact_fence():
+            row = missions.observe_objective(
+                mission_id,
+                key,
+                observed=fact.observed,
+                value=fact.value,
+                detail=fact.detail,
+                extra=fact.extra,
+                # THE IDENTITY THIS PROBE WAS ABOUT, compared inside the settling
+                # transaction. A probe is an external call that can outlive the objective it
+                # was issued for: drop and re-add the same key with a different probe while an
+                # HTTP request is in flight and the old answer would settle the new target
+                # (#897 review). The row is only written when the objective is still the one
+                # that was asked about.
+                expect_probe=str(o.get("probe") or ""),
+                expect_args=o.get("probe_args"),
+                # …and the EXTERNAL target too: the forge, the checkout, the derived repo and
+                # branch, the remote, the local HEAD. The transaction requires the row still to
+                # be bound to this destination at this generation, so an answer from an
+                # authority the operator has since changed — or one a second runner has
+                # superseded — cannot settle the row.
+                expect_target=after.digest,
+                expect_gen=gen,
+                read_at=read_at,
+                path=path,
+            )
+        if row is None:
+            log.debug("probe target moved under %s/%s — discarded", mission_id, key)
+        elif fact.observed and fact.value:
+            # THE MERGE SHA, RECORDED FROM THE ONE THING THAT KNOWS IT (#897 re-review 5,
+            # finding 7). `forge_merged` carries the merge commit; `http_revision` needs a
+            # revision to look for and a playbook cannot name one that does not exist yet.
+            # Write-once in the store, and only from an observation that actually settled.
+            sha = str((fact.extra or {}).get("sha") or "")
+            # Only the mission's OWN project's merge (#1797 S2a): the mission-level SHA is the
+            # `http_revision` fallback for that project, never for another's.
+            if str(o.get("probe") or "") == "forge_merged" and sha and not is_foreign(mission, o):
+                # Fenced too: the merge SHA is part of the resolved target a direction's facts
+                # are checked against (#983). Same lock order as the writes above.
+                with contextlib.suppress(Exception), _fact_fence():
+                    missions.note_merge_sha(mission_id, sha, path=path)
+        out["row"] = row
+        if row is not None and was != "met" and str(row.get("state")) == "met":
+            out["settled"] = True
+    except Exception:  # noqa: BLE001 — one unwritable row must not stop the rest
+        log.debug("could not record probe for %s/%s", mission_id, o.get("key"))
+    return out
+
+
+def probe_row(mission_id: str, key: str, *, path=None) -> dict | None:
+    """Ask ONE objective NOW, uncached, through the same fenced path as the pass (#2035: a
+    rework `when` row is read fresh before a round is consumed). The row it wrote, or None (the
+    objective is not one this runner asks, moved, or the fence was busy). Blocking; runs OFF the
+    loop and OUTSIDE every session lock — the request is the slow part."""
+    mission = missions.get_mission(mission_id, events_limit=1, path=path)
+    if mission is None:
+        return None
+    o = next((x for x in _eligible(mission) if str(x.get("key")) == key), None)
+    if o is None:
+        return None
+    return _probe_and_record(mission, o, path=path)["row"]
+
+
 def run_for_mission(mission_id: str, *, path=None) -> dict:
     """Probe one mission's objectives and record what was seen. Synchronous; runs OFF the loop.
 
@@ -668,8 +787,6 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
         return {"probed": 0, "settled": 0, "unknown": 0}
     if mission is None:
         return {"probed": 0, "settled": 0, "unknown": 0}
-
-    from . import session_input  # the fence's busy signal; imported here, as `_fact_fence` does
 
     # WAITING EVIDENCE FIRST (#1777 S1c): a row whose producer step was observed since the last
     # pass becomes its real probe now, so this pass can already ask it. Idempotent, and run every
@@ -698,103 +815,10 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
 
     probed = settled = unknown = 0
     for o in rows:
-        key = str(o["key"])
-        # BIND FIRST, then ask. `bind_probe_target` writes the fully resolved destination and a
-        # fresh generation onto the row, in its own transaction, before a single byte goes out —
-        # so what this answer will be adjudicated against is durable, visible to any other runner,
-        # and survives a restart. `None` means the objective moved (or went) between selecting it
-        # and issuing the request, and the right response is not to issue one.
-        before = resolve_target(mission, o)
-        # FENCED against byte one (#983): the binding is part of what a pending supervisor nudge's
-        # facts rest on. Lock order: session_input._lock → authfence → missions._write_lock.
-        # Only the store write is fenced; the forge request below runs outside it.
-        try:
-            with _fact_fence():
-                gen = missions.bind_probe_target(
-                    mission_id,
-                    key,
-                    target=before.digest,
-                    expect_probe=str(o.get("probe") or ""),
-                    expect_args=o.get("probe_args"),
-                    path=path,
-                )
-        except session_input.AuthorityFenceBusy:
-            # Could not be ordered against a delivery: issue no request, the next pass retries.
-            log.debug("probe for %s/%s skipped: the authorization fence was busy", mission_id, key)
-            continue
-        if gen is None:
-            continue
-        # The SAME resolution the row is now bound to is handed to the probe. Re-resolving inside
-        # would ask about a destination nobody fenced. When the read BEGAN is recorded with the
-        # answer (#2035): a reopened step's row settles only from a read begun in its new episode.
-        read_at = time.time()
-        fact = probe_one(mission, o, target=before)
-        probed += 1
-        if not fact.observed:
-            unknown += 1
-        # RE-RESOLVED AFTER THE ANSWER, and adjudicated inside the settling transaction rather
-        # than here. The forge config and the checkout are both part of where this answer came
-        # FROM, neither appears in `probe_args`, and both can be changed by the operator
-        # mid-flight — but the store cannot read either, so the comparison is split: the caller
-        # supplies the two digests, the transaction requires them to be the same value the row is
-        # bound to, at the generation it was bound at. A pre/post pair held in this loop's locals
-        # (what this replaces) could not see a second runner and left the gap between the
-        # comparison and the write unguarded (#897 re-review, finding 2).
-        after = resolve_target(mission, o)
-        try:
-            was = str(o.get("state") or "")
-            # FENCED against byte one (#983), after the request has returned — never across it.
-            # Lock order: session_input._lock → authfence → missions._write_lock. A busy fence
-            # raises here and lands in the `except` below: the answer is discarded, not settled.
-            with _fact_fence():
-                row = missions.observe_objective(
-                    mission_id,
-                    key,
-                    observed=fact.observed,
-                    value=fact.value,
-                    detail=fact.detail,
-                    extra=fact.extra,
-                    # THE IDENTITY THIS PROBE WAS ABOUT, compared inside the settling
-                    # transaction. A probe is an external call that can outlive the objective it
-                    # was issued for: drop and re-add the same key with a different probe while an
-                    # HTTP request is in flight and the old answer would settle the new target
-                    # (#897 review). The row is only written when the objective is still the one
-                    # that was asked about.
-                    expect_probe=str(o.get("probe") or ""),
-                    expect_args=o.get("probe_args"),
-                    # …and the EXTERNAL target too: the forge, the checkout, the derived repo and
-                    # branch, the remote, the local HEAD. The transaction requires the row still to
-                    # be bound to this destination at this generation, so an answer from an
-                    # authority the operator has since changed — or one a second runner has
-                    # superseded — cannot settle the row.
-                    expect_target=after.digest,
-                    expect_gen=gen,
-                    read_at=read_at,
-                    path=path,
-                )
-            if row is None:
-                log.debug("probe target moved under %s/%s — discarded", mission_id, key)
-            elif fact.observed and fact.value:
-                # THE MERGE SHA, RECORDED FROM THE ONE THING THAT KNOWS IT (#897 re-review 5,
-                # finding 7). `forge_merged` carries the merge commit; `http_revision` needs a
-                # revision to look for and a playbook cannot name one that does not exist yet.
-                # Write-once in the store, and only from an observation that actually settled.
-                sha = str((fact.extra or {}).get("sha") or "")
-                # Only the mission's OWN project's merge (#1797 S2a): the mission-level SHA is the
-                # `http_revision` fallback for that project, never for another's.
-                if (
-                    str(o.get("probe") or "") == "forge_merged"
-                    and sha
-                    and not is_foreign(mission, o)
-                ):
-                    # Fenced too: the merge SHA is part of the resolved target a direction's facts
-                    # are checked against (#983). Same lock order as the writes above.
-                    with contextlib.suppress(Exception), _fact_fence():
-                        missions.note_merge_sha(mission_id, sha, path=path)
-            if row is not None and was != "met" and str(row.get("state")) == "met":
-                settled += 1
-        except Exception:  # noqa: BLE001 — one unwritable row must not stop the rest
-            log.debug("could not record probe for %s/%s", mission_id, o.get("key"))
+        got = _probe_and_record(mission, o, path=path)
+        probed += got["probed"]
+        unknown += got["unknown"]
+        settled += got["settled"]
     if rows:
         with contextlib.suppress(Exception):
             missions.set_supervisor_state(

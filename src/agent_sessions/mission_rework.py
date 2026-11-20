@@ -19,6 +19,21 @@ step-mode mission (#1581) that is read here, from the evidence, never from a mod
   (`missions.rework_decision`), and it is read again inside the fence, before the stop: a request
   past an exhausted edge, or one already consumed, stops nothing and is left to the ordinary
   reconcile.
+* **Read fresh, bounded, outside the global lock (#2035).** The cached observation only nominates a
+  candidate. Before anything is stopped, the `when` row is read NOW: a probe row is asked again
+  through the probe pass's own fenced path (`mission_probes.probe_row`), a judged row's output is
+  gathered (`mission_judge.gather`) and its fingerprint compared. Both run before
+  `session_input._lock` is taken, within `WHEN_READ_TIMEOUT_S`. A read that does not answer in time
+  consumes nothing this pass, and its late answer is never acted on (nothing waits for it; it only
+  records an observation; the thread it leaves is bounded by the read's own limits — the probe's
+  HTTP timeout, the judge's gather caps). Inside the fence, nothing slow runs: the store is asked
+  whether the read is younger than `WHEN_READ_MAX_AGE_S`, the approval in force is the one the read
+  began under, and the row still holds the same observation (its incarnation, the source episode and
+  the fact, `missions.rework_observation`), for a probe row one whose read began at or after this
+  fresh read. A judged read is bound to the output generation of the sessions it gathered from,
+  read before and after the gather outside the lock; in the fence only the reviewer's is compared,
+  from the one snapshot the idle check reads (`_fence_ready`). The consume binds the approval
+  again in its own transaction.
 * **Reopen = a new episode.** Inside the adoption fence, once the reviewer's session is idle, its
   answer is still the current one and the stop is PROVED (`mission_fence.fenced_step_stop`, the
   reconcile's own path), the round is consumed. ONE transaction holds the round, the reset and the
@@ -40,6 +55,12 @@ step-mode mission (#1581) that is read here, from the evidence, never from a mod
   no longer holds. The claim refuses any further launch of the step under the approval
   (`bound_reached`): beyond the bound is a question, never a launch.
 
+* **A round held back by an `unknown` run says so (#2035 P3).** When a review asks for changes
+  but a step the reopen would reset still has an `unknown` run (never settled automatically), the
+  round waits and nothing is consumed; ONE bell row and push per blocking run
+  (`mission-rework-blocked:<mission>:<edge>:<step>:<episode>`, `once`) tells the operator to settle
+  that run, and it is retracted, on devices too, when the run settles or the edge stops mattering.
+
 Called from `mission_steps.reconcile` (every supervisor pass and every start). Never raises.
 """
 
@@ -47,10 +68,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from . import missions
 
 log = logging.getLogger(__name__)
+
+#: The fresh `when` read's budget, in seconds (#2035): a probe request, or the judge's gather of
+#: the reviewer's output, that has not answered by then consumes nothing this pass.
+WHEN_READ_TIMEOUT_S = 20.0
+#: How old that read may be when the fence checks it (the fence may wait for the global lock):
+#: an older one consumes nothing, and the next pass reads again.
+WHEN_READ_MAX_AGE_S = 60.0
 
 #: Rework's question options: the existing answer actions, each with its server consequence.
 QUESTION_ACTIONS = ("note_answer", "waive_objective", "stand_down_objective")
@@ -62,10 +91,13 @@ def observation_id(row: dict, since: float) -> str | None:
     return missions.rework_observation(row, since)
 
 
-def candidates_sync(mission_id: str, *, only_plan: str | None = None) -> list[dict]:
+def candidates_sync(
+    mission_id: str, *, only_plan: str | None = None, judge: bool = True
+) -> list[dict]:
     """The running source runs whose review asked for changes, with the observation, that the
-    store would consume a round for NOW. Blocking. `only_plan` narrows it to one run (the fence's
-    re-check)."""
+    store would consume a round for NOW. Blocking. `only_plan` narrows it to one run. `judge`:
+    whether a judged row's verdict is compared with the output as it is now (`gather`, the slow
+    part); without it only the store is read: the nomination, and the fence's re-check (#2035)."""
     runs = [
         r
         for r in missions.step_runs(mission_id)
@@ -105,7 +137,7 @@ def candidates_sync(mission_id: str, *, only_plan: str | None = None) -> list[di
             continue
         obs = row.get("observed") if isinstance(row.get("observed"), dict) else {}
         judged = obs.get("judged") if isinstance(obs.get("judged"), dict) else None
-        if judged is not None:
+        if judged is not None and judge:
             # The verdict must be on the output as it is NOW (mission-judge.md: stale means a
             # changed fingerprint); one the agent has since moved past is not its answer.
             from . import mission_judge
@@ -124,25 +156,192 @@ def candidates_sync(mission_id: str, *, only_plan: str | None = None) -> list[di
                 if isinstance(q, dict)
             ):
                 continue
-        out.append({"run": run, "edge": edge, "observation_id": oid})
+        out.append(
+            {
+                "run": run,
+                "edge": edge,
+                "observation_id": oid,
+                # A JUDGED observation is read fresh by gathering the output; any other by
+                # asking the probe again (the same distinction as above).
+                "judged": judged is not None,
+                "read_at": obs.get("read_at"),
+            }
+        )
     return out
 
 
-def _still_fresh(mission_id: str, cand: dict) -> bool:
-    """Asked INSIDE the fence, before the stop: is this still the review's current answer (the
-    same observation, for a verdict on the output as it is now) and a round the store would
-    consume? Blocking; False on doubt."""
+def _read_when(mission_id: str, key: str) -> None:
+    """Ask the `when` probe row NOW through the probe pass's fenced path (the slow part: a forge
+    request). Blocking; never under a session lock."""
+    from . import mission_probes
+
+    mission_probes.probe_row(mission_id, key)
+
+
+def _recorded_since(cand: dict, since: float) -> bool:
+    """A probe row's observation is one whose read began at or after `since`."""
+    at = cand.get("read_at")
+    return isinstance(at, int | float) and not isinstance(at, bool) and float(at) >= since
+
+
+def _snapshot(key: str) -> dict:
+    """One runtime snapshot of a session (`structured_runtime.snapshot`). Raises when it cannot be
+    read. Asked OUTSIDE the global lock for the output generation; inside it only through
+    `_idle_snapshot`, the one read the fence already made before #2230."""
+    from . import structured_runtime as runtime
+
+    return asyncio.run(runtime.snapshot(key))
+
+
+def _marker(snap: dict) -> tuple:
+    """A session's output generation in one snapshot: its turn count, its last turn's id and
+    status, and whether a turn or a background task runs. Any turn that starts, settles or is
+    added changes it."""
+    turns = snap.get("turns") or []
+    last = turns[-1] if turns else {}
+    return (
+        len(turns) + int(snap.get("omitted_turns") or 0),
+        str(last.get("turn_id") or ""),
+        str(last.get("status") or ""),
+        bool(snap.get("active_turn")),
+        bool((snap.get("native") or {}).get("background_active")),
+    )
+
+
+async def _snapshot_async(key: str) -> dict:
+    """One runtime snapshot, awaited ON THE MAIN LOOP (independent review of #2230): a chat
+    session's snapshot takes that session's `asyncio.Lock`, which belongs to this loop, so it
+    is never driven from another loop (`asyncio.run` in a worker thread)."""
+    from . import structured_runtime as runtime
+
+    return await runtime.snapshot(key)
+
+
+async def _output_generation(keys: list[str], source: str | None) -> tuple | None:
+    """The OUTPUT GENERATION of the sessions a judged read gathers from and of the reviewer (#2035,
+    Hermes on #2230): `(key, _marker)` per session, awaited on the main loop, before and after the
+    gather — never in the fence. None when the reviewer cannot be read (fail closed); another
+    session that cannot be read (a terminal one) contributes a constant."""
+    out: list[tuple] = []
+    for key in sorted(set(keys) | ({source} if source else set())):
+        try:
+            snap = await _snapshot_async(key)
+        except Exception:  # noqa: BLE001 — could not look
+            if key == source:
+                return None
+            out.append((key, None))
+            continue
+        out.append((key, _marker(snap)))
+    return tuple(out)
+
+
+def _gathered_keys(mission_id: str) -> list[str]:
+    """The sessions a judged read gathers from (`mission_judge._recent_sessions`)."""
+    from . import mission_judge
+
+    return list(mission_judge._recent_sessions(mission_id))
+
+
+async def _fresh(mission_id: str, cand: dict) -> dict | None:
+    """THE FRESH, BOUNDED `when` READ (#2035), before any lock: the candidate as the evidence says
+    NOW, or None (no longer a request, not a round the store would consume, or the read did not
+    answer within `WHEN_READ_TIMEOUT_S` — its late answer is never acted on)."""
+    plan = cand["run"]["plan_id"]
+    started = time.time()
     try:
-        now = candidates_sync(mission_id, only_plan=cand["run"]["plan_id"])
+        # Bound BEFORE the read: an approval replaced while it runs is caught in the fence.
+        approval = await asyncio.to_thread(missions.approval_in_force_id, mission_id)
+    except Exception:  # noqa: BLE001 — could not look: not now
+        return None
+    probe = not cand.get("judged")
+    source = cand["run"].get("session_key") or None
+    seen: dict = {}
+
+    def read_probe() -> list[dict]:
+        _read_when(mission_id, cand["edge"]["when"])
+        return candidates_sync(mission_id, only_plan=plan)
+
+    async def read_judged() -> list[dict]:
+        # The judged row's output is gathered in a worker, outside every session lock. Its OUTPUT
+        # GENERATION is awaited here on the main loop BEFORE and AFTER the gather (Hermes and the
+        # independent review on #2230): a session whose turn moved during the gather, or a
+        # different set of sessions, discards the read.
+        keys = await asyncio.to_thread(_gathered_keys, mission_id)
+        before = await _output_generation(keys, source)
+        if before is None:
+            return []
+        got = await asyncio.to_thread(lambda: candidates_sync(mission_id, only_plan=plan))
+        if await asyncio.to_thread(_gathered_keys, mission_id) != keys:
+            return []
+        if await _output_generation(keys, source) != before:
+            return []
+        # The reviewer's own generation is checked once more in the fence, from the one snapshot
+        # `_idle_snapshot` reads there: a reviewer that answered again after the gather.
+        seen["reviewer"] = next((m for k, m in before if k == source), None) if source else None
+        return got
+
+    try:
+        now = await asyncio.wait_for(
+            asyncio.to_thread(read_probe) if probe else read_judged(), WHEN_READ_TIMEOUT_S
+        )
+    except TimeoutError:
+        log.info("mission %s: the review's fresh read timed out; no round this pass", mission_id)
+        return None
+    except Exception:  # noqa: BLE001 — unknown is not "changes requested"
+        log.debug("mission %s: the review's fresh read failed", mission_id, exc_info=True)
+        return None
+    if not now or (probe and not _recorded_since(now[0], started)):
+        return None
+    return {
+        **now[0],
+        "fresh_at": started,
+        "approval_id": approval,
+        "reviewer_marker": seen.get("reviewer"),
+    }
+
+
+def _still_valid(mission_id: str, cand: dict) -> bool:
+    """Asked INSIDE the fence, before the stop, and reading only the store (#2035: nothing slow
+    under the global lock): the fresh read is young enough, the approval it began under is still
+    the one in force, and the row still holds that observation (for a probe row, one read at or
+    after the fresh read; a judged row's reviewer is checked by `_fence_ready`, from the snapshot
+    the idle check already read). Store reads only. False on doubt."""
+    try:
+        if time.time() - float(cand["fresh_at"]) > WHEN_READ_MAX_AGE_S:
+            return False
+        if missions.approval_in_force_id(mission_id) != cand["approval_id"]:
+            return False
+        now = candidates_sync(mission_id, only_plan=cand["run"]["plan_id"], judge=False)
     except Exception:  # noqa: BLE001 — could not look: not now
         return False
-    return bool(now) and now[0]["observation_id"] == cand["observation_id"]
+    if not now or now[0]["observation_id"] != cand["observation_id"]:
+        return False
+    return bool(cand.get("judged")) or _recorded_since(now[0], cand["fresh_at"])
 
 
-def _idle(key: str) -> bool:
-    from .mission_steps import _idle as idle
+def _idle_snapshot(key: str) -> dict | None:
+    """The reviewer's snapshot when it is between turns with no background task, else None: the
+    ONE runtime read the fence makes (the read `mission_steps._idle` makes), so the reviewer's
+    output generation is compared from it and nothing new is read under the global lock."""
+    try:
+        snap = _snapshot(key)
+    except Exception:  # noqa: BLE001 — could not look: not idle
+        return None
+    if snap.get("active_turn") or (snap.get("native") or {}).get("background_active"):
+        return None
+    return snap
 
-    return idle(key)
+
+def _fence_ready(mission_id: str, key: str, cand: dict) -> bool:
+    """Asked INSIDE the fence: the reviewer is idle, a judged read's reviewer has not moved since
+    before the gather (its turn settled, a new one, the move to idle — Hermes on #2230), and the
+    store still says this round (`_still_valid`). One snapshot, then store reads."""
+    snap = _idle_snapshot(key)
+    if snap is None:
+        return False
+    if cand.get("judged") and cand.get("reviewer_marker") != _marker(snap):
+        return False
+    return _still_valid(mission_id, cand)
 
 
 async def _settle_one(mission_id: str, cand: dict) -> dict | None:
@@ -167,6 +366,7 @@ async def _settle_one(mission_id: str, cand: dict) -> dict | None:
             edge_from=run["step_id"],
             source_episode=int(run["episode"]),
             observation_id=cand["observation_id"],
+            expect_approval=cand["approval_id"],
         )
         got.append(rec)
         if rec is None and outcome == "stopped" and run.get("session_key"):
@@ -187,7 +387,7 @@ async def _settle_one(mission_id: str, cand: dict) -> dict | None:
     if not key:
 
         def direct() -> None:
-            if _still_fresh(mission_id, cand):
+            if _still_valid(mission_id, cand):
                 settle("stopped")
 
         await missions.run_admitted(direct)
@@ -196,7 +396,7 @@ async def _settle_one(mission_id: str, cand: dict) -> dict | None:
             mission_id,
             key,
             settle,
-            idle=lambda: _idle(key) and _still_fresh(mission_id, cand),
+            idle=lambda: _fence_ready(mission_id, key, cand),
         )
     return got[0] if got else None
 
@@ -371,6 +571,162 @@ def notify_sync(mission_id: str) -> int:
     return raised
 
 
+#: A round held back by an `unknown` run (#2035 P3): its bell row's action id prefix.
+BLOCKED = "mission-rework-blocked:"
+
+
+def blocked_key(mission_id: str, edge_from: str, step: str, episode: int) -> str:
+    """The pending-round notice's identity: the mission, the edge and the BLOCKING run (its step
+    and episode). No model text. A different blocking run is a new notice; the same one is never
+    announced twice (`once`)."""
+    return f"{BLOCKED}{mission_id}:{edge_from}:{step}:{int(episode)}"
+
+
+def blocked_sync(mission_id: str) -> list[dict]:
+    """The rounds a review's "changes requested" would consume NOW but for an `unknown` run of a
+    step the reopen would reset (`missions.rework_blocked`): `{edge_from, step, episode, key}`.
+    Reads the store only (the cached observation; no probe, no gather) and consumes nothing.
+    Blocking."""
+    runs = [r for r in missions.step_runs(mission_id) if r["state"] == "running"]
+    if not runs:
+        return []
+    latest = missions.plan_revision(mission_id)
+    if latest is None:
+        return []
+    by_id = {s["id"]: s for s in latest["document"]["steps"]}
+    rows = {o["key"]: o for o in missions.objectives(mission_id)}
+    out = []
+    for run in runs:
+        edge = (by_id.get(run["step_id"]) or {}).get("rework")
+        if not edge or int(run["revision"]) != int(latest["revision"]):
+            continue
+        row = rows.get(edge["when"])
+        oid = observation_id(row, float(run["created_at"])) if row is not None else None
+        if oid is None:
+            continue
+        got = missions.rework_blocked(
+            mission_id,
+            edge_from=run["step_id"],
+            source_episode=int(run["episode"]),
+            observation_id=oid,
+        )
+        if got is not None:
+            out.append(
+                {
+                    "edge_from": run["step_id"],
+                    "step": got["step"],
+                    "episode": got["episode"],
+                    "key": blocked_key(mission_id, run["step_id"], got["step"], got["episode"]),
+                }
+            )
+    return out
+
+
+def _parse_blocked(mission_id: str, key: str) -> tuple[str, str, int] | None:
+    """`(edge_from, step, episode)` of one of this mission's pending-round keys, or None."""
+    rest = key.removeprefix(f"{BLOCKED}{mission_id}:")
+    if rest == key:
+        return None
+    edge_from, sep, tail = rest.partition(":")
+    step, sep2, episode = tail.rpartition(":")
+    if not (sep and sep2 and edge_from and step and episode.isdigit()):
+        return None
+    return edge_from, step, int(episode)
+
+
+def _blocked_holds(mission_id: str, key: str) -> bool:
+    """Whether a raised pending-round notice still stands, on LASTING facts only (independent
+    review of #2035 P3): its blocking run is still `unknown`, the mission is not finished, the
+    edge is still on the latest plan with the blocking step in its reset span, its `when` row is
+    not settled (met or waived: the review passed), and its source
+    still has a `running` run on that revision whose round was neither consumed nor exhausted.
+    A blip of the evidence (an unknown probe read, a stale verdict, the mission paused) never
+    retracts it: the notice is announced `once`, so a retraction on a blip could never be undone
+    while the same run still holds the round. Blocking; False on a key it cannot read."""
+    parsed = _parse_blocked(mission_id, key)
+    if parsed is None:
+        return False
+    edge_from, step, episode = parsed
+    blocker = missions.step_run(mission_id, step, episode)
+    if blocker is None or blocker["state"] != "unknown":
+        return False
+    mission = missions.get_mission(mission_id, events_limit=1) or {}
+    if not mission or str(mission.get("state") or "") in missions.TERMINAL_STATES:
+        return False
+    latest = missions.plan_revision(mission_id)
+    if latest is None:
+        return False
+    doc = latest["document"]
+    edge = next((x.get("rework") for x in doc["steps"] if x["id"] == edge_from), None)
+    if not edge or step not in missions.rework_reset_steps(doc, edge_from, edge["to"]):
+        return False
+    when = next((o for o in missions.objectives(mission_id) if o["key"] == edge["when"]), None)
+    if when is None or str(when.get("state") or "") in ("met", "waived"):
+        return False  # the review passed (a settled fact, not a blip), or the row is gone
+    sources = [
+        r
+        for r in missions.step_runs(mission_id)
+        if r["step_id"] == edge_from
+        and r["state"] == "running"
+        and int(r["revision"]) == int(latest["revision"])
+    ]
+    if not sources:
+        return False
+    rounds = [r for r in missions.reworks(mission_id) if r["edge_from"] == edge_from]
+    if len(rounds) > int(edge["max_rounds"]):
+        return False  # exhausted: its one question stands, not this notice
+    consumed = {int(r["source_episode"]) for r in rounds}
+    return any(int(r["episode"]) not in consumed for r in sources)
+
+
+def _retract_blocked(mission_id: str, raised_now: set[str] = frozenset()) -> int:
+    """Retract this mission's pending-round notices that no longer stand (`_blocked_holds`), on
+    devices too (#2154's episode close). A notice raised on THIS pass is kept. Strict read: an
+    unreadable bell raises, it never reads as "none"."""
+    from . import notifications
+
+    n = 0
+    for key in notifications.actions_with_prefix(f"{BLOCKED}{mission_id}:"):
+        if key not in raised_now and not _blocked_holds(mission_id, key):
+            n += notifications.retract_episode(key)
+    return n
+
+
+def notify_blocked_sync(mission_id: str) -> int:
+    """THE ONE PRODUCER of the pending-round notice (#2035 P3): ONE bell row and push per blocking
+    run while it holds the round back (`once`: deduplicated across passes, retries and restarts by
+    the store's tombstone), retracted when it no longer does. No round is consumed to get a
+    record: the notice IS the record, and it is derived again every pass. Blocking; best-effort.
+    Returns how many were raised."""
+    from . import notifications
+
+    blocked = blocked_sync(mission_id)
+    _retract_blocked(mission_id, {b["key"] for b in blocked})
+    if not blocked:
+        return 0
+    # Raised only on a CURRENT request; retracted only on lasting facts (`_blocked_holds`).
+    title = str((missions.get_mission(mission_id, events_limit=1) or {}).get("title") or "")
+    raised = 0
+    for b in blocked:
+        row = notifications.add(
+            title=f"Mission rework waits: {title}"[:200],
+            project="",
+            session_id="",
+            engine="",
+            reason=(
+                f"{b['edge_from']}: a rework round waits for {b['step']}, whose last run ended "
+                "unknown; settle that run on the mission board"
+            ),
+            action_id=b["key"],
+            once=True,
+            tag=notifications.mission_episode_tag(b["key"]),
+        )
+        if row:
+            notifications.push(row)
+            raised += 1
+    return raised
+
+
 def retract_sync(mission_id: str) -> int:
     """Retract every exhausted round's notification whose question no longer holds, at once (the
     answer and state routes call it, so an answered question's bell row goes with the answer, not
@@ -394,6 +750,12 @@ def retract_sync(mission_id: str) -> int:
             n += 1
     except Exception:  # noqa: BLE001 — the next pass retracts it
         log.debug("mission %s: rework notifications not retracted", mission_id, exc_info=True)
+    try:
+        # The pending-round notices too (#2035 P3): a mission that stops, a run settled on the
+        # board, a plan change — gone with the route that changed it, not on a later pass.
+        n += _retract_blocked(mission_id)
+    except Exception:  # noqa: BLE001 — the next pass retracts it
+        log.debug("mission %s: pending-round notices not retracted", mission_id, exc_info=True)
     return n
 
 
@@ -402,13 +764,17 @@ async def sweep(mission_id: str) -> int:
     retract their notifications. Returns how many rounds were consumed. Never raises."""
     n = 0
     try:
-        cands = await asyncio.to_thread(candidates_sync, mission_id)
+        # The CACHED evidence only nominates (no gather): each candidate is read fresh below.
+        cands = await asyncio.to_thread(lambda: candidates_sync(mission_id, judge=False))
     except Exception:  # noqa: BLE001 — retried by the next pass
         log.debug("mission %s: rework could not read", mission_id, exc_info=True)
         cands = []
     for cand in cands:
         try:
-            rec = await _settle_one(mission_id, cand)
+            fresh = await _fresh(mission_id, cand)
+            if fresh is None:
+                continue
+            rec = await _settle_one(mission_id, fresh)
             n += 1 if rec and rec.get("new") else 0
         except Exception:  # noqa: BLE001 — one edge must not stop the others
             log.warning("mission %s: rework not settled", mission_id, exc_info=True)
@@ -420,6 +786,10 @@ async def sweep(mission_id: str) -> int:
         await asyncio.to_thread(notify_sync, mission_id)
     except Exception:  # noqa: BLE001
         log.debug("mission %s: rework notification not raised", mission_id, exc_info=True)
+    try:
+        await asyncio.to_thread(notify_blocked_sync, mission_id)
+    except Exception:  # noqa: BLE001 — the next pass raises or retracts it
+        log.debug("mission %s: pending-round notice not settled", mission_id, exc_info=True)
     return n
 
 

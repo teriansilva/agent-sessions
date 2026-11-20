@@ -22,6 +22,7 @@ from test_mission_rework import (
     _claim,
     _consume,
     _fresh_runner,  # noqa: F401 — the autouse runner reset
+    _fresh_when_read,  # noqa: F401 — the autouse fresh `when` read
     _land,
     _pin,
     _running,
@@ -428,7 +429,7 @@ def test_a_threshold_recompute_never_settles_an_old_episode_verdict():
 # ---- Hermes on #2227: a held verdict is judged once more when a read would count -----------------
 
 
-async def _judge_pass(mid: str, monkeypatch, *, start_run_mid_gather=None) -> int:
+async def _judge_pass(mid: str, monkeypatch, *, start_run_mid_gather=None, reply=None) -> int:
     """One production judge pass (`judge_one`) over unchanged output; returns the model calls."""
     from agent_sessions import review
 
@@ -441,7 +442,7 @@ async def _judge_pass(mid: str, monkeypatch, *, start_run_mid_gather=None) -> in
 
     async def verdict(messages, **_):
         calls["n"] += 1
-        return {
+        return reply or {
             "met": True,
             "confidence": 0.99,
             "reason": "rewritten",
@@ -497,3 +498,72 @@ async def test_a_held_verdict_costs_nothing_more_while_no_new_run_has_started(mo
     for _ in range(3):
         assert await _judge_pass(mid, monkeypatch) == 0
     assert _row(mid, key)["state"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_phase_one_sees_a_held_verdict_due_once_a_read_would_count(monkeypatch):
+    """Independent review of #2227: the sweep's phase-1 check (an input remembered from the
+    supervision phase) must not skip a held verdict as "nothing due" once the new run started."""
+    mid, doc, aid, key = _reopened()
+    _judged_row(mid, key)
+    assert await _judge_pass(mid, monkeypatch) == 1  # held: no new run yet
+    run = _claim(mid, TO, "approval", aid)
+    _set_run_state(run["plan_id"], "running")
+    _running(mid)
+    time.sleep(0.01)
+    prior = mission_judge.gather(mid, "/tmp/x")  # the same output, as phase 1 read it
+    mission_judge._remember_phase1_input(mid, prior)
+    assert await _judge_pass(mid, monkeypatch) == 1, "phase 1 skipped it as nothing due"
+    assert _row(mid, key)["state"] == "met"
+
+
+@pytest.mark.anyio
+async def test_a_not_met_re_judge_of_a_held_verdict_is_not_judged_again(monkeypatch):
+    """The once-more judgment says NOT met: it is not held (nothing settled), so the idle skip
+    applies again — one call, then none."""
+
+    mid, doc, aid, key = _reopened()
+    _judged_row(mid, key)
+    assert await _judge_pass(mid, monkeypatch) == 1
+    run = _claim(mid, TO, "approval", aid)
+    _set_run_state(run["plan_id"], "running")
+    _running(mid)
+    no = {
+        "met": False,
+        "confidence": 0.05,
+        "reason": "the CV lists no project",
+        "evidence": [{"source": "diff", "quote": QUOTE}],
+    }
+    calls = [await _judge_pass(mid, monkeypatch, reply=no) for _ in range(3)]
+    assert calls == [1, 0, 0], calls
+    got = _row(mid, key)
+    assert got["state"] == "pending" and not got["observed"].get("awaits_rework_run")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("guard", ["rejected", "waived"])
+async def test_a_held_verdict_never_overrides_the_operators_guards(monkeypatch, guard):
+    """A rejected fingerprint and a waived row still win over the once-more judgment."""
+    mid, doc, aid, key = _reopened()
+    _judged_row(mid, key)
+    assert await _judge_pass(mid, monkeypatch) == 1
+    run = _claim(mid, TO, "approval", aid)
+    _set_run_state(run["plan_id"], "running")
+    _running(mid)
+    fp = _row(mid, key)["observed"]["judged"]["fingerprint"]
+    con = missions._ready(None)
+    try:
+        if guard == "rejected":
+            con.execute(
+                "UPDATE mission_objectives SET judge_rejected_fp=? WHERE mission_id=? AND key=?",
+                (fp, mid, key),
+            )
+        else:
+            con.execute(
+                "UPDATE mission_objectives SET state='waived' WHERE mission_id=? AND key=?",
+                (mid, key),
+            )
+        con.commit()
+    finally:
+        con.close()
+    assert await _judge_pass(mid, monkeypatch) == 0

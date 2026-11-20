@@ -1188,11 +1188,12 @@ def episode_tag(session_id: str, episode: str) -> str:
 
 
 #: The device-tag family of a MISSION notification episode (#2154): a refusal notice
-#: (`mission-refusal:…`) or an exhausted rework question (`mission-rework:…`). Each producer's
+#: (`mission-refusal:…`), an exhausted rework question (`mission-rework:…`) or a rework round held
+#: back by an `unknown` run (`mission-rework-blocked:…`, #2035 P3). Each producer's
 #: action id is announced once and never reused, so its tag is never reused either, and retracting
 #: one can never close a newer episode. Kept distinct from the bell/action identity.
 MISSION_EPISODE = "mission-ep:"
-_MISSION_ACTIONS = ("mission-refusal:", "mission-rework:")
+_MISSION_ACTIONS = ("mission-refusal:", "mission-rework:", "mission-rework-blocked:")
 
 
 def mission_episode_tag(action_id: str) -> str:

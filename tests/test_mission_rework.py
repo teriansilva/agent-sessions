@@ -9,6 +9,7 @@ The plan is #1950's synthetic application flow (`mission_team_fixture`): `review
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
@@ -37,6 +38,39 @@ def _fresh_runner():
     mission_runner.reset_for_test()
     yield
     mission_runner.reset_for_test()
+
+
+def _forge_answers_what_it_last_said(mid: str, key: str) -> None:
+    """The fresh `when` read (#2035) asks the forge again. Here the forge answers what the row
+    last recorded (a test states the review's answer by observing it), read NOW."""
+    row = next((o for o in missions.objectives(mid) if o["key"] == key), None)
+    obs = (row or {}).get("observed")
+    if isinstance(obs, str):
+        obs = json.loads(obs)
+    if not isinstance(obs, dict) or obs.get("value") is not False or obs.get("judged"):
+        return  # nothing a forge said: the read records nothing
+    missions.observe_objective(
+        mid,
+        key,
+        observed=True,
+        value=False,
+        detail=str(obs.get("detail") or ""),
+        extra={k: obs[k] for k in ("state", "reviews", "sha") if k in obs},
+        read_at=time.time(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_when_read(monkeypatch):
+    monkeypatch.setattr(mission_rework, "_read_when", _forge_answers_what_it_last_said)
+    # These fixtures' session keys have no runtime to snapshot: every session reads as idle with
+    # no turns, so the output generation is stable unless a test says otherwise.
+    monkeypatch.setattr(mission_rework, "_snapshot", lambda key: {})
+
+    async def idle_no_turns(key):
+        return {}
+
+    monkeypatch.setattr(mission_rework, "_snapshot_async", idle_no_turns)
 
 
 def _step(doc: dict, sid: str) -> dict:
@@ -731,18 +765,27 @@ async def test_a_met_verdict_under_the_confidence_floor_is_not_a_request_for_cha
 
 
 class _Fence:
-    """`mission_fence.fenced_step_stop` as it behaves: `idle()` is asked inside the fence, and
-    only a True answer stops the session (`stopped`); otherwise `busy`, nothing stopped."""
+    """`mission_fence.fenced_step_stop` as it behaves: `idle()` is asked inside the fence, OFF the
+    event loop (the real fence runs in `asyncio.to_thread`, so the blocking reads it makes can run
+    their own loop), and only a True answer stops the session (`stopped`); otherwise `busy`,
+    nothing stopped."""
 
     def __init__(self) -> None:
         self.calls = 0
         self.stopped = 0
 
     async def __call__(self, mission_id, key, settle, *, idle=None):
+        import asyncio
+
         self.calls += 1
-        outcome = "stopped" if idle is None or idle() else "busy"
+
+        def fenced() -> str:
+            outcome = "stopped" if idle is None or idle() else "busy"
+            settle(outcome)
+            return outcome
+
+        outcome = await asyncio.to_thread(fenced)
         self.stopped += outcome == "stopped"
-        settle(outcome)
         return outcome
 
 
@@ -763,7 +806,7 @@ async def test_a_request_past_an_exhausted_edge_stops_nothing(monkeypatch):
     _review_asked_for_changes(mid, doc)
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
-    monkeypatch.setattr(mission_rework, "_idle", lambda key: True)
+    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key: {})
     assert mission_rework.candidates_sync(mid) == []
     for _ in range(3):
         assert await mission_rework.sweep(mid) == 0
@@ -790,7 +833,7 @@ async def test_the_decision_is_asked_again_inside_the_fence_before_the_stop(monk
     assert oid is not None, "the request itself is current"
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
-    monkeypatch.setattr(mission_rework, "_idle", lambda key: True)
+    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key: {})
     cand = {"run": run5, "edge": _step(doc, SRC)["rework"], "observation_id": oid}
     assert await mission_rework._settle_one(mid, cand) is None
     assert fence.calls == 1 and fence.stopped == 0, "a round nobody would consume stopped it"
@@ -815,7 +858,7 @@ async def test_a_session_stopped_for_a_round_that_was_not_taken_does_not_stay_ru
         con.close()
     _review_asked_for_changes(mid, doc)
     monkeypatch.setattr(mission_fence, "fenced_step_stop", _Fence())
-    monkeypatch.setattr(mission_rework, "_idle", lambda key: True)
+    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key: {})
     monkeypatch.setattr(missions, "consume_rework", lambda *a, **k: None)
     assert await mission_rework.sweep(mid) == 0
     run = next(r for r in missions.step_runs(mid) if r["step_id"] == SRC)
@@ -1339,7 +1382,7 @@ async def test_a_newer_request_in_the_same_episode_is_not_the_candidate_that_was
     assert mission_rework.candidates_sync(mid)[0]["observation_id"] != cand["observation_id"]
     fence = _Fence()
     monkeypatch.setattr(mission_fence, "fenced_step_stop", fence)
-    monkeypatch.setattr(mission_rework, "_idle", lambda key: True)
+    monkeypatch.setattr(mission_rework, "_idle_snapshot", lambda key: {})
     assert await mission_rework._settle_one(mid, cand) is None
     assert fence.stopped == 0, "a candidate the review had moved past stopped its session"
     assert missions.step_run(mid, SRC, 1)["state"] == "running"

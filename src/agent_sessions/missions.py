@@ -11578,17 +11578,36 @@ def rework_observation(row: dict, since: float) -> str | None:
     return "obs:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+#: `expect_approval`'s "not bound": a caller that does not hold the round to one approval.
+ANY_APPROVAL: Any = object()
+
+
+def approval_in_force_id(mission_id: str, *, path: Path | None = None) -> str | None:
+    """The id of the approval in force (unrevoked), or None."""
+    got = approval(mission_id, path=path)
+    return None if got is None or got.get("revoked_at") is not None else str(got["id"])
+
+
 def _rework_decide_tx(
-    con, mission_id: str, edge_from: str, source_episode: int, observation_id: str
+    con,
+    mission_id: str,
+    edge_from: str,
+    source_episode: int,
+    observation_id: str,
+    expect_approval: Any = ANY_APPROVAL,
 ) -> dict:
     """What consuming a round of `edge_from`'s rework edge for this source episode and observation
     would do, read on an open transaction (#1951 §4). One of:
 
     * `{"kind": "prior", "row"}`: this episode or this observation already consumed a round;
-    * `{"kind": "none"}`: nothing to consume: the run is not `running` at that episode, or not on
+    * `{"kind": "none"}` (with `blocked`, `{step, episode, state}`, when the only thing in the way
+      is an open run of a step the reopen would reset: the round waits for it): nothing to
+      consume: the run is not `running` at that episode, or not on
       the latest plan revision, the step has no rework edge, its `when` row no longer holds the
       not-met observation the caller saw (re-derived here: a passing result, a re-judged verdict
-      or a replaced row since), or the edge is already exhausted;
+      or a replaced row since), the approval in force is not `expect_approval` (when bound: an
+      approval revoked or replaced since the caller's read, #2035), or the edge is already
+      exhausted;
     * `{"kind": "consume", "outcome", "round", "max_rounds", "edge", "doc", "revision"}`:
       `outcome` is `reopened` (round ≤ `max_rounds`) or `exhausted` (round `max_rounds + 1`)."""
     prior = con.execute(
@@ -11604,6 +11623,13 @@ def _rework_decide_tx(
         # flight; a claim inside the reset span already waits below): one the operator moved to
         # review (or closed) keeps the evidence it was judged on.
         return {"kind": "none"}
+    if expect_approval is not ANY_APPROVAL:
+        live = con.execute(
+            "SELECT id FROM mission_plan_approvals WHERE mission_id=? AND revoked_at IS NULL",
+            (mission_id,),
+        ).fetchone()
+        if (None if live is None else str(live["id"])) != expect_approval:
+            return {"kind": "none"}  # the read was made under another approval (#2035)
     run = con.execute(
         "SELECT state, revision, created_at FROM mission_step_runs WHERE mission_id=? "
         "AND step_id=? AND episode=?",
@@ -11645,8 +11671,10 @@ def _rework_decide_tx(
     span = rework_reset_steps(doc, edge_from, edge["to"])
     marks = ",".join("?" for _ in OPEN_STEP_STATES)
     for r in con.execute(
-        f"SELECT step_id, episode FROM mission_step_runs WHERE mission_id=? "  # noqa: S608
-        f"AND state IN ({marks})",
+        f"SELECT step_id, episode, state FROM mission_step_runs WHERE mission_id=? "  # noqa: S608
+        # A STABLE answer, `unknown` first (independent review of #2035 P3): the blocker named
+        # must not flip between passes, and the one that waits for the operator is the one said.
+        f"AND state IN ({marks}) ORDER BY (state = 'unknown') DESC, step_id, episode",
         (mission_id, *OPEN_STEP_STATES),
     ).fetchall():
         if r["step_id"] in span and (r["step_id"], int(r["episode"])) != (
@@ -11655,7 +11683,15 @@ def _rework_decide_tx(
         ):
             # A step the reopen would reset still has an open episode: its session could answer
             # the NEW episode's evidence. Not now; the next pass looks again once it settled.
-            return {"kind": "none"}
+            # WHAT waits is said (#2035 P3): an `unknown` run never settles by itself.
+            return {
+                "kind": "none",
+                "blocked": {
+                    "step": str(r["step_id"]),
+                    "episode": int(r["episode"]),
+                    "state": str(r["state"]),
+                },
+            }
     rnd = used + 1
     return {
         "kind": "consume",
@@ -11674,6 +11710,7 @@ def rework_decision(
     edge_from: str,
     source_episode: int,
     observation_id: str,
+    expect_approval: Any = ANY_APPROVAL,
     path: Path | None = None,
 ) -> str | None:
     """`reopened` or `exhausted` when `consume_rework` would consume a round now, else None (a
@@ -11683,8 +11720,32 @@ def rework_decision(
     validate_id(mission_id)
     con = _ready(path)
     try:
-        got = _rework_decide_tx(con, mission_id, edge_from, source_episode, observation_id)
+        got = _rework_decide_tx(
+            con, mission_id, edge_from, source_episode, observation_id, expect_approval
+        )
         return got["outcome"] if got["kind"] == "consume" else None
+    finally:
+        con.close()
+
+
+def rework_blocked(
+    mission_id: str,
+    *,
+    edge_from: str,
+    source_episode: int,
+    observation_id: str,
+    path: Path | None = None,
+) -> dict | None:
+    """`{step, episode, state}` of the `unknown` run that holds back a round the store would
+    otherwise consume for this source episode and observation (#2035 P3), or None. A read: it
+    consumes nothing. Only an `unknown` run is reported: a `claimed` or `running` one settles by
+    itself, an `unknown` one waits for the operator (it is never resolved automatically)."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        got = _rework_decide_tx(con, mission_id, edge_from, source_episode, observation_id)
+        blocked = got.get("blocked") if got["kind"] == "none" else None
+        return blocked if blocked and blocked["state"] == "unknown" else None
     finally:
         con.close()
 
@@ -11695,6 +11756,7 @@ def consume_rework(
     edge_from: str,
     source_episode: int,
     observation_id: str,
+    expect_approval: Any = ANY_APPROVAL,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict | None:
@@ -11726,7 +11788,9 @@ def consume_rework(
         try:
             con.execute("BEGIN IMMEDIATE")
             ts = time.time() if now is None else now
-            got = _rework_decide_tx(con, mission_id, edge_from, source_episode, observation_id)
+            got = _rework_decide_tx(
+                con, mission_id, edge_from, source_episode, observation_id, expect_approval
+            )
             if got["kind"] != "consume":
                 con.execute("COMMIT")
                 return None if got["kind"] == "none" else {**got["row"], "new": False}

@@ -469,6 +469,13 @@ def needs_judgment(row: dict, fp: str, *, now: float, lifted: frozenset[str] = f
     return True
 
 
+def holds_fenced_verdict(rows: list[dict]) -> bool:
+    """Whether any row holds a verdict the rework fence held: only then is the store asked."""
+    return any(
+        isinstance(r.get("observed"), dict) and r["observed"].get("awaits_rework_run") for r in rows
+    )
+
+
 def fence_lifted(mission_id: str, rows: list[dict], read_at: float, *, path=None) -> frozenset[str]:
     """The keys of `rows` holding a verdict the rework fence held (`awaits_rework_run`) that a read
     begun at `read_at` would no longer be held from settling (`missions.rework_fence_holds`).
@@ -803,8 +810,10 @@ async def judge_one(mission_id: str, budget: Budget, *, path=None) -> dict:
     if prior is not None and not prior.empty:
         t0 = time.time()
         # Would a read begun NOW pass a held verdict's fence? (Phase 2's gather begins now.)
-        lifted = await missions.run_admitted(
-            lambda: fence_lifted(mission_id, wl["rows"], t0, path=path)
+        lifted = (
+            await missions.run_admitted(lambda: fence_lifted(mission_id, wl["rows"], t0, path=path))
+            if holds_fenced_verdict(wl["rows"])
+            else frozenset()
         )
         if not any(
             needs_judgment(r, row_fingerprint(prior, r), now=t0, lifted=lifted) for r in wl["rows"]
@@ -832,8 +841,12 @@ async def judge_one(mission_id: str, budget: Budget, *, path=None) -> dict:
     now = time.time()
     # A held verdict is judged again when THIS input's read would count (it began at
     # `inp.gathered_at`, which is what the new verdict is stamped with).
-    lifted = await missions.run_admitted(
-        lambda: fence_lifted(mission_id, wl["rows"], inp.gathered_at, path=path)
+    lifted = (
+        await missions.run_admitted(
+            lambda: fence_lifted(mission_id, wl["rows"], inp.gathered_at, path=path)
+        )
+        if holds_fenced_verdict(wl["rows"])
+        else frozenset()
     )
     due = [
         r for r in wl["rows"] if needs_judgment(r, row_fingerprint(inp, r), now=now, lifted=lifted)
