@@ -48,6 +48,11 @@
 // paths) and four added (the Share icon's circles and lines at button[5]); no recorded element
 // changed its styles, Stop moved back from button[7] to button[6], and the mobile cases (one
 // Actions menu, closed) and the chat pane are byte-identical.
+// A twelfth time for #2234: the structured pane gained ONE element, the pinned question dock
+// (`div>div[2]`, between the conversation area and the composer form, empty and so hidden in a
+// default pane). That is one inserted element per structured case: the composer form moved from
+// form[2] to form[3], every existing element computes exactly the recorded styles at its shifted
+// path in the same order (checked by mapping each old path), and the chat pane is byte-identical.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
