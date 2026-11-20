@@ -11,6 +11,7 @@ import {
   nameProblem,
   pickWords,
   pickableWebhooks,
+  RELAY_NOTE,
   secretWords,
   usedByWords,
   webhookAddress,
@@ -62,7 +63,9 @@ describe("a row (frame 1)", () => {
     expect(deliveryTone(w)).toBe("up");
     expect(lastDeliveryWords(w, NOW)).toMatch(/today|yesterday/);
     expect(webhookStatus(w)).toBe("receiving");
-    expect(webhookMeta(w)).toBe("used by 2 automations · last: pull_request · 0 unsigned in 24 h");
+    expect(webhookMeta(w)).toBe(
+      "used by 2 automations · last: pull_request · 0 unsigned in 24 h",
+    );
   });
 
   test("a legacy webhook names its review loop and its old address", () => {
@@ -75,7 +78,9 @@ describe("a row (frame 1)", () => {
       unsigned_24h: 3,
     });
     expect(legacyOwner(w)).toBe("Review loop · shop");
-    expect(webhookMeta(w)).toBe("old address · used by Review loop · shop · 3 unsigned in 24 h");
+    expect(webhookMeta(w)).toBe(
+      "old address · used by Review loop · shop · 3 unsigned in 24 h",
+    );
     // An owner the server did not name falls back to its id.
     expect(legacyOwner({ ...w, used_by: [] })).toBe("rv1");
   });
@@ -89,13 +94,19 @@ describe("a row (frame 1)", () => {
 
 describe("a webhook's page (frame 2)", () => {
   test("the address is this app's origin + the server's path", () => {
-    expect(webhookAddress("/hooks/w/abc")).toBe(`${window.location.origin}/hooks/w/abc`);
+    expect(webhookAddress("/hooks/w/abc")).toBe(
+      `${window.location.origin}/hooks/w/abc`,
+    );
   });
 
   test("the secret's status, never the secret", () => {
     expect(secretWords(hook(), NOW)).toMatch(/^set .+ · never shown again$/);
-    expect(secretWords(hook({ secret_created_at: null }), NOW)).toBe("set · never shown again");
-    expect(secretWords(hook({ secret_set: false }), NOW)).toBe("no secret: rotate to make one");
+    expect(secretWords(hook({ secret_created_at: null }), NOW)).toBe(
+      "set · never shown again",
+    );
+    expect(secretWords(hook({ secret_set: false }), NOW)).toBe(
+      "no secret: rotate to make one",
+    );
   });
 
   test("delete is off while used, and never for a legacy webhook", () => {
@@ -103,12 +114,24 @@ describe("a webhook's page (frame 2)", () => {
     expect(deleteBlock(hook({ used_by: [{ id: "a1", name: "A" }] }))).toBe(
       "It is used by 1 automation. Pick another webhook in it, or delete it, first.",
     );
-    expect(deleteBlock(hook({ used_by: [{ id: "a1", name: "A" }, { id: "a2", name: "B" }] }))).toMatch(
-      /used by 2 automations\. Pick another webhook in them/,
-    );
-    expect(deleteBlock(hook({ legacy_automation: "rv1", used_by: [{ id: "rv1", name: "Loop" }] }))).toMatch(
-      /review loop “Loop”’s own address/,
-    );
+    expect(
+      deleteBlock(
+        hook({
+          used_by: [
+            { id: "a1", name: "A" },
+            { id: "a2", name: "B" },
+          ],
+        }),
+      ),
+    ).toMatch(/used by 2 automations\. Pick another webhook in them/);
+    expect(
+      deleteBlock(
+        hook({
+          legacy_automation: "rv1",
+          used_by: [{ id: "rv1", name: "Loop" }],
+        }),
+      ),
+    ).toMatch(/review loop “Loop”’s own address/);
   });
 
   test("a name the server would refuse", () => {
@@ -123,7 +146,12 @@ describe("the picker (frame 3)", () => {
   test("offers only pickable webhooks, by name; never a legacy one", () => {
     const list = [
       hook({ id: "b", name: "status page" }),
-      hook({ id: "rv1", name: "Review loop", legacy_automation: "rv1", pickable: false }),
+      hook({
+        id: "rv1",
+        name: "Review loop",
+        legacy_automation: "rv1",
+        pickable: false,
+      }),
       hook({ id: "a", name: "deploy notices" }),
     ];
     expect(pickableWebhooks(list).map((w) => w.id)).toEqual(["a", "b"]);
@@ -132,6 +160,20 @@ describe("the picker (frame 3)", () => {
 
   test("each option says when it last delivered", () => {
     expect(pickWords(hook(), NOW)).toBe("shop repo · no delivery yet");
-    expect(pickWords(hook({ last_delivery_at: NOW - 60 }), NOW)).toMatch(/^shop repo · last: /);
+    expect(pickWords(hook({ last_delivery_at: NOW - 60 }), NOW)).toMatch(
+      /^shop repo · last: /,
+    );
+  });
+});
+
+describe("the relay address (#2221 P1b)", () => {
+  test("gives the sender the relay address on a Home Free box, else this app's own", () => {
+    expect(
+      webhookAddress("/hooks/w/abc", "https://aaaa.hook.battlelabos.com/"),
+    ).toBe("https://aaaa.hook.battlelabos.com/");
+    expect(webhookAddress("/hooks/w/abc", null)).toBe(
+      `${window.location.origin}/hooks/w/abc`,
+    );
+    expect(RELAY_NOTE).toMatch(/sees its contents in transit/);
   });
 });

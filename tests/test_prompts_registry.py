@@ -131,6 +131,8 @@ HTTP_MODULES = frozenset(
         # #2190 the Home Free agent uploads a SHARED artifact's blobs to its own relay's upload
         # path (never a prompt, never a credential beyond the relay's one-time token in the URL)
         "artifactlink",
+        # #2221 P1b: forwards a relayed webhook delivery to this box's own app (loopback only).
+        "hooklink",
     }
 )
 
@@ -178,6 +180,9 @@ POST_SITES = {
     ("review", "list_models"): 1,
     ("webpush", "send"): 1,  # Web Push delivery to the browser's push service — no prompts
     ("artifactlink", "put"): 1,  # #2190 one PUT per blob the relay asked for, to its own path
+    # #2221 P1b: one POST per relayed webhook delivery, to the box's own `/hooks/w/{id}` on loopback
+    # (no redirects, header allowlist, capped body) — never a model endpoint.
+    ("hooklink", "_forward"): 1,
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
     # #1530: the same proxy's `/api/files/raw` branch — one STREAMED request to the same local
     # app, read as it arrives so a file over MAX_RAW_RESPONSE is refused before it is held. Same

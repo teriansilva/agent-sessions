@@ -6,10 +6,15 @@ import { whenWords } from "./automations";
 import { appUrl } from "./appBase";
 import type { Webhook } from "../types/webhooks";
 
-/** The public address a sender delivers to: this app's origin + the server's root-relative path. */
-export function webhookAddress(path: string): string {
-  return `${window.location.origin}${appUrl(path)}`;
+/** The public address a sender delivers to. On a Home Free box it is the webhook's address on the
+ *  BattleLab relay (#2221 P1b); otherwise this app's origin + the server's root-relative path. */
+export function webhookAddress(path: string, relayUrl?: string | null): string {
+  return relayUrl ? relayUrl : `${window.location.origin}${appUrl(path)}`;
 }
+
+/** Shown under a relay address: the one thing the relay sees that the app channel never shows it. */
+export const RELAY_NOTE =
+  "Through the BattleLab relay: it forwards each delivery to this box and sees its contents in transit. It never stores them and has no secret, so it can't fake a delivery.";
 
 /** The LED beside a webhook's last delivery: lit once a signed delivery arrived, grey before. */
 export function deliveryTone(w: Pick<Webhook, "last_delivery_at">): Tone {
@@ -21,12 +26,16 @@ export function lastDeliveryWords(
   w: Pick<Webhook, "last_delivery_at">,
   nowS: number,
 ): string {
-  return w.last_delivery_at == null ? "no delivery yet" : whenWords(w.last_delivery_at, nowS);
+  return w.last_delivery_at == null
+    ? "no delivery yet"
+    : whenWords(w.last_delivery_at, nowS);
 }
 
 /** The status stamp beside a webhook's name (frame 7's "waiting for first delivery"). */
 export function webhookStatus(w: Pick<Webhook, "last_delivery_at">): string {
-  return w.last_delivery_at == null ? "waiting for first delivery" : "receiving";
+  return w.last_delivery_at == null
+    ? "waiting for first delivery"
+    : "receiving";
 }
 
 export function usedByWords(n: number): string {
@@ -35,18 +44,26 @@ export function usedByWords(n: number): string {
 }
 
 /** The review loop a legacy webhook belongs to, by name (its id when the name is not known). */
-export function legacyOwner(w: Pick<Webhook, "legacy_automation" | "used_by">): string {
+export function legacyOwner(
+  w: Pick<Webhook, "legacy_automation" | "used_by">,
+): string {
   if (!w.legacy_automation) return "";
-  return w.used_by.find((u) => u.id === w.legacy_automation)?.name ?? w.legacy_automation;
+  return (
+    w.used_by.find((u) => u.id === w.legacy_automation)?.name ??
+    w.legacy_automation
+  );
 }
 
 /** One row's meta line (frame 1): who uses it, what arrived last, refused deliveries. */
 export function webhookMeta(w: Webhook): string {
   const parts = [
-    w.legacy_automation ? `old address · used by ${legacyOwner(w)}` : usedByWords(w.used_by.length),
+    w.legacy_automation
+      ? `old address · used by ${legacyOwner(w)}`
+      : usedByWords(w.used_by.length),
   ];
   if (w.last_event) parts.push(`last: ${w.last_event}`);
-  if (w.last_delivery_at != null || w.unsigned_24h > 0) parts.push(unsignedWords(w.unsigned_24h));
+  if (w.last_delivery_at != null || w.unsigned_24h > 0)
+    parts.push(unsignedWords(w.unsigned_24h));
   return parts.join(" · ");
 }
 
@@ -60,12 +77,17 @@ export function secretWords(
   nowS: number,
 ): string {
   if (!w.secret_set) return "no secret: rotate to make one";
-  const made = w.secret_created_at == null ? "" : ` ${whenWords(w.secret_created_at, nowS)}`;
+  const made =
+    w.secret_created_at == null
+      ? ""
+      : ` ${whenWords(w.secret_created_at, nowS)}`;
   return `set${made} · never shown again`;
 }
 
 /** Why Delete is not offered, or "" when it is. The server refuses the same cases (409). */
-export function deleteBlock(w: Pick<Webhook, "legacy_automation" | "used_by">): string {
+export function deleteBlock(
+  w: Pick<Webhook, "legacy_automation" | "used_by">,
+): string {
   if (w.legacy_automation)
     return `It is the review loop “${legacyOwner(w)}”’s own address: it goes when that automation moves to a webhook from the list.`;
   const n = w.used_by.length;
@@ -91,7 +113,8 @@ export function pickWords(w: Webhook, nowS: number): string {
 export function nameProblem(name: string): string {
   const n = name.trim();
   if (!n) return "Give it a name";
-  if (n.length > WEBHOOK_NAME_MAX) return `At most ${WEBHOOK_NAME_MAX} characters`;
+  if (n.length > WEBHOOK_NAME_MAX)
+    return `At most ${WEBHOOK_NAME_MAX} characters`;
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(n)) return "No control characters";
   return "";

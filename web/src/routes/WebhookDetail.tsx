@@ -25,6 +25,7 @@ import {
   nameProblem,
   secretWords,
   unsignedWords,
+  RELAY_NOTE,
   webhookAddress,
   webhookStatus,
 } from "../lib/webhooks";
@@ -141,12 +142,18 @@ function Page({ id }: { id: string }) {
       <div className={styles.page}>
         <div className={`${styles.notice} ${styles.noticeBad}`} role="alert">
           <strong data-testid="webhook-load-error">
-            {missing ? "This webhook doesn’t exist" : "Couldn’t load this webhook"}
+            {missing
+              ? "This webhook doesn’t exist"
+              : "Couldn’t load this webhook"}
           </strong>
           <span>{loadError}</span>
           <div className={styles.noticeRow}>
             {!missing && (
-              <button type="button" className={styles.ghost} onClick={() => void load()}>
+              <button
+                type="button"
+                className={styles.ghost}
+                onClick={() => void load()}
+              >
                 Retry
               </button>
             )}
@@ -166,7 +173,7 @@ function Page({ id }: { id: string }) {
     );
   }
 
-  const address = webhookAddress(w.path);
+  const address = webhookAddress(w.path, w.relay_url);
   const blocked = deleteBlock(w);
   const renameProblem = renaming == null ? "" : nameProblem(renaming);
 
@@ -183,7 +190,11 @@ function Page({ id }: { id: string }) {
               </Link>
             </span>
             <div className={styles.hookHead}>
-              <h1 id="webhook-title" className={styles.title} data-testid="webhook-name">
+              <h1
+                id="webhook-title"
+                className={styles.title}
+                data-testid="webhook-name"
+              >
                 {w.name}
               </h1>
               <span className={styles.hookTag} data-testid="webhook-status">
@@ -193,22 +204,34 @@ function Page({ id }: { id: string }) {
           </div>
 
           {w.legacy_automation && (
-            <div className={`${styles.notice} ${styles.more}`} data-testid="webhook-legacy">
+            <div
+              className={`${styles.notice} ${styles.more}`}
+              data-testid="webhook-legacy"
+            >
               <strong>A review loop’s own address</strong>
               <span>
-                It belongs to “{legacyOwner(w)}” from before webhooks were a list. That automation
-                keeps using it; no other automation can pick it.
+                It belongs to “{legacyOwner(w)}” from before webhooks were a
+                list. That automation keeps using it; no other automation can
+                pick it.
               </span>
             </div>
           )}
 
           {notice && (
-            <div className={`${styles.notice} ${styles.noticeOk} ${styles.more}`} role="status" data-testid="webhook-notice">
+            <div
+              className={`${styles.notice} ${styles.noticeOk} ${styles.more}`}
+              role="status"
+              data-testid="webhook-notice"
+            >
               {notice}
             </div>
           )}
           {error && (
-            <div className={`${styles.error} ${styles.more}`} role="alert" data-testid="webhook-error">
+            <div
+              className={`${styles.error} ${styles.more}`}
+              role="alert"
+              data-testid="webhook-error"
+            >
               {error}
             </div>
           )}
@@ -216,20 +239,31 @@ function Page({ id }: { id: string }) {
           <dl className={`${styles.kv} ${styles.more}`}>
             <dt>Address</dt>
             <dd>
-              <code ref={addressEl} className={styles.hookValue} data-testid="webhook-url">
+              <code
+                ref={addressEl}
+                className={styles.hookValue}
+                data-testid="webhook-url"
+              >
                 {address}
               </code>
+              {w?.relay_url && (
+                <p className={styles.hint} data-testid="webhook-relay-note">
+                  {RELAY_NOTE}
+                </p>
+              )}
             </dd>
             <dt>Secret</dt>
             <dd data-testid="webhook-secret-state">{secretWords(w, nowS)}</dd>
-            {w.previous_valid_until != null && w.previous_valid_until > nowS && (
-              <>
-                <dt>Old secret</dt>
-                <dd data-testid="webhook-previous">
-                  keeps working until {whenWords(w.previous_valid_until, nowS)}
-                </dd>
-              </>
-            )}
+            {w.previous_valid_until != null &&
+              w.previous_valid_until > nowS && (
+                <>
+                  <dt>Old secret</dt>
+                  <dd data-testid="webhook-previous">
+                    keeps working until{" "}
+                    {whenWords(w.previous_valid_until, nowS)}
+                  </dd>
+                </>
+              )}
           </dl>
 
           {secret && (
@@ -265,7 +299,9 @@ function Page({ id }: { id: string }) {
                   aria-invalid={!!renameProblem || undefined}
                   data-testid="webhook-rename-input"
                 />
-                {renameProblem && <p className={styles.hint}>{renameProblem}</p>}
+                {renameProblem && (
+                  <p className={styles.hint}>{renameProblem}</p>
+                )}
               </div>
               <div className={styles.noticeRow}>
                 <button
@@ -276,7 +312,11 @@ function Page({ id }: { id: string }) {
                 >
                   {busy === "rename" ? "Saving…" : "Save name"}
                 </button>
-                <button type="button" className={styles.ghost} onClick={() => setRenaming(null)}>
+                <button
+                  type="button"
+                  className={styles.ghost}
+                  onClick={() => setRenaming(null)}
+                >
                   Cancel
                 </button>
               </div>
@@ -299,7 +339,11 @@ function Page({ id }: { id: string }) {
                   onClick={() => void rotate()}
                   data-testid="webhook-rotate"
                 >
-                  {busy === "rotate" ? "Rotating…" : w.secret_set ? "Rotate secret" : "Make a secret"}
+                  {busy === "rotate"
+                    ? "Rotating…"
+                    : w.secret_set
+                      ? "Rotate secret"
+                      : "Make a secret"}
                 </button>
               )}
               <button
@@ -328,40 +372,59 @@ function Page({ id }: { id: string }) {
           )}
           <CopyNote state={copied} what={{ address: "Address" }} />
           {blocked && (
-            <p id="webhook-delete-why" className={styles.hint} data-testid="webhook-delete-why">
+            <p
+              id="webhook-delete-why"
+              className={styles.hint}
+              data-testid="webhook-delete-why"
+            >
               Delete is off. {blocked}
             </p>
           )}
           {!secret && w.secret_set && (
             <p className={styles.hint}>
-              Rotating shows a new secret once; the old one keeps working for 24 h, so the sender
-              can be updated without missed deliveries.
+              Rotating shows a new secret once; the old one keeps working for 24
+              h, so the sender can be updated without missed deliveries.
             </p>
           )}
 
-          <h2 className={`${styles.hookSub} ${styles.more}`} data-testid="webhook-last-title">
-            Last delivery{w.last_delivery_at != null ? ` · ${lastDeliveryWords(w, nowS)}` : ""}
+          <h2
+            className={`${styles.hookSub} ${styles.more}`}
+            data-testid="webhook-last-title"
+          >
+            Last delivery
+            {w.last_delivery_at != null
+              ? ` · ${lastDeliveryWords(w, nowS)}`
+              : ""}
           </h2>
           <p className={styles.hookLast} data-testid="webhook-last">
             <Led tone={deliveryTone(w)} />
             <span>
               {w.last_delivery_at == null
                 ? "No delivery yet. Send a test from your service."
-                : [w.last_event, w.last_note].filter(Boolean).join(" · ") || "A signed delivery."}
+                : [w.last_event, w.last_note].filter(Boolean).join(" · ") ||
+                  "A signed delivery."}
             </span>
           </p>
           {w.unsigned_24h > 0 && (
-            <p className={`${styles.hint} ${styles.wordDegraded}`} data-testid="webhook-unsigned">
-              {unsignedWords(w.unsigned_24h)}: refused. If that was your service, check its secret.
+            <p
+              className={`${styles.hint} ${styles.wordDegraded}`}
+              data-testid="webhook-unsigned"
+            >
+              {unsignedWords(w.unsigned_24h)}: refused. If that was your
+              service, check its secret.
             </p>
           )}
           {w.last_shape.length > 0 && (
             <>
               <p className={styles.hint}>
-                The fields it sent, with their types — the names an automation can use. Real values
-                are not kept.
+                The fields it sent, with their types — the names an automation
+                can use. Real values are not kept.
               </p>
-              <ul className={styles.hookShape} data-testid="webhook-shape" aria-label="Fields of the last delivery">
+              <ul
+                className={styles.hookShape}
+                data-testid="webhook-shape"
+                aria-label="Fields of the last delivery"
+              >
                 {w.last_shape.map((f) => (
                   <li key={f.path} data-testid="webhook-field">
                     {f.path}
@@ -381,7 +444,11 @@ function Page({ id }: { id: string }) {
             <ul className={styles.hookList} data-testid="webhook-users">
               {w.used_by.map((u) => (
                 <li key={u.id}>
-                  <Link className={styles.hookRow} to={automationPath(u.id)} data-testid="webhook-user">
+                  <Link
+                    className={styles.hookRow}
+                    to={automationPath(u.id)}
+                    data-testid="webhook-user"
+                  >
                     <span className={styles.hookName}>{u.name}</span>
                   </Link>
                 </li>
@@ -400,11 +467,14 @@ function Page({ id }: { id: string }) {
           onCancel={() => setConfirmDelete(false)}
           onConfirm={() => void remove()}
           returnFocusTo={returnTo}
-          markers={{ dialog: { "data-testid": "webhook-delete-dialog" }, confirm: { "data-testid": "webhook-delete-confirm" } }}
+          markers={{
+            dialog: { "data-testid": "webhook-delete-dialog" },
+            confirm: { "data-testid": "webhook-delete-confirm" },
+          }}
         >
           <p>
-            Its address stops working at once: deliveries to it are refused. A service still sending
-            to it will see errors.
+            Its address stops working at once: deliveries to it are refused. A
+            service still sending to it will see errors.
           </p>
         </ConfirmDialog>
       )}

@@ -14,7 +14,13 @@ import { SecretOnce } from "../components/webhooks/WebhookBits";
 import { api } from "../lib/api";
 import { errorWords, type EditorForm } from "../lib/automations";
 import { WEBHOOKS_PATH, webhookPath } from "../lib/routes";
-import { WEBHOOK_NAME_MAX, nameProblem, webhookAddress, webhookStatus } from "../lib/webhooks";
+import {
+  WEBHOOK_NAME_MAX,
+  nameProblem,
+  RELAY_NOTE,
+  webhookAddress,
+  webhookStatus,
+} from "../lib/webhooks";
 import type { Webhook } from "../types/webhooks";
 import styles from "../components/automations/automations.module.css";
 
@@ -27,13 +33,17 @@ export interface NewWebhookHandoff {
 export default function WebhookNew() {
   const location = useLocation();
   const navigate = useNavigate();
-  const handoff = (location.state as { webhookHandoff?: NewWebhookHandoff } | null)?.webhookHandoff ?? null;
+  const handoff =
+    (location.state as { webhookHandoff?: NewWebhookHandoff } | null)
+      ?.webhookHandoff ?? null;
   const nowS = useNowS();
   const [name, setName] = useState("");
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [made, setMade] = useState<{ webhook: Webhook; secret: string } | null>(null);
+  const [made, setMade] = useState<{ webhook: Webhook; secret: string } | null>(
+    null,
+  );
   const addressEl = useRef<HTMLElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -69,7 +79,7 @@ export default function WebhookNew() {
   }
 
   const w = made?.webhook ?? null;
-  const address = w ? webhookAddress(w.path) : "";
+  const address = w ? webhookAddress(w.path, w.relay_url) : "";
 
   return (
     <div className={styles.page} data-testid="webhook-new-page">
@@ -128,7 +138,11 @@ export default function WebhookNew() {
                 </p>
               </div>
               {error && (
-                <div className={styles.error} role="alert" data-testid="webhook-new-error">
+                <div
+                  className={styles.error}
+                  role="alert"
+                  data-testid="webhook-new-error"
+                >
                   {error}
                 </div>
               )}
@@ -141,7 +155,15 @@ export default function WebhookNew() {
                 >
                   {busy ? "Making it…" : "Make webhook"}
                 </button>
-                <Link className={styles.ghost} to={handoff ? handoff.returnTo : WEBHOOKS_PATH} state={handoff ? { webhookPick: { id: "", draft: handoff.draft } } : undefined}>
+                <Link
+                  className={styles.ghost}
+                  to={handoff ? handoff.returnTo : WEBHOOKS_PATH}
+                  state={
+                    handoff
+                      ? { webhookPick: { id: "", draft: handoff.draft } }
+                      : undefined
+                  }
+                >
                   Cancel
                 </Link>
               </div>
@@ -151,15 +173,30 @@ export default function WebhookNew() {
               <dl className={`${styles.kv} ${styles.more}`}>
                 <dt>Address</dt>
                 <dd>
-                  <code ref={addressEl} className={styles.hookValue} data-testid="webhook-url">
+                  <code
+                    ref={addressEl}
+                    className={styles.hookValue}
+                    data-testid="webhook-url"
+                  >
                     {address}
                   </code>
+                  {w?.relay_url && (
+                    <p className={styles.hint} data-testid="webhook-relay-note">
+                      {RELAY_NOTE}
+                    </p>
+                  )}
                 </dd>
               </dl>
-              <SecretOnce secret={made!.secret} address={address} addressEl={addressEl} nowS={nowS} />
+              <SecretOnce
+                secret={made!.secret}
+                address={address}
+                addressEl={addressEl}
+                nowS={nowS}
+              />
               <p className={`${styles.hint} ${styles.more}`}>
-                Paste both into your service’s webhook settings (content type JSON), then send a test.
-                The fields it sends show on the webhook’s page after the first signed delivery.
+                Paste both into your service’s webhook settings (content type
+                JSON), then send a test. The fields it sends show on the
+                webhook’s page after the first signed delivery.
               </p>
               <p className={styles.hookLast} data-testid="webhook-last">
                 <Led tone="idle" />
@@ -176,7 +213,11 @@ export default function WebhookNew() {
                     Use it in the automation
                   </button>
                 ) : (
-                  <Link className={styles.primary} to={webhookPath(w.id)} data-testid="webhook-open">
+                  <Link
+                    className={styles.primary}
+                    to={webhookPath(w.id)}
+                    data-testid="webhook-open"
+                  >
                     I’ve copied it — open the webhook
                   </Link>
                 )}
@@ -185,8 +226,8 @@ export default function WebhookNew() {
                 </Link>
               </div>
               <p className={styles.hint}>
-                Rotate it later from the webhook’s page: a new secret is shown once, and the old one
-                keeps working for 24 h.
+                Rotate it later from the webhook’s page: a new secret is shown
+                once, and the old one keeps working for 24 h.
               </p>
             </>
           )}

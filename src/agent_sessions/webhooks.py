@@ -278,6 +278,18 @@ def consumers(wid: str, *, include_disabled: bool = False) -> list[str]:
     return out
 
 
+def set_relay(wid: str, public_id: str | None, url: str | None) -> None:
+    """The webhook's address on the BattleLab relay (Home Free, #2221 P1b), or none."""
+    if public_id is not None and not re.match(r"\A[a-z2-7]{26}\Z", public_id):
+        raise WebhookError("bad relay id")
+    if url is not None and (not url.startswith(f"https://{public_id}.") or len(url) > 200):
+        raise WebhookError("bad relay address")
+    with store._tx() as con:
+        con.execute(
+            "UPDATE webhooks SET relay_public_id=?, relay_url=? WHERE id=?", (public_id, url, wid)
+        )
+
+
 def note_delivery(
     wid: str, event: str, note: str, *, shape: list[dict] | None = None, now: float | None = None
 ) -> None:
@@ -333,6 +345,8 @@ def _public(r, ts: float, users: list[dict], *, detail: bool) -> dict:
         "name": r["name"],
         "revision": int(r["revision"]),
         "path": f"/hooks/a/{legacy}" if legacy else f"/hooks/w/{r['id']}",
+        # Through the BattleLab relay (Home Free): the public address to give the sender.
+        "relay_url": r["relay_url"] if not legacy else None,
         "legacy_automation": legacy,
         "pickable": not legacy,
         "secret_set": cur is not None,

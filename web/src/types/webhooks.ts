@@ -18,6 +18,8 @@ export interface Webhook {
   revision: number;
   /** Root-relative: `/hooks/w/<id>`, or `/hooks/a/<automation>` for a legacy one. */
   path: string;
+  /** On a Home Free box: the webhook's public address on the BattleLab relay, or `null`. */
+  relay_url?: string | null;
   /** A #2202 review loop's own webhook: its automation's id. `null` for a webhook from the list. */
   legacy_automation: string | null;
   /** Whether an automation may pick it. A legacy webhook never is. */
@@ -36,7 +38,8 @@ export interface Webhook {
 }
 
 /** A value's type as the server names it (`webhooks._type_of`). */
-export type ShapeType = "text" | "number" | "yes/no" | "empty" | "list" | "object";
+export type ShapeType =
+  "text" | "number" | "yes/no" | "empty" | "list" | "object";
 
 /** One field of the last signed delivery: its path (`pull_request.number`, `labels[].name`) and
  *  its value's type. Never the value. */

@@ -13,11 +13,13 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .. import automations_store as store
-from .. import webhooks
+from .. import webhook_relay, webhooks
 
 PREFIX = "/api/webhooks"
 BODY_MAX = 4096
 _NO_STORE = {"Cache-Control": "no-store"}
+#: How long a create waits for the relay to confirm the new address before answering without it.
+CREATE_RELAY_WAIT_S = 20.0
 
 
 def _json(payload: object, status: int = 200) -> JSONResponse:
@@ -68,11 +70,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except webhooks.WebhookError as e:
             return _err(e)
 
-        def _make() -> dict:
-            pub, secret = webhooks.create(body.get("name"))
-            return {"webhook": pub, "secret": secret}
-
-        return await _run(_make, status=201)
+        try:
+            pub, secret = await asyncio.to_thread(webhooks.create, body.get("name"))
+        except (webhooks.WebhookError, store.StoreError) as e:
+            return _err(e)
+        if webhook_relay.available():
+            # A Home Free box: register it on the relay now, so the address shown is the one to
+            # give the sender. A relay that is offline, or a sync that takes too long, leaves the
+            # direct address: the new revision stays owed and the next poll registers it.
+            webhook_relay.mark_dirty()
+            try:
+                await asyncio.wait_for(webhook_relay.sync_all(), CREATE_RELAY_WAIT_S)
+                pub = await asyncio.to_thread(webhooks.get, pub["id"])
+            except (webhook_relay.RelayError, TimeoutError):
+                pass
+        return _json({"webhook": pub, "secret": secret}, 201)
 
     @app.get(PREFIX + "/{wid}")
     async def get_webhook(wid: str, _user: str = Depends(logged_in)) -> JSONResponse:
@@ -108,4 +120,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     async def delete_webhook(
         wid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
-        return await _run(lambda: (webhooks.delete(wid), {"deleted": wid})[1])
+        try:
+            pub = await asyncio.to_thread(webhooks.get, wid)
+        except (webhooks.WebhookError, store.StoreError) as e:
+            return _err(e)
+        if pub.get("legacy_automation") or pub.get("used_by"):
+            # Refused before the relay is touched: an in-use webhook keeps its relay address.
+            return await _run(lambda: (webhooks.delete(wid), {"deleted": wid})[1])
+        if pub.get("relay_url"):
+            # Removed at the relay FIRST; a relay that can't confirm keeps the webhook (and its
+            # address) so nothing is left routing to a deleted id. A store delete refused after
+            # that (an automation picked it meanwhile) registers it again (#2221 P1b).
+            try:
+                await webhook_relay.delete(wid, lambda: webhooks.delete(wid))
+            except webhook_relay.RelayError as e:
+                return _json(
+                    {"detail": f"the relay could not confirm removing this address ({e.code})"},
+                    502,
+                )
+            except (webhooks.WebhookError, store.StoreError) as e:
+                return _err(e)
+            return _json({"deleted": wid})
+        out = await _run(lambda: (webhooks.delete(wid), {"deleted": wid})[1])
+        if out.status_code == 200 and webhook_relay.available():
+            webhook_relay.mark_dirty()  # the agent may still list it (an unconfirmed address)
+        return out

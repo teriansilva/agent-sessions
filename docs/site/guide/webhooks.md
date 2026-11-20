@@ -50,6 +50,21 @@ these names. **The values themselves are not kept.**
 - **Delete** works only while no automation uses the webhook. Change or delete those automations
   first.
 
+## On a Home Free box: through the BattleLab relay
+
+A Home Free box has no public address of its own. Its webhooks get one on the BattleLab relay
+instead, like `https://<id>.hook.battlelabos.com/`. That's the address the webhook page shows. The
+relay passes each delivery straight on to your box, where the signature is checked as usual.
+
+- The relay **sees what a delivery contains while passing it on** (unlike your sessions, which are
+  end-to-end encrypted). It **doesn't store it** and has **no secret**, so it can't fake a delivery.
+- If your box is offline, the sender gets an error and can deliver again later. Forgejo has
+  **Redeliver** for this.
+- Deleting a webhook removes its relay address first. If the relay can't confirm that, the webhook
+  stays, and you can try again.
+- After the box or its relay connection restarts, the relay addresses work again within about a
+  minute. They keep the same address.
+
 ## Behind a reverse proxy
 
 The webhook authenticates itself with its signature. If a proxy in front of BattleLab asks for a

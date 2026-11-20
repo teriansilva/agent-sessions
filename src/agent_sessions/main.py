@@ -78,6 +78,7 @@ from . import (
     update_loop,
     usage_loop,
     voice_calls,
+    webhook_relay,
 )
 from . import (
     handoff as handoff_mod,
@@ -415,6 +416,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         shelf_task = asyncio.create_task(shelf_broker.serve())
         # The artifacts broker (#1932): sessions with artifacts on publish through it.
         artifacts_task = asyncio.create_task(artifact_broker.serve())
+        # Webhooks through the relay (#2221 P1b): a Home Free box tells its agent which webhooks
+        # to relay, on startup and daily. Quiet without Home Free.
+        webhook_relay_task = asyncio.create_task(webhook_relay.run_loop())
         # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
         # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
@@ -629,6 +633,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 hq_report_task,
                 shelf_task,
                 artifacts_task,
+                webhook_relay_task,
                 review_task,
                 autosort_task,
                 clusters_task,

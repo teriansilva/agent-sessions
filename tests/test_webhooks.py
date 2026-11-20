@@ -141,10 +141,10 @@ def test_a_review_loops_webhook_is_adopted_unchanged(monkeypatch, tmp_path):
         assert con.execute("SELECT COUNT(*) FROM webhooks WHERE id=?", (aid,)).fetchone()[0] == 1
 
 
-def test_a_fresh_store_is_at_v3_with_the_webhook_tables():
+def test_a_fresh_store_has_the_webhook_tables():
     webhooks.list_all()
     with store._read() as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"webhooks", "webhook_secrets"} <= names
 

@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .appproxy import AppProxyTarget
 from .artifactlink import ArtifactLink
 from .handshake import Responder, derive_psk
+from .hooklink import HookLink
 from .mux import Mux, StreamReset
 from .peerpipe import PeerPipe
 
@@ -75,8 +76,11 @@ class HomeFreeAgent:
         # access key, not the Home Free handshake, not the app proxy.
         # Hosting a shared artifact on the relay (#2190): requests ride the control connection.
         self.artifacts = ArtifactLink(config.relay_url)
+        # Receiving webhooks through the relay (#2221 P1b): forwards go to the box's own app.
+        self.hooks = HookLink(app_host=config.app_host, app_port=config.app_port)
         self.peer = PeerPipe(
             artifacts=self.artifacts,
+            hooks=self.hooks,
             relay_url=config.relay_url,
             console_name=config.console_name,
             identity=self._identity,
@@ -97,6 +101,7 @@ class HomeFreeAgent:
             try:
                 await self._register(ws)
                 self.artifacts.attach(ws)
+                self.hooks.attach(ws)
                 async for message in ws:
                     if isinstance(message, bytes):
                         continue
@@ -117,9 +122,11 @@ class HomeFreeAgent:
                     elif data.get("t") == "ping":
                         await ws.send(json.dumps({"t": "pong"}))
                     elif isinstance(data, dict):
-                        self.artifacts.on_message(data)
+                        if not self.hooks.on_message(data):
+                            self.artifacts.on_message(data)
             finally:
                 self.artifacts.detach()
+                self.hooks.detach()
                 # Peer legs belong to this registration (#1246 P3); they end with it.
                 await self.peer.close_legs()
 

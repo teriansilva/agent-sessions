@@ -61,6 +61,8 @@ REQUEST_MAX = 1024
 #: An ``artifact_put`` request carries a manifest (#2190): its own, larger bound, still checked
 #: before a byte is allocated. Every other op is held to REQUEST_MAX after parsing.
 ARTIFACT_REQUEST_MAX = 256 * 1024
+#: A webhook request (#2221 P1b): `hook_sync` lists up to 100 webhook ids (plus `gen`).
+HOOK_REQUEST_MAX = 8 * 1024
 #: One pipe frame. The federation channel caps its own frames far below this; the pipe only
 #: needs a bound of its own, and it does not interpret what it carries.
 FRAME_MAX = 64 * 1024
@@ -133,6 +135,7 @@ class PeerPipe:
         app_host: str,
         app_port: int | None,
         artifacts=None,
+        hooks=None,
     ) -> None:
         self._relay_url = relay_url
         self._name = console_name
@@ -147,6 +150,8 @@ class PeerPipe:
         # Hosting a shared artifact on the relay (#2190): an ArtifactLink on the agent's control
         # connection, or None (no artifact ops).
         self._artifacts = artifacts
+        # Receiving webhooks through the relay (#2221 P1b): a HookLink, or None (no hook ops).
+        self._hooks = hooks
 
     # ── being called ──────────────────────────────────────────────────
     async def handle_peer_start(self, start: dict) -> None:
@@ -256,10 +261,15 @@ class PeerPipe:
             if not isinstance(request, dict):
                 return
             op = request.get("op")
-            if not str(op).startswith("artifact_") and len(raw) > REQUEST_MAX:
-                return  # only an artifact request may be larger than REQUEST_MAX
+            if str(op).startswith("hook_"):
+                if len(raw) > HOOK_REQUEST_MAX:
+                    return
+            elif not str(op).startswith("artifact_") and len(raw) > REQUEST_MAX:
+                return  # only an artifact or webhook request may be larger than REQUEST_MAX
             if op in ("artifact_put", "artifact_delete"):
                 self._answer(writer, await self._artifact(request))
+            elif op in ("hook_sync", "hook_unregister", "hook_status"):
+                self._answer(writer, await self._hook(request))
             elif op == "info" and set(request) == {"op"}:
                 self._answer(writer, {"ok": True, "relay_url": self._relay_url, "name": self._name})
             elif op == "call" and set(request) == {"op", "target"}:
@@ -302,6 +312,24 @@ class PeerPipe:
             if op == "artifact_delete" and set(request) == {"op", "public_id", "ref"}:
                 return await self._artifacts.delete(request["public_id"], request["ref"])
         except LinkError as exc:
+            return {"ok": False, "code": exc.code}
+        return {"ok": False, "code": "bad_request"}
+
+    async def _hook(self, request: dict) -> dict:
+        """Register or remove the box's webhooks on the relay, for the app (#2221 P1b)."""
+        from .hooklink import HookError
+
+        if self._hooks is None:
+            return {"ok": False, "code": "no_relay"}
+        try:
+            if request["op"] == "hook_sync" and set(request) == {"op", "refs", "gen"}:
+                return {"ok": True, **await self._hooks.sync(request["refs"], request["gen"])}
+            if request["op"] == "hook_unregister" and set(request) == {"op", "ref", "gen"}:
+                await self._hooks.unregister(request["ref"], request["gen"])
+                return {"ok": True}
+            if request["op"] == "hook_status" and set(request) == {"op"}:
+                return {"ok": True, **self._hooks.status()}
+        except HookError as exc:
             return {"ok": False, "code": exc.code}
         return {"ok": False, "code": "bad_request"}
 

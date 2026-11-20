@@ -32,7 +32,7 @@ from pathlib import Path
 
 from . import automations as model
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: The claim's refusal when the consent receipt no longer equals the config's scope (a receipt from
 #: before a scope field existed, or a hand edit). Never run; the due check and Run now both flag it
@@ -307,8 +307,14 @@ def _adopt_legacy_webhooks(con: sqlite3.Connection) -> None:
             )
 
 
+def _to_v4(con: sqlite3.Connection) -> None:
+    """A webhook's relay address for a Home Free box (#2221 P1b)."""
+    con.execute("ALTER TABLE webhooks ADD COLUMN relay_public_id TEXT")
+    con.execute("ALTER TABLE webhooks ADD COLUMN relay_url TEXT")
+
+
 #: ``{from_version: step}`` — each step brings a file from that version to the next.
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2, 2: _to_v3}
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2, 2: _to_v3, 3: _to_v4}
 
 
 class StoreError(RuntimeError):
