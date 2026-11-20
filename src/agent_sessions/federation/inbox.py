@@ -51,14 +51,32 @@ def refreshed(fed, peer_id: str, before: list[store.RemoteShare], after: list[di
         was = old.get(grant_id)
         if was is None:
             notices.announce_remote(st, "shared", peer_id, grant_id, entry["title"])
+            _still_shared(st, peer_id, grant_id, "share")
         elif was.level != entry["level"]:
             notices.announce_remote(st, "changed", peer_id, grant_id, entry["title"], replace=True)
+            _still_shared(st, peer_id, grant_id, "share")
         if not store.level_includes(entry["level"], "send"):
             notices.retract_remote(peer_id, grant_id, ("decision",))
     for grant_id, was in old.items():
         if grant_id not in new:
             notices.retract_remote(peer_id, grant_id, ("share", "decision", "note"))
+            # A share this instance LEFT (#2201) did not "stop being shared": nobody is told.
+            # Looked at before and AFTER the row is posted: the leave marks first and retracts
+            # last, so a row posted around it is taken back here or there.
+            if fed.has_left(peer_id, grant_id):
+                continue
             notices.announce_remote(st, "ended", peer_id, grant_id, was.title)
+            if fed.has_left(peer_id, grant_id):
+                notices.retract_remote(peer_id, grant_id, ("ended",))
+
+
+def _still_shared(st: store.Store, peer_id: str, grant_id: str, kind: str) -> None:
+    """A row about a grant was just posted. This runs beside the request that may have LEFT
+    that grant meanwhile (#2201): if the mirror no longer has it, the row is taken back. The
+    leave drops the mirror row and only then retracts (`remote._forget`), so a row posted
+    before its retraction goes there and one posted after it goes here. Blocking."""
+    if st.get_remote(peer_id, grant_id) is None:
+        notices.retract_remote(peer_id, grant_id, (kind,))
 
 
 def newly_answerable(before: list[store.RemoteShare], after: list[dict]) -> list[str]:
@@ -140,6 +158,8 @@ async def check(fed, peer_id: str, grant_id: str, kind: str) -> None:
             await asyncio.to_thread(
                 notices.announce_remote, fed.store, kind, peer_id, grant_id, row.title
             )
+            # The share may have been left while the owner was asked (#2201).
+            await asyncio.to_thread(_still_shared, fed.store, peer_id, grant_id, kind)
         else:
             await asyncio.to_thread(notices.retract_remote, peer_id, grant_id, (kind,))
     except Exception:

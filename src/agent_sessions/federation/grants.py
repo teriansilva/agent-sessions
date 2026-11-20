@@ -31,8 +31,11 @@ default, at most 24 hours, only with ``accept_risk: true`` in the operator's own
 refused for a session a mission holds. Each level includes the ones below it. **A terminal
 grant is ``view`` and nothing else**: creating one at, or changing one to, ``suggest`` or
 ``send`` is refused, and every input verb asks for an ``api`` grant. **Only the operator
-functions here change a grant** (:func:`create`, :func:`change`, :func:`revoke`); no verb does,
-and nothing renews one in the background.
+functions here change a grant** (:func:`create`, :func:`change`, :func:`revoke`); no verb
+extends, raises or re-creates one, and nothing renews one in the background.
+
+**A peer can give a grant up** (:func:`leave`, the ``share.leave`` verb, #2201): the one thing a
+verb may do to a grant, and it only narrows. The check and the end are one fenced transaction.
 
 **Every change holds the grant's fence** (``fence.py``, taken inside the store's methods): a
 revoke, a level or expiry change, a peer revoke, an archive and the expiry sweep land before a
@@ -309,6 +312,36 @@ def revoke(st: store.Store, grant_id: object) -> store.Grant:
         return st.revoke_grant(grant_id, now=_clock())
     except store.StoreError as exc:
         raise GrantError(_code(exc), str(exc), status=exc.status) from exc
+
+
+#: How long ``share.leave`` waits for the grant's fence (a delivery under the grant is in
+#: flight): well inside the peer's own call timeout (``channel.CALL_TIMEOUT_S``), so ``busy``
+#: arrives as an answer and the peer is not left guessing.
+LEAVE_WAIT_S = 10.0
+
+
+def leave(st: store.Store, grant_id: object, peer_id: str, revision: object) -> store.Grant | None:
+    """THE PEER ends a grant it holds (``share.leave``, #2201). The grant as it was when it
+    ended, or ``None``: the one refusal, whatever failed.
+
+    Two steps, and only the second decides. (1) The plain per-call read (:func:`_granted`: this
+    peer's own grant, live, unexpired, at this revision, the peer trusted; any kind, any level).
+    A call that fails it goes no further, so nobody waits on, or learns anything from, the
+    fence of a grant that is not theirs. (2) ``Store.leave_grant``: INSIDE the grant's fence
+    and one transaction all of that is read again and the grant is ended there, through the
+    cascade a revoke uses. A grant that changed, was revoked or expired while this waited for
+    the fence is refused and nothing ends. No session is read: giving a grant up needs none.
+
+    A fence that cannot be had inside :data:`LEAVE_WAIT_S` raises ``store.Busy``: nothing was
+    committed. Blocking."""
+    if _granted(st, grant_id, peer_id, revision) is None:
+        return None
+    try:
+        return st.leave_grant(
+            grant_id, peer_id=peer_id, revision=revision, clock=_clock, wait=LEAVE_WAIT_S
+        )
+    except store.NotGranted as exc:
+        return _refused(f"changed before the leave ({exc})", peer_id, grant_id)
 
 
 def listing(st: store.Store, session_key: object = None) -> list[store.Grant]:

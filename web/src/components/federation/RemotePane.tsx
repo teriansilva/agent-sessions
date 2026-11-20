@@ -1,8 +1,9 @@
 import { Copy, Ellipsis, KeyRound, StickyNote } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { refreshRemoteShares, useRemoteShares } from "../../app/remoteShares";
 import { ApiError, api } from "../../lib/api";
+import { SESSIONS_PATH } from "../../lib/routes";
 import {
   REMOTE_EVENTS_WAIT_S,
   REMOTE_GONE,
@@ -75,6 +76,8 @@ import { ContinueHereDialog } from "./ContinueHereDialog";
 import { NotesDrawer } from "./NotesDrawer";
 import { PeerDecisionCard, SettledDecisionCard, type AnswerState } from "./PeerDecisions";
 import { RemoteFrame } from "./RemoteFrame";
+import { LeaveButton } from "./LeaveButton";
+import { useLeaveShare } from "./useLeaveShare";
 import styles from "./Remote.module.css";
 import together from "./Together.module.css";
 
@@ -155,6 +158,16 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
   const facts = known?.target === target ? known : null;
   const peer = facts?.peer || "the other instance";
   const title = facts?.title || "Shared session";
+  // Leave (#2201): the same action the screen pane and Settings → Peers use. After a proven
+  // leave this view has nothing to show: the app goes to the session list.
+  const navigate = useNavigate();
+  const leaving = useLeaveShare(useCallback(() => navigate(SESSIONS_PATH), [navigate]));
+  const leaveView = (
+    <>
+      {listed && <LeaveButton share={listed} onLeave={leaving.open} />}
+      {leaving.dialog}
+    </>
+  );
 
   const { generation, startAfterMs } = state;
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -954,6 +967,7 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
         word={badge.word}
         empty={REMOTE_GONE}
         notices={notices}
+        leave={leaveView}
         foot={
           <>
             {composerView}
@@ -973,6 +987,7 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
         word={badge.word}
         empty={remoteOfflineText(peer)}
         notices={notices}
+        leave={leaveView}
         foot={
           <>
             {composerView}
@@ -996,6 +1011,7 @@ export function RemotePane({ peerId, grantId }: { peerId: string; grantId: strin
       led={badge.led}
       word={badge.word}
       notices={notices}
+      leave={leaveView}
       menu={menuView}
       presence={presence}
       paneRef={bindPane}

@@ -231,6 +231,31 @@ are not listed under Active or Archived.
   shared with you right now. It goes away when you leave it.
 - An owner shares a session from that session's **Share → Peer…**.
 
+#### Leaving a share
+
+A share can be ended from both sides. The instance that shares a session revokes it (**Share →
+Peer…**, or Settings → Peers). You, on the receiving side, can **Leave** it: the button is in the
+shared session's banner, beside who shares it and until when, and beside each session under
+*Shared by …* in Settings → Peers.
+
+Leave asks first. The share then ends on both instances at once: you no longer see the session,
+and the other operator gets a bell entry saying that you left, with the session's title. They can
+share it with you again.
+
+Leaving needs the other instance, because the share ends there:
+
+- If it is **not connected**, nothing changes and the dialog says so. To stop everything from an
+  instance at once, revoke the peer in Settings → Peers.
+- If the dialog says it **could not confirm that you left**, the request was sent and no answer
+  came back, so the share may or may not have ended. The session stays in your list until the
+  other instance's own list says it is gone. **Check again** reads that list; it never sends
+  Leave a second time.
+- If the other instance **did not accept**, the share changed there a moment ago (its access or
+  its end date). It is still in your list; press Leave again if you still want to end it.
+
+A session is never hidden only on your side: while the other instance still shares it, it stays
+in your list.
+
 ::: info Verified against
 Commit `218cf3a` — `docs/session-handling.md`; `docs/reference.md § Runtime / storage`; `src/agent_sessions/sessionlock.py`; `src/agent_sessions/runtime_cleanup.py`.
 :::

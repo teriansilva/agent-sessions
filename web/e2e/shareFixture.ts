@@ -257,6 +257,12 @@ export class FakeShare {
   /** How a write to a remote session is answered; `undefined` = the default below. */
   onWrite: (kind: "suggest" | "turns" | "withdraw", grant: string, body: Json | null, n: number) => Answer | undefined =
     () => undefined;
+  // ---- leaving a share (#2201) ----
+  /** How a Leave is answered; `undefined` = the model's own answer: the owner ends the grant
+   *  (the row leaves the list) when the revision sent is the one listed, else `404 no_grant`. */
+  onLeave: (grant: string, body: Json | null, n: number) => Answer | undefined = () => undefined;
+  /** Every Leave that reached the server, in order. */
+  leaves: { peer: string; grant: string; revision: unknown }[] = [];
   /** How a status read (`…/operations/<key>`) is answered. Default: unknown. */
   onStatus: (key: string, grant: string, n: number) => Answer = () => ({ json: { known: false } });
   statusReads: string[] = [];
@@ -617,6 +623,21 @@ export class FakeShare {
       if ((coded.times ?? 1) <= 1) delete this.refuseCoded[`${method} ${path}`];
       else coded.times = (coded.times ?? 1) - 1;
       return json(coded.json, coded.status);
+    }
+    // ---- leaving a share (#2201) ----
+    if (method === "POST" && (m = path.match(/^\/remote\/([^/]+)\/([^/]+)\/leave$/))) {
+      const [, peerId, grant] = m;
+      const n = (this.counts[`${grant}/leave`] = (this.counts[`${grant}/leave`] ?? 0) + 1);
+      this.leaves.push({ peer: peerId, grant, revision: body?.revision });
+      const custom = this.onLeave(grant, body, n);
+      if (custom) return this.answer(route, custom);
+      // As the route and the owner behind it: a share this instance does not hold, or a
+      // revision the owner no longer lists, is refused, and nothing ends.
+      const row = this.remote.find((r) => r.peer_id === peerId && r.grant_id === grant);
+      if (!row || (body?.revision !== undefined && body.revision !== row.revision))
+        return json({ detail: "this session is not shared with this instance", code: "no_grant" }, 404);
+      this.remote = this.remote.filter((r) => r !== row);
+      return json({ left: true });
     }
     // ---- working together (#2062) ----
     if (method === "POST" && (m = path.match(/^\/access-requests\/([^/]+)\/decline$/))) {

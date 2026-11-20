@@ -11,14 +11,18 @@ import { Disclosure } from "../hud/Controls";
 import btn from "../ui/actionButton.module.css";
 import styles from "./Peers.module.css";
 import { useAnswerFence } from "./useAnswerFence";
+import { LeaveButton } from "./LeaveButton";
+import { useLeaveShare } from "./useLeaveShare";
 
 /** What is shared with one peer, and what it shares with this instance (#2055), under its row in
  *  Settings → Peers. Collapsed, the row shows the two counts.
  *
  *  - **Shared with <peer>**: this instance's live grants to it (`GET /api/federation/grants
  *    ?peer=`), each with Revoke. Revoking ends that one share at once.
- *  - **Shared by <peer>**: what it shares here, from the same list the session list shows. Read
- *    only: the other operator decides how long it stays shared. */
+ *  - **Shared by <peer>**: what it shares here, from the same list the session list shows, each
+ *    with Leave (#2201): this instance gives that one share up, and it ends on both instances
+ *    (`useLeaveShare`, the action the shared session's own header uses). The other operator
+ *    still decides everything else about it: how long it stays shared, and what it allows. */
 export function PeerShares({
   peerId,
   peerName,
@@ -37,6 +41,9 @@ export function PeerShares({
   // An answer applies only while this list is shown for the peer it was asked for. Declared
   // before the loading effect, so it is armed when that runs (StrictMode replay included).
   const ticket = useAnswerFence(peerId);
+  // Leave, for what this peer shares here. When the row left with its share, focus goes to
+  // the list's own heading.
+  const leaving = useLeaveShare(undefined, `[id="${inId}"]`);
 
   const load = useCallback(() => {
     const current = ticket();
@@ -122,7 +129,7 @@ export function PeerShares({
           )}
         </section>
         <section aria-labelledby={inId} data-testid="peer-shares-in">
-          <h4 id={inId} className={styles.sharesHead}>
+          <h4 id={inId} className={styles.sharesHead} tabIndex={-1}>
             Shared by {peerName} · {received.length}
           </h4>
           {received.length === 0 ? (
@@ -137,14 +144,17 @@ export function PeerShares({
                       <span className={styles.level}>{levelLabel(r.level)}</span>
                       <span className={styles.grantMeta}>until {shortDate(r.expires_at)}</span>
                     </span>
+                    <LeaveButton share={r} onLeave={leaving.open} className={styles.grantRevoke} />
                   </li>
                 ))}
               </ul>
               <p className={styles.rowMeta} data-testid="peer-shares-readonly">
-                Read-only here. {peerName}'s operator decides how long it stays shared.
+                {peerName}'s operator decides how long these stay shared. Leave ends one share on
+                both instances.
               </p>
             </>
           )}
+          {leaving.dialog}
         </section>
       </div>
     </Disclosure>

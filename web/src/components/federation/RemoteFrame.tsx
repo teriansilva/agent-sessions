@@ -10,7 +10,9 @@ import together from "./Together.module.css";
  *  no composer: only `RemotePane` passes one, as its `foot`, for an API share whose mirrored level
  *  is Suggest or Send (#2061); the screen pane never does. The same holds for working together
  *  (#2062): the ⋯ menu, the presence line and the pane ref are passed by `RemotePane` only, so a
- *  terminal's screen has none of them. */
+ *  terminal's screen has none of them. **Leave** (#2201) is passed by BOTH panes: a plain button
+ *  in the banner, beside who shares the session and until when. It is never a menu item (a
+ *  terminal's screen has no menu), and the frame only places it: the action is `useLeaveShare`. */
 export function RemoteFrame({
   title,
   peer,
@@ -26,6 +28,7 @@ export function RemoteFrame({
   menu,
   presence,
   paneRef,
+  leave,
 }: {
   title: string;
   peer: string | null;
@@ -50,6 +53,8 @@ export function RemoteFrame({
   presence?: string | null;
   /** The pane's own element, the notes drawer's anchor (#2062). */
   paneRef?: Ref<HTMLElement>;
+  /** The Leave button (and its dialog) of a listed share (#2201), beside the banner's text. */
+  leave?: ReactNode;
 }) {
   const ends = typeof until === "string" ? { text: `until ${until}`, countdown: false } : until;
   return (
@@ -78,6 +83,7 @@ export function RemoteFrame({
               </>
             )}
           </span>
+          {leave}
           {presence && (
             <span className={`${styles.state} ${together.presence}`} data-testid="remote-presence">
               <Led tone="up" />

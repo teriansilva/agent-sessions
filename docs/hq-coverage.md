@@ -201,6 +201,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Working together, the receiving side (#2059): ask the owner for more access; answer a pending question or tool permission of a shared session; read and write the notes of a share | POST /api/federation/remote/{peer_id}/{grant_id}/access, POST …/decisions, GET and POST …/notes, PATCH and DELETE …/notes/{note_id}, POST …/notes/read | **never** (a model must not answer a decision on another instance's agent, ask another operator for authority, or read or write a note) |
 | Working together, the receiving side (#2059): whether an access request was answered | GET /api/federation/remote/{peer_id}/{grant_id}/access | P6 R (a level and a state; presence, `watching` and `owner_present`, rides on the grants list and the snapshot read above) |
 | Working together, the receiving side (#2062): take one's own pending access request back | POST /api/federation/remote/{peer_id}/{grant_id}/access/withdraw | P6 W (it narrows: a request is a record, and withdrawing it changes no grant) |
+| Leaving a share (#2201): give up ONE session a peer shares with this instance, of either kind and any level; the share ends on the owner as its own revoke would end it | POST /api/federation/remote/{peer_id}/{grant_id}/leave | P6 W (it narrows: it ends this instance's own access to one session and nothing else; sent once, and only the owner's `ok` removes the row here) |
 | Continue here (#2059): start a new LOCAL session briefed from a session a peer shares (prepare, preview, create) | POST /api/federation/remote/{peer_id}/{grant_id}/continue, GET …/continue/{handle}, POST …/continue/{handle}/create | P7 W (as the handoff: it starts an agent, and the seed is shown verbatim on the card; the seed frames the shared record as data) |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
@@ -787,6 +788,7 @@ POST   /api/federation/grants/{grant_id}/notes/{note_id}/hide                   
 POST   /api/federation/remote/{peer_id}/{grant_id}/access                         never  # asks another operator for authority
 GET    /api/federation/remote/{peer_id}/{grant_id}/access                         P6  # read: a level and a request's state
 POST   /api/federation/remote/{peer_id}/{grant_id}/access/withdraw                P6  # narrows: takes one's own access request back (#2062)
+POST   /api/federation/remote/{peer_id}/{grant_id}/leave                          P6  # narrows: gives up one share a peer makes with this instance (#2201)
 POST   /api/federation/remote/{peer_id}/{grant_id}/decisions                      never  # a model must not answer for another instance's agent
 GET    /api/federation/remote/{peer_id}/{grant_id}/notes                          never  # notes are never model input
 POST   /api/federation/remote/{peer_id}/{grant_id}/notes                          never  # a note is a person's message to a person

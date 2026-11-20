@@ -30,6 +30,9 @@ guarantee, :func:`_enforce` is.
 
 Images are not served to a peer in this phase: an attachment carries its name and type only.
 
+``share.leave`` (#2201) is the one verb here that writes: the peer gives up a grant it holds.
+It reads no session and returns no data; :func:`share_leave` says how it is fenced.
+
 A **terminal** session is read by one more verb, ``terminal.frame``, in :mod:`terminal`. The
 session verbs here refuse a terminal grant as ``no_grant``, and that verb refuses an API grant.
 
@@ -48,7 +51,7 @@ import logging
 from .. import chat_store, engines, metadata, prefs, share_api, shares, template_secrets
 from .. import structured_runtime as runtime
 from . import channel as ch
-from . import grants, offers, presence, store
+from . import grants, notices, offers, presence, store
 
 log = logging.getLogger(__name__)
 
@@ -637,6 +640,58 @@ async def session_events(channel: ch.Channel, args: dict) -> dict:
 
 
 # ── share.changed (this instance is the RECEIVER) ─────────────────────
+LEFT, BUSY = "left", "busy"
+
+
+async def _leave(fed, peer_id: str, grant_id: str, revision: int) -> str:
+    """The leave itself, as the SERVICE's own task (``Federation.own``): what became of it.
+    :data:`LEFT` only when the fenced transaction committed the end; then, and only then, the
+    owner's operator is told (in the background, like every notice) and the peer is hinted.
+    Never raises: a caller that went away must not leave an outcome nobody retrieves."""
+    try:
+        grant = await asyncio.to_thread(grants.leave, fed.store, grant_id, peer_id, revision)
+    except store.Busy:
+        return BUSY  # the fence could not be had: nothing was committed, nothing is said
+    except (store.StoreError, OSError, ValueError):
+        log.warning("federation: a peer's leave could not be carried out", exc_info=True)
+        return UNAVAILABLE
+    if grant is None:
+        return NO_GRANT
+    fed.watching.forget(grant.grant_id)  # presence is only under a live grant
+    fed.background(asyncio.to_thread(notices.announce_left, fed.store, grant))
+    # Best effort and no data: should the answer below be lost, the peer reads the list again.
+    fed.notify_share_changed(peer_id)
+    return LEFT
+
+
+async def share_leave(channel: ch.Channel, args: dict) -> dict:
+    """The peer gives up ONE grant it holds (#2201): ``{grant_id, revision}`` → ``{}``.
+
+    **The check and the end are one fenced transaction** (:func:`grants.leave` →
+    ``Store.leave_grant``): inside the grant's fence the grant is read again (it exists, names
+    this peer, is live and unexpired, has this revision) and ended there by the cascade a revoke
+    uses. This verb therefore has no "second check before the answer": after the commit there
+    is no grant left to check, and the answer carries nothing a check could protect.
+
+    * ``{}``: the grant was ended by THIS call. Nothing else is ever answered ``ok``.
+    * ``no_grant``: every refusal, byte for byte the answer to an unknown id (another peer's
+      grant, an ended or expired one, a stale revision, a grant that changed while this waited
+      for the fence, and a repeat of a leave that already ended it). Nothing was written.
+    * ``busy``: the fence could not be had in time. Nothing was committed and nobody is told.
+      Only a call that passed the plain check (its own live grant) ever waits on a fence.
+
+    The write runs as the service's own task and this handler only waits for it: a channel
+    that closes under the call cancels the wait, never the write, and a committed end is
+    announced whether or not anybody was still waiting for the answer."""
+    fed, peer_id = channel.context
+    outcome = await asyncio.shield(
+        fed.own(_leave(fed, peer_id, args["grant_id"], args["revision"]))
+    )
+    if outcome != LEFT:
+        raise ch.VerbError(outcome)
+    return {}
+
+
 async def share_changed(channel: ch.Channel, args: dict) -> dict:
     """A hint from the owner that its list changed. It carries no data: this side asks again."""
     fed, peer_id = channel.context

@@ -449,7 +449,11 @@ test("the screen pane: head, banner, the frame with its columns intact and a mas
   expect(shape).toEqual({ rows: true, leaves: true, cells: true, celled: [MASK], plain: true });
   // A masked run is shown as it is, and the pane offers nothing to reveal or copy it.
   await expect(text).toContainText(`API_TOKEN=${MASK.repeat(8)}`);
-  await expect(pane.locator("button, a, input, textarea, select, [contenteditable], [role=button]")).toHaveCount(0);
+  // Its one control is Leave in the banner (#2201): it gives the share up and touches no screen.
+  const controls = pane.locator("button, a, input, textarea, select, [contenteditable], [role=button]");
+  await expect(controls).toHaveCount(1);
+  await expect(controls).toHaveText("Leave");
+  await expect(pane.getByTestId("remote-banner").getByTestId("share-leave")).toHaveCount(1);
   await expect(pane.locator("[title*=reveal i], [title*=copy i], [aria-label*=reveal i], [aria-label*=copy i]")).toHaveCount(0);
 
   // The block is exactly `cols` characters wide, monospace, and the columns line up.
@@ -525,8 +529,9 @@ test("a wide frame scrolls inside its own block at 390 px; the page does not ove
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width + 0.5);
   }
-  // Nothing to tap in the pane; the row that leads to it is a 44 px target.
-  await expect(pane.locator("button, a")).toHaveCount(0);
+  // Nothing to tap in the pane but Leave in its banner (#2201), a 44 px target.
+  await expect(pane.locator("button, a")).toHaveCount(1);
+  await controlsAtLeast44(pane.getByTestId("remote-banner"));
 });
 
 // =================================================================================================

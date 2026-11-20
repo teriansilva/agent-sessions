@@ -1174,6 +1174,14 @@ export const api = {
       `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggestions/${enc(suggestionId)}/withdraw`,
     ),
   /** What became of one message this browser submitted, by its retry key: a read, no text. */
+  /** Leave ONE share a peer makes with this instance (#2201). Sent once by the server; only a
+   *  200 proves the share ended. `revision` is the one the list showed when Leave was pressed. */
+  federationRemoteLeave: (peerId: string, grantId: string, revision: number) =>
+    mutateJson<{ left: boolean }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/leave`,
+      { revision },
+    ),
   federationRemoteOperation: (peerId: string, grantId: string, clientKey: string, signal?: AbortSignal) =>
     getJsonWithDetail<OperationStatus>(
       `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/operations/${enc(clientKey)}`,

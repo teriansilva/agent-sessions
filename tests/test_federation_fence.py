@@ -744,7 +744,7 @@ def test_every_grant_write_in_the_store_goes_through_the_fenced_helper():
     assert holders == {"_with_fences"}
     enders = {name for name, node in methods.items() if calls(node, "_end_grants")}
     assert enders == {"revoke", "create_grant", "revoke_grant", "end_grants_for_session",
-                      "expire_due"}  # fmt: skip
+                      "expire_due", "leave_grant"}  # fmt: skip
     writers = {
         name
         for name, node in methods.items()

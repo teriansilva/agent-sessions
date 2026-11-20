@@ -103,6 +103,8 @@ PAIRING_STATES = ("dialing", "confirm", "done", "denied", "failed", "expired")
 #: Checks of a shared session's bell row (after the owner's hint) in flight at once; a hint
 #: past it is dropped. A hint is only ever "read sooner".
 HINT_CHECKS_MAX = 64
+#: Shares this instance left that a late list refresh must not bring back (`left_remote`).
+LEFT_MAX = 1024
 #: `send` grants whose session the round looks at for pending requests, per round.
 DECISION_WATCH_MAX = 32
 UNPROVEN = (
@@ -484,6 +486,8 @@ class Federation:
         self._refreshed_at: dict[str, float] = {}
         # Working together (#2059). Which peers have a shared session open: in memory only.
         self.watching = presence.Watching()
+        #: Shares this instance left, by the owner's own answer (`left_remote`).
+        self._left: dict[tuple[str, str], None] = {}
         #: Checks of a remote session's bell row in flight, and those asked for again meanwhile.
         self._checking: set[tuple[str, str, str]] = set()
         self._check_again: set[tuple[str, str, str]] = set()
@@ -594,6 +598,13 @@ class Federation:
             coro.close()
             return
         self._spawn(coro)
+
+    def own(self, coro) -> asyncio.Task:
+        """Run ``coro`` as the service's own task and return it, for a write its caller only
+        WAITS for (shielded): the caller is often a verb handler the channel cancels when it
+        closes, and the write must not be cut in half by that (as a trust write, `_start_commit`;
+        a peer's leave, #2201)."""
+        return self._spawn(coro)
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -1325,6 +1336,21 @@ class Federation:
         self.background(asyncio.to_thread(inbox.refreshed, self, peer_id, before, entries))
         for grant_id in inbox.newly_answerable(before, entries):
             self.peer_hint(peer_id, grant_id, inbox.DECISION)
+
+    def left_remote(self, peer_id: str, grant_id: str) -> None:
+        """The owner answered that this instance left that share (#2201). This mark is for the
+        BELL and nothing else: `inbox.refreshed` says neither "stopped sharing" nor "shared
+        with you" about a grant this instance left itself. It hides nothing from any list: what
+        keeps the row out of the mirror is the store (`Store.drop_remote` / `swap_remote`).
+        In memory and bounded; a restart needs none, because the notices it guards are
+        computed by this process's own refreshes."""
+        self._left.pop((peer_id, grant_id), None)
+        self._left[(peer_id, grant_id)] = None
+        while len(self._left) > LEFT_MAX:
+            self._left.pop(next(iter(self._left)))
+
+    def has_left(self, peer_id: str, grant_id: str) -> bool:
+        return (peer_id, grant_id) in self._left
 
     def refused_remote(self, peer_id: str, grant_id: str) -> None:
         """The owner refused a read of one grant: its rows on this instance's bell go."""

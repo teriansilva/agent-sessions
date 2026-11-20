@@ -43,6 +43,17 @@ checks its grant for that call):
 * ``GET    /api/federation/remote/{peer_id}/{grant_id}/frame?have=&wait=`` — a shared TERMINAL
   session's current screen as a redacted text frame (#2056)
 
+Leaving a share (#2201): the receiving instance gives up ONE session a peer shares with it, of
+either kind and any level. The share ends on the owner, as its own Revoke would end it:
+
+* ``POST   /api/federation/remote/{peer_id}/{grant_id}/leave`` — ``{revision?}``: the revision
+  the operator was shown (absent: the mirrored one). A write sent ONCE. Only ``200`` proves the
+  share ended: then this instance drops its row and its bell rows for that grant. ``404
+  no_grant`` proves nothing (a stale revision answers it while the share is live): the rows
+  stay and the owner's list is read again in the background, never the write. ``503
+  peer_offline`` (it never left), ``429 busy`` (the owner committed nothing), ``504 peer_lost``
+  / ``timeout`` (not known) keep the rows too. Nothing is ever hidden locally
+
 Writing to a session a peer shares (#2057; the owner decides on every call, whatever the mirror
 says). ``client_key`` is the browser's retry key, a UUID, passed through unchanged and never
 minted here:
@@ -106,7 +117,7 @@ working-together write read what it changed: the snapshot's ``decisions``, the n
 A refusal by the owner to a READ is re-resolved once (the mirror is refreshed and the call
 repeated under the current revision); a grant that is still refused, or no longer listed,
 answers ``404``. A refused WRITE is never repeated: it answers ``404`` at once and the mirror
-is refreshed in the background. The writes: suggest, turns,
+is refreshed in the background. The writes: leave (#2201), suggest, turns,
 withdraw, and of working together the access request and its withdrawal (#2062), the decision
 answer, a note's add, edit, delete and read mark, and Continue here's create (pinned to its
 handle's revision). The reads:
@@ -937,6 +948,26 @@ def register(app: FastAPI, *, federation: Federation, logged_in, csrf_guard) -> 
                 check=remote.check_suggestion,
                 retry=False,  # a refused write is answered as it is, never repeated
             )
+
+        return await guarded(run)()
+
+    @app.post(
+        f"{PREFIX}/remote/{{peer_id}}/{{grant_id}}/leave",
+        dependencies=[Depends(logged_in), Depends(csrf_guard)],
+    )
+    async def federation_remote_leave(
+        peer_id: str, grant_id: str, request: Request
+    ) -> JSONResponse:
+        async def run() -> dict:
+            _remote_ids(peer_id, grant_id)
+            body = await _body(request)
+            _only(body, "revision")
+            revision = body.get("revision")
+            if revision is not None and not grants.valid_revision(revision):
+                raise FederationError("invalid", "revision must be the share's listed revision")
+            # It narrows: this instance gives up one share (#2201). Sent once; only the owner's
+            # `ok` removes anything here (`remote.leave`).
+            return await remote.leave(federation, peer_id, grant_id, revision)
 
         return await guarded(run)()
 

@@ -489,7 +489,7 @@ async def test_a_refresh_stores_nothing_without_a_channel_a_trusted_peer_or_a_wo
         raise store.StoreError("disk full")
 
     with monkeypatch.context() as m:
-        m.setattr(r.fed.store, "replace_remote", broken)
+        m.setattr(r.fed.store, "swap_remote", broken)
         r.script(page([entry(1)]))
         assert await remote.refresh(r.fed, r.peer.peer_id) is False
     assert r.unchanged()

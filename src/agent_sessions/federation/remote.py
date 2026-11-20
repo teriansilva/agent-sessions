@@ -31,7 +31,7 @@ import unicodedata
 from .. import chat_store, engines, scrollback
 from ..plugins import kinds
 from . import channel as ch
-from . import frames, grants, identity, offers, sharing, store
+from . import frames, grants, identity, notices, offers, sharing, store
 
 log = logging.getLogger(__name__)
 
@@ -283,18 +283,31 @@ async def refresh(fed, peer_id: str) -> bool:
                 channel = fed.channel_for(peer_id)
                 if channel is None:
                     return False
+                # Read BEFORE the owner is asked (#2201): a leave this instance confirms from
+                # here on moves it, and the write below then refuses this list.
+                epoch = await asyncio.to_thread(fed.store.remote_epoch, peer_id)
                 try:
                     entries = await _collect(channel)
                 except _Torn:
                     continue  # the owner's list moved between pages: read it again
-                before = await asyncio.to_thread(fed.store.list_remote, peer_id)
-                replaced = await asyncio.to_thread(fed.store.replace_remote, peer_id, entries)
-                if replaced:
-                    # A COMPLETE refresh, and only one: what is new is announced, and the bell
-                    # rows of a grant the list no longer has are retracted (#2059). Every
-                    # failure path below returns without reaching this.
-                    fed.refreshed_remote(peer_id, before, entries)
-                return replaced
+                try:
+                    # The order is decided INSIDE the store's write transaction, in the thread
+                    # that writes: never here on the loop before the write is handed over.
+                    before = await asyncio.to_thread(
+                        fed.store.swap_remote, peer_id, entries, epoch=epoch
+                    )
+                except store.StaleMirror:
+                    # A share was left while this list was on its way: it may still name that
+                    # grant. Nothing was written; the owner's list is read again.
+                    continue
+                if before is None:
+                    return False
+                # A COMPLETE refresh, and only one: what is new is announced, and the bell
+                # rows of a grant the list no longer has are retracted (#2059), judged against
+                # the rows this very write replaced. Every failure path returns without
+                # reaching this.
+                fed.refreshed_remote(peer_id, before, entries)
+                return True
             log.info("federation: a peer's list kept changing; the mirror is unchanged")
             return False
     except Invalid as exc:
@@ -769,13 +782,15 @@ async def read(
     *,
     check,
     timeout: float = ch.CALL_TIMEOUT_S,
-    kind: str = grants.KIND_API,
+    kind: str | None = grants.KIND_API,
     retry: bool = True,
     revision: int | None = None,
 ) -> dict:
     """Call ``verb`` for a mirrored grant on its owner's live channel and return the validated
     answer. ``kind`` is what the verb reads: a mirrored grant of the other kind is ``no_grant``
-    here, without a call (the owner would refuse it the same way). Raises :class:`ReadError`:
+    here, without a call (the owner would refuse it the same way). ``None`` is for the one verb
+    that reads no session and serves a grant of any kind (``share.leave``, #2201).
+    Raises :class:`ReadError`:
     ``no_grant`` (not shared, or the owner refused),
     ``peer_offline`` (no channel), ``bad_answer`` (the answer was refused here), or the call's own
     code.
@@ -832,7 +847,7 @@ async def read_bound(
     *,
     check,
     timeout: float = ch.CALL_TIMEOUT_S,
-    kind: str = grants.KIND_API,
+    kind: str | None = grants.KIND_API,
     retry: bool = True,
     revision: int | None = None,
 ) -> tuple[dict, int]:
@@ -843,7 +858,7 @@ async def read_bound(
         raise ValueError("a call pinned to a revision is never re-resolved: pass retry=False")
     row = await asyncio.to_thread(fed.store.get_remote, peer_id, grant_id)
     peer = await asyncio.to_thread(fed.store.get, peer_id)
-    if row is None or peer is None or not peer.trusted or row.kind != kind:
+    if row is None or peer is None or not peer.trusted or kind not in (None, row.kind):
         raise ReadError(sharing.NO_GRANT)
     channel = fed.channel_for(peer_id)
     if channel is None:
@@ -879,3 +894,73 @@ async def read_bound(
     except Invalid as exc:
         log.warning("federation: a peer's %s answer was refused (%s)", verb, exc)
         raise ReadError("bad_answer") from None
+
+
+# ── leaving a share (#2201) ───────────────────────────────────────────
+#: The owner did not carry the request out because it does not know it (a build before
+#: ``share.leave``): its channel refused the call before any handler ran.
+NOT_POSSIBLE = "not_possible"
+
+
+def _left(doc: dict) -> dict:
+    """A ``share.leave`` answer. That the owner answered ``ok`` at all is the whole statement;
+    nothing in the answer is read, kept or passed on."""
+    return {}
+
+
+def _forget(fed, peer_id: str, grant_id: str) -> None:
+    """This instance left that share: its mirror row goes, THEN its bell rows. Blocking. The
+    order matters: whoever posts a row about a grant looks at the mirror (or the left mark)
+    afterwards and takes the row back when the share is gone, so a row posted before this
+    retraction is retracted here and one posted after it retracts itself."""
+    fed.store.drop_remote(peer_id, grant_id)
+    notices.retract_remote(peer_id, grant_id)
+
+
+async def leave(fed, peer_id: str, grant_id: str, revision: int | None = None) -> dict:
+    """Give up ONE share a peer makes with this instance (``share.leave``, #2201), of any kind
+    and any level. A write, sent ONCE (``retry=False``) under the mirrored revision, or under
+    ``revision`` when the caller names the one it was shown; never repeated here.
+
+    **Only ``ok`` proves the share ended.** Then, and only then, this instance drops its mirror
+    row and retracts its bell rows about that grant. The drop moves the peer's mirror epoch in
+    the same transaction (``Store.drop_remote``), so a list some refresh read before it is
+    refused at the write (``Store.swap_remote``): the row stays out for every reader, whether
+    or not the owner can be reached again, and across a restart. No repair refresh is needed
+    and none is started.
+
+    **Everything else keeps both rows** and raises :class:`ReadError`:
+
+    * ``no_grant``: a refusal proves nothing. A stale revision answers it while the share is
+      still live. The owner's complete list is read again in the background WITHOUT replaying
+      the write (``read_bound``'s refused-write path), and the row goes only when a complete
+      refresh no longer lists it; a refresh that fails keeps it.
+    * ``peer_offline``: the request provably never left. Nothing changed anywhere.
+    * ``busy`` (the owner's fence), ``peer_lost`` / ``timeout`` (the answer was lost, the share
+      may or may not have ended) and anything else: the rows stay, and the owner's list is
+      read again in the background so the mirror follows what the owner says.
+    * ``not_possible``: an owner on a build before this verb refused the call unseen."""
+    try:
+        await read(
+            fed,
+            peer_id,
+            grant_id,
+            "share.leave",
+            {},
+            check=_left,
+            kind=None,  # any kind: leaving reads no session
+            retry=False,  # a refused write is returned as it is, never repeated
+            revision=revision,
+        )
+    except ReadError as exc:
+        if exc.code == "refused":
+            raise ReadError(NOT_POSSIBLE) from None
+        if exc.code not in (sharing.NO_GRANT, "peer_offline"):
+            # (`no_grant` already asked for this refresh; offline has nobody to ask.)
+            fed.refresh_remote(peer_id)
+        raise
+    # For the BELL only, and before anything is awaited: a notice a refresh computed around
+    # this moment says nothing about a share this instance left itself (`inbox.refreshed`).
+    fed.left_remote(peer_id, grant_id)
+    await asyncio.to_thread(_forget, fed, peer_id, grant_id)
+    return {"left": True}

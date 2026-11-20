@@ -1148,6 +1148,8 @@ EVENT_REASON = {
     "peer_shared": "A paired instance shared a session with you",
     "peer_share_changed": "A paired instance changed what it shares with you",
     "peer_share_ended": "A paired instance stopped sharing a session",
+    # #2201, the OWNER's row: the instance a session was shared with gave the share up.
+    "peer_share_left": "A paired instance left a share",
     "peer_access_request": "A paired instance asks for more access",
     "peer_decision": "A shared session waits for a decision you may give",
     "peer_note": "A new note on a shared session",

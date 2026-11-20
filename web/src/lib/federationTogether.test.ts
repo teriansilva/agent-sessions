@@ -201,6 +201,8 @@ describe("asking for access", () => {
       what: "note",
       grantId: G1,
     });
+    // #2201, the owner's row: a peer gave a share up (it links to the owner's own session)
+    expect(peerNotice({ action_id: `peer-left:${G1}` })).toEqual({ kind: "left", label: "Share ended" });
     expect(peerNotice({ action_id: "automation:x:1" })).toBeNull();
   });
 });

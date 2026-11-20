@@ -272,12 +272,15 @@ export const accessReviewHint = (level: "suggest" | "send") =>
  *  question or a suggested text. */
 export const PEER_ACCESS_ACTION = "peer-access:";
 export const PEER_NOTE_ACTION = "peer-note:";
+/** The owner's row when a peer gave a share up (#2201): `<peer> left a share` and the title. */
+export const PEER_LEFT_ACTION = "peer-left:";
 const REMOTE_ACTION_RE = /^peer-remote-([a-z]{1,16}):([a-z2-7]{32}):([A-Za-z0-9_-]{16,64})$/;
 /** The query that opens a thread: the owner's pane reads the grant id, the peer's pane any value. */
 export const NOTES_QUERY = "notes";
 
 export type PeerNotice =
   | { kind: "access"; label: string }
+  | { kind: "left"; label: string }
   | { kind: "note"; label: string; grantId: string }
   | { kind: "remote"; label: string; what: string; peerId: string; grantId: string };
 
@@ -285,6 +288,7 @@ export type PeerNotice =
 export function peerNotice(n: { action_id?: string | null }): PeerNotice | null {
   const id = n.action_id ?? "";
   if (id.startsWith(PEER_ACCESS_ACTION)) return { kind: "access", label: "Access request" };
+  if (id.startsWith(PEER_LEFT_ACTION)) return { kind: "left", label: "Share ended" };
   if (id.startsWith(PEER_NOTE_ACTION)) {
     const grantId = id.slice(PEER_NOTE_ACTION.length);
     return ID_RE.test(grantId) ? { kind: "note", label: "Note", grantId } : null;

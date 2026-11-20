@@ -156,6 +156,10 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Leave (#2201): one plain button beside who shares the session and until when. */
+.leave {
+  flex: none;
+}
 .state {
   margin-left: auto;
   display: inline-flex;

@@ -10,7 +10,10 @@ here from a fixed sentence and the peer's name; every reason is a fixed
 
 * ``peer-suggestion:<suggestion id>``: a pending suggestion (#2057);
 * ``peer-access:<request id>``: a pending access request;
-* ``peer-note:<grant id>``: a peer's note the operator has not read. One row per thread.
+* ``peer-note:<grant id>``: a peer's note the operator has not read. One row per thread;
+* ``peer-left:<grant id>``: the peer gave a share up (``share.leave``, #2201). Raised once, for
+  a committed end by the peer and for nothing else; it states a fact, so nothing retracts it
+  (the operator reads or dismisses it).
 
 **The receiver's rows** (another instance shares the session; the action id names the peer and
 the grant, and the link is the remote pane): ``peer-remote-share:…`` (a session was shared, or
@@ -44,6 +47,7 @@ log = logging.getLogger(__name__)
 ACTION_PREFIX = "peer-suggestion:"
 ACCESS_PREFIX = "peer-access:"
 NOTE_PREFIX = "peer-note:"
+LEFT_PREFIX = "peer-left:"
 REMOTE_PREFIX = "peer-remote-"
 REMOTE_KINDS = ("share", "ended", "decision", "note")
 UNNAMED_PEER = "A paired instance"
@@ -64,6 +68,10 @@ def access_key(request_id: str) -> str:
 
 def note_key(grant_id: str) -> str:
     return f"{NOTE_PREFIX}{grant_id}"
+
+
+def left_key(grant_id: str) -> str:
+    return f"{LEFT_PREFIX}{grant_id}"
 
 
 def remote_key(kind: str, peer_id: str, grant_id: str) -> str:
@@ -190,6 +198,26 @@ def announce_note(st: store.Store, grant: store.Grant) -> None:
             )
     except Exception:  # noqa: BLE001 — the bell is another store
         log.warning("federation: a note's notification failed", exc_info=True)
+    retract(st)
+
+
+def announce_left(st: store.Store, grant: store.Grant) -> None:
+    """One bell row and one push: the peer gave up a share (#2201). ``grant`` is the grant as
+    the fenced transaction ended it (``Store.leave_grant``), so this is only ever called for a
+    COMMITTED end by the peer: never for a repeat, a refusal or a busy fence. The peer's name
+    and the session's title, nothing else. What hung on the grant (a pending suggestion, an
+    access request, a note row) is retracted as after every other end."""
+    try:
+        _post(
+            key=left_key(grant.grant_id),
+            title=f"{_peer_name(st, grant.peer_id)} left a share",
+            project=_session_title(grant.session_key),
+            session_id=grant.session_key,
+            engine=grant.session_key.partition(":")[0],
+            reason="peer_share_left",
+        )
+    except Exception:  # noqa: BLE001 — the bell is another store
+        log.warning("federation: a left share's notification failed", exc_info=True)
     retract(st)
 
 

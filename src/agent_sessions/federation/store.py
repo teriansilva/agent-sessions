@@ -11,7 +11,8 @@
   revoke ends them in the same transaction; later phases add notes the same way.
 * **Grants** (``grants``, ``grant_events``): what this instance shares with a peer. A grant is
   ``live`` until it is revoked or expires; ``end_reason`` says why (``revoked``, ``expired``,
-  ``peer_revoked``, ``archived``). ``grant_events`` is append-only (triggers refuse an update or a
+  ``peer_revoked``, ``archived``, and ``peer_left`` when the peer itself gave the grant up,
+  #2201). ``grant_events`` is append-only (triggers refuse an update or a
   delete) and ``meta.generation`` moves with every grant change, in the same transaction.
 * **The mirror** (``remote_shares``): what a peer says it shares with this instance. A cache for
   listing, replaced per peer in one transaction; never a session row, never read by local code
@@ -73,6 +74,9 @@ KIND_TERMINAL = "terminal"
 GRANT_KINDS = (KIND_API, KIND_TERMINAL)
 GRANT_EVENTS = ("granted", "changed", "revoked", "expired", "peer_revoked", "archived")
 GRANT_ACTORS = ("operator", "system")
+#: A grant's ``end_reason`` when the PEER gave it up (``share.leave``, #2201). The column is free
+#: text; the event row beside it is ``revoked`` (the closed list above gains nothing).
+END_PEER_LEFT = "peer_left"
 PRINCIPAL_PEER = "peer:"
 #: What a level includes. A level this build does not know ranks below every known one.
 LEVEL_RANK = {"view": 0, "suggest": 1, "send": 2}
@@ -383,6 +387,14 @@ class Busy(StoreError):
 
     def __init__(self, message: str = "a delivery under this grant is in flight — try again"):
         super().__init__(message, status=503)
+
+
+class StaleMirror(StoreError):
+    """A peer's list was read before a leave this instance has since confirmed (#2201): nothing
+    of it was written."""
+
+    def __init__(self) -> None:
+        super().__init__("the list was read before a share was left; read it again", status=409)
 
 
 class NotGranted(StoreError):
@@ -1083,10 +1095,12 @@ class Store:
         reason: str,
         actor: str,
         now: float,
+        event: str | None = None,
     ) -> list[Grant]:
         """End every LIVE grant matching ``where`` inside the caller's transaction: the row, its
         event and the generation move together. ``where`` is a fixed fragment written in this
-        module, never input. Returns the grants as they were."""
+        module, never input. Returns the grants as they were. ``event`` is the audit row's name
+        when it is not the reason itself (``grant_events`` holds a closed list of names)."""
         rows = con.execute(
             f"SELECT * FROM grants WHERE state = 'live' AND {where}",  # noqa: S608 — fixed fragments
             params,
@@ -1098,7 +1112,7 @@ class Store:
                 " WHERE grant_id = ? AND state = 'live'",
                 (state, now, reason, row["grant_id"]),
             )
-            self._event(con, row["grant_id"], reason, actor, now)
+            self._event(con, row["grant_id"], event or reason, actor, now)
             # The same transaction: what the peer proposed under this grant and nobody decided
             # is withdrawn with it. (An ``approving`` row is settled by its replay, which
             # re-checks the grant inside the fence and withdraws: ``inputs.resume_approving``.)
@@ -1289,6 +1303,47 @@ class Store:
 
         return _grant(self._with_fences(lambda con: self._known(con, grant_id), work, wait=wait))
 
+    def leave_grant(
+        self,
+        grant_id: str,
+        *,
+        peer_id: str,
+        revision: int,
+        clock=time.time,
+        wait: float | None = None,
+    ) -> Grant:
+        """THE PEER gives up a grant it holds (#2201). The check and the end are ONE step:
+        inside the grant's fence and inside one transaction the grant is read again (it exists,
+        names ``peer_id``, is live and not expired on this clock, and still has ``revision``;
+        the peer is still trusted), and only then is it ended, by the cascade every other end
+        uses (:meth:`_end_grants`), with ``end_reason`` ``peer_left``. Any kind and any level:
+        giving a grant up only narrows.
+
+        Whatever does not hold raises :class:`NotGranted` and nothing is written: also for a
+        grant that was changed, revoked or expired while this waited for the fence. A fence
+        that cannot be had raises :class:`Busy`: nothing was committed. Returns the grant as it
+        was. The clock is read INSIDE the fence, after the wait.
+
+        The audit row is ``revoked`` by ``system``: ``grant_events`` holds a closed list of
+        names and actors (schema 2) and this adds none; who ended the grant is the grant row's
+        ``end_reason``."""
+
+        def work(con: sqlite3.Connection) -> Grant:
+            now = clock()
+            self._holding(con, grant_id, peer_id, now, revision)
+            (ended,) = self._end_grants(
+                con,
+                "grant_id = ?",
+                (grant_id,),
+                reason=END_PEER_LEFT,
+                event="revoked",
+                actor="system",
+                now=now,
+            )
+            return ended
+
+        return self._with_fences(lambda con: self._known(con, grant_id), work, wait=wait)
+
     def end_grants_for_session(
         self, session_key: str, *, now: float | None = None, wait: float | None = None
     ) -> list[Grant]:
@@ -1437,6 +1492,29 @@ class Store:
 
     # ── input from a peer (#2057) ─────────────────────────────────────
     @staticmethod
+    def _holding(
+        con: sqlite3.Connection,
+        grant_id: str,
+        peer_id: str,
+        now: float,
+        revision: int | None = None,
+    ) -> sqlite3.Row:
+        """The grant row, when ``peer_id`` holds it right now: the peer is trusted, the grant
+        exists and names it, is live and not expired, and (when given) still has ``revision``.
+        Of any kind and any level. Inside the caller's transaction."""
+        row = con.execute("SELECT * FROM grants WHERE grant_id = ?", (grant_id,)).fetchone()
+        peer = con.execute("SELECT state FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
+        if peer is None or peer["state"] != "trusted":
+            raise NotGranted("peer not trusted")
+        if row is None or row["principal"] != principal_of(peer_id):
+            raise NotGranted("unknown grant")
+        if row["state"] != "live" or row["expires_at"] <= now:
+            raise NotGranted("grant ended")
+        if revision is not None and row["revision"] != revision:
+            raise NotGranted("stale revision")
+        return row
+
+    @staticmethod
     def _serving(
         con: sqlite3.Connection,
         grant_id: str,
@@ -1448,16 +1526,7 @@ class Store:
         """The grant row, when it serves ``peer_id`` at ``need`` right now. Inside the caller's
         transaction, so the answer and the write that follows are one step. Input from a peer
         is for API sessions only: a terminal grant (view only, #2056) never serves here."""
-        row = con.execute("SELECT * FROM grants WHERE grant_id = ?", (grant_id,)).fetchone()
-        peer = con.execute("SELECT state FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
-        if peer is None or peer["state"] != "trusted":
-            raise NotGranted("peer not trusted")
-        if row is None or row["principal"] != principal_of(peer_id):
-            raise NotGranted("unknown grant")
-        if row["state"] != "live" or row["expires_at"] <= now:
-            raise NotGranted("grant ended")
-        if revision is not None and row["revision"] != revision:
-            raise NotGranted("stale revision")
+        row = Store._holding(con, grant_id, peer_id, now, revision)
         if row["kind"] != KIND_API:
             raise NotGranted(f"a {row['kind']} grant takes no input")
         if not level_includes(row["level"], need):
@@ -2648,36 +2717,107 @@ class Store:
         return gone
 
     # ── the mirror (receiving side) ───────────────────────────────────
+    @staticmethod
+    def _epoch_key(peer_id: str) -> str:
+        return f"remote_epoch:{peer_id}"
+
+    def remote_epoch(self, peer_id: str) -> int:
+        """How many confirmed leaves this instance has recorded for ``peer_id``'s mirror
+        (:meth:`drop_remote`). A refresh reads it BEFORE it asks the owner for its list and
+        hands it to :meth:`swap_remote`, which refuses a list read before a leave. Durable (a
+        ``meta`` row), so the order holds across processes and restarts."""
+        if not self.db_path.exists():
+            return 0  # never used: reading creates nothing
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT value FROM meta WHERE key = ?", (self._epoch_key(peer_id),)
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _replace_rows(con: sqlite3.Connection, peer_id: str, rows: list[dict], now: float) -> None:
+        con.execute("DELETE FROM remote_shares WHERE peer_id = ?", (peer_id,))
+        con.executemany(
+            "INSERT INTO remote_shares (peer_id, grant_id, engine, native_id, title, level,"
+            " expires_at, revision, seen_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    peer_id,
+                    r["grant_id"],
+                    r["engine"],
+                    r["native_id"],
+                    r["title"],
+                    r["level"],
+                    r["expires_at"],
+                    r["revision"],
+                    now,
+                    r["kind"],
+                )
+                for r in rows
+            ],
+        )
+
     def replace_remote(self, peer_id: str, rows: list[dict], *, now: float | None = None) -> bool:
         """Replace everything ``peer_id`` shares with this instance, in ONE transaction. Refused
         (``False``, nothing changed) for a peer that is not trusted any more: its rows already
-        left with the revoke."""
+        left with the revoke. Unconditional: a list READ FROM THE OWNER goes through
+        :meth:`swap_remote`, which orders it against a confirmed leave."""
         now = time.time() if now is None else now
         with self._write() as con:
             peer = con.execute("SELECT state FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
             if peer is None or peer["state"] != "trusted":
                 return False
-            con.execute("DELETE FROM remote_shares WHERE peer_id = ?", (peer_id,))
-            con.executemany(
-                "INSERT INTO remote_shares (peer_id, grant_id, engine, native_id, title, level,"
-                " expires_at, revision, seen_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        peer_id,
-                        r["grant_id"],
-                        r["engine"],
-                        r["native_id"],
-                        r["title"],
-                        r["level"],
-                        r["expires_at"],
-                        r["revision"],
-                        now,
-                        r["kind"],
-                    )
-                    for r in rows
-                ],
-            )
+            self._replace_rows(con, peer_id, rows, now)
         return True
+
+    def swap_remote(
+        self, peer_id: str, rows: list[dict], *, epoch: int, now: float | None = None
+    ) -> list[RemoteShare] | None:
+        """:meth:`replace_remote` for a list a refresh read from the owner, ORDERED against a
+        confirmed leave (#2201). ``epoch`` is :meth:`remote_epoch` as the refresh read it before
+        it asked the owner. Inside the one write transaction:
+
+        * the epoch moved (a leave was confirmed since): the list may have been read before the
+          owner ended that grant, so NOTHING of it is written and :class:`StaleMirror` is
+          raised. Not the left grant alone: a list from before the leave is refused whole, as
+          every failed refresh is, and the caller reads the owner's list again;
+        * the peer is not trusted any more: ``None``, nothing changed;
+        * otherwise the rows are replaced, and the rows AS THEY WERE in this same transaction
+          are returned: what is announced as new or ended is judged against exactly what was
+          replaced, never against a read made beside the write."""
+        now = time.time() if now is None else now
+        with self._write() as con:
+            peer = con.execute("SELECT state FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            if peer is None or peer["state"] != "trusted":
+                return None
+            held = con.execute(
+                "SELECT value FROM meta WHERE key = ?", (self._epoch_key(peer_id),)
+            ).fetchone()
+            if (int(held[0]) if held else 0) != epoch:
+                raise StaleMirror()
+            before = con.execute(
+                "SELECT * FROM remote_shares WHERE peer_id = ? ORDER BY grant_id", (peer_id,)
+            ).fetchall()
+            self._replace_rows(con, peer_id, rows, now)
+        return [_remote(r) for r in before]
+
+    def drop_remote(self, peer_id: str, grant_id: str) -> bool:
+        """Remove ONE mirrored row: the owner answered that this instance left that share
+        (#2201). The same transaction moves the peer's mirror epoch, also when no row was
+        there, so a list a refresh read before this can never be written after it
+        (:meth:`swap_remote`). Nothing else calls it: a row otherwise leaves only with a
+        complete refresh or with its peer's revoke."""
+        with self._write() as con:
+            cur = con.execute(
+                "DELETE FROM remote_shares WHERE peer_id = ? AND grant_id = ?",
+                (peer_id, grant_id),
+            )
+            con.execute(
+                "INSERT INTO meta (key, value) VALUES (?, 1)"
+                " ON CONFLICT(key) DO UPDATE SET value = value + 1",
+                (self._epoch_key(peer_id),),
+            )
+            return cur.rowcount > 0
 
     def list_remote(self, peer_id: str | None = None) -> list[RemoteShare]:
         if not self.db_path.exists():

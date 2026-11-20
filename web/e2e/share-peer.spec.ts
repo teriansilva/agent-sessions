@@ -452,9 +452,11 @@ test("a remote row opens the read-only pane: no composer, no session actions", a
   );
   // Nothing to type into and no session action: this is not the local pane. Its only buttons are
   // the working-together ones (#2062): the ⋯ menu (Continue here, Notes, Ask for access) and Ask
-  // for access in the view-only foot. None of them archives, renames, tags or moves anything.
+  // for access in the view-only foot; and Leave in the banner (#2201), which gives this share up.
+  // None of them archives, renames, tags or moves anything.
   await expect(pane.locator("textarea, input, [contenteditable='true']")).toHaveCount(0);
-  await expect(pane.getByRole("button")).toHaveCount(2);
+  await expect(pane.getByRole("button")).toHaveCount(3);
+  await expect(pane.getByTestId("remote-banner").getByRole("button")).toHaveText("Leave");
   await expect(pane.getByTestId("remote-menu")).toBeVisible();
   await expect(pane.getByTestId("remote-access-ask")).toHaveText(/Ask for access/i);
   await expect(page.getByTestId("structured-pane")).toHaveCount(0);
@@ -1048,10 +1050,12 @@ test("Settings → Peers lists, per peer, what is shared with it and what it sha
   await expect(received.nth(0)).toContainText("Tune the render queue");
   await expect(received.nth(0)).toContainText(/view/i);
   await expect(received.nth(0)).toContainText(`until ${date(NOW() + 7 * DAY)}`);
-  // Read-only: nothing to press, and the line that says who decides.
-  await expect(inbound.getByRole("button")).toHaveCount(0);
+  // One thing to press per share, Leave (#2201; its journey is share-leave.spec.ts), and the
+  // line that says who decides the rest. Nothing here revokes, extends or changes a share.
+  await expect(inbound.getByRole("button")).toHaveCount(2);
+  await expect(inbound.getByRole("button", { name: /^Leave / })).toHaveCount(2);
   await expect(inbound.getByTestId("peer-shares-readonly")).toHaveText(
-    "Read-only here. gpu-box's operator decides how long it stays shared.",
+    "gpu-box's operator decides how long these stay shared. Leave ends one share on both instances.",
   );
   if (isMobile(page)) await controlsAtLeast44(gpu);
   await noHorizontalOverflow(page);

@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useReducer,
@@ -7,8 +8,10 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import { refreshRemoteShares, useRemoteShares } from "../../app/remoteShares";
 import { ApiError, api } from "../../lib/api";
+import { SESSIONS_PATH } from "../../lib/routes";
 import {
   REMOTE_GONE,
   REMOTE_RETRY_MS,
@@ -38,6 +41,8 @@ import {
 import { ScreenTag } from "./PeerBadge";
 import { RemoteFrame } from "./RemoteFrame";
 import styles from "./Remote.module.css";
+import { LeaveButton } from "./LeaveButton";
+import { useLeaveShare } from "./useLeaveShare";
 
 /** The server's `code` of a refused read (`{detail, code}`), when it sent one. */
 function refusal(e: unknown): { status: number; code: string | null } {
@@ -108,6 +113,10 @@ export function RemoteScreenPane({ peerId, grantId }: { peerId: string; grantId:
   const facts = known?.target === target ? known : null;
   const peer = facts?.peer || "the other instance";
   const title = facts?.title || "Shared terminal";
+  // Leave (#2201): the same action the conversation pane and Settings → Peers use. After a
+  // proven leave this view has nothing to show: the app goes to the session list.
+  const navigate = useNavigate();
+  const leaving = useLeaveShare(useCallback(() => navigate(SESSIONS_PATH), [navigate]));
 
   const { generation, startAfterMs } = state;
   // The state this generation starts from, for the loop below (read after commit, never in
@@ -187,6 +196,12 @@ export function RemoteScreenPane({ peerId, grantId }: { peerId: string; grantId:
     access: "screen only",
     tag: <ScreenTag />,
     word: badge.word,
+    leave: (
+      <>
+        {listed && <LeaveButton share={listed} onLeave={leaving.open} />}
+        {leaving.dialog}
+      </>
+    ),
   };
 
   if (gone) return <RemoteFrame {...common} empty={REMOTE_GONE} />;

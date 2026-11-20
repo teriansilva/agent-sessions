@@ -683,6 +683,9 @@ async def test_no_verb_extends_raises_or_recreates_a_grant(owner, submits):
         "note.read",
         "note.changed",
         "decision.changed",
+        # #2201: the peer gives a grant up. It ends one and can do nothing else
+        # (`test_federation_leave.py`); it is not called below.
+        "share.leave",
     }
     made = owner.grant("send")
     before = (owner.st.get_grant(made.grant_id), owner.st.generation())

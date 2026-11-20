@@ -2260,6 +2260,7 @@ def test_no_notice_can_carry_another_partys_text():
         "peer_shared",
         "peer_share_changed",
         "peer_share_ended",
+        "peer_share_left",  # #2201: the owner's row, a name and a title
         "peer_access_request",
         "peer_decision",
         "peer_note",

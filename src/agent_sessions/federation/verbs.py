@@ -15,6 +15,10 @@ Input (#2057, handlers in :mod:`inputs`): ``input.suggest``, ``input.suggestions
 operation id (the owner mints them) and **no verb changes a grant**: none extends, raises or
 re-creates one.
 
+``share.leave`` (#2201, handler in :mod:`sharing`): the receiving instance gives up ONE grant it
+holds. A grant reference and nothing else. It is the only verb that ends a grant, and it can do
+nothing but that: it extends, raises and re-creates nothing, and returns no session data.
+
 Working together (#2059, handlers in :mod:`together` and :mod:`notes`): ``access.request``,
 ``access.status`` and ``access.withdraw`` (a request is a record; it changes no grant),
 ``decision.answer`` (the peer
@@ -96,6 +100,13 @@ def _share_list_args(args: dict) -> dict:
 
 
 def _snapshot_args(args: dict) -> dict:
+    _only(args, "grant_id", "revision")
+    return _grant_ref(args)
+
+
+def _leave_args(args: dict) -> dict:
+    """``share.leave``: the grant and the revision the caller was told. Nothing else is
+    accepted: no reason, no session, no peer, no flag."""
     _only(args, "grant_id", "revision")
     return _grant_ref(args)
 
@@ -459,6 +470,9 @@ PEER = _table(
     ("session.events", _events_args, sharing.session_events),
     ("session.history", _history_args, sharing.session_history),
     ("share.changed", _no_args, sharing.share_changed),
+    # The RECEIVER gives up one grant it holds (#2201), answered by the OWNER. It only narrows:
+    # the check and the end are one fenced transaction (`grants.leave`).
+    ("share.leave", _leave_args, sharing.share_leave),
     # Input (#2057), answered by the OWNER. None of them changes a grant.
     ("input.suggest", _suggest_args, inputs.input_suggest),
     ("input.suggestions", _suggestions_args, inputs.input_suggestions),

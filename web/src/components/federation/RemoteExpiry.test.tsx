@@ -14,7 +14,11 @@ import { UNKNOWN_DATE, type RemoteShare } from "../../lib/federation";
 const shares = vi.hoisted(() => ({ list: [] as unknown[] }));
 vi.mock("../../app/remoteShares", () => ({
   useRemoteShares: () => shares.list,
-  refreshRemoteShares: () => Promise.resolve(),
+  refreshRemoteShares: () => Promise.resolve(true),
+  // The panes' Leave action (#2201) reads the list's status as well.
+  useRemoteSharesStatus: () => ({ loaded: true, attempts: 1 }),
+  remoteSharesNow: () => ({ rows: shares.list, loaded: true }),
+  proveLeft: () => Promise.resolve(true),
 }));
 const api = vi.hoisted(() => ({
   federationRemoteSnapshot: vi.fn(),

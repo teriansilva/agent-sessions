@@ -67,6 +67,13 @@ the session and a link. It never contains the suggested message: you read that o
 itself, where you approve or reject it. The entry goes away once you decide, the other side takes
 the suggestion back, or the share ends.
 
+## A paired instance left a share
+
+When an instance you shared a session with leaves that share, the bell gets one entry and your
+subscribed devices one push: its name as you named it, and the session's title. The share has
+already ended on both instances; you can share the session again. The entry stays until you read
+or dismiss it.
+
 ## Web push
 
 You can subscribe the browser for push, so an escalation reaches your phone with BattleLab closed.
