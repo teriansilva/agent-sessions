@@ -257,7 +257,12 @@ test("create, reorder, add rework, save, reload and give two steps different rol
 }) => {
   const { calls } = await setup(page);
   await page.goto(PLAYBOOKS_PATH);
-  await page.getByRole("link", { name: "New playbook", exact: true }).click();
+  // The head's primary link. On a phone the grid's "+ New playbook" tile hides its hint, so its
+  // accessible name is the same and an unscoped role query matches both.
+  await page
+    .getByRole("link", { name: "New playbook", exact: true })
+    .and(page.locator(":not([data-testid='library-new-tile'])"))
+    .click();
   await expect(
     page.getByRole("heading", { name: "New playbook", exact: true }),
   ).toBeVisible();
