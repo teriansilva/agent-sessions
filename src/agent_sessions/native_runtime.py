@@ -573,6 +573,33 @@ def _specialist_claim(record: dict, adapter: str):
     return claim
 
 
+#: `held["account"]` until the first generation's caller resolved it (None is the default login).
+_UNRESOLVED = object()
+
+
+def _account(binding, session_key: str, *, new: bool):
+    """The account this API session runs on (#2169): its SOURCE agent's pool and recipe, keyed by
+    the session's logical key only. ``new`` only where the session record is first written, so the
+    choice is fixed at Create; every generation reads it. None is the default login, which is also
+    what a session with no assignment (one created before this) gets. Refused rather than started
+    on another login (`docs/invariants/agent-accounts.md`). ``base_env={}``: the child's default
+    home is the vendor's own under its ``HOME``, never this app's environment."""
+    from . import agent_account_store
+
+    try:
+        return agent_account_store.for_launch(binding.source, [session_key], new=new, base_env={})
+    except agent_account_store.AccountRefused as exc:
+        raise NativeError(409, exc.detail) from None
+
+
+def _account_config(account) -> dict | None:
+    """What the worker needs to apply ``account``: the reviewed recipe's kind and the home's path.
+    Never anything read from the home."""
+    if account is None:
+        return None
+    return {"kind": account.recipe.kind, "home": str(account.home)}
+
+
 def _launch_locked(
     session_id: str,
     record: dict,
@@ -582,6 +609,7 @@ def _launch_locked(
     mode: str,
     claim=None,
     shelf_mission: str | None = None,
+    account=_UNRESOLVED,
 ) -> str:
     """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock.
     ``claim``: a specialist slot the caller already took for it; otherwise one is taken here when
@@ -591,10 +619,18 @@ def _launch_locked(
 
     ``shelf_mission`` (#1900): the mission a dispatch launches this FIRST generation for, before
     the session is on its roster. In memory only, never in the request, so a replay of the create
-    stays byte-identical; a later generation asks the session's current mission instead."""
+    stays byte-identical; a later generation asks the session's current mission instead.
+
+    ``account`` (#2169): the first generation's account, resolved by its caller before ownership
+    was reserved; a later generation resolves its own here."""
     from . import specialist_launch
 
-    held = {"claim": claim, "spawning": False, "shelf_mission": shelf_mission}
+    held = {
+        "claim": claim,
+        "spawning": False,
+        "shelf_mission": shelf_mission,
+        "account": account,
+    }
     try:
         return _launch_generation(session_id, record, prov, binding, mode=mode, held=held)
     except BaseException:
@@ -621,6 +657,10 @@ def _launch_generation(
         # creation's generation is born only from `starting` (the `/start` that set it, under this
         # same lock) or `started`. Fail closed here, where every generation is born.
         raise NativeError(409, "this session has not been started; start or discard it")
+    # The account (#2169), before the specialist slot, the grant set or anything is written.
+    account = held["account"]
+    if account is _UNRESOLVED:
+        account = _account(binding, record["session_key"], new=False)
 
     policy = resource_limits.values()
     worker = native_containment.WorkerIdentity.mint()
@@ -665,6 +705,11 @@ def _launch_generation(
     if forced:
         # Applied by the worker LAST over its child's environment (`forced_environment`).
         config["forced_env"] = forced
+    account_config = _account_config(account)
+    if account_config is not None:
+        # Applied by the worker before the forced tree (`account_environment`). Absent on the
+        # default login, so a launch without an account writes the config it always did.
+        config["account"] = account_config
     # Started from a specialist (#1693 S4b): each generation is a new agent process, so it takes
     # its own slot — the same version, re-reserved — and its skill bundle here, once everything
     # above that can refuse the launch has passed. Released at once if nothing is spawned; after a
@@ -1230,6 +1275,10 @@ def _create_admitted(
                 raise NativeError(409, reason or "native client is not ready")
             if not os.path.isdir(cwd):
                 raise NativeError(422, "cwd is not a directory")
+            # The account is fixed HERE, when the record is first written (#2169): a skip
+            # creation's later `start`, a retry and a relaunch read it and never the pick. Before
+            # the slot and the record, so a refusal leaves neither behind.
+            _account(binding, session_key, new=True)
             # The session limit, before anything is written, and held through the launch: a refused
             # create leaves no row behind, and no launch can take the slot in between (#1819).
             slots.append(_admit_session(session_key))
@@ -1330,6 +1379,10 @@ def _reserve_and_launch_admitted(
     source = native_ownership.source_identity(binding.source)
     if source is None:
         raise NativeError(409, "the native source has no recognised history store")
+    # The account (#2169) before the specialist slot and the ownership reservation: a refusal
+    # leaves no pending creation that would refuse the source's console launches. Resolved once
+    # and handed to the generation.
+    account = _account(binding, session_key, new=False)
     # A specialist's slot first (#1693 S4b): a refusal (at capacity, archived) must leave no
     # pending ownership behind — an unresolved creation refuses the source's console launches.
     claim = _specialist_claim(record, record["adapter"])
@@ -1358,7 +1411,14 @@ def _reserve_and_launch_admitted(
         raise
     launchtiming.mark("admit")
     return _launch_locked(
-        session_id, record, prov, binding, mode=mode, claim=claim, shelf_mission=shelf_mission
+        session_id,
+        record,
+        prov,
+        binding,
+        mode=mode,
+        claim=claim,
+        shelf_mission=shelf_mission,
+        account=account,
     )
 
 

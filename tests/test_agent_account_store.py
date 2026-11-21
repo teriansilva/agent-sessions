@@ -376,6 +376,11 @@ def test_every_launch_seam_resolves_and_applies_the_account():
     assert "account_launch.apply(env)" in headless
     # The auth probe asks about the account's login, not the default one.
     assert '{"env": dict(env)} if account_launch is not None' in headless
+    # The API seam (#2169): resolved in the web process, applied by the worker.
+    native = _source("native_runtime.py")
+    assert "agent_account_store.for_launch(binding.source" in native
+    assert 'config["account"] = account_config' in native
+    assert "account_environment(config, env)" in _source("native_worker.py")
 
 
 def test_the_account_is_resolved_after_the_capacity_slot_in_both_seams():

@@ -578,6 +578,32 @@ def forced_environment(config: dict) -> dict[str, str]:
     return dict(value)
 
 
+def account_environment(config: dict, env: dict[str, str]) -> dict[str, str]:
+    """``env`` as a launch on this generation's account must see it (#2169), or ``env`` unchanged
+    on the default login. The web process resolved the account at generation launch and passed
+    only the reviewed recipe's kind and the home's path; the recipe itself (which variable, which
+    outranking credentials to drop) is looked up here, the same `launch_env` the terminal seam
+    uses. Nothing is read from the home."""
+    value = config.get("account")
+    if value is None:
+        return env
+    from . import agent_accounts
+
+    if not isinstance(value, dict) or set(value) != {"kind", "home"}:
+        raise WorkerError("invalid account")
+    kind, home = value["kind"], value["home"]
+    rec = agent_accounts.recipe(kind) if isinstance(kind, str) else None
+    if (
+        rec is None
+        or not isinstance(home, str)
+        or not home.startswith("/")
+        or "\0" in home
+        or "\n" in home
+    ):
+        raise WorkerError("invalid account")
+    return agent_accounts.launch_env(rec, Path(home), env)
+
+
 #: Listener passwords a 2.x child must never be handed (#2084): its ACP client mints its own
 #: per process and overrides an inherited one anyway; a stray value is simply dropped.
 _LISTENER_PASSWORDS = ("OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD")
@@ -639,6 +665,8 @@ def child_environment(
             env.pop(key, None)
     if config["adapter"] == COPILOT:
         env["COPILOT_AUTO_UPDATE"] = "false"
+    # The account's home (#2169), with the credentials that would outrank its login dropped.
+    env = account_environment(config, env)
     # LAST, over everything above (`docs/invariants/opencode2-isolation.md`): an isolated
     # source's forced XDG tree. Refused when an opencode 2 generation lacks one.
     env.update(forced_environment(config))

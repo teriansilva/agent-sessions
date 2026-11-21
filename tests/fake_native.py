@@ -83,7 +83,11 @@ LOG = os.path.join(os.getcwd(), "native-frames.jsonl")
 
 # Every entry records the BattleLab session the child was told (#1406), so a test can prove each
 # generation names the app session, never the native id.
-EXTRA: dict = {"battlelab_session": os.environ.get("BATTLELAB_SESSION")}
+# And the account home it runs on (#2169): unset on the default login.
+EXTRA: dict = {
+    "battlelab_session": os.environ.get("BATTLELAB_SESSION"),
+    "account_home": os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("CODEX_HOME"),
+}
 
 
 def log(frame):
