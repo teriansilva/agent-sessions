@@ -36,7 +36,7 @@ import type {
   Weekday,
   WebhookCondition,
 } from "../types/automations";
-import type { Template } from "../types/api";
+import type { Session, Template } from "../types/api";
 import type { Specialist } from "../types/specialists";
 import type { ShapeField, WebhookPreset } from "../types/webhooks";
 
@@ -1510,6 +1510,60 @@ export function switchBody(
     revision: a.revision,
     action: { ...a.action, engine, model: null, bypass: false },
   };
+}
+
+// ---- the What step's pickers: API first (#2244) ----------------------------------------------------
+
+/** Is `id` an API agent (runtime `api`, not retiring), asked of the loaded roster? Not a terminal
+ *  agent, not the plain shell, not the chat "API agent" (runtime `chat`, which runs no agent). An
+ *  id the roster doesn't know — or a roster not loaded yet — is not one: nothing is guessed. */
+export function isApiAgent(id: string): boolean {
+  const info = engineInfo(id);
+  return !!info && info.runtime === "api" && isActive(info);
+}
+
+/** The server's refusal for an API client that can start but is not admitted for unattended work
+ *  (`automation_runner.NOT_ADMITTED`). Matched only to choose the plain words below: if the server
+ *  rewords it, the line falls back to `NOT_AVAILABLE_WORDS`, which is still true. */
+const NOT_ADMITTED_REASON = "this agent's API client can't run unattended yet";
+export const HELD_WORDS = "not cleared for unattended work yet";
+export const NOT_AVAILABLE_WORDS = "not available for unattended work";
+
+export interface AgentPicker {
+  /** The API agents the server admits for unattended work, in the server's order. */
+  offered: string[];
+  /** Targets the picker must keep showing although they aren't offered: what the stored
+   *  automation (or the form) already uses — a terminal agent, or an API agent no longer admitted. */
+  kept: string[];
+  /** One plain line per API agent that is installed (the roster says it can start) but that the
+   *  server doesn't admit. Nothing for terminal agents, agents that aren't installed, the shell or
+   *  the chat agent: none of them is a choice here, so none needs explaining. */
+  why: { id: string; line: string }[];
+}
+
+/** The Agent picker of "Start a session" (#2244): API agents only, from the server's verdicts
+ *  (`GET /api/automations` → `engines`) and the roster's runtime. Never the raw diagnostics. */
+export function agentPicker(
+  engines: readonly UnattendedEngine[],
+  keep: readonly string[],
+  label: (id: string) => string,
+): AgentPicker {
+  const offered = engines.filter((e) => e.ok && isApiAgent(e.id)).map((e) => e.id);
+  const kept: string[] = [];
+  for (const id of keep) if (id && !offered.includes(id) && !kept.includes(id)) kept.push(id);
+  const why = engines
+    .filter((e) => !e.ok && isApiAgent(e.id) && engineInfo(e.id)?.present === true)
+    .map((e) => ({
+      id: e.id,
+      line: `${label(e.id)}: ${e.reason === NOT_ADMITTED_REASON ? HELD_WORDS : NOT_AVAILABLE_WORDS}`,
+    }));
+  return { offered, kept, why };
+}
+
+/** The Session picker of "Message a session" (#2244): API sessions, plus the sessions in `keep`
+ *  (what the stored automation or the form already targets), whatever they run in. */
+export function sessionPicker(sessions: readonly Session[], keep: readonly string[]): Session[] {
+  return sessions.filter((s) => isApiAgent(s.engine) || keep.includes(s.id));
 }
 
 // ---- the review loop's reviewer (#2202) ----------------------------------------------------------

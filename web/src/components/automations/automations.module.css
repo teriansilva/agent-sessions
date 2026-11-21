@@ -1,5 +1,6 @@
 /* LIBRARY → AUTOMATIONS (#1201): the list, the editor, run history, the consent dialog and the
- * origin badge, on NIGHTJAR (#1531 Phase 10, #1574): every panel is a clipped frame (`nj-frame-sm`),
+ * origin badge, on NIGHTJAR (#1531 Phase 10, #1574): a page's sections sit on the app's pane, the one
+ * chamfered panel (#2244: no box-in-a-box), and a section after another is set apart by a rule,
  * the counters are readout tiles, fields are square with the inset ring, section titles carry the
  * callsign notch, and a selected segment or weekday is lit in the chrome (`--hud`), never the
  * accent (that marks actions and focus).
@@ -13,7 +14,8 @@
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  /* The Library's own inset (library.module.css): the pane is the frame, so the page pads itself. */
+  padding: var(--sp-5) var(--sp-5) var(--sp-6);
   color: var(--text-1);
 }
 .stack {
@@ -23,11 +25,20 @@
   max-width: 1320px;
 }
 
-/* --- frames ------------------------------------------------------------------------------------ */
+/* --- sections ---------------------------------------------------------------------------------- */
+/* A section sits ON the app's content pane (`.terminal-pane`), which is already the one chamfered
+ * panel: design.md §5 "the pane *is* the panel", §9 no box-in-a-box. It used to compose
+ * `nj-frame-sm`, which drew a second chamfer inside the pane on every page and wizard step that
+ * uses it (Automations, its runs, the wizard's webhook and scope sections, Webhooks — #2244). A
+ * section that follows another is set apart by a rule, never a frame. */
 .panel {
-  composes: nj-frame-sm from global;
+  position: relative;
   min-width: 0;
-  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+.panel:not(:first-child),
+.panel .panel {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
 }
 /* A panel's callsign: the hazard notch, then the mono title. */
 .panelTitle {
@@ -1018,10 +1029,7 @@ textarea.control {
 /* --- ≤800px: one column, the rows become cards ------------------------------------------------- */
 @media (max-width: 800px) {
   .page {
-    padding: 12px 10px 28px;
-  }
-  .panel {
-    padding: var(--sp-3) var(--sp-3) var(--sp-4);
+    padding: var(--sp-4) var(--sp-3) var(--sp-6);
   }
   .title {
     font-size: var(--fs-h2);

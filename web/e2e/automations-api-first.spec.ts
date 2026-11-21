@@ -5,8 +5,9 @@
  *  when its family has an API client. Switch opens a sheet naming the new client, model and
  *  permission mode; Confirm saves through the ordinary PATCH with the API client, its default model
  *  and "asks before each request" — the terminal's permission grant is not carried — and an ENABLED
- *  automation then asks for the server's consent. No cutoff: a new console-target automation still
- *  saves. With no API client admitted, the button stays disabled with the server's reason. */
+ *  automation then asks for the server's consent. No cutoff: a saved console-target automation still
+ *  saves (a new one is offered API agents only, #2244). With no API client admitted, the button
+ *  stays disabled with the server's reason. */
 import { expect, test, type Page } from "@playwright/test";
 
 import { AUTOMATIONS_PATH, automationEditPath } from "../src/lib/routes";

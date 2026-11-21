@@ -354,11 +354,12 @@ test("a session an automation started wears its badge in the sidebar", async ({ 
   );
 });
 
-test("an empty list says so and offers the first automation", async ({ page }) => {
+test("an empty list says so, and the head's New automation is the one way in (#2244)", async ({ page }) => {
   await mockAutomations(page);
   await page.goto(AUTOMATIONS_PATH);
   await expect(page.getByTestId("automations-empty")).toContainText("No automations yet");
-  await expect(page.getByTestId("automations-empty").getByRole("link", { name: /New automation/ })).toBeVisible();
+  await expect(page.getByTestId("automations-empty").getByRole("link", { name: /New automation/ })).toHaveCount(0);
+  await expect(page.getByTestId("automation-new")).toBeVisible();
 });
 
 test("Library names Automations beside Templates, Variables, Memory, Skills, Specialists and Playbooks", async ({ page }) => {

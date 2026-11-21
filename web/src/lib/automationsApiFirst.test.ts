@@ -4,9 +4,17 @@
 import { afterEach, expect, test } from "vitest";
 import { setRoster } from "../app/engineRoster";
 import fixture from "../test/roster.fixture.json";
-import type { EngineFamily, EngineInfo } from "../types/api";
+import type { EngineFamily, EngineInfo, Session } from "../types/api";
 import type { Automation, AutomationAction } from "../types/automations";
-import { apiSwitchFor, isTerminalTarget, switchBody } from "./automations";
+import {
+  HELD_WORDS,
+  NOT_AVAILABLE_WORDS,
+  agentPicker,
+  apiSwitchFor,
+  isTerminalTarget,
+  sessionPicker,
+  switchBody,
+} from "./automations";
 
 const ENGINES = fixture.engines as EngineInfo[];
 const API = ENGINES.find((e) => e.runtime === "api" && e.api?.source)!;
@@ -83,4 +91,64 @@ test("the switch body never carries the terminal's permission grant or a model",
     action: { kind: "start_mission", project_id: "p", instruction: { text: "x" }, autonomy: "propose" },
   } as unknown as Automation;
   expect(switchBody(mission, API.id)).toBeNull();
+});
+
+// ---- #2244: the What step's pickers are API first --------------------------------------------------
+
+const APIS = ENGINES.filter((e) => e.runtime === "api");
+const CHAT = ENGINES.find((e) => e.runtime === "chat")!;
+const TERMINAL = ENGINES.find((e) => e.kind === "terminal")!;
+/** A host where every API client can start except the last one (not installed). */
+const HOST = ENGINES.map((e) =>
+  e.runtime === "api" ? { ...e, present: e.id !== APIS[APIS.length - 1].id } : e,
+);
+const label = (id: string) => `L(${id})`;
+const NOT_ADMITTED = "this agent's API client can't run unattended yet";
+
+test("the agent picker offers admitted API agents only, and explains only installed, held API agents", () => {
+  setRoster(HOST);
+  const [ok, held, odd, absent] = [APIS[0], APIS[1], APIS[2], APIS[APIS.length - 1]];
+  const engines = [
+    { id: CONSOLE.id, ok: true, reason: "" },
+    { id: ok.id, ok: true, reason: "" },
+    { id: held.id, ok: false, reason: NOT_ADMITTED },
+    { id: odd.id, ok: false, reason: "this agent could not be checked" },
+    { id: absent.id, ok: false, reason: `${absent.id}: not installed` },
+    { id: LONE.id, ok: false, reason: "missing: unattended_launch" },
+    { id: TERMINAL.id, ok: false, reason: `${TERMINAL.id}: not an agent engine` },
+    { id: CHAT.id, ok: false, reason: `${CHAT.id}: not an agent engine` },
+  ];
+  const pick = agentPicker(engines, ["", ""], label);
+  expect(pick.offered).toEqual([ok.id]);
+  expect(pick.kept).toEqual([]);
+  expect(pick.why).toEqual([
+    { id: held.id, line: `L(${held.id}): ${HELD_WORDS}` },
+    { id: odd.id, line: `L(${odd.id}): ${NOT_AVAILABLE_WORDS}` },
+  ]);
+  for (const w of pick.why) expect(w.line).not.toMatch(/unattended_launch|not installed|not an agent engine/);
+  // The fallback never echoes the server's own reason, whatever it says.
+  for (const e of engines) if (e.reason) for (const w of pick.why) expect(w.line).not.toContain(e.reason);
+});
+
+test("a stored target the picker doesn't offer is kept once; an offered one isn't repeated", () => {
+  setRoster(HOST);
+  const engines = [{ id: APIS[0].id, ok: true, reason: "" }, { id: CONSOLE.id, ok: true, reason: "" }];
+  expect(agentPicker(engines, [CONSOLE.id, CONSOLE.id], label).kept).toEqual([CONSOLE.id]);
+  expect(agentPicker(engines, [APIS[0].id], label).kept).toEqual([]);
+});
+
+test("before a roster loads nothing is offered or explained: nothing is guessed", () => {
+  setRoster([]);
+  const pick = agentPicker([{ id: APIS[0].id, ok: true, reason: "" }], [], label);
+  expect(pick).toEqual({ offered: [], kept: [], why: [] });
+});
+
+test("the session picker offers API sessions, plus the stored target whatever it runs in", () => {
+  setRoster(HOST);
+  const s = (engine: string, n: number) => ({ id: `${engine}:${n}`, engine }) as unknown as Session;
+  const api = s(APIS[0].id, 1);
+  const term = s(CONSOLE.id, 2);
+  const chat = s(CHAT.id, 3);
+  expect(sessionPicker([api, term, chat], [])).toEqual([api]);
+  expect(sessionPicker([api, term, chat], [term.id])).toEqual([api, term]);
 });

@@ -365,6 +365,8 @@ export default function Automations() {
             </div>
           )}
 
+          {/* The head's New automation is the ONE way in, in every state (#2244): the empty state
+              explains and offers no second button, as Playbooks' does. */}
           {data && rows.length === 0 && (
             <div className={styles.empty} data-testid="automations-empty">
               <strong>No automations yet</strong>
@@ -372,9 +374,6 @@ export default function Automations() {
                 Run a mission or a session on a schedule, once at a set time, or on Run now. Nothing
                 runs until you enable it.
               </span>
-              <Link to={AUTOMATION_NEW_PATH} className={styles.primary}>
-                <Plus size={15} aria-hidden="true" /> New automation
-              </Link>
             </div>
           )}
 

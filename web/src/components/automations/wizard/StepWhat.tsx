@@ -8,18 +8,22 @@
  *  text, yes/no). A value that fails its type refuses that delivery and nothing starts. Only the
  *  template's own typed fields can be filled this way — never a library field, never a secret. */
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
-import { engineName, runsInTerminal } from "../../../app/engineRoster";
+import { engineLabel, rosterReady, runsInTerminal } from "../../../app/engineRoster";
+import { settingsPath } from "../../../routes/settingsTabs";
 import { LegacyTerminalStamp, SwitchToApiButton } from "../SwitchToApi";
 import {
   AUTONOMY_WORDS,
   MAPPED_TYPE_WORDS,
   CHOICES_MAX,
+  agentPicker,
   fromListHook,
   legacyTrigger,
   mappableFields,
   reviewerOptions,
   sessionEngine,
+  sessionPicker,
   withAction,
   withFieldSource,
   type EditorForm,
@@ -53,6 +57,7 @@ export function StepWhat({
   update,
   f,
   list,
+  stored,
   projects,
   sessions,
   templates,
@@ -67,6 +72,9 @@ export function StepWhat({
   warnings,
 }: StepProps & {
   list: AutomationList;
+  /** What the SAVED automation targets ("" for none, or a new one): a terminal target stays
+   *  visible in its picker, stamped, though a new automation is offered API agents only. */
+  stored: { engine: string; sessionKey: string };
   projects: { id: string; name: string; default_folder?: string | null }[];
   sessions: Session[] | null;
   templates: Template[] | null;
@@ -98,7 +106,12 @@ export function StepWhat({
   const loop = form.actionKind === "forge_review_loop";
   const template = templates?.find((t) => t.id === form.templateId) ?? null;
   const mappable = listHook ? mappableFields(template) : [];
-  const sessionKnown = sessions?.some((s) => s.id === form.sessionKey);
+  // API first (#2244): the pickers offer API agents and API sessions; what the automation already
+  // targets stays visible, whatever it runs in.
+  const agents = agentPicker(engines, [stored.engine, form.engine], engineLabel);
+  const keepSessions = [stored.sessionKey, form.sessionKey].filter(Boolean);
+  const sessionChoices = sessionPicker(sessions ?? [], keepSessions);
+  const sessionKnown = sessionChoices.some((s) => s.id === form.sessionKey);
   const terminal = (engine: string) => listHook && runsInTerminal(engine) === true;
   const msgWord =
     form.actionKind === "start_mission"
@@ -202,30 +215,47 @@ export function StepWhat({
               className={styles.control}
               value={form.engine}
               onChange={(e) => set("engine", e.target.value)}
-              aria-describedby={f("engine-why")}
+              aria-describedby={f("engine-note")}
               data-testid="session-engine"
             >
               <option value="">Choose an agent…</option>
-              {engines.map((e) => (
-                <option key={e.id} value={e.id} disabled={!e.ok || terminal(e.id)}>
-                  {engineName(e.id)}
-                  {!e.ok ? " — can’t start unattended" : terminal(e.id) ? " — terminal, not for a webhook" : ""}
+              {agents.offered.map((id) => (
+                <option key={id} value={id}>
+                  {engineLabel(id)}
+                </option>
+              ))}
+              {agents.kept.map((id) => (
+                <option key={id} value={id} disabled={terminal(id)}>
+                  {engineLabel(id)}
+                  {terminal(id) ? " — terminal, not for a webhook" : ""}
                 </option>
               ))}
             </select>
             {form.engine && runsInTerminal(form.engine) === true && <LegacyTerminalStamp />}
             {switchButton && <SwitchToApiButton {...switchButton} />}
-            <div id={f("engine-why")} className={styles.hint} data-testid="engine-reasons">
-              {engines
-                .filter((e) => !e.ok)
-                .map((e) => (
-                  <p key={e.id} className={styles.hint}>
-                    {engineName(e.id)}: {e.reason}
-                  </p>
-                ))}
-              {listHook && <p className={styles.hint}>A webhook starts API sessions only.</p>}
-              {engines.length === 0 && "No agent can be started unattended on this server."}
-            </div>
+            {agents.offered.length ? (
+              <p id={f("engine-note")} className={styles.hint} data-testid="engine-api-note">
+                New automations use API agents.
+              </p>
+            ) : (
+              // Not while the roster is still loading: that is "not known yet", never "none".
+              rosterReady() && <p id={f("engine-note")} className={styles.hint} data-testid="engine-none">
+                No API agent can start a new automation on this server yet.{" "}
+                <Link className={styles.link} to={settingsPath("agents")}>
+                  Settings → Agents
+                </Link>
+              </p>
+            )}
+            {agents.why.length > 0 && (
+              <details className={w.why} data-testid="engine-why">
+                <summary className={w.whyHead}>Why aren’t other agents listed?</summary>
+                <ul className={w.whyList}>
+                  {agents.why.map((x) => (
+                    <li key={x.id}>{x.line}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
           <div className={`${styles.field} ${styles.full}`}>
             <label className={styles.label} htmlFor={f("folder")}>
@@ -311,20 +341,24 @@ export function StepWhat({
             data-testid="send-session"
           >
             <option value="">Choose a session…</option>
-            {(sessions ?? []).map((s) => (
+            {sessionChoices.map((s) => (
               <option key={s.id} value={s.id} disabled={terminal(s.engine)}>
-                {s.title || "(untitled)"} · {engineName(s.engine)}
+                {s.title || "(untitled)"} · {engineLabel(s.engine)}
                 {s.running ? " · running" : ""}
                 {terminal(s.engine) ? " — terminal, not for a webhook" : ""}
               </option>
             ))}
             {form.sessionKey && !sessionKnown && <option value={form.sessionKey}>{form.sessionKey}</option>}
           </select>
+          {form.sessionKey && runsInTerminal(sessionEngine(form.sessionKey)) === true && <LegacyTerminalStamp />}
           {form.sessionKey && (
             <p className={`${styles.hint} ${styles.mono}`} data-testid="send-session-key">
               {form.sessionKey}
             </p>
           )}
+          <p className={styles.hint} data-testid="send-session-api-note">
+            New automations message API sessions.
+          </p>
           <p className={styles.hint}>
             It types into that session as it is — with whatever permissions it already runs with. If
             the session isn’t running then, the run is refused and recorded; nothing is started in

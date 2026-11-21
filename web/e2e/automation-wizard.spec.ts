@@ -207,8 +207,8 @@ test("no delivery yet: step 2 says to send a test first, and Advanced still work
     /Tell HQ/,
   ]);
   await page.getByTestId("action-kind").getByRole("button", { name: /Start a session/ }).click();
-  // A webhook starts API sessions only: a terminal agent is offered disabled.
-  await expect(page.getByTestId("session-engine").locator('option[value="claude"]')).toBeDisabled();
+  // New automations use API agents (#2244): a terminal agent isn’t offered for a new one.
+  await expect(page.getByTestId("session-engine").locator('option[value="claude"]')).toHaveCount(0);
   await page.getByTestId("session-engine").selectOption("claude-api");
   // The folder is still missing: Next waits on What and says why.
   await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();

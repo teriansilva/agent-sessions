@@ -18,9 +18,10 @@
  *  changes it also says, in the form's own words, what the draft would change — a preview, never
  *  what is consented to.
  *
- *  **Agents come from the roster, gated by the server.** The agent picker lists the engines
- *  `GET /api/automations` reports with the unattended-start check's verdict; one that may not start
- *  unattended is shown disabled with its reason, and a webhook starts or messages API clients only.
+ *  **Agents come from the roster, gated by the server — API first (#2244).** The agent picker
+ *  offers the API agents `GET /api/automations` admits for unattended work; a folded line names each
+ *  installed API agent that is held, in plain words. A terminal agent (or session) is shown only
+ *  when the saved automation already targets it, stamped, with "Switch to API client".
  *
  *  **"+ New webhook…"** opens the create flow with this draft in router state (the form only, never
  *  a secret) and comes back with the new webhook picked. A #2202 review loop saved with its own
@@ -450,6 +451,10 @@ function Editor({ routeId }: { routeId?: string }) {
           <StepWhat
             {...props}
             list={list}
+            stored={{
+              engine: saved?.action?.kind === "start_session" ? saved.action.engine : "",
+              sessionKey: saved?.action?.kind === "send_to_session" ? saved.action.session_key : "",
+            }}
             projects={liveProjects}
             sessions={sessions}
             templates={templates}

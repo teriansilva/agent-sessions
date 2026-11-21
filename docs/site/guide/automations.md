@@ -67,8 +67,11 @@ Choose what it does:
   A template with a secret can't be used here, because the message is shown in your
   notifications.
 
-A webhook starts or messages **API sessions only**. Terminal agents are shown, but can't be picked
-for a webhook.
+The wizard offers **API agents** for new automations: *Start a session* lists the API agents that
+may work unattended, and *Message a session* lists API sessions. An installed API agent that isn't
+cleared for unattended work yet is named under *Why aren't other agents listed?*. The server's rules
+are unchanged, and so are existing automations on a terminal agent or session: they keep their
+target, labelled, and still save.
 
 The message is plain text or a [template](/guide/templates). With a template, each of its fields is
 either:

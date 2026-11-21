@@ -139,6 +139,47 @@
   padding: 4px 0 8px;
 }
 
+/* "Why aren't other agents listed?" (#2244): a quiet hint-sized fold under the Agent picker, closed
+ * until asked, one plain line per held API agent. Sentence case: it is a question, not a heading. */
+.why {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.whyHead {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-2);
+}
+.whyHead::-webkit-details-marker {
+  display: none;
+}
+.whyHead::before {
+  content: "▸";
+  color: var(--hud-text);
+}
+.why[open] > .whyHead::before {
+  content: "▾";
+}
+.whyHead:hover {
+  color: var(--text);
+}
+.whyHead:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.whyList {
+  margin: 0;
+  padding: 0 0 4px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.45;
+}
+
 /* A condition: field, operator, remove; under them its values, one line each (value, type,
  * remove). On a phone the field takes its own row. */
 .condRow {
