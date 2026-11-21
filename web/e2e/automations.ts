@@ -96,6 +96,14 @@ export function scopeLines(config: Json): string[] {
     );
     lines.push(`At most ${caps.pr} rounds per pull request and ${caps.issue} per issue; then one notification`);
     lines.push("Never posts, merges or labels anything on the forge");
+  } else if (action.kind === "tell_hq") {
+    // `automations.describe` for "Tell HQ" (#2221).
+    lines.push("Puts a message in your notifications (the bell) and tells HQ an automation reported");
+    lines.push(
+      "HQ sees only that a message from this automation arrived, never what it says; HQ may comment, it never acts on it",
+    );
+    lines.push("Starts no session and types into none");
+    lines.push(messageLine("Message", action.message as Json));
   } else {
     lines.push(`Types into the live session ${action.session_key}`);
     lines.push("If that session isn't running, the run is refused; nothing is started");

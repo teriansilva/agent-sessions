@@ -334,7 +334,9 @@ def test_a_review_loop_is_started_only_by_a_webhook_and_its_own_webhook_starts_o
     picked = {"kind": "webhook", "webhook_id": "wh1"}
     assert model.validate_config({**_config(), "trigger": picked, "action": send})
     mission = {"kind": "start_mission", "project_id": "p1", "instruction": {"text": "go"}}
-    with pytest.raises(model.AutomationError, match="start a session or message a session"):
+    with pytest.raises(
+        model.AutomationError, match="start a session, message a session or tell HQ"
+    ):
         model.validate_config({**_config(), "trigger": picked, "action": mission})
 
 

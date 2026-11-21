@@ -2,8 +2,8 @@
 
 An **automation** does one thing for you without you starting it: on a schedule, when you press
 **Run now**, or when a [webhook](/guide/webhooks) delivers an event. It can start a session, send a
-message to a session, start a [review loop](/guide/review-loop), or (on a schedule or Run now) start
-a mission.
+message to a session, start a [review loop](/guide/review-loop), tell HQ, or (on a schedule or Run
+now) start a mission.
 
 You find them in **Library → Automations**. Every automation is created and changed in the same
 **wizard**: five short steps, each one screen on a phone. Advanced options are folded away until
@@ -60,6 +60,12 @@ Choose what it does:
 - **Review loop**: only from a webhook. See [Review loop with Forgejo](/guide/review-loop).
 - **Start a mission**: only on a schedule or Run now. HQ drafts the mission in the project you
   choose.
+- **Tell HQ**: puts a message in your notifications (the bell), from any trigger. HQ sees that a
+  message from this automation arrived, and may write its usual line about it. HQ never sees what
+  the message says or what a delivery contained, and it never acts on the message by itself. The
+  bell shows the message on one line (a long one is cut short); the run history keeps all of it.
+  A template with a secret can't be used here, because the message is shown in your
+  notifications.
 
 A webhook starts or messages **API sessions only**. Terminal agents are shown, but can't be picked
 for a webhook.

@@ -52,6 +52,8 @@ DISPATCH_TAG_RES = (
     re.compile(r"escalation:msn_[0-9a-f]{32}:[0-9a-f]{12}:[0-9]{1,9}"),
     # An automation failure episode: its `action_id`.
     re.compile(r"automation:[a-z0-9]{1,64}:[^:]+"),
+    # A "Tell HQ" automation's message (#2221): `automsg:<automation id>:<run id>`, one per run.
+    re.compile(r"automsg:[a-z0-9]{1,64}:[0-9a-f]{32}"),
 )
 DISPATCH_TAG_MAX = 300
 
@@ -1676,8 +1678,9 @@ def drop_endpoint(endpoint: str, path: Path | None = None) -> None:
             _write(p, keep)
 
 
-#: An automation's failure episode key (`automation_runner.notify`): the link opens its run history.
-_AUTOMATION_ACTION_RE = re.compile(r"^automation:([a-z0-9]{1,64}):")
+#: An automation's failure episode key (`automation_runner.notify`) or a "Tell HQ" message's
+#: (`automsg:<id>:<run>`, #2221): the link opens its run history.
+_AUTOMATION_ACTION_RE = re.compile(r"^(?:automation|automsg):([a-z0-9]{1,64}):")
 #: The SPA's run-history route for one automation (`web/src/lib/routes.ts` `automationPath`).
 AUTOMATION_PATH = "/mission/automations/"
 

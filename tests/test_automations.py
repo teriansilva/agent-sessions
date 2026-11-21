@@ -3185,16 +3185,27 @@ def _scopes() -> dict[str, dict]:
         "action": {"kind": "send_to_session", "session_key": SESSION, "message": {"text": "go"}},
         "policy": model.validate_policy(None),
     }
+    # "Tell HQ" (#2221): no target, agent or bypass of its own; a template with typed values.
+    tell = {
+        "name": "h",
+        "trigger": {"kind": "schedule", "cadence": {"kind": "daily", "time": "06:00"}, "tz": "UTC"},
+        "action": {
+            "kind": "tell_hq",
+            "message": {"template_id": "tpl_1", "values": {"pr": "12"}},
+        },
+        "policy": model.validate_policy(None),
+    }
     return {
         "mission": model.scope_of(mission, tpin),
         "session": model.scope_of(
             session, {"template": None, "checklist": None, "cwd": tpin["cwd"]}
         ),
         "send": model.scope_of(send, {"template": None, "checklist": None}),
+        "tell_hq": model.scope_of(tell, {"template": tpin["template"], "checklist": None}),
     }
 
 
-@pytest.mark.parametrize("kind", ["mission", "session", "send"])
+@pytest.mark.parametrize("kind", ["mission", "session", "send", "tell_hq"])
 def test_describe_discloses_every_field_the_digest_covers(kind):
     scope = _scopes()[kind]
     base_lines = model.describe(scope)

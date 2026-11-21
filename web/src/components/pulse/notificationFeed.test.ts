@@ -16,6 +16,7 @@ import {
   MAX_BUNDLE_LOOKUPS,
   type FeedItem,
 } from "./notificationFeed";
+import { targetPath } from "./notificationLinks";
 
 const SID = "claude:11111111-1111-4111-8111-111111111111";
 const NY1 = `needs-you:${SID}:1`;
@@ -228,6 +229,14 @@ test("a row's class comes from its tag, else its producer's stored flags", () =>
   expect(classOfRow(row("c", 1, { needs_you: true }))).toBe("needs");
   expect(classOfRow(row("d", 1, { escalation: true }))).toBe("escalation");
   expect(classOfRow(row("e", 1))).toBe("other");
+  // A "Tell HQ" message (#2221) files with the automations, by its tag or by its action id.
+  const MSG = `automsg:nightly:${"0".repeat(32)}`;
+  expect(classOfRow(row("f", 1, inBundle(D1, MSG)))).toBe("automation");
+  expect(classOfRow(row("g", 1, { session_id: "", action_id: MSG }))).toBe("automation");
+  // …and opens that automation, as the server's push link does.
+  expect(targetPath(row("h", 1, { session_id: "", action_id: MSG }))).toBe(
+    "/mission/automations/nightly",
+  );
 });
 
 test("the bell keeps its order but sits a bundle's rows together at its newest", () => {

@@ -59,9 +59,17 @@ EXPIRES_MAX = 253402300799  # 9999-12-31T23:59:59Z
 TRIGGER_KINDS = ("once", "schedule", "manual", "webhook")
 #: Reserved for later phases. Accepted as a NAME so the refusal can say why; never stored.
 RESERVED_TRIGGERS = {"loop": "Phase 2"}
-ACTION_KINDS = ("start_mission", "start_session", "send_to_session", "forge_review_loop")
-#: The actions a webhook delivery may start (#2221 P2).
-WEBHOOK_ACTIONS = ("forge_review_loop", "start_session", "send_to_session")
+ACTION_KINDS = (
+    "start_mission",
+    "start_session",
+    "send_to_session",
+    "forge_review_loop",
+    "tell_hq",
+)
+#: The actions a webhook delivery may start (#2221 P2). `tell_hq` (#2221) puts a message in the
+#: bell and tells HQ that an automation reported: HQ learns the class and the automation's name,
+#: never the message or any delivered value (`hq_dispatch.CLASS_AUTOMATION_MESSAGE`).
+WEBHOOK_ACTIONS = ("forge_review_loop", "start_session", "send_to_session", "tell_hq")
 #: The webhook signature schemes. Only Forgejo's for now (#2202); `github`/`battlelab` are #1201's.
 WEBHOOK_SCHEMES = ("forgejo",)
 #: A forge repository ``owner/name`` and a forge login (Forgejo's alphabets, bounded).
@@ -411,6 +419,11 @@ def validate_action(raw: object) -> dict:
             "session_key": key,
             "message": validate_message(a["message"], "message"),
         }
+    if kind == "tell_hq":
+        # A message for the operator (#2221): a bell row whose reason is the rendered message, and
+        # an HQ dispatch about it whose facts are the class and this automation's name only.
+        _obj(a, "a tell_hq action", {"kind", "message"}, {"message"})
+        return {"kind": kind, "message": validate_message(a["message"], "message")}
     raise AutomationError(f"action kind must be one of {list(ACTION_KINDS)}")
 
 
@@ -563,7 +576,7 @@ def validate_config(raw: object, *, now: float | None = None) -> dict:
         raise AutomationError("a review loop's own webhook starts only that review loop")
     if hook and kind not in WEBHOOK_ACTIONS:
         raise AutomationError(
-            "a webhook can start a review loop, start a session or message a session"
+            "a webhook can start a review loop, start a session, message a session or tell HQ"
         )
     if trig.get("when") and not trig.get("webhook_id"):
         raise AutomationError("conditions go with a webhook from the list")
@@ -960,6 +973,13 @@ def check_template(config: dict) -> dict | None:
             "a template with a secret cannot be a new session's first message; "
             "use send to session instead"
         )
+    if secret and action["kind"] == "tell_hq":
+        # The rendered message becomes a notification row's reason (#2221): a secret would sit in
+        # the bell, its push and HQ's view of the row.
+        raise AutomationError(
+            "a template with a secret cannot be a message to HQ: it would be shown in your "
+            "notifications"
+        )
     return t
 
 
@@ -1001,6 +1021,9 @@ def scope_of(config: dict, pins: dict) -> dict:
             "max_rounds": action["max_rounds"],
             "return_to_origin": action["return_to_origin"],
         }
+    elif action["kind"] == "tell_hq":
+        # Nothing is started or typed into: the bell and HQ's dispatch are the whole effect.
+        target = {}
     else:
         target = {"session_key": action["session_key"]}
     if action["kind"] == "forge_review_loop":
@@ -1379,6 +1402,16 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("If that session isn't running, the run is refused; nothing is started")
     elif action == "forge_review_loop":
         lines.extend(_review_loop_lines(scope, t))
+    elif action == "tell_hq":
+        lines.append(
+            "Puts a message in your notifications (the bell) and tells HQ an automation reported"
+        )
+        lines.append(
+            "HQ sees only that a message from this automation arrived, never what it says; "
+            "HQ may comment, it never acts on it"
+        )
+        if t:
+            lines.append(f"Target: {json.dumps(t, sort_keys=True)}")
     else:
         lines.append(f"Action: {action} · target {json.dumps(t, sort_keys=True)}")
     review_loop = action == "forge_review_loop"
@@ -1403,6 +1436,8 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("Permission bypass: off (automated missions never bypass)")
     elif action == "start_session":
         lines.append("Permission bypass: off")
+    elif action == "tell_hq":
+        lines.append("Starts no session and types into none")
     else:
         lines.append("Permission bypass: unchanged — whatever that session already runs with")
     # A STORED checklist (approved before checklists were removed, #1653) is still disclosed, since

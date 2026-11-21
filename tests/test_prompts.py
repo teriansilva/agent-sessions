@@ -202,7 +202,7 @@ EXPECTED_DEFAULT_SHA = {
     "voice_confirm_judge": "d0360ad9fd195a9a",  # #1715: did a spoken reply confirm a card?
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
     "hq_conversation_compact": "c7fe648ee4b538ff",  # #2137 P2: the background summary
-    "hq_notify": "172738181e0bcb1e",  # #1837: HQ's one line about a notification, facts only
+    "hq_notify": "7e181d31107a52e1",  # #1837 (+ #2221 "automation message"): facts only
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
 }

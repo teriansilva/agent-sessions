@@ -269,6 +269,7 @@ export function actionLabel(
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
   if (kind === "forge_review_loop") return "Review loop";
+  if (kind === "tell_hq") return "Tell HQ";
   return "Unreadable";
 }
 
@@ -295,6 +296,7 @@ export function targetWords(
   if (action.kind === "start_session") return baseName(action.folder);
   if (action.kind === "forge_review_loop")
     return projectName(action.project_id);
+  if (action.kind === "tell_hq") return "your notifications";
   return action.session_key;
 }
 
@@ -646,8 +648,8 @@ export function blankForm(tz: string): EditorForm {
 /** What a trigger may start (#2221 P2, mirroring `automations.validate_config`):
  *
  *  - a review loop is started only by a webhook, and takes no conditions (it reads its own events);
- *  - a webhook from the list starts a review loop, a session or a message to a session — never a
- *    mission (that is a later phase);
+ *  - a webhook from the list starts a review loop, a session, a message to a session or a message
+ *    to HQ (`tell_hq`) — never a mission (that is a later phase);
  *  - a #2202 review loop's own webhook (`legacyHook`) starts only that review loop;
  *  - conditions and values from the delivery go only with a webhook from the list.
  *
@@ -780,7 +782,7 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.engine = act.engine;
       f.folder = act.folder;
       f.bypass = act.bypass;
-    } else {
+    } else if (act.kind === "send_to_session") {
       f.sessionKey = act.session_key;
     }
   }
@@ -865,6 +867,8 @@ export function formAction(f: EditorForm): AutomationAction {
       bypass: f.bypass,
       message,
     };
+  // A message to HQ (#2221): the message only — it has no target, agent or permissions.
+  if (f.actionKind === "tell_hq") return { kind: "tell_hq", message };
   return { kind: "send_to_session", session_key: f.sessionKey, message };
 }
 
@@ -979,7 +983,7 @@ function whatProblems(f: EditorForm): string[] {
   const out: string[] = [];
   const hook = f.triggerKind === "webhook";
   if (hook && f.actionKind === "start_mission")
-    out.push("A webhook can’t start a mission; start or message a session");
+    out.push("A webhook can’t start a mission; start or message a session, or tell HQ");
   if (legacyTrigger(f) && f.actionKind !== "forge_review_loop")
     out.push("A review loop’s own webhook starts only that review loop");
   if (!hook && f.actionKind === "forge_review_loop")

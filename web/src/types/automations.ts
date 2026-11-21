@@ -27,9 +27,9 @@ export type Trigger =
   | { kind: "manual" }
   | { kind: "once"; at: string; tz: string }
   | { kind: "schedule"; cadence: Cadence; tz: string }
-  /** A webhook picked from Library → Webhooks (#2221). It starts a review loop, a session or a
-   *  message to a session (#2221 P2); `when` (omitted when empty) chooses which deliveries, and a
-   *  review loop takes none. */
+  /** A webhook picked from Library → Webhooks (#2221). It starts a review loop, a session, a
+   *  message to a session (#2221 P2) or a message to HQ; `when` (omitted when empty) chooses which
+   *  deliveries, and a review loop takes none. */
   | { kind: "webhook"; webhook_id: string; when?: WebhookCondition[] }
   /** #2202: a review loop's own Forgejo webhook. Read-only: an existing automation keeps it, but the
    *  server refuses creating a new one in this form. */
@@ -101,6 +101,10 @@ export type AutomationAction =
       session_key: string;
       message: AutomationMessage;
     }
+  /** "Tell HQ" (#2221): a message in the operator's notifications, filed as an HQ dispatch. HQ is
+   *  told only that a message from this automation arrived, never what it says, and never acts on
+   *  it. No target, agent or permissions of its own. */
+  | { kind: "tell_hq"; message: AutomationMessage }
   | ReviewLoopAction;
 
 /** The Forgejo review loop (#2202): one repository, one pinned reviewer specialist VERSION, one

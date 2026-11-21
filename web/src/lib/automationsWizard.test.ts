@@ -474,7 +474,7 @@ describe("the pairing and the steps", () => {
     expect(formProblems(f).slice(0, 2)).toEqual(["Give it a name", "Pick a webhook"]);
     // A webhook can't start a mission.
     expect(stepProblems({ ...hookForm(), actionKind: "start_mission", projectId: "p1" }).what).toContain(
-      "A webhook can’t start a mission; start or message a session",
+      "A webhook can’t start a mission; start or message a session, or tell HQ",
     );
   });
 
@@ -485,5 +485,75 @@ describe("the pairing and the steps", () => {
     expect(limitsWords({ ...blankForm("UTC"), concurrency: "allow", maxConcurrent: 3 })).toMatch(
       /^up to 3 runs at once/,
     );
+  });
+});
+
+describe("Tell HQ (#2221)", () => {
+  /** A webhook automation that tells HQ, with a template whose `pr_number` comes from the delivery. */
+  function tellForm(over: Partial<EditorForm> = {}): EditorForm {
+    return {
+      ...withAction(hookForm({ engine: "", folder: "" }), "tell_hq", 3),
+      fromDelivery: { pr_number: { path: "number", type: "number", choices: [] } },
+      ...over,
+    };
+  }
+
+  test("a webhook may start it, and so may a schedule, a once and Run now", () => {
+    expect(withAction(hookForm(), "tell_hq", 3).triggerKind).toBe("webhook");
+    for (const kind of ["schedule", "once", "manual"] as const) {
+      const f = withAction(withTrigger(blankForm("UTC"), kind, 3), "tell_hq", 3);
+      expect(f.triggerKind).toBe(kind);
+      expect(f.actionKind).toBe("tell_hq");
+    }
+  });
+
+  test("the body is the message only: no target, agent or permissions", () => {
+    const body = bodyFromForm(tellForm({ values: { reviewer: "bot" } }));
+    expect(body.action).toEqual({
+      kind: "tell_hq",
+      message: {
+        template_id: "t1",
+        values: { reviewer: "bot" },
+        from_delivery: { pr_number: { path: "number", type: "number" } },
+      },
+    });
+    expect(body.trigger).toEqual({ kind: "webhook", webhook_id: HOOK });
+    const text = bodyFromForm({ ...tellForm(), messageMode: "text", text: "backup done" });
+    expect(text.action).toEqual({ kind: "tell_hq", message: { text: "backup done" } });
+  });
+
+  test("its problems: only the message's, never an agent, a folder or an API session", () => {
+    expect(stepProblems(tellForm()).what).toEqual([]);
+    expect(stepProblems({ ...tellForm(), templateId: "" }).what).toEqual(["Choose a template"]);
+    expect(stepProblems({ ...tellForm(), messageMode: "text", text: " " }).what).toEqual([
+      "Write the message",
+    ]);
+    expect(
+      stepProblems({ ...tellForm(), fromDelivery: { pr_number: { path: "", type: "number", choices: [] } } })
+        .what,
+    ).toEqual(["pr_number: pick a field of the delivery"]);
+  });
+
+  test("a stored Tell HQ automation round-trips through the form unchanged", () => {
+    const a = {
+      id: "a2",
+      name: "PR arrived",
+      trigger: { kind: "webhook", webhook_id: HOOK },
+      action: {
+        kind: "tell_hq",
+        message: {
+          template_id: "t1",
+          values: { reviewer: "bot" },
+          from_delivery: { pr_number: { path: "pull_request.number", type: "number" } },
+        },
+      },
+      policy: null,
+    } as unknown as Automation;
+    const f = formFromAutomation(a, "UTC");
+    expect(f.actionKind).toBe("tell_hq");
+    expect(f.sessionKey).toBe("");
+    const body = bodyFromForm(f);
+    expect(body.trigger).toEqual(a.trigger);
+    expect(body.action).toEqual(a.action);
   });
 });

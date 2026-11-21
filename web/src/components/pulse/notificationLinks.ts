@@ -6,9 +6,10 @@ import { MISSION_PATH } from "../../lib/missionLink";
 import { automationPath } from "../../lib/routes";
 import type { PulseNotification } from "../../types/api";
 
-/** An automation's failure episode (`automation:<id>:<run>`, #1201) opens that automation's run
- *  history — the same link the server puts in its push (`notifications._link`). */
-const AUTOMATION_ACTION_RE = /^automation:([a-z0-9]{1,64}):/;
+/** An automation's failure episode (`automation:<id>:<run>`, #1201) or a "Tell HQ" message
+ *  (`automsg:<id>:<run>`, #2221) opens that automation's run history — the same link the server
+ *  puts in its push (`notifications._link`). */
+const AUTOMATION_ACTION_RE = /^(?:automation|automsg):([a-z0-9]{1,64}):/;
 
 /** Deep link for a notification: the session it concerns, an automation's run history, a session
  *  another instance shares (#2062: the row names the peer and the grant, as the server's own push

@@ -117,6 +117,7 @@ test("a schedule skips step 2, saves off, and enables through the server's conse
     /Start a mission/,
     /Start a session/,
     /Message a session/,
+    /Tell HQ/,
   ]);
   await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
   await page.getByTestId("mission-project").selectOption(PROJECT.id);
@@ -203,6 +204,7 @@ test("no delivery yet: step 2 says to send a test first, and Advanced still work
     /Start a session/,
     /Message a session/,
     /Review loop/,
+    /Tell HQ/,
   ]);
   await page.getByTestId("action-kind").getByRole("button", { name: /Start a session/ }).click();
   // A webhook starts API sessions only: a terminal agent is offered disabled.
@@ -306,6 +308,61 @@ test("a preset is chosen, a field is mapped from the delivery with a type, and t
       reviewer: { path: "action", type: "choice", choices: ["opened", "ops, urgent"] },
     },
   });
+});
+
+test("Tell HQ from a webhook: a mapped field, no agent or folder, and the body is the message only", async ({ page }) => {
+  const { fake } = await setup(page);
+  await page.goto(AUTOMATION_NEW_PATH);
+  await pickWebhook(page, SHOP.id);
+  await wizardNext(page);
+  await expect(wizardHeading(page)).toHaveText("Which events start it?");
+  await page.getByTestId("events-presets").getByTestId("events-preset").check();
+  await wizardNext(page);
+  await expect(wizardHeading(page)).toHaveText("What does it do?");
+  const card = page.getByTestId("action-kind-tell_hq");
+  await expect(card).toContainText("a message in your notifications; HQ may comment");
+  await card.click();
+  await expect(card).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("tell-hq-what")).toContainText("never what it says");
+  // No agent, folder or session to choose: only the message.
+  await expect(page.getByTestId("session-engine")).toHaveCount(0);
+  await expect(page.getByTestId("session-folder")).toHaveCount(0);
+  await expect(page.getByTestId("send-session")).toHaveCount(0);
+  await page.getByTestId("message-mode").selectOption("template");
+  await page.getByTestId("message-template").selectOption(TEMPLATE.id);
+  await field(page, "pr_number").getByTestId("field-source").getByRole("button", { name: "From the delivery" }).click();
+  await field(page, "pr_number").getByTestId("map-path").fill("number");
+  await field(page, "pr_number").getByTestId("map-type").selectOption("number");
+  await field(page, "reviewer").getByTestId("field-value").fill("the shop team");
+  await expect(page.getByTestId("step-problems")).toHaveCount(0);
+  await targetsAndOverflow(page, '[data-testid="automation-editor"]');
+
+  await toReview(page);
+  await expect(page.getByTestId("summary-events")).toHaveText("PR opened or pushed (drafts skipped)");
+  await page.getByTestId("automation-name").fill("PR arrived");
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-notice")).toContainText("is off until you enable it");
+  const sent = lastWrite(fake, "POST");
+  expect(sent.trigger).toEqual({
+    kind: "webhook",
+    webhook_id: SHOP.id,
+    when: [
+      { path: "action", op: "one_of", value: ["opened", "reopened", "synchronized"] },
+      { path: "pull_request.draft", op: "is_false" },
+      { path: "review", op: "missing" },
+    ],
+  });
+  expect(sent.action).toEqual({
+    kind: "tell_hq",
+    message: {
+      template_id: TEMPLATE.id,
+      values: { reviewer: "the shop team" },
+      from_delivery: { pr_number: { path: "number", type: "number" } },
+    },
+  });
+  // The server's own lines, after the save: what HQ is told, and that it never acts.
+  await expect(page.getByTestId("editor-scope-lines")).toContainText("Puts a message in your notifications");
+  await expect(page.getByTestId("editor-scope-lines")).toContainText("it never acts on it");
 });
 
 test("Advanced: a condition on a field the last delivery lacked warns; a wrong type holds the step", async ({ page }) => {
@@ -446,6 +503,7 @@ for (const [card, title] of [
       /Start a mission/,
       /Start a session/,
       /Message a session/,
+      /Tell HQ/,
     ]);
     await expect(page.getByTestId("action-kind-start_mission")).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("action-why")).not.toContainText("own Forgejo webhook");

@@ -1,5 +1,7 @@
-/** Step 3 — What (#2221 P2b): start a session, message a session, or a review loop — and, on a
- *  schedule or Run now, start a mission, as before. A webhook starts or messages an API session only.
+/** Step 3 — What (#2221 P2b): start a session, message a session, a review loop, or tell HQ — and,
+ *  on a schedule or Run now, start a mission, as before. A webhook starts or messages an API session
+ *  only. "Tell HQ" puts the message in the operator's notifications; HQ is told only that a message
+ *  from this automation arrived (never what it says) and never acts on it.
  *
  *  A template message's fields each take a FIXED value or, on a webhook from the list, a value FROM
  *  THE DELIVERY: one field of it (never a list), read as a type (number, choice from a list, short
@@ -42,6 +44,7 @@ const CARD: Record<Kind, CardOption<Kind>> = {
     title: "Review loop",
     sub: "a specialist reviews each issue and PR",
   },
+  tell_hq: { value: "tell_hq", title: "Tell HQ", sub: "a message in your notifications; HQ may comment" },
 };
 
 export function StepWhat({
@@ -90,8 +93,8 @@ export function StepWhat({
   const kinds: Kind[] = legacy
     ? ["forge_review_loop"]
     : hook
-      ? ["start_session", "send_to_session", "forge_review_loop"]
-      : ["start_mission", "start_session", "send_to_session"];
+      ? ["start_session", "send_to_session", "forge_review_loop", "tell_hq"]
+      : ["start_mission", "start_session", "send_to_session", "tell_hq"];
   const loop = form.actionKind === "forge_review_loop";
   const template = templates?.find((t) => t.id === form.templateId) ?? null;
   const mappable = listHook ? mappableFields(template) : [];
@@ -122,7 +125,7 @@ export function StepWhat({
         {legacy
           ? "Its own Forgejo webhook starts only its review loop."
           : hook
-            ? "A webhook starts or messages an API session, or runs a review loop. Starting a mission from a webhook comes in a later release."
+            ? "A webhook starts or messages an API session, runs a review loop, or tells HQ. Starting a mission from a webhook comes in a later release."
             : "A review loop starts from a webhook: choose “When a webhook delivers” in step 1."}
       </p>
 
@@ -286,6 +289,13 @@ export function StepWhat({
             </Fold>
           </div>
         </div>
+      )}
+
+      {form.actionKind === "tell_hq" && (
+        <p className={styles.hint} data-testid="tell-hq-what">
+          The message goes in your notifications (the bell). HQ is told that a message from this automation
+          arrived — never what it says — and may comment on it. HQ never acts on it by itself.
+        </p>
       )}
 
       {form.actionKind === "send_to_session" && (
@@ -549,7 +559,12 @@ export function StepWhat({
               </div>
             </>
           )}
-          {form.actionKind !== "send_to_session" && (
+          {form.actionKind === "tell_hq" ? (
+            <p className={styles.hint}>
+              A message to HQ never carries a secret: it is shown in your notifications, so a template
+              with a secret is refused.
+            </p>
+          ) : form.actionKind !== "send_to_session" && (
             <p className={styles.hint}>
               {form.actionKind === "start_mission" ? "Mission briefs" : "A new session’s first message"} never
               carry secrets: a template with a secret can only be sent to a running session.

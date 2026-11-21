@@ -760,7 +760,12 @@ export interface PulseNotification {
 
 /** One event in a dispatch (#1837): the row's fixed text and Open target, as announced. */
 export interface HqDispatchMember {
-  class: "needs you" | "mission escalation" | "automation failed" | string;
+  class:
+    | "needs you"
+    | "mission escalation"
+    | "automation failed"
+    | "automation message"
+    | string;
   title: string;
   reason: string;
   /** The row's own Open target, re-validated by the server ("" when it has none). */

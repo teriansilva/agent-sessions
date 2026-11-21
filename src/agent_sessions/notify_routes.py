@@ -73,12 +73,17 @@ _CODE_RE = re.compile(r"[a-z0-9_]{1,40}")
 CLASS_NEEDS_YOU = hq_dispatch.CLASS_NEEDS_YOU
 CLASS_ESCALATION = hq_dispatch.CLASS_ESCALATION
 CLASS_AUTOMATION = hq_dispatch.CLASS_AUTOMATION
+#: A "Tell HQ" automation's message (#2221). No route carries it yet: `connectors.store`'s
+#: `NOTIFY_CLASSES` does not offer it, so it never joins. It has a fixed label and no settlement,
+#: like a failure, so a later opt-in sends the label — never the message.
+CLASS_AUTOMATION_MESSAGE = hq_dispatch.CLASS_AUTOMATION_MESSAGE
 #: The classes a member can RESOLVE in. An automation failure never does: its copy is never edited.
 RESOLVABLE = frozenset({CLASS_NEEDS_YOU, CLASS_ESCALATION})
 #: Each class's fixed label: never a row's title, reason or any session text.
 CLASS_LABEL = {
     CLASS_ESCALATION: "Mission escalation",
     CLASS_AUTOMATION: "Automation failed",
+    CLASS_AUTOMATION_MESSAGE: "Message from an automation",
 }
 NEEDS_YOU_FALLBACK = "A session needs you"
 
@@ -356,8 +361,8 @@ class Resolver:
 
     def __call__(self, tag: str) -> str:
         cls = hq_dispatch.class_of(tag)
-        if cls == CLASS_AUTOMATION:
-            return "open"  # an automation failure has no settlement
+        if cls in (CLASS_AUTOMATION, CLASS_AUTOMATION_MESSAGE):
+            return "open"  # an automation's failure or message has no settlement
         if cls == CLASS_NEEDS_YOU:
             if self.episodes is None:
                 return "unknown"

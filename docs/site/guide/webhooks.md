@@ -45,7 +45,9 @@ these names. **The values themselves are not kept.**
 ## Choose which events, and fill values from them
 
 You do this in the [automation wizard](/guide/automations), steps 2 and 3. A webhook can start a
-review loop, start a session, or send a message to a session. Sessions must be API sessions.
+review loop, start a session, send a message to a session, or tell HQ (a message in your
+notifications). Sessions must be API sessions. When a webhook tells HQ, HQ learns only that a
+message arrived, never what the delivery said.
 
 - **Which events.** If the webhook has received an event, BattleLab offers presets for common
   ones: *PR opened or pushed (drafts skipped)*, *Issue opened or edited*, *Review submitted*. You

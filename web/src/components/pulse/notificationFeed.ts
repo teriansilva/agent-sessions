@@ -66,6 +66,8 @@ const TAG_CLASS: [string, EventClass][] = [
   ["needs-you:", "needs"],
   ["escalation:", "escalation"],
   ["automation:", "automation"],
+  // A "Tell HQ" automation's message (#2221): filed with the automations.
+  ["automsg:", "automation"],
 ];
 
 function classOfTag(tag: string | undefined): EventClass | null {
@@ -79,7 +81,7 @@ function classOfTag(tag: string | undefined): EventClass | null {
 export function classOfRow(n: PulseNotification): EventClass {
   const byTag = classOfTag(n.dispatch?.tag);
   if (byTag) return byTag;
-  if (!n.session_id && /^automation:/.test(n.action_id ?? ""))
+  if (!n.session_id && /^(?:automation|automsg):/.test(n.action_id ?? ""))
     return "automation";
   if (n.needs_you === true) return "needs";
   if (n.escalation === true) return "escalation";
@@ -91,7 +93,7 @@ export function classOfMember(m: HqDispatchMember): EventClass {
   if (byTag) return byTag;
   if (m.class === "needs you") return "needs";
   if (m.class === "mission escalation") return "escalation";
-  if (m.class === "automation failed") return "automation";
+  if (m.class === "automation failed" || m.class === "automation message") return "automation";
   return "other";
 }
 

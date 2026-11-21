@@ -11,6 +11,10 @@ There is no second launcher here. Each action goes through the path a manual sta
 * ``send_to_session`` → ``session_input.send_input`` (single writer, ``require_quiet``,
   ``precondition`` + ``final_guard``) for text, ``template_send.send`` for a template (the only
   path a secret travels). Its ``Outcome`` becomes the run outcome.
+* ``tell_hq`` (#2221) → one bell row through the same ``_announce`` every automation notice uses,
+  tagged ``automsg:<id>:<run>`` for HQ's Dispatches. The row's reason is the rendered message
+  (display, for the operator); HQ's facts are the class and the automation's name only, never the
+  message or a delivered value. HQ may write its one line about it; it never acts on it.
 
 **API targets are structured (#1901).** The target client's ``manifest.runtime`` picks the
 transport, above every PTY check. An API client is admitted (``target_state``) by
@@ -849,6 +853,101 @@ async def _send_to_session(run: dict, config: dict, pins: dict, *, registry) -> 
     return await asyncio.to_thread(_send, run, config, pins)
 
 
+#: A "Tell HQ" run's bell row (#2221): its title names the automation, its reason is the message.
+TELL_HQ_TITLE = "{name}: a message for you"
+TELL_HQ_DONE = "put in your notifications; HQ was told a message arrived"
+#: Why a template that has a secret now is refused: the message would sit in the bell.
+TELL_HQ_CARRIES = "the template now has a secret, which a message to HQ can never carry"
+
+
+def tell_hq_tag(run: dict) -> str:
+    """A "Tell HQ" run's action key AND dispatch tag: ``automsg:<automation id>:<run id>``. Fixed
+    from ids before the row write, one per run, so a second run never dedupes into the first and a
+    reconcile pass derives the same tag again (`notifications.DISPATCH_TAG_RES`)."""
+    return f"automsg:{run['automation_id']}:{run['id']}"
+
+
+def tell_hq_reason(text: str) -> str:
+    """The rendered message as the bell row's reason: whitespace collapsed to one line, capped to
+    what `notifications.add` keeps (`BODY_MAX`), with an ellipsis rather than a silent cut. The
+    run's recorded inputs keep the whole message."""
+    line = " ".join(text.split())
+    cap = notifications.BODY_MAX
+    return line if len(line) <= cap else line[: cap - 1].rstrip() + "…"
+
+
+async def _tell_hq(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
+    """A message for the operator, filed as an HQ dispatch (#2221). The effect is ONE bell row,
+    written under the effect lock after the final authority read, like every other effect.
+
+    **The whole effect runs on ONE worker thread** under `effect_lock.runner_sync`
+    (`_tell_hq_sync`), like a send: a cancellation of this coroutine cannot release the lock
+    while the row is being written, so a disable acknowledged without ``in_flight`` is never
+    followed by a message (the effect-lock contract). On cancellation the worker is JOINED before
+    the cancellation goes on, so a written row is recorded as delivered (`_DELIVERED`), never as
+    interrupted.
+
+    **The facts contract holds** (`hq_dispatch`): the row's reason is the rendered message (text,
+    or a template with its fixed and delivered values), for the operator only. HQ's facts are
+    ``CLASS_AUTOMATION_MESSAGE``, the automation's own name and the age. HQ writes its usual line
+    about the event; nothing here proposes or does anything on HQ's behalf."""
+    task = asyncio.ensure_future(asyncio.to_thread(_tell_hq_sync, run, config, pins))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Join the worker however often we are cancelled meanwhile (`effect_lock._try_owned`): the
+        # lock is released, and its outcome recorded in `_DELIVERED`, only when it is done.
+        while not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(task)
+        raise
+
+
+def _tell_hq_sync(run: dict, config: dict, pins: dict) -> tuple[str, str]:
+    """BLOCKING: the final authority read and the bell row, in one critical section."""
+    rid = run["id"]
+    with effect_lock.runner_sync(run["automation_id"]) as held:
+        if not held:
+            return "skipped", LOCK_BUSY
+        stop = _authority_outcome(run)
+        if stop:
+            return stop
+        try:
+            # Text, or a template with NO secret: the message lands in a notification row.
+            text, inputs = _render_plain(config, pins, carried_refusal=TELL_HQ_CARRIES)
+        except RunRefused as e:
+            return "refused", e.detail
+        reason = tell_hq_reason(text)
+        if not reason:
+            return "refused", "the message is empty, so nothing was put in your notifications"
+        # Recorded BEFORE the row: a crash after it leaves an honest record, never a replay.
+        store.set_inputs(rid, inputs)
+        stop = _authority_outcome(run)
+        if stop:
+            return stop
+        key = tell_hq_tag(run)
+        name = str(config.get("name") or "automation")
+        try:
+            rec = _announce(
+                TELL_HQ_TITLE.format(name=name),
+                reason,
+                key,
+                dispatch_tag=key,
+                # The class and the automation's own name: never `text`, never a delivered value.
+                facts={"class": hq_dispatch.CLASS_AUTOMATION_MESSAGE, "automation": name},
+            )
+        except Exception as e:  # noqa: BLE001 — the bell could not be written: nothing reached you
+            log.warning("automation run %s: the bell row was not written", rid, exc_info=True)
+            return (
+                "failed",
+                f"the message could not be put in your notifications ({type(e).__name__})",
+            )
+        if rec is None:
+            return "failed", "the message could not be put in your notifications"
+        _delivered(rid, "ok", TELL_HQ_DONE)
+        return _DELIVERED[rid]
+
+
 async def _review_loop(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
     # At call time: the review loop's runtime imports this module (#2202).
     from . import review_loop_runner
@@ -861,6 +960,7 @@ _ACTIONS = {
     "start_session": _start_session,
     "send_to_session": _send_to_session,
     "forge_review_loop": _review_loop,
+    "tell_hq": _tell_hq,
 }
 
 
@@ -898,7 +998,7 @@ def with_delivered(config: dict, run: dict) -> dict:
     template's values for this run only. Anything else — a missing value, an unmapped one — is
     refused: nothing is partly filled."""
     action = config["action"]
-    if action["kind"] not in ("start_session", "send_to_session"):
+    if action["kind"] not in ("start_session", "send_to_session", "tell_hq"):
         return config
     msg = action["message"]
     mapped = msg.get("from_delivery") or {}
@@ -1103,7 +1203,7 @@ def _announce(
     *,
     dispatch_tag: str | None = None,
     facts: dict | None = None,
-) -> None:
+) -> dict | None:
     # HQ's Dispatches (#1837): the row's write, its push and its hand-off all run inside the
     # in-flight fence (in memory, cannot fail or wait). The fence is up BEFORE the row can be read
     # (Hermes 7678), so a reconcile pass never sees an unfenced row, however long the write takes.
@@ -1124,6 +1224,7 @@ def _announce(
             with contextlib.suppress(Exception):
                 notifications.fanout(rec)
         hq_dispatch.announce(rec, facts)
+    return rec
 
 
 def notify(result: dict) -> None:

@@ -40,8 +40,9 @@ the next pass, or that no pass sees within 24 h.
 
 **Facts only.** ``hq_notify``'s input is the members' ``facts`` snapshots: per-producer derived
 fields (class, project, engine label, age, and the mission or automation's own name), never a row's
-title or reason, a session's text, a run or escalation reason, or anything third-party. ``display``
-is the view's record and is never sent.
+title or reason, a session's text, a run or escalation reason, or anything third-party. A "Tell
+HQ" automation's message (#2221) is the row's reason: the row shows it, its facts never carry it.
+``display`` is the view's record and is never sent.
 
 Kill switch: ``AGENT_SESSIONS_HQ_DISPATCH_LOOP=0`` stops the writer (enqueues still record).
 """
@@ -118,18 +119,24 @@ LIST_MAX = 50
 CLASS_NEEDS_YOU = "needs you"
 CLASS_ESCALATION = "mission escalation"
 CLASS_AUTOMATION = "automation failed"
+#: A "Tell HQ" automation's message (#2221). Its facts are the class, the automation's own name and
+#: the age: NEVER the message, its template values or anything a webhook delivered. Those are
+#: third-party text, and they reach the operator only on the bell row (display, never model input).
+CLASS_AUTOMATION_MESSAGE = "automation message"
 #: Each class's facts, exactly. A REDUCED (reconciled) member carries a subset: what the row's
 #: structured fields give, never anything parsed out of its title or reason.
 FACT_KEYS: dict[str, frozenset[str]] = {
     CLASS_NEEDS_YOU: frozenset({"class", "project", "engine", "age_min"}),
     CLASS_ESCALATION: frozenset({"class", "mission", "project", "engine", "age_min"}),
     CLASS_AUTOMATION: frozenset({"class", "automation", "outcome", "age_min"}),
+    CLASS_AUTOMATION_MESSAGE: frozenset({"class", "automation", "age_min"}),
 }
 #: The reduced shape a reconciled member gets: the row's structured fields only.
 REDUCED_KEYS: dict[str, frozenset[str]] = {
     CLASS_NEEDS_YOU: frozenset({"class", "project", "engine", "age_min"}),
     CLASS_ESCALATION: frozenset({"class", "project", "engine", "age_min"}),
     CLASS_AUTOMATION: frozenset({"class", "age_min"}),
+    CLASS_AUTOMATION_MESSAGE: frozenset({"class", "age_min"}),
 }
 #: An automation run's outcome, as the automations store spells it.
 OUTCOMES = frozenset({"failed", "refused", "partial"})
@@ -137,6 +144,7 @@ _CLASS_OF_PREFIX = {
     "needs-you:": CLASS_NEEDS_YOU,
     "escalation:": CLASS_ESCALATION,
     "automation:": CLASS_AUTOMATION,
+    "automsg:": CLASS_AUTOMATION_MESSAGE,
 }
 
 #: A bundle id: server-minted, opaque, the only id a link carries.
