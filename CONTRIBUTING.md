@@ -143,8 +143,25 @@ model).
 - One logical change per PR; keep the diff scoped.
 - Add a regression test for every bug fix and every new behavior.
 - Conventional, descriptive commit messages. No AI-attribution trailers.
-- Update the docs (`README.md` / `CLAUDE.md` / `docs/`) when you change behavior.
+- Update the docs (`README.md` / `CLAUDE.md` / `docs/`) when you change behavior; a user-visible
+  change also updates the manual (see [Docs are part of done](#docs-are-part-of-done)).
 - For UI changes, include before/after screenshots — see [`docs/visual-review.md`](docs/visual-review.md).
+
+## Docs are part of done
+
+The manual in `docs/site` is what users read at docs.battlelabos.com, and what HQ searches when
+someone asks it how BattleLab works. A feature the manual doesn't describe is a feature HQ can't
+explain. So:
+
+- **A user-visible change updates its manual page in the same PR.** That covers UI, behaviour, a
+  setting, or anything a user can reach. Say which in the PR's test plan:
+  `- [x] Manual: guide/<page> updated`, or `- [x] Manual: none — <why it isn't user-visible>`.
+- **A new section, sub-menu entry or HQ capability group gets a row in
+  [`docs/docs-coverage.md`](docs/docs-coverage.md)**, naming the page that documents it, or
+  `gap #<issue>` for the open issue that will write it. `tests/test_docs_coverage.py` fails on an
+  unmapped entry, a missing page, a page that isn't in the sidebar, or a stale row.
+- The test proves a page *exists*; review checks it is *right*. Write against the running app, and
+  prefer generated blocks (`scripts/gen-engine-docs`) for facts the code already knows.
 
 ## UI changes — NIGHTJAR
 
