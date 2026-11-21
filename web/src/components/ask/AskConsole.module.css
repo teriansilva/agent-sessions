@@ -1091,9 +1091,13 @@
 
 /* STOP (#2076): it takes Send's exact slot while a turn runs. An outlined danger plate — never
  * filled: red stays rare — with a square glyph, at the 44px floor. */
+/* Stop beside Send (#2103): a square, 44px in both directions, outlined danger. */
 .stop {
   composes: danger from "../ui/actionButton.module.css";
-  min-width: 92px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
   flex: none;
 }
 .stopSquare {
@@ -1104,8 +1108,79 @@
 }
 /* "Esc to stop": under the button, for a keyboard — never on a coarse pointer or a phone-width
  * layout. */
-.stopHint {
+/* The row under the box: what Send does while HQ works (left), the Stop shortcut (right). */
+.underBox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
   margin-top: 6px;
+  min-height: 16px;
+}
+.queueNote {
+  min-width: 0;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.queueNoteWarn {
+  color: var(--warn-text);
+}
+/* A question that waits or never ran (#2103): the Commander's own bubble, dashed and dimmed,
+ * with its state and its one action beneath it. */
+.you.youQueued {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+}
+.you.youQueued .text {
+  color: var(--text-2);
+}
+.queueLine {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: 4px;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.queueWarn > [role="status"] {
+  color: var(--warn-text);
+}
+.queueAct {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.queueAct:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.queueAct:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .queueAct {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+.stopHint {
+  flex: none;
   text-align: right;
   font: 500 var(--fs-micro) / 1 var(--font-mono);
   letter-spacing: 0.14em;

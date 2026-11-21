@@ -1,7 +1,7 @@
 /** HQ's process row and Stop, in a real browser (#2076).
  *
- *  What a DOM emulator cannot prove: that Stop really sits where Send was and is a 44px target on
- *  a coarse pointer, that a step line is one too, that Esc reaches HQ only when nothing over it
+ *  What a DOM emulator cannot prove: that Stop really sits in the composer's foot row beside
+ *  Send (#2103; it took Send's place until then) and is a 44px target on a coarse pointer, that a step line is one too, that Esc reaches HQ only when nothing over it
  *  owns the key, that the row and its bar hold still outside Full motion, that a long list scrolls
  *  with the thread (never inside itself) with the composer still docked, and that keyboard focus
  *  reaches the row and Stop in order. Runs on both projects (desktop and phone).
@@ -154,7 +154,7 @@ async function openRunning(page: Page, done: Step[]) {
   return { panel, held };
 }
 
-test("Stop takes Send's place, stops the turn it names, and the process row opens", async ({
+test("Stop sits beside Send, stops the turn it names, and the process row opens", async ({
   page,
 }) => {
   const held = await mockHq(page);
@@ -175,10 +175,16 @@ test("Stop takes Send's place, stops the turn it names, and the process row open
 
   const stop = panel.getByTestId("composer-stop");
   await expect(stop).toHaveAccessibleName("Stop HQ");
-  await expect(panel.getByTestId("composer-send")).toHaveCount(0);
-  // Send's exact slot: the same right inset, on the same centre line of the foot row.
-  expect(await slot("composer-stop")).toEqual(send);
-  expect((await stop.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  // #2103: Send KEEPS its slot (a question sent now is queued behind the running one), and
+  // Stop is a 44px square to its left, on the same centre line of the foot row.
+  await expect(panel.getByTestId("composer-send")).toBeVisible();
+  expect(await slot("composer-send")).toEqual(send);
+  const beside = await slot("composer-stop");
+  expect(beside.centre).toBe(send.centre);
+  expect(beside.right).toBeGreaterThan(send.right);
+  const stopBox = (await stop.boundingBox())!;
+  expect(stopBox.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  expect(stopBox.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // The field stays usable while HQ works.
   await expect(panel.getByTestId("composer-input")).toBeEnabled();
   // The running row: ONE collapsed <details>, its bar inside the summary.

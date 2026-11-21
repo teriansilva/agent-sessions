@@ -45,6 +45,7 @@ from . import (
     grants,
     hq_dispatch,
     hq_report_broker,
+    hq_tasks,
     memory,
     memory_broker,
     memory_capture,
@@ -566,6 +567,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             native_runtime.start_reconciliation()
         # Ask's follower (#1443 Phase 4): deterministic, no model call, no notification.
         ask_follow_task = asyncio.create_task(ask_follow.run(registry))
+        # HQ's tasks (#2103): a turn the last process left queued reads "not started", and a
+        # settled answer nobody saw whose bell row was never written gets it now. Once, at start.
+        hq_tasks_task = asyncio.create_task(hq_tasks.reconcile())
         # API clients' model lists (#1503): warmed shortly after startup and re-probed before they
         # expire, one probe at a time on `native_models`' own refresher thread, never on the loop.
         # Env kill-switch AGENT_SESSIONS_MODELS_LOOP=0 (lists are then read on demand).
@@ -604,6 +608,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # …and Ask's (#1443), for the same reason: a turn whose reader left has no request.
             with contextlib.suppress(Exception):
                 await ask_orchestrator.drain_turns()
+                await hq_tasks.drain()
             # …and Ask's launches in flight (#1443 Phase 3a): one cut short reads `interrupted`.
             with contextlib.suppress(Exception):
                 await ask_proposals.drain()
@@ -656,6 +661,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 capacity_task,
                 archive_sweep_task,
                 ask_follow_task,
+                hq_tasks_task,
                 models_task,
             ):
                 task.cancel()

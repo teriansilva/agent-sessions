@@ -70,15 +70,44 @@ STOP_PHRASES: dict[str, frozenset[str]] = {
 }  # fmt: skip
 
 
+#: What stops EVERYTHING when it is the WHOLE utterance (#2103): every running HQ task, and
+#: every question waiting behind one. Same rule and same languages as `STOP_PHRASES`: a sentence
+#: that merely contains one is a request. Checked before the plain stop.
+STOP_ALL_PHRASES: dict[str, frozenset[str]] = {
+    "en": frozenset({
+        "stop everything", "stop all", "stop it all", "stop all of it", "cancel everything",
+        "cancel all", "please stop everything",
+    }),
+    "de": frozenset({
+        "alles stoppen", "stopp alles", "stop alles", "alles anhalten", "alles abbrechen",
+        "brich alles ab", "hör mit allem auf",
+    }),
+    "es": frozenset({"para todo", "detén todo", "cancela todo", "cancelar todo"}),
+    "fr": frozenset({"arrête tout", "arrêtez tout", "annule tout", "stop tout"}),
+    "it": frozenset({"ferma tutto", "annulla tutto", "stop tutto", "basta tutto"}),
+    "pt": frozenset({"pare tudo", "para tudo", "cancela tudo", "cancelar tudo"}),
+}  # fmt: skip
+
+
+def _whole_phrase(said: str, phrases: dict, languages: frozenset | None) -> bool:
+    text = " ".join(_PUNCT.sub(" ", said or "").split()).casefold()
+    if not text:
+        return False
+    langs = [lang for lang in phrases if not languages or lang in languages]
+    return any(text in phrases[lang] for lang in langs or phrases)
+
+
+def is_stop_all_phrase(said: str, languages: frozenset | None = None) -> bool:
+    """Whether an utterance is NOTHING but a stop-everything phrase (#2103), in one of
+    ``languages`` (as `is_stop_phrase`)."""
+    return _whole_phrase(said, STOP_ALL_PHRASES, languages)
+
+
 def is_stop_phrase(said: str, languages: frozenset | None = None) -> bool:
     """Whether an utterance is NOTHING but a stop phrase (#2076), in one of ``languages`` (the
     call's listening set; ``None`` or empty: every language listed). A sentence that merely
     contains one ("stop the staging deploy") is a request, never a stop."""
-    text = " ".join(_PUNCT.sub(" ", said or "").split()).casefold()
-    if not text:
-        return False
-    langs = [lang for lang in STOP_PHRASES if not languages or lang in languages]
-    return any(text in STOP_PHRASES[lang] for lang in langs or STOP_PHRASES)
+    return _whole_phrase(said, STOP_PHRASES, languages)
 
 
 #: How many consecutive words of HQ's own line make an echo (#1807). Three: HQ's shortest fixed

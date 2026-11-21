@@ -271,7 +271,14 @@ def state(cid: str) -> dict:
     latest follow began: an update older than that belongs to an earlier follow of the session
     (#1755), so a notice it superseded never comes back after Unfollow. ``unread`` is False when
     the sidecar cannot be read. Blocking."""
-    empty = {"following": [], "follows": [], "since": {}, "unread": False, "last_update_at": 0.0}
+    empty = {
+        "following": [],
+        "follows": [],
+        "since": {},
+        "unread": False,
+        "last_update_at": 0.0,
+        "seen_at": 0.0,
+    }
     try:
         doc = ask_store.read_follows(cid)
     except ask_store.ConversationNotFound:
@@ -297,6 +304,8 @@ def state(cid: str) -> dict:
         },
         "unread": doc["last_update_at"] > doc["seen_at"],
         "last_update_at": doc["last_update_at"],
+        # #2103: the seen cursor itself, for a client that shows a newer SETTLEMENT.
+        "seen_at": doc["seen_at"],
     }
 
 

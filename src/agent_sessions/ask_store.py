@@ -51,7 +51,7 @@ import re
 import stat
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 from . import ask_screen, hq_contacts, missions, template_secrets, template_suggest
@@ -77,7 +77,8 @@ MAX_CONVERSATIONS = 50
 #: Turns one conversation may hold; past it the operator starts a new one (honest, not a cut).
 MAX_TURNS = 50
 #: The most of one conversation file read back. Above the worst case by construction: a turn is
-#: at most a question and an answer (TEXT_MAX each), 8+8 matches, two status records, its first
+#: at most a question and an answer (TEXT_MAX each), 8+8 matches, three status records (a turn
+#: that waited in the queue has `queued`, `pending` and its outcome, #2103), its first
 #: `ask_orchestrator.STEP_RECORDS_MAX` no-effect tool records (ARG_MAX of arguments and
 #: META_IDS_MAX ids each), one record per step that had or may have had an effect (bounded by the
 #: send and memory caps and by `MAX_SESSION_PROPOSALS` cards a conversation), and one `steps_more`
@@ -103,7 +104,13 @@ META_IDS_MAX = 20
 PINNING_PROPOSAL_STATES = frozenset({"deciding", "creating"})
 
 #: `stopped` (#2076): the Commander ended the turn before HQ answered; its records are kept.
-TURN_STATUSES = frozenset({"pending", "done", "failed", "stopped"})
+TURN_STATUSES = frozenset(
+    {"pending", "done", "failed", "stopped", "queued", "withdrawn", "not_started"}
+)
+#: A queued turn's life before it runs, and the two ways it ends without running (#2103,
+#: `hq-tasks.md`): ``queued`` waits behind the running turn; ``withdrawn`` was taken back by the
+#: Commander (Withdraw, Stop all); ``not_started`` was still queued when the server stopped.
+UNSTARTED_STATUSES = frozenset({"queued", "withdrawn", "not_started"})
 #: What a `send` step's record says of its message: delivered, not sent, or not known.
 SENT_OUTCOMES = frozenset({"yes", "no", "unknown"})
 #: The largest number a step record or a `steps_more` summary keeps (an ordinal, a duration in
@@ -884,6 +891,36 @@ def append(cid: str, *records: dict) -> list[dict]:
             raise ConversationNotFound(cid) from None
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
+            _write_all(fd, _records_bytes(admitted))
+        finally:
+            os.close(fd)
+    return admitted
+
+
+def append_if(cid: str, decide: Callable[[list[dict]], Sequence[dict]]) -> list[dict]:
+    """Decide and append in ONE step, under the file's own lock (#2103): ``decide`` is given the
+    conversation's records as they are with the lock held and returns the records to append
+    (none: nothing is written), or raises to refuse. Nothing can be appended between its look
+    and the write, so a check ("is there room in the queue?", "is this id unused?") and the
+    record that makes it true are one step, also while a running turn holds the cross-process
+    TURN lock, which this does not take. Returns the records as written. Blocking."""
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        try:
+            fd = os.open(_path(cid), os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            raise ConversationNotFound(cid) from None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.fstat(fd).st_size > READ_MAX_BYTES:
+                raise StoreRefused("this conversation is too large to read — start a new one")
+            records = list(decide(_parse(os.pread(fd, READ_MAX_BYTES, 0))))
+            if not records:
+                return []
+            admitted = [_admit(r, secrets) for r in records]
             _write_all(fd, _records_bytes(admitted))
         finally:
             os.close(fd)

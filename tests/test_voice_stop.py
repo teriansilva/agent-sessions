@@ -120,15 +120,14 @@ def test_a_request_that_contains_stop_does_not_stop_the_turn(rig, held):  # noqa
         await _speak(rig, "How far are we with the epic?")
         await asyncio.wait_for(script.reached.wait(), 15)
         await _speak(rig, "Stop the staging deploy when it is done")
-        # A new request, kept for when this turn settles (#2113 P3: once the interjection
-        # judgement has answered — here, no verdict, so it waits as it always did).
-        await _until(lambda: rig.call.queued is not None)
+        # A new request: it waits in the conversation's queue (#2103) behind the running turn.
+        await _until(lambda: len(ask_orchestrator.queued(rig.call.cid)) == 1)
         assert voice_calls.STOPPED_LINE not in rig.said_text()
         script.go.set()
-        await _until(lambda: len(_statuses(rig.call.cid)) == 4)
+        await _until(lambda: len(_statuses(rig.call.cid)) == 5)
 
     run(scenario())
-    assert _statuses(rig.call.cid) == ["pending", "done", "pending", "done"]
+    assert _statuses(rig.call.cid) == ["pending", "queued", "done", "pending", "done"]
 
 
 def test_noise_and_hqs_own_echo_never_stop_the_turn(rig, held):  # noqa: F811
@@ -298,7 +297,8 @@ def test_a_stop_heard_while_a_drafts_commit_is_being_written_stops_that_turn(
         # The window: the draft is claimed for its commit, and nothing is visibly running yet.
         assert rig.call.draft is None and ask_orchestrator.running_turn(rig.call.cid) is None
         await _speak(rig, "Stop.")
-        assert rig.call.queued is None and voice_calls.STOPPED_LINE not in rig.said_text()
+        assert not ask_orchestrator.queued(rig.call.cid)
+        assert voice_calls.STOPPED_LINE not in rig.said_text()
         go.set()
         await committing
         await _until(lambda: voice_calls.STOPPED_LINE in rig.said_text())

@@ -381,10 +381,16 @@ def add(
     after: Callable[[], None] | None = None,
     record: Callable[[str], bool] | None = None,
     dispatch_tag: str | None = None,
+    hq_conversation: str = "",
     tag: str = "",
     path: Path | None = None,
 ) -> dict | None:
     """Record one notification, or return ``None`` when an equivalent one is already pending.
+
+    ``hq_conversation`` (#2103) is the row's target when it is about an HQ conversation rather
+    than a session: an id of the store's own shape (`HQ_CID_RE`), never text. The bell's Open,
+    the push's link and its click all open that conversation (`_link`). A malformed one is
+    dropped and the row is written without it.
 
     Deliberately takes named, bounded fields rather than a free dict: it is the same enforcement
     trick as ``webpush.build_payload`` — a caller cannot slip screen text in without changing
@@ -563,6 +569,8 @@ def add(
             "auto_direction": bool(auto_direction),
             "activity_at": activity_at if isinstance(activity_at, int | float) else None,
         }
+        if hq_conversation and HQ_CID_RE.match(str(hq_conversation)):
+            rec["hq_conversation"] = str(hq_conversation)
         if dispatch_tag is not None:
             # A tag only (#1837): HQ's line lives in its own store and is joined into the view.
             rec["dispatch"] = dispatch_tag
@@ -1685,6 +1693,10 @@ _AUTOMATION_ACTION_RE = re.compile(r"^(?:automation|automsg):([a-z0-9]{1,64}):")
 AUTOMATION_PATH = "/mission/automations/"
 
 
+#: An HQ conversation id (`ask_store.CID_RE`), and the SPA's route for one
+#: (`web/src/lib/routes.ts` `hqConversationPath`): a row's third target kind (#2103).
+HQ_CID_RE = re.compile(r"^ask_[0-9a-f]{32}$")
+HQ_CONVERSATION_PATH = "/hq/c/"
 #: A row about a session ANOTHER instance shares with this one (#2059) names no local session:
 #: its action id carries the peer id and the grant id (both server-validated shapes), and its
 #: link is the remote pane. When the share has ended that pane shows its unavailable state.
@@ -1693,6 +1705,9 @@ REMOTE_PATH = "/remote/"
 
 
 def _link(notification: dict, base_url: str = "") -> str:
+    cid = str(notification.get("hq_conversation") or "")
+    if HQ_CID_RE.match(cid):
+        return f"{base_url}{HQ_CONVERSATION_PATH}{cid}"
     m = _AUTOMATION_ACTION_RE.match(str(notification.get("action_id") or ""))
     if m and not notification.get("session_id"):
         return f"{base_url}{AUTOMATION_PATH}{m.group(1)}"

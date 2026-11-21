@@ -67,6 +67,8 @@ export function AskComposer({
   onDraftChange,
   onStop,
   stopping = false,
+  queueFull = false,
+  queueLine = null,
 }: {
   /** False when no AI endpoint is configured: the field is disabled and says why. */
   configured: boolean;
@@ -97,9 +99,16 @@ export function AskComposer({
   /** Whether unsent text or a staged file is in the box (#1776: the sidebar's Open as page waits
    *  for it, so a draft is never lost or silently carried across). */
   onDraftChange?: (hasDraft: boolean) => void;
-  /** A turn is running and can be stopped (#2076): Stop takes Send's place. The text field stays
-   *  enabled — the next question can be typed while HQ works. Absent: nothing to stop. */
+  /** A turn is running and can be stopped (#2076). Since #2103 Stop sits BESIDE Send — a square
+   *  between the field and Send — because Send stays available: a question sent while HQ works
+   *  is queued behind the running one. Absent: nothing to stop. */
   onStop?: () => void;
+  /** The queue behind the running turn is full (#2103): Send is disabled and `queueLine` says
+   *  why. The server's 409 stays the authority. */
+  queueFull?: boolean;
+  /** The quiet line under the box while a turn runs: "Queued behind the running question", or
+   *  the full-queue line (`warn`). */
+  queueLine?: { text: string; warn: boolean } | null;
   /** The Stop is in; the turn has not settled yet. */
   stopping?: boolean;
   /** Moves on every SWITCH of the thread on screen (a pick, New, Back/Forward, a delete) — never
@@ -128,7 +137,11 @@ export function AskComposer({
   const unresolved = staged.some((s) => s.status !== "ready");
   const ready = staged.filter((s) => s.status === "ready" && s.attachment);
   const canSend =
-    configured && !busy && !unresolved && (text.trim() !== "" || ready.length > 0);
+    configured &&
+    !busy &&
+    !queueFull &&
+    !unresolved &&
+    (text.trim() !== "" || ready.length > 0);
 
   const hasDraft = text.trim() !== "" || staged.length > 0;
   useEffect(() => {
@@ -501,39 +514,55 @@ export function AskComposer({
         <div className={styles.footTrail}>
           <span className={styles.footSpacer} aria-hidden="true" />
           {onStop ? (
-            // STOP TAKES SEND'S EXACT SLOT while a turn runs (#2076): outlined danger, never
-            // filled. `type="button"`: Enter in the field never stops, and never sends either.
+            // STOP SITS BESIDE SEND while a turn runs (#2103; it took Send's place in #2076): a
+            // 44px outlined danger square, never filled, before Send in the tab order.
+            // `type="button"`: Enter in the field never stops — it sends, which now queues.
             <button
               type="button"
               className={a.stop}
               aria-label="Stop HQ"
+              title="Stop HQ"
               aria-keyshortcuts="Escape"
               disabled={stopping}
               onClick={onStop}
               data-testid="composer-stop"
             >
               <span className={a.stopSquare} aria-hidden="true" />
-              Stop
             </button>
-          ) : (
-            <button
-              type="submit"
-              className={`${compose.send} shine`}
-              disabled={!canSend}
-              data-testid="composer-send"
-            >
-              <Send size={15} aria-hidden="true" />
-              Send
-            </button>
-          )}
+          ) : null}
+          <button
+            type="submit"
+            className={`${compose.send} shine`}
+            disabled={!canSend}
+            data-testid="composer-send"
+          >
+            <Send size={15} aria-hidden="true" />
+            Send
+          </button>
         </div>
       </div>
     </form>
-    {/* Under the button, outside the box (its cut corner clips what hangs out of it). For the
-        eye and a keyboard only: hidden on a coarse pointer and a phone-width layout. */}
-    {onStop ? (
-      <div className={a.stopHint} aria-hidden="true" data-testid="composer-stop-hint">
-        <kbd>Esc</kbd> to stop
+    {/* Under the box, outside it (its cut corner clips what hangs out of it): what Send does
+        while HQ works (#2103), and — for the eye and a keyboard only, hidden on a coarse pointer
+        and a phone-width layout — the Stop shortcut. */}
+    {onStop || queueLine ? (
+      <div className={a.underBox}>
+        {queueLine ? (
+          <span
+            className={`${a.queueNote} ${queueLine.warn ? a.queueNoteWarn : ""}`}
+            role="status"
+            data-testid="composer-queue-line"
+          >
+            {queueLine.text}
+          </span>
+        ) : (
+          <span />
+        )}
+        {onStop ? (
+          <span className={a.stopHint} aria-hidden="true" data-testid="composer-stop-hint">
+            <kbd>Esc</kbd> to stop
+          </span>
+        ) : null}
       </div>
     ) : null}
     </>

@@ -226,7 +226,7 @@ test("both consumers: deleting on the page never lets a stale read restore it on
 
 // ---- invariant 2: the pending-turn Send lock -------------------------------------------------
 
-test("no console sends into a conversation with a turn it is not streaming, until that turn settles", async () => {
+test("a console that is not streaming the running turn queues behind it, once it has read it", async () => {
   // The hidden sidebar is still answering in A: the page reads it back PENDING.
   const done = conversation(A);
   const pending = { ...done, turns: [{ ...done.turns[0], status: "pending" as const, answer: null }] };
@@ -256,19 +256,21 @@ test("no console sends into a conversation with a turn it is not streaming, unti
   const thread = await screen.findByTestId("hq-thread");
   await waitFor(() => expect(within(thread).getByTestId("ask-turn")).toBeInTheDocument());
   const input = within(thread).getByTestId("composer-input");
+  // #2103: the turn the other console started is running here too, and this page has READ it,
+  // so the question is queued behind it — one request, to the same conversation — with Stop
+  // beside Send. (Before the read lands, Send waits: `notRead`.)
   await userEvent.type(input, "and then?{Enter}");
-  // While that turn runs there is no Send: Stop has its place (#2076).
-  expect(within(thread).queryByRole("button", { name: /send/i })).toBeNull();
   expect(within(thread).getByRole("button", { name: "Stop HQ" })).toBeInTheDocument();
-  expect(api.askMessageStream).not.toHaveBeenCalled();
-
-  // The other console's turn settles; the page's poll reads it, and only then may it send.
-  settled = true;
-  const send = await within(thread).findByRole("button", { name: /send/i }, { timeout: 5000 });
-  await waitFor(() => expect(send).toBeEnabled(), { timeout: 5000 });
-  await userEvent.click(send);
   await waitFor(() => expect(api.askMessageStream).toHaveBeenCalledTimes(1));
   expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(A);
+
+  // The other console's turn settles; the page's poll reads it, and Stop goes.
+  settled = true;
+  await waitFor(
+    () => expect(within(thread).queryByRole("button", { name: "Stop HQ" })).toBeNull(),
+    { timeout: 5000 },
+  );
+  expect(api.askMessageStream).toHaveBeenCalledTimes(1);
 }, 15_000);
 
 // ---- Hermes review 7393 ------------------------------------------------------------------------

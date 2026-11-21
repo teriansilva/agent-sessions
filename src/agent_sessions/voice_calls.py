@@ -162,6 +162,12 @@ ASIDE_GAP_S = 8.0
 FIND_STEPS = frozenset({"catalog", "content"})
 #: What HQ says once the Commander stopped its running turn (#2076). The call stays open.
 STOPPED_LINE = "Stopped."
+#: What HQ says when a task finished whose answer the Commander is no longer waiting on — they
+#: asked something newer meanwhile (#2103). Fixed and number-free; the answer is on screen, and
+#: is spoken only if they ask for it.
+ANSWER_READY_LINE = "I have that answer now."
+#: A spoken question while the conversation's queue is full (#2103). Number-free.
+QUEUE_FULL_LINE = "I already have questions waiting. Ask again once one of them is done."
 #: What HQ says to words heard while it works when no verdict could be had (#2113 P3): the words
 #: then wait for the running work, as they always did.
 INTERJECT_FALLBACK = "One sec, I'll finish this first."
@@ -253,6 +259,7 @@ from .voice_text import (  # noqa: E402,F401
     classify_decision,
     is_no_speech_phrase,
     is_skip,
+    is_stop_all_phrase,
     is_stop_phrase,
     pick_option,
     readback,
@@ -311,11 +318,13 @@ class Call:
     state: str = "dialing"  # dialing | listening | thinking | speaking | ended
     ended_reason: str = ""
     muted: bool = False
-    #: The latest utterance heard while HQ was still answering the previous one, with what it was
-    #: heard after (``(text, heard)``, see `on_utterance`).
-    queued: tuple | None = None
+    #: (#2103: the call's own one-question buffer is gone. A question spoken while HQ works
+    #: waits in the conversation's queue, `ask_orchestrator`, like a typed one.)
     #: The first part of a request, held because the Commander was already speaking again when
     #: it arrived (#1842): ``(text, heard)``. The rest joins it, and the whole is asked once.
+    #: Questions on their way into the conversation's queue (`_ask_later`, #2103): counted from
+    #: the moment the call decided they wait until `begin` has admitted or refused them.
+    admitting: int = 0
     held: tuple | None = None
     #: When the Commander last stopped speaking (`user_stopped`'s own instant, #1845).
     user_stopped_at: float = 0.0
@@ -963,6 +972,11 @@ class Call:
         if await self._answer_challenge(text, late=late, turn=turn, heard_id=heard_id):
             self._link(heard_id, "confirm")
             return
+        if not captioned and is_stop_all_phrase(text, self.listen_languages):
+            # "Stop everything" (#2103): every running HQ task is stopped and every question
+            # waiting behind one is withdrawn — Stop all, spoken. The call stays open.
+            if self.stop_turn(said=text, everything=True):
+                return
         if not captioned and is_stop_phrase(text, self.listen_languages):
             # Nothing but "stop" while HQ works (#2076): the running turn is stopped and the
             # call stays open. With no turn running the words go to HQ like any others.
@@ -1095,16 +1109,55 @@ class Call:
             self._dispatch(text, heard, self.generation)
 
     def _dispatch(self, text: str, heard: dict, gen: int) -> None:
-        if self._turn_running():
-            # HQ is still answering the previous question: keep only the newest one and ask it
-            # when the running turn settles; that turn's answer is no longer spoken.
-            self.queued = (text, heard)
-            for hid in heard.get("ids", []):
-                self._link(hid, "queued")
+        if self._turn_running() or ask_orchestrator.running(self.cid):
+            # HQ is still working in this conversation (#2103): the question waits in the
+            # conversation's queue, in order, exactly as a typed one would, and runs when the
+            # running task settles. Nothing is kept here.
+            self._ask_later(text, heard, gen)
             return
         # Drafted (#1845) where the setting waits at all and the words have a turn to time from.
         draft = self.commit_pause > 0 and heard.get("turn") is not None
         self.turn_task = asyncio.create_task(self._ask(text, gen, heard, draft=draft))
+
+    def _ask_later(
+        self,
+        text: str,
+        heard: dict | None,
+        gen: int | None = None,
+        *,
+        after: str | None = None,
+    ) -> None:
+        """Words that wait for the running work (#2103): admitted to the conversation's queue
+        (`_ask_behind`), where the call's one-question buffer used to keep only the newest.
+        Their heard records are linked as queued (#2137). ``after``: admitted only once that
+        (stopped) turn has settled."""
+        heard = heard if heard is not None else self._heard_now()
+        for hid in heard.get("ids", []):
+            self._link(hid, "queued")
+        self.admitting += 1  # until the conversation's queue has it (`_ask_behind`)
+        gen = self.generation if gen is None else gen
+
+        async def admit() -> None:
+            if after is not None:
+                await ask_orchestrator.wait_settled(self.cid, after)
+            if self.state == "ended":
+                self.admitting = max(0, self.admitting - 1)
+                return
+            await self._ask_behind(text, gen, heard)
+
+        self._side(admit())
+
+    @property
+    def queued(self) -> list[str] | None:
+        """The questions waiting behind the running work in this call's conversation, by turn
+        id, or None for none. The call keeps no buffer of its own (#2103): this reads the
+        conversation's queue."""
+        waiting = [*ask_orchestrator.queued(self.cid), *([""] * self.admitting)]
+        return waiting or None
+
+    def _heard_now(self) -> dict:
+        return {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                "began": None, "replying_to": None}  # fmt: skip
 
     def _interjectable(self) -> bool:
         """This call's own turn is running and visible, with no draft or commit in between and no
@@ -1200,12 +1253,16 @@ class Call:
             do = "later"  # it could not take them any more: they wait instead
         if do == "switch":
             if self.stop_turn(announce=False):
-                self.queued = (text, heard)  # asked once the stopped turn has settled
+                # Asked once the stopped turn has settled (as before #2103): admitted then, so
+                # they run in the freed slot, or behind what already waited in the queue.
+                self._ask_later(text, heard, after=turn_id)
                 await self._interject_say(say or INTERJECT_FALLBACK)
                 return
             do = "later"
         if do in (None, "later"):
-            self.queued = (text, heard)  # the running answer is said first, then these
+            # The running answer is said first, then these: they wait in the conversation's
+            # queue (#2103) with no new generation, so both answers are spoken.
+            self._ask_later(text, heard)
         await self._interject_say(say if do is not None and say else INTERJECT_FALLBACK)
 
     def on_mute(self, on: bool) -> None:
@@ -1223,14 +1280,23 @@ class Call:
         else:
             await self.say(text, kind="progress", heard=False)
 
-    def stop_turn(self, *, said: str | None = None, announce: bool = True) -> bool:
+    def stop_turn(
+        self, *, said: str | None = None, everything: bool = False, announce: bool = True
+    ) -> bool:
         """Stop the HQ turn running in this call's conversation (#2076): the Stop on the call
         screen, or a spoken stop phrase (`said`, captioned). HQ says `STOPPED_LINE`; the call
         NEVER ends by this. A draft not yet committed is dropped — nothing of it was stored or
         shown. False when nothing was running: nothing is said and nothing changes. Decided
-        now; the stop itself runs beside the relay loop (an effect in flight finishes first)."""
+        now; the stop itself runs beside the relay loop (an effect in flight finishes first).
+
+        The questions waiting behind the running turn STAY (#2103): the next one starts.
+        ``everything`` ("stop everything") is Stop all: every running HQ task in any
+        conversation is flagged here, at once, and every queue is withdrawn."""
         if self.state == "ended":
             return False
+        # Stop all's own fence first, with no await (#2103): the "no successor" marks and every
+        # running turn's stop flag.
+        elsewhere = bool(ask_orchestrator.request_stop_all()) if everything else False
         # WHAT is stopped is fixed NOW, before anything awaits, so nothing can slip between the
         # decision and the stop:
         # - an open draft is CLAIMED here (`_take_draft`), so the quiet timer can no longer
@@ -1249,14 +1315,14 @@ class Call:
         committing = self.committing
         turn_id = committing.turn_id if committing is not None else None
         turn_id = turn_id or ask_orchestrator.running_turn(self.cid)
-        if d is None and turn_id is None:
+        if d is None and turn_id is None and not elsewhere:
             return False
         flagged = turn_id is not None and ask_orchestrator.request_stop(
             self.cid, turn_id, committing=committing is not None
         )
-        self.queued = None  # "stop" also takes back what was asked while HQ was working
+        # (#2103: a plain Stop leaves the questions waiting in the conversation's queue.)
         self.interjection = None  # …and what was still being judged (#2113 P3)
-        self._side(self._stop_turn(d, committing, turn_id, said, flagged, announce))
+        self._side(self._stop_turn(d, committing, turn_id, said, flagged, everything, announce))
         return True
 
     async def _stop_turn(
@@ -1266,6 +1332,7 @@ class Call:
         turn_id: str | None,
         said: str | None,
         flagged: bool,
+        everything: bool = False,
         announce: bool = True,
     ) -> None:
         """The waiting half of a stop. The fence itself was set in `stop_turn` (`flagged`).
@@ -1287,6 +1354,10 @@ class Call:
                 # Not there to flag a moment ago (its commit had not reached the orchestrator's
                 # turn): asked again now that the commit has ended.
                 stopped = await ask_orchestrator.stop(self.cid, turn_id) or stopped
+        if everything:
+            # The queues go, and the turns flagged in `stop_turn` settle (bounded wait).
+            done = await ask_orchestrator.stop_all()
+            stopped = stopped or bool(done["stopped"] or done["withdrawn"])
         # Said only when a turn really was stopped or discarded: one that answered first, or
         # whose commit failed, was not stopped, and its own outcome speaks for it.
         if stopped and announce:
@@ -1454,7 +1525,8 @@ class Call:
         else:
             await self.set_state("thinking")
         now = time.monotonic()
-        self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
+        work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
+        self.work = work
         progress = asyncio.create_task(self._report_progress(d))
         self.call_turn = (turn_id, text)
         if self._queue() is not None:
@@ -1468,6 +1540,8 @@ class Call:
             )
         except _DraftDropped:
             return  # nothing of it was stored, shown or said; the words went on elsewhere
+        except _NotStarted:
+            return  # it waited in the queue and was withdrawn, or the call ended meanwhile
         except ask_orchestrator.TurnError as e:
             view = {"status": "failed", "detail": e.detail}
         except ask_store.StoreRefused:
@@ -1477,7 +1551,8 @@ class Call:
             view = {"status": "failed", "detail": ""}
         finally:
             progress.cancel()
-            self.work = None
+            if self.work is work:  # the next task's own, once a queued one has started (#2103)
+                self.work = None
             if self.call_turn is not None and self.call_turn[0] == turn_id:
                 self.call_turn = None
             if d is not None and self.draft is d:
@@ -1488,16 +1563,135 @@ class Call:
             for hid in heard.get("ids", []):
                 self._link(hid, "hq", turn_id)
         # Words the Commander added that the turn settled without using (#2113 P3): asked next,
-        # ahead of anything queued, exactly once. A stopped turn hands none back (the
+        # exactly once. A stopped turn hands none back (the
         # orchestrator drops them at its settle; checked here too).
         left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
         if left and self.state != "ended" and view.get("status") != "stopped":
-            words, q = " ".join(left), self.queued
-            joined = f"{words} {q[0]}" if q else words
-            self.queued = (joined[: ask_orchestrator.QUERY_MAX], q[1] if q else None)
+            # (#2103: they join the conversation's queue, behind anything already waiting.)
+            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], None)
         if self.state == "ended" or (d is not None and d.dropped):
             return
+        await self._present(view, gen, heard, now)
+
+    async def _ask_behind(self, text: str, gen: int, heard: dict) -> None:
+        """A question spoken while HQ is working (#2103). It is admitted to the conversation's
+        queue like a typed one (never a draft: the Commander has finished it), and this call
+        follows it: when it starts it is the call's turn, and when it settles it is presented
+        like any other. Withdrawn, or the call over before it started: nothing is said. A
+        queued spoken turn outlives the call and runs as a typed one would; an ended or
+        replaced call is never spoken to (every `say` is this call's own)."""
+        from . import actuator
+
+        turn_id = str(uuid.uuid4())
+        try:
+            task, view = await ask_orchestrator.begin(
+                self.cid,
+                turn_id,
+                text,
+                working_keys=actuator.working_keys(self.registry),
+                busy_keys=actuator.busy_keys(self.registry),
+                # Never an answer to HQ's own question: that one is asked into a free slot.
+                answers=None,
+                option=None,
+                contact=self.contact,
+                via="call",
+                call_answers=self.answers,
+                replying_to=heard.get("replying_to"),
+                operator=self.operator,
+                app=self.app,
+            )
+        except ask_orchestrator.TurnError as e:
+            self.admitting = max(0, self.admitting - 1)
+            full = e.extra.get("queue_full") is True
+            await self.say(
+                QUEUE_FULL_LINE if full else "Sorry, I couldn't take that question.",
+                kind="error",
+            )
+            return
+        except BaseException as e:  # never a silent loss of what the Commander said
+            self.admitting = max(0, self.admitting - 1)
+            if not isinstance(e, Exception):
+                raise
+            log.warning("voice call: a spoken question could not be queued", exc_info=True)
+            await self.say("Sorry, I couldn't take that question.", kind="error")
+            return
+        self.admitting = max(0, self.admitting - 1)  # the conversation has it now
+        if task is None:
+            if (view or {}).get("status") != "queued":
+                if view and self.state != "ended":
+                    self._link_asked(heard, turn_id)
+                    await self._present(view, gen, heard, time.monotonic())  # already settled
+                return
+            task, settled = await self._follow_queued(turn_id, view)
+            if self.state == "ended":
+                return
+            if task is None:
+                # It settled before this call could follow it: presented once, like any other.
+                # Withdrawn or never started: nothing is said.
+                if settled and settled.get("status") in ask_orchestrator.RAN_STATUSES:
+                    self._link_asked(heard, turn_id)
+                    await self._present(settled, gen, heard, time.monotonic())
+                return
+        # It runs now (or ran: a finished task still holds its view): this call's turn, shown
+        # and timed as one asked into a free slot.
+        self.turn_task = asyncio.current_task()
+        await self.set_state("thinking")
+        now = time.monotonic()
+        work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
+        self.work = work
+        progress = asyncio.create_task(self._report_progress())
+        self.call_turn = (turn_id, text)  # words heard while it works are its own (#2113 P3)
+        try:
+            view = await self._watch_turn(task)
+        except Exception:  # noqa: BLE001 — as `_ask`: never a call stuck in "thinking"
+            log.warning("voice call turn failed", exc_info=True)
+            view = {"status": "failed", "detail": ""}
+        finally:
+            progress.cancel()
+            if self.work is work:
+                self.work = None
+            if self.call_turn is not None and self.call_turn[0] == turn_id:
+                self.call_turn = None
+        self._link_asked(heard, turn_id)
+        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        if left and self.state != "ended" and view.get("status") != "stopped":
+            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], None)
+        if self.state == "ended":
+            return
+        await self._present(view, gen, heard, now)
+
+    def _link_asked(self, heard: dict, turn_id: str) -> None:
+        """The heard words were asked as this turn (#2137): linked to it, whatever it answered."""
+        for hid in heard.get("ids", []):
+            self._link(hid, "hq", turn_id)
+
+    async def _follow_queued(
+        self, turn_id: str, view: dict
+    ) -> tuple[asyncio.Task | None, dict | None]:
+        """Follow a question this call has just queued (#2103): ``(task, None)`` once it runs or
+        ran, ``(None, view)`` for one the store already settled (or that never will run).
+
+        The start handle is taken HERE, before anything awaits, in the same step in which
+        `begin` returned the queued view — and kept across the client send (review 8407): that
+        send can yield for as long as the running turn needs to settle and the queued one to
+        start, and even to settle too. Looking the turn up only after it found the queue
+        entry gone and took a turn that ran for one that never started."""
+        handle = ask_orchestrator.when_started(self.cid, turn_id)
+        await self.client({"t": "queued", "turn": view})
+        return await ask_orchestrator.follow(self.cid, turn_id, handle)
+
+    async def _present(self, view: dict, gen: int, heard: dict, now: float) -> None:
+        """A turn of this call settled: show it, and say what is to be said."""
         await self.client({"t": "turn", "turn": view})
+        # The call screen has just been given this turn's outcome (#2103): it is SEEN, like one
+        # a console displayed, so the bell is not told about an answer the Commander is being
+        # shown and read. A turn that settles after the call ended never gets here.
+        at = view.get("settled_at")
+        if isinstance(at, int | float) and ask_store.valid_cid(self.cid):
+            from . import ask_follow
+
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(ask_follow.mark_seen, self.cid, float(at))
         # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
         # before the generation check below, so a question asked meanwhile still wins.
         ready = gen == self.generation and view.get("status") == "done"
@@ -1507,8 +1701,15 @@ class Call:
         # Needs-you rows HQ put to the Commander (`offer_decisions`, #2137), built from the LIVE
         # list now: only a row still waiting on the very decision HQ read is offered.
         offered = await self._offered_needs_you(view) if ready else []
-        if gen != self.generation or self.state == "ended":
-            pass  # a newer question superseded this one: its answer is on screen, not spoken
+        if self.state == "ended":
+            pass
+        elif gen != self.generation:
+            # The Commander asked something newer meanwhile, so this is not the answer they
+            # are waiting on (#2103): it is on screen, and HQ only says that it has it, in a
+            # fixed line and never over its own voice. Asked for, HQ answers it from the
+            # conversation.
+            if view.get("status") == "done" and self.state != "speaking":
+                await self.say(ANSWER_READY_LINE, kind="status", turn_id=view.get("turn_id"))
         elif view.get("status") == "done":
             ask = view.get("ask")
             if isinstance(ask, dict) and ask.get("question_id"):
@@ -1586,11 +1787,9 @@ class Call:
                 "Sorry, I couldn't answer that. " + (str(view.get("detail") or "")[:160]),
                 kind="error",
             )
-        nxt, self.queued = self.queued, None
-        if nxt and self.state != "ended":
-            text, heard = nxt
-            self.turn_task = asyncio.create_task(self._ask(text, self.generation, heard))
-        elif self.state == "thinking":
+        # A queued question that started meanwhile is thinking now: its state is its own.
+        mine = self.turn_task is None or self.turn_task is asyncio.current_task()
+        if self.state == "thinking" and (mine or self.turn_task.done()):
             await self.set_state("listening")
 
     # -- spoken confirmation (#1397 P2) -------------------------------------------------------
@@ -2145,12 +2344,27 @@ class Call:
             draft=draft is not None,
         )
         if task is None:
-            return view
+            if (view or {}).get("status") != "queued":
+                return view
+            # The slot was taken between the dispatch and this begin (#2103): it waits in the
+            # conversation's queue and is followed from here once it starts — by the handle
+            # taken with the admission (`_follow_queued`, review 8407).
+            task, settled = await self._follow_queued(turn_id, view)
+            if self.state == "ended":
+                raise _NotStarted
+            if task is None:
+                if settled and settled.get("status") in ask_orchestrator.RAN_STATUSES:
+                    return settled  # it ran and settled before this call looked: presented once
+                raise _NotStarted
         if draft is not None:
             if draft.dropped:  # more words arrived while it was being begun
                 await ask_orchestrator.discard(self.cid, turn_id)
                 raise _DraftDropped
             self._side(self._commit_when_quiet(draft))
+        return await self._watch_turn(task, draft)
+
+    async def _watch_turn(self, task: asyncio.Task, draft: _CallDraft | None = None) -> dict:
+        """Follow the running turn `task` to its settled view, relaying its progress."""
         queue = ask_orchestrator.listen(self.cid, task)
         try:
             while not task.done():
@@ -2297,6 +2511,11 @@ class Call:
 
     async def wait_ended(self) -> None:
         await self._ended.wait()
+
+
+class _NotStarted(Exception):
+    """A question that waited in the queue never started for this call (#2103): withdrawn, or
+    the call ended first. Nothing is said."""
 
 
 class _DraftDropped(Exception):

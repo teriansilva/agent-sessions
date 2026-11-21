@@ -4460,10 +4460,14 @@ def _exchanges(
     # heard in a language it does not listen in: the next question says some were not taken.
     said: dict[str, list[str]] = {}
     foreign = False
+    # The CURRENT turn's own records are skipped, and nothing stops the scan (#2103): a turn
+    # that waited in the queue has its question stored while the turn before it still ran, so
+    # that turn's answer comes AFTER this turn's question in the file. A turn with no outcome
+    # (still queued or running, withdrawn, not started) is not replayed anyway (below).
     for r in records:
         tid = r.get("turn_id")
         if tid == turn_id:
-            break
+            continue
         rtype = r.get("type")
         if rtype == "said" and r.get("kind") in SAID_REPLAYED and isinstance(r.get("text"), str):
             owner = tid if tid in questions else (order[-1] if order else None)
@@ -4521,11 +4525,13 @@ def _exchanges(
 
 
 def _newest_summary(records: list[dict], turn_id: str, replayed: list[str]) -> dict | None:
-    """The newest summary written before this turn whose covered exchange is still replayable."""
+    """The newest summary whose covered exchange is still replayable. The scan does not stop at
+    this turn's own question (#2103): a queued turn's question is stored before the turn ahead
+    of it settles, and a summary written since (the turn reads at its START) covers only settled
+    exchanges, never this turn."""
+    del turn_id  # every summary on record when the turn starts is before it
     best = None
     for r in records:
-        if r.get("turn_id") == turn_id and r.get("type") == "user":
-            break
         if r.get("type") == "summary" and r.get("upto") in replayed and r.get("text"):
             best = r
     return best
@@ -5182,7 +5188,7 @@ def _named_before(records: list[dict], turn_id: str) -> list[str]:
     for r in records:
         tid = r.get("turn_id")
         if tid == turn_id:
-            break
+            continue  # this turn's own records, never a stop (#2103: a queued turn's come early)
         if not isinstance(tid, str):
             continue
         found: list[object] = []
@@ -6009,6 +6015,64 @@ class _Running:
 _RUNNING: dict[str, _Running] = {}
 _LOCKS: dict[str, asyncio.Lock] = {}
 
+# ---- the queue behind the running turn (#2103, `docs/invariants/hq-tasks.md`) -------------------
+
+#: Questions that may wait behind a conversation's running turn. A fourth is refused, 409.
+QUEUE_MAX = 3
+QUEUE_FULL = "queue full — withdraw a queued question or wait"
+#: Statuses of a turn that ran and settled: the ones a notification is due for.
+RAN_STATUSES = frozenset({"done", "failed", "stopped"})
+
+
+@dataclass
+class _Queued:
+    """A question the operator sent while a turn was running in its conversation (#2103). What
+    the turn needs to start is kept HERE, in memory only: the original question and the
+    queuing request's own identity (`operator`, `app`), exactly as a running turn keeps its
+    request's. Nothing of it is stored but the `user` record and its `queued` status, so after a
+    restart it cannot start (`not_started`)."""
+
+    turn_id: str
+    text: str
+    working_keys: set[str]
+    busy_keys: set[str]
+    answering: dict | None
+    contact: str
+    via: str | None
+    call_answers: str
+    replying_to: str | None
+    descriptors: list[dict]
+    operator: object | None
+    app: object | None
+    #: Resolved once: the turn's task when it starts, or None when it never will.
+    started: asyncio.Future = field(
+        default_factory=lambda: asyncio.get_running_loop().create_future()
+    )
+
+
+#: `cid → the questions waiting behind its running turn`, oldest first. Non-empty only while a
+#: turn of THIS process holds the conversation's slot: promotion hands the turn lock over.
+_QUEUE: dict[str, list[_Queued]] = {}
+#: Conversations in which Stop all is in force (#2103): no queued turn starts behind the turn
+#: being stopped. Set SYNCHRONOUSLY before that turn's stop flag; cleared by the next message
+#: or once the stopped turn has settled.
+_NO_SUCCESSOR: set[str] = set()
+
+
+#: `(cid, turn id) → the start future` of every turn admitted to a queue here, kept from its
+#: ADMISSION until it will never start or its turn has settled — not only while it waits. A
+#: follower (the call) can so resolve it at any moment without a gap: before the start, during
+#: it (the entry has left `_QUEUE`, the turn is not in `_RUNNING` yet) and while it runs. After
+#: the settle the store has the outcome (`follow`).
+_STARTS: dict[tuple[str, str], asyncio.Future] = {}
+
+
+def _resolve(q: _Queued, task: asyncio.Task | None, cid: str | None = None) -> None:
+    if not q.started.done():
+        q.started.set_result(task)
+    if task is None and cid is not None:
+        _STARTS.pop((cid, q.turn_id), None)  # it never will: the store says why
+
 
 def _lock(cid: str) -> asyncio.Lock:
     lk = _LOCKS.get(cid)
@@ -6029,7 +6093,9 @@ def _reconcile_owned(cid: str) -> list[dict]:
     """Settle pending turns no task holds — under the turn lock, so a turn another process runs is
     never declared interrupted. Blocking."""
     records = ask_store.read(cid)
-    if not any(st.get("status") == "pending" for st in _turn_statuses(records).values()):
+    if not any(
+        st.get("status") in ("pending", "queued") for st in _turn_statuses(records).values()
+    ):
         return records
     with ask_store.turn_lock(cid) as free:
         if not free:
@@ -6072,6 +6138,10 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "turn_id": tid,
                 "question": r.get("text") or "",
                 "asked_at": r.get("ts"),
+                # #2103: when it began to run (later than asked for a turn that was queued) and
+                # when its outcome was written: what "seen" is compared with (`hq_tasks`).
+                "started_at": None,
+                "settled_at": None,
                 "status": "pending",
                 "answer": None,
                 "detail": None,
@@ -6124,13 +6194,19 @@ def turn_views(records: list[dict]) -> list[dict]:
             t["code"] = r.get("code")
             if isinstance(r.get("ctx"), dict):
                 t["ctx"] = r["ctx"]  # this turn's context size (#2137 P2)
-            asked, at = t.get("asked_at"), r.get("ts")
+            at = r.get("ts")
+            if r.get("status") == "pending":
+                t["started_at"] = at
+            elif r.get("status") != "queued":
+                t["settled_at"] = at
+            # How long it RAN: from its start, never from when it was queued (#2103).
+            began = t.get("started_at")
             if (
-                r.get("status") != "pending"
-                and isinstance(asked, int | float)
+                r.get("status") in RAN_STATUSES
+                and isinstance(began, int | float)
                 and isinstance(at, int | float)
             ):
-                t["elapsed_ms"] = max(0, int((at - asked) * 1000))
+                t["elapsed_ms"] = max(0, int((at - began) * 1000))
         elif kind == "tool":
             t["tools"].append(step_view(r))
         elif kind == "interjection":
@@ -6187,6 +6263,9 @@ def turn_views(records: list[dict]) -> list[dict]:
                 }
             )
     out = [turns[t] for t in order]
+    for t in out:
+        if t["started_at"] is None and t["status"] not in ask_store.UNSTARTED_STATUSES:
+            t["started_at"] = t["asked_at"]  # a draft's or an older record's turn began as asked
     _title_shows(records, out)
     for t in out:
         steps = t["steps"]
@@ -6331,9 +6410,9 @@ def with_running(views: list[dict], cid: str) -> list[dict]:
             "incomplete": False,
             "live": dict(turn.live) if turn.live else None,
         }
-        asked = v.get("asked_at")
-        if isinstance(asked, int | float):
-            v["elapsed_ms"] = max(0, int((time.time() - asked) * 1000))
+        began = v.get("started_at") or v.get("asked_at")
+        if isinstance(began, int | float):
+            v["elapsed_ms"] = max(0, int((time.time() - began) * 1000))
         v["stopping"] = turn.stop.is_set()
     return views
 
@@ -6460,6 +6539,7 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
 
 async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
     """Run the turn, write its outcome, give up the slot and the lock — whatever happened."""
+    settled = False
     try:
         try:
             records = await run_turn(turn)
@@ -6530,17 +6610,364 @@ async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
         view = _view_of(stored, turn.turn_id) or {}
         view = (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view
+        if view.get("status") in RAN_STATUSES:
+            # #2103: the Commander is told once if this outcome stays unseen (`hq_tasks`).
+            from . import hq_tasks
+
+            hq_tasks.on_settled(turn.cid, turn.turn_id)
         if turn.end_call and view:
             view = {**view, "end_call": True}  # to the call alone (#1668), never stored
         if turn.offers and view:
             view = {**view, "offers": list(turn.offers)}  # to the call alone (#2137), never stored
+        settled = True
         return view
     finally:
         async with _lock(turn.cid):
             running = _RUNNING.get(turn.cid)
-            if running is not None and running.task is asyncio.current_task():
+            mine = running is not None and running.task is asyncio.current_task()
+            if mine:
                 _RUNNING.pop(turn.cid, None)
-            os.close(lock_fd)
+            # Its outcome is in the store (or it was cancelled): the start handle has done its
+            # work; a follower that still holds it keeps the task and its result.
+            _STARTS.pop((turn.cid, turn.turn_id), None)
+            handed = False
+            try:
+                # The oldest queued question starts NOW (#2103), under this same hold of the
+                # conversation lock and with the turn lock handed over, never released: no
+                # other turn, in this process or another, can take the slot in between. Only
+                # behind a turn that SETTLED: one that was cancelled (a discarded draft, the
+                # loop going away) starts nothing, and what waited reads `not_started`.
+                if mine and settled:
+                    handed = await _start_next(turn.cid, lock_fd)
+                else:
+                    _drop_queue(turn.cid)
+            except BaseException:
+                _drop_queue(turn.cid)
+                raise
+            finally:
+                if not handed:
+                    os.close(lock_fd)
+
+
+def _drop_queue(cid: str) -> None:
+    """Forget what waits in ``cid`` without starting it: its stored ``queued`` status then reads
+    ``not_started`` at the next read (`_settle_stale_locked`)."""
+    for q in _QUEUE.pop(cid, ()):
+        _resolve(q, None, cid)
+
+
+async def _withdraw_locked(cid: str, turn_id: str | None) -> list[str]:
+    """Take back the queued turn ``turn_id`` (or every queued one), with the conversation lock
+    HELD. Out of memory FIRST, so it can never start whatever the write below does; then its
+    ``withdrawn`` status. Returns the ids withdrawn."""
+    queue = _QUEUE.get(cid) or []
+    gone = [q for q in queue if turn_id is None or q.turn_id == turn_id]
+    if not gone:
+        return []
+    left = [q for q in queue if q not in gone]
+    if left:
+        _QUEUE[cid] = left
+    else:
+        _QUEUE.pop(cid, None)
+    try:
+        await _append(
+            cid, *({"type": "status", "turn_id": q.turn_id, "status": "withdrawn"} for q in gone)
+        )
+    finally:
+        # Told only now, with the record written: a follower that reads the store next sees
+        # `withdrawn`, never a stale `queued`.
+        for q in gone:
+            _resolve(q, None, cid)
+    return [q.turn_id for q in gone]
+
+
+async def _start_next(cid: str, lock_fd: int) -> bool:
+    """Start the oldest queued turn of ``cid`` in the slot the settling turn is giving up
+    (#2103). The caller holds the conversation lock and the turn lock ``lock_fd``, which the
+    new turn takes over. False — nothing started, the caller releases the lock — when nothing
+    waits, when Stop all is in force (the queue is withdrawn) or when the app is shutting down
+    (the queue reads ``not_started`` after the restart)."""
+    try:
+        if not _QUEUE.get(cid):
+            return False
+        if cid in _NO_SUCCESSOR:
+            with contextlib.suppress(ask_store.StoreRefused, ask_store.ConversationNotFound):
+                await _withdraw_locked(cid, None)
+            return False
+        if _stopping():
+            return False
+        while _QUEUE.get(cid):
+            q = _QUEUE[cid].pop(0)
+            try:
+                await _append(cid, {"type": "status", "turn_id": q.turn_id, "status": "pending"})
+                turn = await _new_turn(
+                    cid,
+                    q.turn_id,
+                    q.text,
+                    working_keys=_fresh_keys(q, "working_keys"),
+                    busy_keys=_fresh_keys(q, "busy_keys"),
+                    answering=q.answering,
+                    contact=q.contact,
+                    via=q.via,
+                    call_answers=q.call_answers,
+                    replying_to=q.replying_to,
+                    descriptors=q.descriptors,
+                    operator=q.operator,
+                    app=q.app,
+                )
+            except Exception as e:  # noqa: BLE001 — one that cannot start never blocks the rest
+                log.warning("a queued HQ turn could not start (%s)", type(e).__name__)
+                _resolve(q, None, cid)
+                continue
+            if cid in _NO_SUCCESSOR:
+                # Stop all arrived while this start was being written: the turn starts already
+                # stopped, so it makes no model request and settles `stopped`.
+                turn.stop.set()
+            _resolve(q, _launch(turn, lock_fd))
+            return True
+        return False
+    finally:
+        if not _QUEUE.get(cid):
+            _QUEUE.pop(cid, None)
+        if cid not in _RUNNING:
+            _drop_queue(cid)
+            # Nothing runs and nothing waits: Stop all has nothing left to hold back.
+            _NO_SUCCESSOR.discard(cid)
+
+
+def _fresh_keys(q: _Queued, which: str) -> set[str]:
+    """Which sessions are working NOW, when the queued turn starts, read as the route reads
+    them; the queuing request's own snapshot where there is no registry to ask."""
+    registry = getattr(getattr(q.app, "state", None), "session_registry", None)
+    if registry is None:
+        return set(getattr(q, which))
+    from . import actuator
+
+    return set(getattr(actuator, which)(registry))
+
+
+async def _new_turn(
+    cid: str,
+    turn_id: str,
+    text: str,
+    *,
+    working_keys: set[str],
+    busy_keys: set[str] | None,
+    answering: dict | None,
+    contact: str,
+    via: str | None,
+    call_answers: str,
+    replying_to: str | None,
+    descriptors: list[dict],
+    operator,
+    app,
+    draft: _Draft | None = None,
+    continues_missions: tuple[str, ...] = (),
+) -> _Turn:
+    turn = _Turn(
+        cid=cid,
+        turn_id=turn_id,
+        question=text,
+        working_keys=working_keys,
+        busy_keys=set(busy_keys or ()),
+        answering=answering,
+        contact=contact,
+        via=via,
+        call_answers=call_answers if call_answers in ("brief", "detailed") else "brief",
+        replying_to=replying_to[:200] if isinstance(replying_to, str) and via else None,
+        attachments=descriptors,
+        attachment_bodies=await asyncio.to_thread(
+            ask_attachments.read_text_bodies, cid, descriptors
+        ),
+        image_bodies=await asyncio.to_thread(ask_attachments.read_image_bodies, cid, descriptors),
+        progress=lambda ev: None,
+        operator=operator,
+        app=app,
+        draft=draft,
+        continues_missions=tuple(dict.fromkeys(continues_missions)) if via == "card" else (),
+    )
+    turn.progress = lambda ev: _emit(turn, ev)
+    return turn
+
+
+def _launch(turn: _Turn, lock_fd: int) -> asyncio.Task:
+    """The turn's own task, holding the turn lock ``lock_fd``, registered as the conversation's
+    running turn. The caller holds the conversation lock."""
+    task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{turn.cid}")
+    _RUNNING[turn.cid] = _Running(turn.turn_id, task, turn=turn)
+
+    def _done(t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            log.warning("ask turn settle failed (%s)", type(t.exception()).__name__)
+
+    task.add_done_callback(_done)
+    return task
+
+
+async def _enqueue(
+    cid: str,
+    turn_id: str,
+    text: str,
+    qd: str,
+    *,
+    answering: dict | None,
+    contact: str,
+    via: str | None,
+    attachments: list[str] | None,
+    **ctx,
+) -> dict:
+    """Admit a question behind the running turn (#2103): its ``user`` record and its ``queued``
+    status, written in ONE step under the conversation's store lock (`ask_store.append_if`),
+    which reserves the turn id and a queue slot together. It takes no turn lock: the running
+    turn holds it. The caller holds the conversation lock. Returns the queued turn's view."""
+    try:
+        review._require_config()
+    except review.NotConfiguredError:
+        raise TurnError(409, "AI endpoint is not configured", configured=False) from None
+    user: dict = {"type": "user", "turn_id": turn_id, "text": text, "qd": qd, "contact": contact}
+    if via is not None:
+        user["via"] = via
+    if answering is not None:
+        user["answers"] = answering["question_id"]
+    descriptors: list[dict] = []
+
+    def decide(records: list[dict]) -> list[dict]:
+        if _stored_digest(records, turn_id) is not None:
+            raise TurnError(409, "that turn id was already used for a different question")
+        views = turn_views(records)
+        if answering is not None and any(
+            t.get("answers") == answering["question_id"]
+            and t.get("status") in ("done", "pending", "queued")
+            for t in views
+        ):
+            raise TurnError(409, "that question was already answered")
+        if len(views) >= ask_store.MAX_TURNS:
+            raise TurnError(409, "this conversation is full — start a new one")
+        if sum(1 for t in views if t.get("status") == "queued") >= QUEUE_MAX:
+            raise TurnError(409, QUEUE_FULL, queue_full=True)
+        if attachments:
+            try:
+                descriptors[:] = ask_attachments.claim(cid, list(attachments), records)
+            except ask_attachments.AttachmentRefused as e:
+                raise TurnError(422, e.detail) from None
+            user["attachments"] = list(descriptors)
+        return [user, {"type": "status", "turn_id": turn_id, "status": "queued"}]
+
+    # The attachments fence across the claim AND the append, as a running turn's admission.
+    with ask_attachments.attachments_fence(cid):
+        written = await asyncio.to_thread(ask_store.append_if, cid, decide)
+    if not written:
+        raise TurnError(409, "that question could not be queued")
+    q = _Queued(
+        turn_id=turn_id,
+        text=text,
+        answering=answering,
+        contact=contact,
+        via=via,
+        descriptors=descriptors,
+        **ctx,
+    )
+    # The start handle exists from the admission on, in the same step as the queue entry.
+    _STARTS[(cid, turn_id)] = q.started
+    _QUEUE.setdefault(cid, []).append(q)
+    stored = await asyncio.to_thread(ask_store.read, cid)
+    return _view_of(stored, turn_id) or {}
+
+
+async def withdraw(cid: str, turn_id: str) -> bool:
+    """The Commander takes back the queued question ``turn_id`` (#2103). Withdraw and the start
+    of the next turn meet under the conversation lock: whichever is first wins, and a withdrawn
+    turn never starts. False — and nothing changes — for a turn that is not waiting here (it
+    started, settled, was withdrawn already, or is another id)."""
+    async with _lock(cid):
+        return bool(await _withdraw_locked(cid, turn_id))
+
+
+def when_started(cid: str, turn_id: str) -> asyncio.Future | None:
+    """For a question admitted to ``cid``'s queue here: a future of its task once it starts, or
+    of None when it never will (withdrawn, the app stopping). Stable from the admission until
+    the turn has settled (`_STARTS`): it is still there, resolved, after the turn left the
+    queue and while it runs. None for a turn that never queued here, or that settled already."""
+    return _STARTS.get((cid, turn_id))
+
+
+async def follow(
+    cid: str, turn_id: str, handle: asyncio.Future | None = None
+) -> tuple[asyncio.Task | None, dict | None]:
+    """Where the turn ``turn_id`` is, for a caller that follows a question it queued (the call,
+    review 8407 on #2125): ``(task, None)`` once it runs — or ran: a finished task still holds
+    its settled view — or ``(None, view)`` with the turn as the store has it (settled before
+    the caller looked, withdrawn, not started), or ``(None, None)`` for an unknown turn.
+
+    There is no moment in which a turn that will run, runs or ran is reported as "never
+    started": ``handle`` (`when_started`, taken with the admission) or the registry covers it
+    from its admission to its settle, and the store from the settle on."""
+    fut = handle if handle is not None else when_started(cid, turn_id)
+    if fut is not None:
+        task = await asyncio.shield(fut)  # the caller going away never cancels the start
+        if task is not None:
+            return task, None
+    r = _RUNNING.get(cid)
+    if r is not None and r.turn_id == turn_id:
+        return r.task, None
+    try:
+        records = await asyncio.to_thread(ask_store.read, cid)
+    except (ask_store.ConversationNotFound, ask_store.StoreRefused):
+        return None, None
+    view = _view_of(records, turn_id)
+    if view:
+        view = (await asyncio.to_thread(with_live, [view], cid))[0]
+    return None, view
+
+
+def queued(cid: str) -> list[str]:
+    """The ids of the questions waiting behind ``cid``'s running turn, oldest first."""
+    return [q.turn_id for q in _QUEUE.get(cid, ())]
+
+
+def active() -> list[str]:
+    """Every conversation in which a turn runs or waits in this process."""
+    return sorted({*_RUNNING, *_QUEUE})
+
+
+def request_stop_all() -> list[str]:
+    """The synchronous half of Stop all (#2103): in every conversation with a turn running or
+    waiting here, the "no successor" mark is set FIRST and then the running turn's stop flag
+    (`request_stop`), with no await anywhere, so a turn that settles from now on starts nothing
+    behind it. Returns those conversations; `stop_all` withdraws their queues."""
+    cids = active()
+    for cid in cids:
+        _NO_SUCCESSOR.add(cid)
+    for cid in cids:
+        r = _RUNNING.get(cid)
+        if r is not None:
+            request_stop(cid, r.turn_id)
+    return cids
+
+
+async def stop_all() -> dict:
+    """Stop every HQ task (#2103): each running turn is stopped as `stop` stops one (a fence,
+    an effect in flight runs to its recorded outcome) and every queued question is withdrawn.
+    A message sent after it is a new request and is not held back. Returns how many turns
+    were being stopped and how many questions were withdrawn."""
+    cids = request_stop_all()
+    stopping: list[asyncio.Task] = []
+    withdrawn = 0
+    for cid in cids:
+        async with _lock(cid):
+            with contextlib.suppress(ask_store.StoreRefused, ask_store.ConversationNotFound):
+                withdrawn += len(await _withdraw_locked(cid, None))
+            r = _RUNNING.get(cid)
+            if r is not None and cid in _NO_SUCCESSOR:
+                # A queued turn whose start was already being written when the mark was set.
+                request_stop(cid, r.turn_id)
+            if r is not None and r.turn is not None and r.turn.stop.is_set():
+                stopping.append(r.task)
+            if r is None:
+                _NO_SUCCESSOR.discard(cid)
+    if stopping:
+        await asyncio.wait(stopping, timeout=STOP_WAIT_S)
+    return {"stopped": len(stopping), "withdrawn": withdrawn}
 
 
 def _stored_digest(records: list[dict], turn_id: str) -> str | None:
@@ -6566,8 +6993,15 @@ def _settle_stale_locked(cid: str) -> list[dict]:
     """Read the conversation with the turn lock HELD by the caller: any pending turn is then one
     no live task owns, and is settled as interrupted. Blocking."""
     records = ask_store.read(cid)
-    stale = [t for t, st in _turn_statuses(records).items() if st.get("status") == "pending"]
-    if stale:
+    statuses = _turn_statuses(records)
+    stale = [t for t, st in statuses.items() if st.get("status") == "pending"]
+    # A queued turn waits only behind a turn that holds this lock (#2103), and what it needs to
+    # start lived in that process's memory: with the lock free here it can never start.
+    waiting = {q.turn_id for q in _QUEUE.get(cid, ())}
+    orphaned = [
+        t for t, st in statuses.items() if st.get("status") == "queued" and t not in waiting
+    ]
+    if stale or orphaned:
         ask_store.append(
             cid,
             *(
@@ -6580,6 +7014,7 @@ def _settle_stale_locked(cid: str) -> list[dict]:
                 }
                 for t in stale
             ),
+            *({"type": "status", "turn_id": t, "status": "not_started"} for t in orphaned),
         )
         records = ask_store.read(cid)
     return records
@@ -6683,6 +7118,30 @@ async def begin(
             if existing["status"] == "pending":
                 raise TurnError(409, "that turn is still running in another process")
             return None, existing
+        if via != "card":
+            # A new message from the Commander: Stop all no longer holds anything back (#2103).
+            _NO_SUCCESSOR.discard(cid)
+        if cid in _RUNNING and not draft and via != "card":
+            # A turn is running here: the question waits behind it instead of being refused
+            # (#2103). Only an operator's request queues; the server's continuation after a
+            # card and a call's draft never do.
+            view = await _enqueue(
+                cid,
+                turn_id,
+                text,
+                qd,
+                answering=answering,
+                contact=contact,
+                via=via,
+                attachments=attachments,
+                working_keys=set(working_keys),
+                busy_keys=set(busy_keys or ()),
+                call_answers=call_answers,
+                replying_to=replying_to,
+                operator=operator,
+                app=app,
+            )
+            return None, view
         if cid in _RUNNING or any(t["status"] == "pending" for t in turn_views(records)):
             raise TurnError(409, "a question is already running in this conversation")
         if via == "card" and _stopping():
@@ -6755,40 +7214,29 @@ async def begin(
             with contextlib.suppress(OSError):
                 os.close(lock_fd)
             raise
-        turn = _Turn(
-            cid=cid,
-            turn_id=turn_id,
-            question=text,
-            working_keys=working_keys,
-            busy_keys=set(busy_keys or ()),
-            answering=answering,
-            contact=contact,
-            via=via,
-            call_answers=call_answers if call_answers in ("brief", "detailed") else "brief",
-            replying_to=replying_to[:200] if isinstance(replying_to, str) and via else None,
-            attachments=descriptors,
-            attachment_bodies=await asyncio.to_thread(
-                ask_attachments.read_text_bodies, cid, descriptors
-            ),
-            image_bodies=await asyncio.to_thread(
-                ask_attachments.read_image_bodies, cid, descriptors
-            ),
-            progress=lambda ev: None,
-            operator=operator,
-            app=app,
-            draft=_Draft(head) if draft else None,
-            continues_missions=tuple(dict.fromkeys(continues_missions)) if via == "card" else (),
-        )
-        turn.progress = lambda ev: _emit(turn, ev)
-        task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{cid}")
-        _RUNNING[cid] = _Running(turn_id, task, turn=turn)
-
-        def _done(t: asyncio.Task) -> None:
-            if not t.cancelled() and t.exception() is not None:
-                log.warning("ask turn settle failed (%s)", type(t.exception()).__name__)
-
-        task.add_done_callback(_done)
-        return task, None
+        try:
+            turn = await _new_turn(
+                cid,
+                turn_id,
+                text,
+                working_keys=working_keys,
+                busy_keys=busy_keys,
+                answering=answering,
+                contact=contact,
+                via=via,
+                call_answers=call_answers,
+                replying_to=replying_to,
+                descriptors=descriptors,
+                operator=operator,
+                app=app,
+                draft=_Draft(head) if draft else None,
+                continues_missions=continues_missions,
+            )
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(lock_fd)
+            raise
+        return _launch(turn, lock_fd), None
 
 
 #: The continuation's text (#1950): the server's, never the Commander's. Stored as the turn's

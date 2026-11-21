@@ -119,11 +119,23 @@ import { AskShown } from "./AskShown";
 import { surfaceOver } from "./escOwner";
 import {
   applyProcessEvent,
+  EMPTY_PROCESS,
   processFromServer,
   startedProcess,
   type AskProcessState,
 } from "./askProcess";
+import {
+  queueLabel,
+  queueLine,
+  queueOffer,
+  queueStateOf,
+  seenIsOwed,
+  shownThrough as shownThroughOf,
+  type AskQueueState,
+} from "./askQueue";
 import { contactById } from "../hq/contacts";
+import { announceHqTasks } from "../hq/tasks/hqTasksStore";
+import { HqTasksStrip } from "../hq/tasks/HqTasksStrip";
 import { HqPortrait } from "../hq/HqPortrait";
 import { useHqContact } from "../hq/useHqContact";
 import { RevealText } from "./RevealText";
@@ -171,6 +183,12 @@ export interface AskTurn {
   /** The server's continuation after a confirmed card (#1950): its question is the server's
    *  note, not the Commander's words, so it renders as a slim line, never a "You" bubble. */
   continuation?: boolean;
+  /** #2103: it waits behind the running turn (`queued`), or never ran (`withdrawn`, `not_started`).
+   *  Absent or null for a turn that runs or ran. */
+  queue?: AskQueueState;
+  /** When its outcome was written (server time); null until it settles. What "seen" is marked
+   *  through: a question that is still queued or running acknowledges nothing. */
+  settledAt?: number | null;
 }
 
 /** How often a turn this page is not streaming is read again until it settles. */
@@ -228,6 +246,8 @@ function fromServer(t: AskConversationTurn): AskTurn {
     attachments: t.attachments ?? [],
     shows: (t.shows ?? []).map(showOf).filter((s): s is ScreenShow => s !== null),
     continuation: t.via === "card",
+    queue: queueStateOf(t.status),
+    settledAt: typeof t.settled_at === "number" ? t.settled_at : null,
   };
 }
 
@@ -325,7 +345,13 @@ function applyEvent(turn: AskTurn, ev: AskTurnEvent): AskTurn {
  *  conversation is still being created, or the read was taken before it was stored). */
 function merge(server: AskTurn[], local: AskTurn[]): AskTurn[] {
   const known = new Set(server.map((t) => t.id));
-  return [...server, ...local.filter((t) => !known.has(t.id) && t.pending && !t.error)];
+  // A question this page has just queued (#2103) survives a read that does not have it yet.
+  return [
+    ...server,
+    ...local.filter(
+      (t) => !known.has(t.id) && (t.pending || t.queue === "queued") && !t.error,
+    ),
+  ];
 }
 
 interface Gate {
@@ -425,6 +451,11 @@ export function AskConsole({
   const [updatesPending, setUpdatesPending] = useState(false);
   const [followsExhausted, setFollowsExhausted] = useState(false);
   const [unread, setUnread] = useState(false);
+  // #2103: how far the server says this conversation was seen; a newer settlement on screen is
+  // marked seen, which retracts that turn's notification.
+  const [seenAt, setSeenAt] = useState(0);
+  /** Whether a question waits behind the running turn (#2103), for the settle of that turn. */
+  const queuedRef = useRef(false);
   // A session just started or a nudge just delivered: keep reading for a while, so the follow it
   // earns arrives.
   const startedSeen = useRef(new Map<string, string>());
@@ -596,6 +627,7 @@ export function AskConsole({
         setFollows(c.follows ?? (c.following ?? []).map((key) => ({ key, title: "" })));
         setFollowSince(c.follow_since ?? {});
         setUnread(Boolean(c.unread));
+        setSeenAt((prev) => Math.max(prev, typeof c.seen_at === "number" ? c.seen_at : 0));
       }
       // A session STARTED, or a nudge DELIVERED (#1517) — from this card or another surface's —
       // earns a follow at the server's next follower pass, up to a minute later. Seen in that
@@ -674,6 +706,7 @@ export function AskConsole({
       setUpdatesPending(false);
       setFollowsExhausted(false);
       setUnread(false);
+      setSeenAt(0);
       startedSeen.current = new Map();
       continueSeen.current = new Map();
       continueArmed.current = null;
@@ -719,6 +752,7 @@ export function AskConsole({
     setUpdatesPending(false);
     setFollowsExhausted(false);
     setUnread(false);
+    setSeenAt(0);
     startedSeen.current = new Map();
     continueSeen.current = new Map();
     continueArmed.current = null;
@@ -811,7 +845,8 @@ export function AskConsole({
 
   // A turn still running on the server that this page is not streaming (a reload, a dropped
   // connection, another tab) is read again until it settles.
-  const waiting = !streaming && turns.some((t) => t.pending);
+  // A queued question (#2103) is read again too: it starts when the running turn settles.
+  const waiting = !streaming && turns.some((t) => t.pending || t.queue === "queued");
   useEffect(() => {
     if (!waiting || !cid) return;
     const timer = window.setTimeout(() => void load(cid), POLL_MS);
@@ -1020,7 +1055,8 @@ export function AskConsole({
           if (!title) setTitle(settled.question);
           // HQ continued by itself after a card tapped during this turn (#1950): its new turn
           // already exists, and nothing else here is pending to make the page read again.
-          if (loadedFor.current !== id || settled.continued) void load(id);
+          // …or a question waits behind it (#2103): the server has just started that one.
+          if (loadedFor.current !== id || settled.continued || queuedRef.current) void load(id);
         }
         void refreshList();
         return sent();
@@ -1077,11 +1113,141 @@ export function AskConsole({
     return () => window.clearTimeout(t);
   }, [seed, cid, busy, configured, ask]);
 
+  /** A QUESTION ASKED WHILE A TURN RUNS IS QUEUED (#2103), never refused: it is admitted behind
+   *  the running turn and starts when that one settles. It has its own request (the running
+   *  turn's stream is not touched) and shows at once as the Commander's bubble, marked Queued.
+   *  The server is the authority: a full queue is its 409, and the draft goes back to the box. */
+  const askBehind = useCallback(
+    async (
+      q: string,
+      atts: AskAttachment[] = [],
+    ): Promise<{ outcome: "sent" | "refused" | "canceled" | "uncertain"; conv: string | null }> => {
+      const id = cidRef.current;
+      if ((!q && !atts.length) || !configured || id === null)
+        return { outcome: "refused", conv: id };
+      const turnId = newTurnId();
+      const optimistic: AskTurn = {
+        id: turnId,
+        question: q,
+        answer: null,
+        error: null,
+        matches: [],
+        missions: [],
+        step: null,
+        pending: false,
+        process: EMPTY_PROCESS,
+        stopped: false,
+        ask: null,
+        proposals: [],
+        at: null,
+        contact: contactRef.current,
+        attachments: atts,
+        shows: [],
+        queue: "queued",
+        settledAt: null,
+      };
+      setTurns((prev) => [...prev, optimistic]);
+      const drop = () => setTurns((prev) => prev.filter((t) => t.id !== turnId));
+      try {
+        const settled = await api.askMessageStream(
+          id,
+          {
+            turnId,
+            text: q,
+            contact: optimistic.contact,
+            ...(atts.length ? { attachments: atts.map((x) => x.id) } : {}),
+          },
+          (ev) => {
+            // The slot was free after all and it runs at once: its progress is its own.
+            if (ev.type === "screen")
+              screen?.execute(ev.directive, {
+                title: ev.title,
+                turnId: ev.turn_id ?? turnId,
+                source: "typed",
+              });
+            if (current(id))
+              setTurns((prev) =>
+                prev.map((t) =>
+                  t.id === turnId ? applyEvent({ ...t, queue: null, pending: true }, ev) : t,
+                ),
+              );
+          },
+        );
+        if (live.current && current(id)) {
+          const now = fromServer(settled);
+          setTurns((prev) =>
+            prev.some((t) => t.id === turnId)
+              ? prev.map((t) => (t.id === turnId ? now : t))
+              : prev,
+          );
+        }
+        announceHqTasks();
+        return { outcome: "sent", conv: id };
+      } catch (err) {
+        const refused =
+          err instanceof ApiError &&
+          (err.status === 409 || err.status === 422 || err.status === 503);
+        if (refused) {
+          // Nothing was written: the bubble goes and the composer gives the draft back.
+          if (live.current && current(id)) drop();
+          return { outcome: "refused", conv: id };
+        }
+        // Unknown: the next read says whether it was admitted; never a blind resend.
+        if (live.current && current(id)) void load(id);
+        return { outcome: "uncertain", conv: id };
+      }
+    },
+    // `current` reads refs only.
+    [configured, load, screen],
+  );
+
+  /** WITHDRAW a queued question (#2103). It names the turn; the server answers with the turn
+   *  as it is, so one that started meanwhile simply shows as running. */
+  const [withdrawing, setWithdrawing] = useState<ReadonlySet<string>>(new Set());
+  const withdrawTurn = useCallback(async (turnId: string) => {
+    const id = cidRef.current;
+    if (!id) return;
+    setWithdrawing((s) => new Set(s).add(turnId));
+    try {
+      const r = await api.askWithdrawTurn(id, turnId);
+      if (!live.current || cidRef.current !== id) return;
+      const now = fromServer(r.turn);
+      setTurns((prev) => prev.map((t) => (t.id === turnId ? now : t)));
+      announceHqTasks();
+    } catch {
+      if (live.current && cidRef.current === id) void load(id);
+    } finally {
+      setWithdrawing((s) => {
+        const n = new Set(s);
+        n.delete(turnId);
+        return n;
+      });
+    }
+  }, [load]);
+
   /** STOP (#2076). It names the running turn, so it can never end another; the server lets what
    *  the turn is doing reach its recorded outcome first and answers with the turn as it is. A
    *  turn whose message has not reached the server yet has nothing to stop. */
   const runningTurn = turns.find((t) => t.pending && !t.error) ?? null;
   const canStop = cid !== null && runningTurn !== null && (streaming || hydrated === cid);
+  // What Send does while a turn runs (#2103): queue behind it (`open`), or nothing (`full`).
+  // Only once the conversation exists and was read: before that there is nothing to queue behind.
+  const offer = cid !== null && hydrated === cid ? queueOffer(turns) : "idle";
+  const line = offer === "idle" ? null : queueLine(turns);
+  const hasQueued = turns.some((t) => t.queue === "queued");
+  useEffect(() => {
+    queuedRef.current = hasQueued;
+  }, [hasQueued]);
+  // The task list (the strip, the working mark) hears of every change here at once.
+  const taskSig = `${turns.filter((t) => t.pending).length}:${turns.filter((t) => t.queue === "queued").length}:${turns.filter((t) => t.settledAt).length}`;
+  useEffect(() => {
+    announceHqTasks();
+  }, [taskSig]);
+  /** Send from the box: into the free slot, or behind the running turn. */
+  const sendFromBox = useCallback(
+    (q: string, atts: AskAttachment[]) => (offer === "open" ? askBehind(q, atts) : ask(q, atts)),
+    [offer, askBehind, ask],
+  );
   const stopCid = canStop ? cid : null;
   const stopId = canStop ? (runningTurn?.id ?? null) : null;
   const stopTurn = useCallback(async () => {
@@ -1292,11 +1458,15 @@ export function AskConsole({
    *  switcher) hears it at once. */
   // Only what is ON SCREEN is seen: the newest update this page has rendered, never "now" — an
   // update written after the last read stays unread until it is shown.
-  const shownThrough = updates.reduce((m, u) => Math.max(m, u.ts), 0);
+  // #2103: …and the newest turn SETTLEMENT it has rendered. A turn that is still queued or
+  // running adds nothing, so seeing a question wait never acknowledges its later answer; the
+  // server retracts a settled turn's notification once this mark passes it.
+  const shownThrough = shownThroughOf(updates, turns);
+  const owed = seenIsOwed(shownThrough, seenAt, unread);
   // Only the NEWEST mark's answer applies: an older one resolving late never restores "unread".
   const seenGen = useRef(0);
   useEffect(() => {
-    if (!unread || !cid || !visible || shownThrough <= 0) return;
+    if (!owed || !cid || !visible) return;
     const id = cid;
     const mark = () => {
       if (document.visibilityState !== "visible") return;
@@ -1304,6 +1474,7 @@ export function AskConsole({
       void api
         .askSeen(id, shownThrough)
         .then((r) => {
+          if (cidRef.current === id) setSeenAt((prev) => Math.max(prev, shownThrough));
           if (g !== seenGen.current) return;
           if (cidRef.current === id) setUnread(Boolean(r.unread));
           window.dispatchEvent(new CustomEvent(ASK_SEEN_EVENT));
@@ -1315,7 +1486,7 @@ export function AskConsole({
     mark();
     document.addEventListener("visibilitychange", mark);
     return () => document.removeEventListener("visibilitychange", mark);
-  }, [unread, cid, visible, shownThrough]);
+  }, [owed, cid, visible, shownThrough]);
 
   const [unfollowing, setUnfollowing] = useState<ReadonlySet<string>>(new Set());
   const unfollow = useCallback(
@@ -1511,6 +1682,9 @@ export function AskConsole({
         </div>
         </div>
       </header>
+      {/* HQ's tasks (#2103), directly under the sidebar's head: only while there is something to
+          act on. On HQ's page the strip heads the conversation list instead. */}
+      {chrome === "sidebar" && visible ? <HqTasksStrip host="sidebar" /> : null}
       {confirmDelete ? (
         <ConfirmDialog
           tag="DELETE CONVERSATION"
@@ -1576,8 +1750,9 @@ export function AskConsole({
                   </div>
                 ) : (
                   <article
-                    className={`${styles.event} ${a.you}`}
-                    aria-label="You"
+                    className={`${styles.event} ${a.you} ${t.queue ? a.youQueued : ""}`}
+                    aria-label={t.queue ? `You — ${queueLabel(t.queue)}` : "You"}
+                    data-queue={t.queue ?? undefined}
                   >
                     <div className={`${styles.eventHead} ${a.label}`}>You</div>
                     <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
@@ -1588,6 +1763,46 @@ export function AskConsole({
                     />
                   </article>
                 )}
+                {t.queue ? (
+                  /* A question that waits, or never ran (#2103): the Commander's bubble with its
+                     state beneath it, and no answer of HQ's. */
+                  <div
+                    className={`${a.queueLine} ${t.queue === "not_started" ? a.queueWarn : ""}`}
+                    data-testid="ask-queue-line"
+                  >
+                    <span role="status">{queueLabel(t.queue)}</span>
+                    {t.queue === "queued" ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <button
+                          type="button"
+                          className={a.queueAct}
+                          disabled={withdrawing.has(t.id)}
+                          onClick={() => void withdrawTurn(t.id)}
+                          aria-label={`Withdraw: ${t.question.slice(0, 80)}`}
+                          data-testid="ask-withdraw"
+                        >
+                          Withdraw
+                        </button>
+                      </>
+                    ) : null}
+                    {t.queue === "not_started" ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <button
+                          type="button"
+                          className={a.queueAct}
+                          disabled={!configured || offer === "full" || (busy && offer === "idle")}
+                          onClick={() => void sendFromBox(t.question, [])}
+                          aria-label={`Re-send: ${t.question.slice(0, 80)}`}
+                          data-testid="ask-resend"
+                        >
+                          Re-send
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                ) : (
                 <article
                   className={`${styles.event} ${a.answer}`}
                   aria-label={`Answer from ${speakerName(t.contact)}`}
@@ -1845,6 +2060,7 @@ export function AskConsole({
                     ),
                   )}
                 </article>
+                )}
               </div>
             ))}
             <FollowingBlock
@@ -1877,10 +2093,13 @@ export function AskConsole({
         <div className={a.measure}>
           <AskComposer
             configured={configured}
-            busy={busy}
+            // While a turn runs Send QUEUES (#2103): it is busy only when it can do neither.
+            busy={offer === "open" ? false : busy}
+            queueFull={offer === "full"}
+            queueLine={line}
             onStop={canStop ? () => void stopTurn() : undefined}
             stopping={runningTurn?.stopping === true}
-            onAsk={(q, atts) => ask(q, atts)} // the outcome drives the composer's draft restore
+            onAsk={sendFromBox} // the outcome drives the composer's draft restore
         convKey={cid}
         uploadFile={async (file, secret) => {
           // The conversation is created by what the operator does in it — the first question or

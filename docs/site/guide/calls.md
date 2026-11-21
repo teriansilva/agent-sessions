@@ -94,6 +94,15 @@ enter that server's key again or remove it.
   but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;
   HQ says "Stopped." and keeps listening. It never ends the call, and a sentence that only
   contains the word ("stop the staging deploy") is a request like any other.
+- **Ask the next thing while HQ is still working.** A question you ask while HQ works on
+  another is queued behind it, in order, like one you typed (up to three; after that HQ says it
+  already has questions waiting). "Stop" stops only what HQ is working on: the next question
+  then starts. Say **"stop everything"** ("cancel everything"; in German "alles stoppen") to
+  stop that and take back everything waiting. Each answer is spoken in turn. If a question you
+  spoke was waiting behind something you typed and you have asked a newer one since, HQ only
+  says "I have that answer now." for the older one and its answer is on screen: ask for it if
+  you want to hear it. If you hang up, questions still waiting run anyway and their answers are
+  in the conversation.
 - **Ask to see something and it opens.** "Open the automations", "pull up the api-rebase
   session in the map": HQ puts it on the screen of the device you are calling from
   ([Showing it on screen](/guide/hq#showing-it-on-screen)). On a phone the call panel covers the

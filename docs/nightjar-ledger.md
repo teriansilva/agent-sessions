@@ -70,6 +70,8 @@ the same list.
 | `components/share/share.module.css` | css | 10 | done | popup:share-export popup:share-import | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a sheet; no motion of its own |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
+| `components/hq/tasks/HqTasks.module.css` | css | 4 | done | popup:hq-tasks | the running row's acquire bar (the shared `.nj-acquire`: still outside Full); the popover deploys in, the ≤800px sheet slides up (the shared menu sheet); the mark and the rows have no motion of their own |
+| `components/hq/tasks/HqTasksMark.tsx` | popup | 4 | done | popup:hq-tasks | the popover deploys in (fade, no rise in Reduced), ≤800px the shared bottom sheet slides up behind a scrim |
 | `components/hq/HqPage.module.css` | css | 4 | done | route:hq route:hq-missing route:mission | none of its own: the conversation list is static; the thread's motion is AskConsole's |
 | `components/hq/Notifications.module.css` | css | 4 | done | route:hq-notifications route:hq-notifications-linked | none of its own: the rows are the bell's (`NotificationBell.module.css`), the filters NIGHTJAR chips, Recent decisions the grid-rows disclosure |
 | `web/src/routes/HqSettings.tsx` | page | 11 | done | route:settings-hq route:settings-hq-autonomy route:settings-hq-unavailable | none of its own: existing settings panels, static group links and independent policy editors |

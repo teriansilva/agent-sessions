@@ -75,6 +75,9 @@ import {
   WEBHOOKS_API,
   webhookApiPath,
   askStopTurnPath,
+  askWithdrawTurnPath,
+  HQ_TASKS_API,
+  HQ_TASKS_STOP_ALL_API,
   mcpInstallPath,
   mcpOperationPath,
   mcpReviewPath,
@@ -147,6 +150,7 @@ import type {
   HistoryPage,
   HqDispatch,
   HqDispatchList,
+  HqTaskList,
   Mission,
   MissionContext,
   MissionNow,
@@ -2506,6 +2510,23 @@ export const api = {
     mutateJson<{ turn: AskConversationTurn; running: boolean }>(
       "POST",
       askStopTurnPath(id, turnId),
+      {},
+    ),
+  /** Take back one queued HQ question (#2103). Answers the turn as it is now: `withdrawn`, or
+   *  unchanged if it had already started or settled. */
+  askWithdrawTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn: AskConversationTurn; withdrawn: boolean; running: boolean }>(
+      "POST",
+      askWithdrawTurnPath(id, turnId),
+      {},
+    ),
+  /** HQ's tasks (#2103): running, queued, parked on a question, and the last settled ones. */
+  hqTasks: () => getJson<HqTaskList>(HQ_TASKS_API),
+  /** Stop every running HQ turn and withdraw every queued question (#2103). */
+  hqStopAllTasks: () =>
+    mutateJson<HqTaskList & { stopped: number; withdrawn: number }>(
+      "POST",
+      HQ_TASKS_STOP_ALL_API,
       {},
     ),
   /** Share one file in the conversation (#1707): one file per request, the kind is decided

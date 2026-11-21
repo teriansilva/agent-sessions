@@ -67,6 +67,7 @@ from .. import (
     ask_proposals,
     ask_store,
     hq_contacts,
+    hq_tasks,
     prefs,
     voice_calls,
 )
@@ -260,6 +261,9 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
         # follow's, superseded (#1755).
         "follow_since": follows["since"],
         "unread": follows["unread"],
+        # #2103: how far this conversation has been SEEN (the newest update or settlement a
+        # browser displayed). A client showing a newer settlement marks it seen.
+        "seen_at": follows["seen_at"],
         # The follow state could not be read this time: not "nothing followed".
         "follows_incomplete": follows["incomplete"],
         # An update is stored but not appended yet: it will land; keep reading.
@@ -560,6 +564,68 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/api/ask/conversations/{cid}/turns/{turn_id}/withdraw")
+    async def withdraw_turn(
+        cid: str,
+        turn_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Take back ONE queued question (#2103). It names the turn; one that is not waiting
+        (it started, settled or was withdrawn already) is returned as it is."""
+        if not (ask_store.valid_cid(cid) and ask_store.valid_turn_id(turn_id)):
+            return JSONResponse({"detail": "no such turn"}, status_code=404)
+        try:
+            withdrawn = await ask_orchestrator.withdraw(cid, turn_id)
+            records = await ask_orchestrator.read_conversation(cid)
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+
+        def view() -> dict | None:
+            views = [t for t in ask_orchestrator.turn_views(records) if t["turn_id"] == turn_id]
+            if not views:
+                return None
+            return ask_orchestrator.with_running(ask_orchestrator.with_live(views, cid), cid)[0]
+
+        turn = await asyncio.to_thread(view)
+        if turn is None:
+            return JSONResponse({"detail": "no such turn"}, status_code=404)
+        return JSONResponse(
+            {"turn": turn, "withdrawn": withdrawn, "running": ask_orchestrator.running(cid)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/hq/tasks")
+    async def hq_task_list(_: str = Depends(logged_in)) -> JSONResponse:
+        """HQ's tasks (#2103): the turns running and waiting, the ones parked on a question,
+        and the last settled ones. Stored first lines only (`hq_tasks.listing`)."""
+        try:
+            body = await asyncio.to_thread(hq_tasks.listing)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        return JSONResponse(
+            {**body, "queue_max": ask_orchestrator.QUEUE_MAX},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/hq/tasks/stop-all")
+    async def hq_stop_all(
+        _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """Stop every HQ task (#2103): each running turn is stopped as Stop stops one, every
+        queued question is withdrawn. Idempotent."""
+        done = await ask_orchestrator.stop_all()
+        try:
+            body = await asyncio.to_thread(hq_tasks.listing)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        return JSONResponse(
+            {**done, **body, "queue_max": ask_orchestrator.QUEUE_MAX},
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/api/ask/proposals/{pid}/content")
     async def proposal_content(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:
         """A library card's draft (#1611): the files, the diff or the automation's scope lines,
@@ -688,6 +754,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _refused(e)
         except ask_store.SidecarUnreadable:
             return JSONResponse({"detail": "could not be read just now"}, status_code=503)
+        # #2103: a settled turn's bell row goes once its settlement has been displayed.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(hq_tasks.retract_seen, cid)
         return JSONResponse({"unread": remaining})
 
     @app.delete("/api/ask/conversations/{cid}/follow/{key:path}")

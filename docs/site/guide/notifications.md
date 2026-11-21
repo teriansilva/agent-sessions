@@ -19,6 +19,15 @@ Notifications retire themselves when the thing they were about resolves: entries
 are cleared once that action reaches a terminal state, so the bell does not keep showing you a
 question that has already been answered.
 
+An HQ question you asked is the other thing that announces, once: when it finishes, stops,
+fails or ends on a question for you and you have not seen that in its conversation within a few
+seconds, the bell gets a row (*HQ answered*, *HQ has a question*, *HQ stopped*, *HQ could not
+answer*) with the conversation's name, and a push if you subscribed a device. The push shows
+only those fixed words and opens the conversation; the conversation's name and your question
+never leave BattleLab in it. **Open** goes to the conversation, and the row is taken back once
+you have seen the answer (a notification already shown on a device stays until you dismiss it). See
+[HQ](/guide/hq#the-sidebar).
+
 HQ may add **one short line** about a row (or a few rows that happened together), written
 afterwards by your HQ contact, with **In HQ →** to those events. It never changes the row, its push
 or when either arrives: see [HQ → Dispatches](/guide/hq#dispatches). **All notifications →** at the

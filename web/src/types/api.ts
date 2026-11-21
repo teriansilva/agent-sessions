@@ -756,6 +756,8 @@ export interface PulseNotification {
    *  row's own event tag, read-only: it names which of the bundle's members this row IS. Never on
    *  a push. */
   dispatch?: { id: string; line: string; by: string; bundled: number; tag?: string };
+  /** The HQ conversation this row is about (#2103): its Open goes there. A conversation id. */
+  hq_conversation?: string;
 }
 
 /** One event in a dispatch (#1837): the row's fixed text and Open target, as announced. */
@@ -1361,7 +1363,13 @@ export interface AskConversationTurn {
   turn_id: string;
   question: string;
   asked_at: number;
-  status: "pending" | "done" | "failed" | "stopped";
+  /** #2103: `queued` waits behind the running turn; `withdrawn` was taken back; `not_started`
+   *  was still queued when the server stopped. */
+  status: "pending" | "done" | "failed" | "stopped" | "queued" | "withdrawn" | "not_started";
+  /** #2103: when it began to run and when its outcome was written (server time); absent from
+   *  an older server. `settled_at` is what "seen" is marked through. */
+  started_at?: number | null;
+  settled_at?: number | null;
   answer: string | null;
   detail: string | null;
   code: string | null;
@@ -1398,6 +1406,42 @@ export interface AskConversationTurn {
   continued?: boolean;
 }
 
+/** One HQ task (#2103): a turn that runs, waits, is parked on a question, or settled lately.
+ *  `question` is the stored question's first line (redacted as stored; empty for the server's
+ *  own continuation after a card), `conversation` its conversation's title. */
+export interface HqTask {
+  cid: string;
+  turn_id: string;
+  state:
+    | "running"
+    | "queued"
+    | "question"
+    | "answered"
+    | "stopped"
+    | "failed"
+    | "withdrawn"
+    | "not_started";
+  question: string;
+  via?: "call" | "card" | null;
+  conversation: string;
+  steps: number;
+  /** The tool the running turn is on, by name (`askStep.ts` words it). */
+  step: string | null;
+  stopping: boolean;
+  asked_at: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+  elapsed_ms: number | null;
+}
+
+export interface HqTaskList {
+  tasks: HqTask[];
+  recent: HqTask[];
+  counts: { running: number; queued: number; question: number };
+  /** How many questions may wait behind one conversation's running turn. */
+  queue_max?: number;
+}
+
 /** A file shared in the HQ chat (#1707). The bytes live on the server; this is what the
  *  conversation carries. `kind` is decided server-side from the bytes: `image` renders inline,
  *  `text` is viewable + downloadable, `other` is a Download card (never rendered). */
@@ -1422,6 +1466,9 @@ export interface AskConversation {
   /** Every active follow with its title, so Unfollow is offered before any update exists. */
   follows?: AskFollow[];
   unread?: boolean;
+  /** How far this conversation has been SEEN (#2103): the newest update or turn settlement a
+   *  browser displayed. Absent from an older server. */
+  seen_at?: number;
   /** The follow state could not be read this time: keep what was last verified, keep reading. */
   follows_incomplete?: boolean;
   /** An update is stored but not appended to the conversation yet: it will land, keep reading. */

@@ -428,6 +428,33 @@ export const SWEEP = [
     open: [{ testId: "hq-primary-contact" }],
     expectCss: '[data-testid="ask-sidebar"][data-open="true"]',
   },
+  // HQ's tasks (#2103): the working mark beside the HQ icon and the strip it opens — one task
+  // running, two queued, one parked on a question, and the recent ones. A popover above 800px,
+  // a bottom sheet on a phone.
+  {
+    id: "popup:hq-tasks",
+    path: "/dashboard",
+    ready: "hq-tasks-mark",
+    api: {
+      "/api/hq/tasks": {
+        tasks: [
+          { cid: "ask_" + "a".repeat(32), turn_id: "t1", state: "running", question: "How far are we with #1613 and who is working on it?", via: null, conversation: "Where is #1613?", steps: 7, step: "session_status", stopping: false, asked_at: 1, started_at: 1, ended_at: null, elapsed_ms: 42000 },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t2", state: "queued", question: "And which sessions are blocked on review right now?", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 2, started_at: null, ended_at: null, elapsed_ms: null },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t3", state: "queued", question: "Draft a status note for the release channel", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 3, started_at: null, ended_at: null, elapsed_ms: null },
+          { cid: "ask_" + "b".repeat(32), turn_id: "t4", state: "question", question: "Archive old docs sessions", via: null, conversation: "Archive old docs sessions", steps: 2, step: null, stopping: false, asked_at: 4, started_at: 4, ended_at: 5, elapsed_ms: 9000 },
+        ],
+        recent: [
+          { cid: "ask_" + "c".repeat(32), turn_id: "t5", state: "answered", question: "What changed in the map since yesterday?", via: null, conversation: "Map perf: who touched WindowLayer", steps: 4, step: null, stopping: false, asked_at: 6, started_at: 6, ended_at: 7, elapsed_ms: 20000 },
+          { cid: "ask_" + "d".repeat(32), turn_id: "t6", state: "failed", question: "Open the release mission's debrief", via: null, conversation: "Release train for v0.24", steps: 1, step: null, stopping: false, asked_at: 8, started_at: 8, ended_at: 9, elapsed_ms: 3000 },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t7", state: "not_started", question: "List the PRs that merged since Monday", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 10, started_at: null, ended_at: 11, elapsed_ms: null },
+        ],
+        counts: { running: 1, queued: 2, question: 1 },
+        queue_max: 3,
+      },
+    },
+    open: [{ testId: "hq-tasks-mark" }],
+    expect: "dialog",
+  },
   // Calling HQ (#1397): the call panel, opened by the dashboard card's Call. With a (fake,
   // granted) microphone the call is admitted and dials; the sweep has no call socket that answers,
   // so the panel holds its dialing state — the panel chrome, controls and copy — asserted below.

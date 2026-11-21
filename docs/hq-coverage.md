@@ -341,12 +341,15 @@ POST   /api/ask/conversations/{cid}/message                                     
 POST   /api/ask/conversations/{cid}/message/stream                                n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/seen                                          n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/turns/{turn_id}/stop                         n/a  # HQ itself (stop one running turn, #2076)
+POST   /api/ask/conversations/{cid}/turns/{turn_id}/withdraw                     n/a  # HQ itself (take back one queued question, #2103)
 GET    /api/ask/proposals/{pid}/content                                           n/a  # HQ itself (a library card's draft, #1611)
 POST   /api/ask/proposals/{pid}/decide                                            n/a  # HQ itself
 GET    /api/ask/unread                                                            n/a  # HQ itself
 GET    /api/hq/dispatches                                                         n/a  # HQ itself (its Dispatches, #1837)
 GET    /api/hq/dispatches/{bid}                                                   n/a  # HQ itself (one dispatch, #1837)
 POST   /api/hq/dispatches/seen                                                    n/a  # HQ itself (the unread cursor, #1837)
+GET    /api/hq/tasks                                                              n/a  # HQ itself (its running and queued turns, #2103)
+POST   /api/hq/tasks/stop-all                                                     n/a  # HQ itself (stop every running turn, withdraw every queue, #2103)
 GET    /api/auth-check                                                            n/a  # diagnostics
 PATCH  /api/automation/{scope}                                                    P2  # down/off only; widening never
 GET    /api/automations                                                           have  # list_automations

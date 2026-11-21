@@ -19,6 +19,7 @@ import {
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
 import { AskSidebar, AskToggle } from "../components/ask/AskSidebar";
+import { HqTasksMark } from "../components/hq/tasks/HqTasksMark";
 import { CallButton } from "../components/call/CallButton";
 import { CallLayer } from "../components/call/CallLayer";
 import { CallProvider } from "../components/call/CallProvider";
@@ -670,6 +671,9 @@ function Layout() {
             {/* Calling HQ (#1397): ☎ beside HQ's own icon; it opens the call while one runs. On a
                 phone the dashboard card and HQ's header carry Call: the bar has no width to spare. */}
             <CallButton variant="icon" testId="topbar-call" wideOnly />
+            {/* HQ's working mark (#2103): what HQ is working on, left of its icon; hidden while
+                nothing runs, queues or waits. It opens the tasks strip; the icon still opens HQ. */}
+            <HqTasksMark />
             <AskToggle />
             <NotificationBell />
             {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell

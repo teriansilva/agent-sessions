@@ -29,3 +29,14 @@ export const mcpReviewPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURICom
 export const mcpInstallPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/install`;
 export const MCP_OPERATIONS_API = "/api/mcp/operations";
 export const mcpOperationPath = (requestId: string) => `${MCP_OPERATIONS_API}/${encodeURIComponent(requestId)}`;
+
+/** `POST` — take back one queued HQ question (#2103). It names the turn, like Stop. */
+export const askWithdrawTurnPath = (cid: string, turnId: string) =>
+  `/api/ask/conversations/${encodeURIComponent(cid)}/turns/${encodeURIComponent(turnId)}/withdraw`;
+
+/** `GET` — HQ's tasks (#2103): the turns running and waiting, the ones parked on a question and
+ *  the last settled ones. Stored first lines only. */
+export const HQ_TASKS_API = "/api/hq/tasks";
+
+/** `POST` — stop every running HQ turn and withdraw every queued question (#2103). */
+export const HQ_TASKS_STOP_ALL_API = "/api/hq/tasks/stop-all";

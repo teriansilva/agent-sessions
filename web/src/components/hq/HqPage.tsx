@@ -48,6 +48,7 @@ import {
 import { HQ_FOCUS_COMPOSER_EVENT } from "../ask/askPanel";
 import { hqTarget } from "./hqRoute";
 import { NotificationsView } from "./NotificationsView";
+import { HqTasksStrip } from "./tasks/HqTasksStrip";
 import s from "./HqPage.module.css";
 
 function when(ts: number): string {
@@ -178,6 +179,8 @@ export default function HqPage() {
               data-testid="hq-search"
             />
           </label>
+          {/* HQ's tasks (#2103): what runs and waits across every conversation, above the list. */}
+          <HqTasksStrip host="page" />
           {conversations !== null && conversations.length === 0 ? (
             <p className={s.empty} data-testid="hq-list-empty">
               No conversations yet. Ask HQ anything: your first question starts one.

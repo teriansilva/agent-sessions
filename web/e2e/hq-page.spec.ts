@@ -263,7 +263,7 @@ test("Open as page: the same conversation, /hq from an empty thread, disabled wi
   await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "false");
 });
 
-test("in-flight handoff: a turn the sidebar is streaming shows pending on the page, holds Send, reaches the server once", async ({
+test("in-flight handoff: a turn the sidebar is streaming shows pending on the page with Stop beside Send, reaches the server once", async ({
   page,
 }) => {
   const fake = await mockShell(page);
@@ -300,16 +300,18 @@ test("in-flight handoff: a turn the sidebar is streaming shows pending on the pa
   const input = thread(page).getByTestId("composer-input");
   await input.fill("one more");
   const send = thread(page).getByRole("button", { name: "Send", exact: true });
-  // Nothing can be sent while it runs: Stop has taken Send's place (#2076).
+  // The turn the sidebar started runs here too: Stop is offered, beside a Send that would
+  // QUEUE behind it (#2103; until then nothing could be sent). The handed-over question itself
+  // is never sent a second time.
   await expect(thread(page).getByRole("button", { name: "Stop HQ" })).toBeVisible();
-  await expect(send).toHaveCount(0);
-  await input.press("Enter");
+  await expect(send).toBeEnabled();
   expect(posts).toEqual(["still thinking?"]);
 
-  // The sidebar's stream settles; the page reads it, and only then may it send.
+  // The sidebar's stream settles; the page reads it, and Stop goes.
   release();
   await expect(answers.last()).toHaveAttribute("aria-busy", "false");
   await expect(thread(page).getByTestId("ask-answer").last()).toHaveText("the settled answer");
+  await expect(thread(page).getByRole("button", { name: "Stop HQ" })).toHaveCount(0);
   await expect(send).toBeEnabled();
   expect(posts).toEqual(["still thinking?"]);
   const c = fake.conversations.find((x) => x.id === A)!;

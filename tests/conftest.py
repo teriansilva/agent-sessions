@@ -216,6 +216,9 @@ _pin_store_env()
 os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 # HQ's Dispatches writer (#1837): a test drives `hq_dispatch.pass_once` itself.
 os.environ.setdefault("AGENT_SESSIONS_HQ_DISPATCH_LOOP", "0")
+# HQ's settle notification (#2103) is written a few seconds after a turn settles: a test that
+# reads the bell would race it. `tests/test_hq_tasks.py` switches it on for itself.
+os.environ.setdefault("AGENT_SESSIONS_HQ_TASK_NOTICES", "0")
 # The notify-route worker (#1841): a test drives `notify_routes.pass_once` itself.
 os.environ.setdefault("AGENT_SESSIONS_NOTIFY_ROUTES_LOOP", "0")
 # The automation scheduler (#1201) fires unattended work from the lifespan. No test that merely

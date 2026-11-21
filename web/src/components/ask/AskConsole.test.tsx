@@ -64,6 +64,7 @@ vi.mock("../../lib/api", async () => {
       askDeleteConversation: vi.fn(),
       askMessageStream: vi.fn(),
       askStopTurn: vi.fn(),
+      askWithdrawTurn: vi.fn(),
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
       decideAskProposal: vi.fn(),
@@ -167,6 +168,7 @@ function twoConversations() {
 beforeEach(() => {
   vi.mocked(api.askMessageStream).mockReset();
   vi.mocked(api.askStopTurn).mockReset();
+  vi.mocked(api.askWithdrawTurn).mockReset();
   vi.mocked(api.askConversations).mockReset();
   vi.mocked(api.askConversation).mockReset();
   vi.mocked(api.askNewConversation).mockReset();
@@ -452,8 +454,8 @@ test("a stream cut mid-turn reads the conversation again and waits for the turn 
   await waitFor(() => expect(reads).toBe(1));
   expect(screen.getByTestId("ask-working")).toBeInTheDocument();
   expect(screen.queryByTestId("ask-error")).toBeNull();
-  // Nothing can be sent while it runs: Stop has taken Send's place (#2076).
-  expect(screen.queryByTestId("composer-send")).toBeNull();
+  // It runs on the server: Stop is there, beside a Send that would queue behind it (#2103).
+  expect(screen.getByTestId("composer-send")).toBeInTheDocument();
   expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
   // …then it is read again until it settles.
   expect(
@@ -560,8 +562,9 @@ test("a watch that settles LATE does not unlock the box under the next question"
 
   await act(async () => settleOld!(turnOf("old", "t-old", { answer: "late" })));
   await userEvent.type(screen.getByTestId("composer-input"), "third");
-  // Still busy with "new": the late settle of "old" must not have re-enabled Send.
-  expect(screen.queryByTestId("composer-send")).toBeNull(); // Stop is in its place (#2076)
+  // Still busy with "new": the late settle of "old" must not have ended ITS run. Stop is still
+  // offered for it (#2076), and since #2103 Send beside it would only queue behind it.
+  expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
   expect(screen.getByTestId("ask-working")).toBeInTheDocument();
   expect(screen.queryByText("late")).toBeNull();
 });
@@ -3076,7 +3079,7 @@ function stoppedTurn(question: string, turnId: string): AskConversationTurn {
   };
 }
 
-test("Stop takes Send's place while a turn runs, stops THAT turn, and the row opens (#2076)", async () => {
+test("Stop sits beside Send while a turn runs, stops THAT turn, and the row opens (#2076, #2103)", async () => {
   const held = heldStream();
   vi.mocked(api.askStopTurn).mockImplementation(async (_cid, turnId) => ({
     turn: stoppedTurn("how far is the epic", turnId),
@@ -3087,7 +3090,10 @@ test("Stop takes Send's place while a turn runs, stops THAT turn, and the row op
   await userEvent.type(screen.getByTestId("composer-input"), "how far is the epic{Enter}");
   const stop = await screen.findByTestId("composer-stop");
   expect(stop).toHaveAccessibleName("Stop HQ");
-  expect(screen.queryByTestId("composer-send")).toBeNull();
+  // #2103: Send stays, after Stop in the tab order; with nothing typed it is disabled.
+  const send = screen.getByTestId("composer-send");
+  expect(send).toBeDisabled();
+  expect(stop.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // The field stays enabled: the next question can be typed while HQ works.
   expect(screen.getByTestId("composer-input")).toBeEnabled();
   await waitFor(() => expect(held.emit).toBeDefined());
@@ -3226,4 +3232,168 @@ test("a Stop answered while another turn runs reads the conversation, so HQ's co
     expect(reads()).toBe(2);
     expect(within(screen.getByTestId("ask-turns")).getByTestId("ask-continuation")).toBeInTheDocument();
   });
+});
+
+// --- the queue behind a running turn (#2103) -----------------------------------------------------
+
+function queuedTurn(question: string, turnId: string, status = "queued"): AskConversationTurn {
+  return {
+    ...turnOf(question, turnId, { answer: "", status: status as AskConversationTurn["status"] }),
+    asked_at: 5,
+    started_at: null,
+    settled_at: null,
+  };
+}
+
+/** The first question is held running; every later send is answered as QUEUED. */
+function runningThenQueued() {
+  const held: { turnId?: string; finish?: (t: AskConversationTurn) => void } = {};
+  const queued: string[] = [];
+  vi.mocked(api.askMessageStream).mockImplementation((_id, body) => {
+    if (!held.turnId)
+      return new Promise<AskConversationTurn>((res) => {
+        held.turnId = body.turnId;
+        held.finish = res;
+      });
+    queued.push(body.turnId);
+    return Promise.resolve(queuedTurn(body.text, body.turnId));
+  });
+  return { held, queued };
+}
+
+test("a question sent while a turn runs is queued: its own bubble, Queued · Withdraw, and the line", async () => {
+  const { held, queued } = runningThenQueued();
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "first{Enter}");
+  await screen.findByTestId("composer-stop");
+  expect(screen.queryByTestId("composer-queue-line")).toBeNull();
+
+  await userEvent.type(input, "second{Enter}");
+  await waitFor(() => expect(queued).toHaveLength(1));
+  // Sent to the same conversation as its own request, behind the running one.
+  expect(vi.mocked(api.askMessageStream).mock.calls[1][0]).toBe(CID);
+  expect(vi.mocked(api.askMessageStream).mock.calls[1][1].text).toBe("second");
+  const turns = screen.getAllByTestId("ask-turn");
+  expect(turns).toHaveLength(2);
+  const bubble = within(turns[1]).getByRole("article", { name: "You — Queued" });
+  expect(bubble).toHaveAttribute("data-queue", "queued");
+  expect(bubble).toHaveTextContent("second");
+  // No answer of HQ's under a question that has not run.
+  expect(within(turns[1]).queryByRole("article", { name: /^Answer from/ })).toBeNull();
+  expect(within(turns[1]).getByTestId("ask-queue-line")).toHaveTextContent("Queued·Withdraw");
+  expect(screen.getByTestId("composer-queue-line")).toHaveTextContent(
+    "Queued behind the running question",
+  );
+  // The box is free for the next one, and the first is still running and stoppable.
+  expect(input).toHaveValue("");
+  expect(screen.getByTestId("composer-stop")).toBeInTheDocument();
+  expect(screen.getAllByTestId("ask-working")).toHaveLength(1);
+  expect(held.turnId).toBeDefined();
+});
+
+test("Withdraw takes the queued question back by its own id", async () => {
+  const { queued } = runningThenQueued();
+  vi.mocked(api.askWithdrawTurn).mockImplementation(async (_cid, turnId) => ({
+    turn: queuedTurn("second", turnId, "withdrawn"),
+    withdrawn: true,
+    running: true,
+  }));
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "first{Enter}");
+  await screen.findByTestId("composer-stop");
+  await userEvent.type(input, "second{Enter}");
+  const withdraw = await screen.findByTestId("ask-withdraw");
+  expect(withdraw).toHaveAccessibleName("Withdraw: second");
+  await userEvent.click(withdraw);
+  expect(api.askWithdrawTurn).toHaveBeenCalledWith(CID, queued[0]);
+  await waitFor(() =>
+    expect(screen.getByTestId("ask-queue-line")).toHaveTextContent("Withdrawn"),
+  );
+  expect(screen.queryByTestId("ask-withdraw")).toBeNull();
+  // Nothing waits any more: the line goes, the running turn is untouched.
+  expect(screen.queryByTestId("composer-queue-line")).toBeNull();
+  expect(api.askStopTurn).not.toHaveBeenCalled();
+});
+
+test("a full queue disables Send and says so; the server's refusal gives the draft back", async () => {
+  runningThenQueued();
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "first{Enter}");
+  await screen.findByTestId("composer-stop");
+  for (const q of ["two", "three"]) {
+    await userEvent.type(input, `${q}{Enter}`);
+    await waitFor(() => expect(input).toHaveValue(""));
+  }
+  // The server is the authority: it refuses one more although this page thought there was room.
+  vi.mocked(api.askMessageStream).mockRejectedValueOnce(
+    new ApiError(409, "queue full — withdraw a queued question or wait"),
+  );
+  await userEvent.type(input, "refused{Enter}");
+  await waitFor(() => expect(input).toHaveValue("refused"));
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(3); // no bubble for what was not stored
+  await userEvent.clear(input);
+  await userEvent.type(input, "four{Enter}");
+  await waitFor(() => expect(screen.getAllByTestId("ask-turn")).toHaveLength(4));
+  // Three wait: Send is disabled, with the reason, and Enter sends nothing.
+  await userEvent.type(input, "five");
+  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  expect(screen.getByTestId("composer-queue-line")).toHaveTextContent(
+    "Queue full — withdraw one or wait",
+  );
+  const calls = vi.mocked(api.askMessageStream).mock.calls.length;
+  await userEvent.type(input, "{Enter}");
+  expect(vi.mocked(api.askMessageStream).mock.calls).toHaveLength(calls);
+  expect(input).toHaveValue("five");
+});
+
+test("a question the server never started says so and can be sent again", async () => {
+  twoConversations();
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      turnOf("the latest", "t1", { answer: "an answer" }),
+      queuedTurn("was waiting", "t2", "not_started"),
+    ]),
+  );
+  answerWith({ answer: "now answered" });
+  await mountAt(<AskConsole configured />);
+  const line = await screen.findByTestId("ask-queue-line");
+  expect(line).toHaveTextContent("Not started — the server restarted");
+  await userEvent.click(within(line).getByRole("button", { name: "Re-send: was waiting" }));
+  await waitFor(() => expect(api.askMessageStream).toHaveBeenCalledTimes(1));
+  const [cid, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  expect([cid, body.text]).toEqual([CID, "was waiting"]);
+  expect(body.turnId).not.toBe("t2"); // a new turn, never the old id
+});
+
+test("seen is marked through the newest SETTLEMENT on screen, never a queued or running turn (#2103)", async () => {
+  twoConversations();
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [
+      { ...turnOf("the latest", "t1", { answer: "an answer" }), settled_at: 50 },
+      { ...queuedTurn("still running", "t2", "pending"), asked_at: 60, started_at: 60 },
+    ]),
+    seen_at: 10,
+  });
+  await mountAt(<AskConsole configured visible />);
+  // The settled answer is on screen and newer than the cursor: marked through ITS settlement,
+  // not through the running question asked after it.
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 50));
+  expect(vi.mocked(api.askSeen).mock.calls.every(([, through]) => through === 50)).toBe(true);
+});
+
+test("nothing is marked seen when the cursor already covers what is shown", async () => {
+  twoConversations();
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [
+      { ...turnOf("the latest", "t1", { answer: "an answer" }), settled_at: 50 },
+    ]),
+    seen_at: 50,
+  });
+  await mountAt(<AskConsole configured visible />);
+  await screen.findByText("an answer");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(api.askSeen).not.toHaveBeenCalled();
 });

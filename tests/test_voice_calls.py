@@ -793,7 +793,7 @@ def test_a_second_socket_in_the_hello_window_starts_no_second_worker(ready, work
     assert starts == [1]
 
 
-def test_any_turn_error_is_spoken_and_the_queue_runs(monkeypatch):
+def test_any_turn_error_is_spoken_and_the_next_question_is_answered(monkeypatch):
     said: list = []
     call = voice_calls.Call(
         id="c", cid="x", contact="europe-man", voice="v", operator=None, app=None,
@@ -819,10 +819,12 @@ def test_any_turn_error_is_spoken_and_the_queue_runs(monkeypatch):
     monkeypatch.setattr(call, "_run_turn", boom)
 
     async def go():
-        call.queued = ("second", None)
+        # #2103: the call keeps no question of its own behind a running turn (the
+        # conversation's queue does); a turn that fails never leaves the call stuck, and the
+        # next question is asked and answered.
         await call._ask("first", call.generation)
-        while call.turn_task is not None and not call.turn_task.done():
-            await call.turn_task
+        assert call.state == "listening"
+        await call._ask("second", call.generation)
 
     asyncio.run(go())
     assert asked == ["first", "second"]

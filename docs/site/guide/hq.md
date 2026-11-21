@@ -176,12 +176,35 @@ with the sidebar open.
   now is marked. The row stays above the answer afterwards as *23 steps · 1 m 48 s* and opens
   to the same list, on every device and after a reload. It shows what HQ looked up and counted,
   never the contents it read.
-- **Stop** takes the place of **Send** while HQ works; **Esc** does the same from the keyboard
-  (when no dialog is open). HQ finishes a message it is already sending, then stops: the turn
+- **Stop** sits beside **Send** while HQ works (a small red square); **Esc** does the same from
+  the keyboard (when no dialog is open). HQ finishes a message it is already sending, then stops: the turn
   reads *Stopped after 9 steps* with the steps it took and no answer, and under it *Stopped by
   you. Nothing was sent.* If a message did go out it is in the list, and if HQ could not confirm
   whether one arrived the line says so. You can keep typing while HQ works, and "continue" in
   your next message picks the stopped question up again.
+- **Ask the next thing while HQ works.** Send stays available: a question sent while another
+  is running in the same conversation is **queued** and runs next, in order. It shows as your
+  own message with a dashed edge and **Queued · Withdraw** under it, and the line under the box
+  reads *Queued behind the running question*. Up to three can wait; then Send is disabled and
+  the line reads *Queue full — withdraw one or wait*. **Withdraw** takes a queued question
+  back before it runs. **Stop** stops only the running question; the next queued one then
+  starts. A queued question does not survive a restart of BattleLab: it reads *Not started —
+  the server restarted* with **Re-send**.
+- **Tasks: what HQ is working on, from anywhere.** While any question runs, waits in a queue
+  or is parked on a question for you, a small mark with a count appears in the top bar, left of
+  the HQ icon (with a **?** when HQ is waiting for your answer). It opens the **Tasks** list:
+  each running question with what it is doing, its steps and time and a **Stop**; each queued
+  one with **Withdraw**; a question HQ asked you with **Answer →**; and the recent ones
+  (*Answered*, *Stopped*, *Withdrawn*, *Could not answer*) with **Open →**. **Stop all** stops
+  every running question and withdraws every queued one, in every conversation. The same list
+  heads the conversation list on the HQ page and, while there is something to act on, the
+  sidebar. It shows the first line of each question and the conversation's name, never an
+  answer.
+- **You are told when an answer lands and you were elsewhere.** If a question finishes, stops,
+  fails or ends on a question for you and its conversation has not shown that outcome within a
+  few seconds, the bell gets one row: *HQ answered*, *HQ has a question*, *HQ stopped* or *HQ
+  could not answer*, with the conversation's name and **Open**. It goes away once you have
+  seen the answer. It never contains the answer itself.
 - A question that runs for a very long time keeps its first 200 lookups one by one and counts
   the rest (*… and 1,240 more lookups*, by kind). Everything HQ sent, staged or remembered is
   always listed. On a very long question HQ lets go of its oldest lookups to make room for new
