@@ -73,7 +73,7 @@ def test_registry_covers_every_system_prompt():
     # the session scan.
     # #2059 handoff_remote_brief (Continue here: a record another instance shares is DATA;
     # unguarded, with that rule locked onto it).
-    assert len(prompts.REGISTRY) == 50
+    assert len(prompts.REGISTRY) == 51
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -91,6 +91,9 @@ def test_registry_covers_every_system_prompt():
         "ask_orchestrator",
         "memory_capture",
         "memory_answer",
+        # `ask_manual` (#2249) reads manual text, full of imperatives, and its answer goes
+        # straight to the Commander.
+        "ask_manual",
         # `ask_route` (#2028) reads the conversation, whose earlier answers quote what searches
         # found in agents' sessions, and its direct answer goes straight to the Commander.
         "ask_route",
@@ -178,8 +181,11 @@ EXPECTED_DEFAULT_SHA = {
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
     # #2163 P2; #2152; #2137 (needs_you, set-up); #1960 P2; #1950; #2136
-    "ask_orchestrator": "a36818ce5d0c50e6",
-    "ask_route": "d0d8bdd7f68826fb",  # #2028: HQ's question router
+    # #2249: for how BattleLab works, the installed manual first (docs_search / docs_read).
+    "ask_orchestrator": "437ac64ec292ecf7",
+    # #2028: HQ's question router; #2249 adds the `manual` route.
+    "ask_route": "323bd1e25e69c20c",
+    "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "e34bfd7e81807815",
     "hq_persona_asia_man": "eba5c28d6ff47fe6",

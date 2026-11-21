@@ -268,6 +268,11 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Git: switch / create branch, delete a merged branch | POST /api/git/switch, …/branch/delete | P6 W |
 | Git: push | POST /api/git/push | P6 W (external) |
 
+#### Help and the manual
+| Capability | Route(s) | HQ |
+|---|---|---|
+| Explain how BattleLab works, a setting, a tutorial (#2249) | none: HQ reads the installed `docs/site` | have (`docs_search`, `docs_read`; without tools, the question router's `manual` route) |
+
 #### API-only routes (no UI caller today)
 | Route | HQ |
 |---|---|

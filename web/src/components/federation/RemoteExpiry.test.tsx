@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import type { NodeProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { UNKNOWN_DATE, type RemoteShare } from "../../lib/federation";
 
 // #2055 review (P1): a paired peer could list an expiry such as 1e300. The receiving server
@@ -124,6 +124,13 @@ test.each(HOSTILE)("the screen pane's banner shows %s as an unknown date", (expi
 
 test("a real expiry still reads as its date on all three", () => {
   const nov22 = Date.UTC(2026, 10, 22, 12) / 1000;
+  // The clock is pinned weeks before the expiry: within 24 h the surfaces read "ends in …"
+  // instead of the date, so against the real clock this test started failing at 21 Nov 12:00 UTC.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(Date.UTC(2026, 10, 1, 12)));
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
   shares.list = [share(nov22)];
   render(
     <MemoryRouter>

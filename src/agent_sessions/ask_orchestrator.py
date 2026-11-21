@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from . import (
     ai_providers,
     ask_attachments,
+    ask_docs,
     ask_memory,
     ask_mission,
     ask_operations,
@@ -471,6 +472,11 @@ class _Turn:
     memory_refs: dict = field(default_factory=dict)
     memory_books: dict = field(default_factory=dict)
     memory_route: dict | None = None
+    #: Manual chunk ids THIS turn's `docs_search` / `docs_read` returned (#2249): what `docs_read`
+    #: may name. Memory only, never stored.
+    doc_refs: set[str] = field(default_factory=set)
+    #: The router's `manual` query on an endpoint that takes no tools (#2249, `ask_docs`).
+    manual_route: str | None = None
     memory_snapshot: dict | None = field(default_factory=ask_memory.snapshot)
     #: Who answers (#1525): a known HQ contact id, or ``off`` for plain HQ (no persona).
     contact: str = hq_contacts.OFF
@@ -3239,6 +3245,7 @@ TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
         *ask_memory.tools(Tool, _spec),
+        *ask_docs.tools(Tool, _spec),  # #2249: the installed manual, read-only
         Tool(
             "find_sessions",
             "read",
@@ -4228,7 +4235,7 @@ DRAFT_READ_TOOLS = frozenset(
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool", "list_procedures",
         "list_memory_notebooks", "search_memory", "read_memory", "list_cards",
-        "needs_you", "notifications", "note",
+        "needs_you", "notifications", "note", "docs_search", "docs_read",
     }
 )  # fmt: skip
 
@@ -4842,6 +4849,10 @@ async def _route_inside(
         if action in {"recall", "remember"}:
             turn.memory_route = obj["memory"]
             return None
+    manual = ask_docs.route_query(obj)  # #2249: a question about BattleLab itself
+    if manual is not None:
+        turn.manual_route = manual
+        return None
     if not isinstance(obj, dict) or obj.get("search") is not False:
         return None
     answer = obj.get("answer")
@@ -4874,6 +4885,8 @@ async def _no_tools_turn(turn: _Turn, history: list[dict], switched: bool, cfg: 
         direct = await _stoppable(turn, _route(turn, history, switched))
         if turn.memory_route is not None:
             records = await ask_memory.routed_turn(turn, history, switched)
+        elif turn.manual_route is not None:
+            records = await ask_docs.routed_turn(turn, history, switched)
         elif direct is not None:
             records = [_assistant(turn, direct), _status(turn, "done")]
         else:

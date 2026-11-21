@@ -325,6 +325,25 @@ keeps the last **50** conversations for **30 days**. What it
 stores is your questions and its answers — never the screens or transcripts it read to answer —
 and any text that looks like a password or a token is stored as *withheld*.
 
+## Ask HQ how BattleLab works
+
+HQ can explain BattleLab itself: how a feature works, where a setting lives, how to set
+something up. It looks the answer up in **this manual, the copy installed with your BattleLab**, so what it tells you matches the version you are running, even when the
+website already describes a newer one. It needs no network for this.
+
+- The answer **cites the page** and links it here, on docs.battlelabos.com. The link opens the
+  public manual, which follows the newest release. The text HQ quoted is your version's.
+- When the manual doesn't cover the question, HQ **says so**, rather than answering from memory.
+  A page that only shares a few words with the question doesn't count as an answer.
+- HQ reads at most five sections per search and 6,000 characters per section read.
+
+With an endpoint that **can't use tools**, [question routing](#question-routing) sends a
+question about BattleLab to the manual: HQ searches it, reads the best three sections (12,000
+characters at most) and answers from them in one request, with the pages listed under the
+answer. If nothing matches, it says the manual doesn't cover it without asking the model. With
+question routing **off**, an endpoint without tools searches your sessions for every message
+and doesn't consult the manual.
+
 ## Showing it on screen
 
 Ask HQ to show you something and the screen follows, typed or on a call: "pull up the api-rebase
@@ -652,8 +671,9 @@ The Recent work window is set from the page itself (**1 day | 2 | 3**).
 Some AI endpoints can't use tools. With one of those, HQ can't look things up as it goes, so it
 used to search all your sessions for every message, even "hi". Now one quick call decides
 first: a question about your work (a session, a mission, a project, what happened, what needs
-you) still searches; anything else (greetings, "which model are you?", a summary of what you
-just discussed) is answered straight away. When unsure, it searches. The search line says
+you) still searches; a question about how BattleLab itself works goes to the
+[manual](#ask-hq-how-battlelab-works); anything else (greetings, "which model are you?", a
+summary of what you just discussed) is answered straight away. When unsure, it searches. The search line says
 what it searched: "Searching 3 matching sessions and your recent ones…", or "Searching your
 recent sessions…" when nothing matched by name.
 
@@ -671,5 +691,5 @@ With an endpoint that does use tools, HQ decides by itself whether to search, an
 settings change nothing.
 
 ::: info Verified against
-`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events, _prefilter_hits`; `src/agent_sessions/ask_orchestrator.py § _route, _no_tools_turn`; `src/agent_sessions/prefs.py § HQ_ROUTE_DEFAULTS`; `web/src/routes/HqRouteSettings.tsx`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
+`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events, _prefilter_hits`; `src/agent_sessions/ask_orchestrator.py § _route, _no_tools_turn`; `src/agent_sessions/docs_index.py § CHUNK_MAX, SEARCH_MAX, resolve_root`; `src/agent_sessions/ask_docs.py § ROUTED_HITS, ROUTED_CONTEXT_MAX, NOT_COVERED`; `src/agent_sessions/prefs.py § HQ_ROUTE_DEFAULTS`; `web/src/routes/HqRouteSettings.tsx`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
 :::

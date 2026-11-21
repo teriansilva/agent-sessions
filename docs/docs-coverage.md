@@ -62,5 +62,6 @@ Decisions, Needs you, notifications, Recent work, dashboard   ->  guide/dashboar
 Settings                                                      ->  guide/settings
 Library                                                       ->  guide/templates, guide/playbooks, guide/specialists, guide/automations, guide/memory, guide/mcp-servers
 Files and git (Files drawer)                                  ->  guide/files-and-git
+Help and the manual                                           ->  guide/hq
 API-only routes (no UI caller today)                          ->  reference/
 ```

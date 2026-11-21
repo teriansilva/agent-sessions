@@ -267,6 +267,9 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "read_memory": "read",
         "remember_hq_memory": "memory",
         "propose_hq_memory_change": "proposal",
+        # #2249: the installed manual — reads only, by ids a search returned this turn.
+        "docs_search": "read",
+        "docs_read": "read",
         "find_sessions": "read",
         # #1932: the artifacts the agents published, with provenance and links — read-only.
         "artifacts_find": "read",

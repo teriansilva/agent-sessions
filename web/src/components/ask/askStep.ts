@@ -48,6 +48,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   read_memory: { label: "Reading a memory note", noun: ["note", "notes"] },
   remember_hq_memory: { label: "Writing a memory note" },
   propose_hq_memory_change: { label: "Preparing the memory change for you to confirm" },
+  // #2249: the manual installed with this BattleLab.
+  docs_search: { label: "Searching the manual", noun: ["section", "sections"] },
+  docs_read: { label: "Reading the manual" },
   // #1611: the Library.
   list_playbooks: { label: "Listing your playbooks", noun: ["playbook", "playbooks"] },
   list_procedures: { label: "Listing the project's procedures", noun: ["procedure", "procedures"] },

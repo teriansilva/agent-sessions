@@ -30,6 +30,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "prompt_guard"
 EXPECTED_SITES = {
     ("memory_capture.py", "memory_capture"),
     ("ask_memory.py", "memory_answer"),
+    ("ask_docs.py", "ask_manual"),  # #2249: a no-tool answer from the installed manual
     ("probes.py", "chat_agent"),  # #1259 candidate endpoint verification; same sole transport
     ("autosort.py", "auto_sort"),
     ("clusters_loop.py", "session_clusters"),  # #1997: HQ's clustering sweep
