@@ -115,7 +115,8 @@ def current() -> Catalog:
             reason = (
                 "Included with BattleLab; configure its source agent."
                 if builtin
-                else "This agent is not offered by the last accepted remote catalog."
+                else "Not in the signed agent catalog this host accepted; "
+                "a catalog update that lists it makes it installable."
             )
             choices.append(Choice(entry, None, reason, builtin))
     return Catalog(

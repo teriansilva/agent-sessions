@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef, useState, type ComponentType, type Reac
 import { Link } from "react-router-dom";
 import { useConfigRefresh } from "../../app/config";
 import { reloadRoster } from "../../app/reloadRoster";
+import { useEngineRoster } from "../../app/engineRoster";
 import { AgentEndpointCard } from "../settings/AgentEndpointCard";
 import { manifestVersion, olderThanInstalled, setupChanges, staleAgainst, updateEligible } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
+import { agentPicker } from "./agentPicker";
 import { SignInTerminal } from "./SignInTerminal";
 import { pluginSignIn } from "./signInTarget";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, SETUP_STEP, SETUP_STEP_SIGNIN, setupPath, sourceLabel, verifiedGeneration } from "./model";
@@ -85,6 +87,7 @@ export function AgentSetupFlow({
   const lockedPlugin = hostSearch === undefined ? plugin : undefined;
   const locked = !!lockedPlugin;
   const refreshConfig = useConfigRefresh();
+  const roster = useEngineRoster();
   const [catalog, setCatalog] = useState<PluginCatalog | null>(null);
   const [selected, setSelected] = useState(() => lockedPlugin ?? new URLSearchParams(search).get("plugin") ?? "");
   const [mode, setMode] = useState<"catalog" | "local">("catalog");
@@ -370,6 +373,7 @@ export function AgentSetupFlow({
     void start("activate", bound);
   };
   const entryShown = catalog?.catalog.find(c => c.manifest.identity.id === selected);
+  const picker = agentPicker(catalog, roster);
   const selectedRow = catalog?.plugins.find(p => p.id === selected);
   const activeGen = selectedRow?.generations?.find(g => g.id === selectedRow.active);
   const versionNow = manifestVersion(activeGen?.review.entry.manifest);
@@ -481,17 +485,32 @@ export function AgentSetupFlow({
           {(["catalog", "local"] as const).map(value => <button key={value} className={`${button.ghost} ${s.filter}`} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === "catalog" ? "Agent catalog" : "Local manifest"}</button>)}
         </div>
         {mode === "catalog" ? <>
+          {/* #2245: the picker offers what this host can install. What it can't is a disabled group
+              (still findable) explained below — a disabled option can't be picked to read its reason. */}
           <label className={s.field}><span>Agent</span><select className={s.input} value={selected} onChange={e => setSelected(e.target.value)}>
-            <option value="">Select an agent</option>{catalog?.catalog.map(c => <option key={c.manifest.identity.id} value={c.manifest.identity.id} disabled={c.installable === false}>{c.manifest.identity.label} · {c.manifest.identity.version}{c.included ? " · Included with BattleLab" : c.installable === false ? " · Unavailable" : ""}</option>)}
+            <option value="">Select an agent</option>
+            {picker.offered.map(c => <option key={c.manifest.identity.id} value={c.manifest.identity.id}>{c.manifest.identity.label} · {c.manifest.identity.version}</option>)}
+            {picker.blocked.length > 0 && <optgroup label="Can’t be installed right now" disabled>
+              {picker.blocked.map(c => <option key={c.manifest.identity.id} value={c.manifest.identity.id}>{c.manifest.identity.label} · {c.manifest.identity.version}</option>)}
+            </optgroup>}
           </select></label>
           {catalog?.feed.error && <p className={s.note} role="alert">{catalog.feed.error}</p>}
-          {catalog?.catalog.find(c => c.manifest.identity.id === selected)?.reason && <p className={s.note}>{catalog.catalog.find(c => c.manifest.identity.id === selected)?.reason}</p>}
+          {picker.blocked.length > 0 && <div className={`${s.note} ${s.listNote}`} data-testid="agents-blocked">
+            <span>These agents can’t be installed on this host right now:</span>
+            <ul className={s.reasons}>{picker.blocked.map(c => <li key={c.manifest.identity.id}><b>{c.manifest.identity.label}</b>{c.reason && c.reason !== catalog?.feed.error ? <> — {c.reason}</> : null}</li>)}</ul>
+          </div>}
+          {picker.included.length > 0 && <div data-testid="agents-included">
+            <p>Included with BattleLab: {picker.included.map(c => c.manifest.identity.label).join(", ")}.
+              {" "}An API agent isn’t installed on its own: it uses its source agent’s installation. Set it up in <Link to={AGENTS_PATH}>Agents</Link>.</p>
+            {picker.needs.length > 0 && <ul className={s.reasons}>
+              {picker.needs.map(n => <li key={n.entry.manifest.identity.id}><b>{n.entry.manifest.identity.label}</b> needs <b>{n.source}</b> installed first.</li>)}
+            </ul>}
+          </div>}
           <AgentCatalogStatus feed={catalog?.feed} busy={busy}
             refresh={() => void run(async current => {
               try { setCatalog(await current(api.pluginRefresh())); }
               catch (error) { setCatalog(await current(api.plugins())); throw error; }
             })} />
-          {!!catalog?.catalog.some(c => c.included) && <p>API agents are included with BattleLab and use their source agent’s installation. Configure them in <Link to={AGENTS_PATH}>Agents</Link>.</p>}
         </> : <>
           <p className={s.note}>Local manifests are untrusted. Verification does not make their publisher trusted.</p>
           <label className={s.field}><span>Manifest and recipe JSON</span><textarea className={s.input} value={local} onChange={e => setLocal(e.target.value)} spellCheck={false} autoComplete="off" /></label>

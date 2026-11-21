@@ -19,7 +19,7 @@ async function catalogFixture(page: Page, state: "bundled" | "expired" | "corrup
     catalog: [
       { manifest: { identity: { id: "sample-agent", label: "Sample agent", version: "1.2.3", publisher: "BattleLab" } }, digest: "c".repeat(64), installable: !unavailable, source: unavailable ? null : "bundled", reason: unavailable ? "Restore catalog evidence before installing." : null },
       { manifest: { identity: { id: "sample-api", label: "Sample API", version: "1", publisher: "BattleLab" }, runtime: { kind: "api" }, api: { kind: "native", source: "sample-agent" } }, digest: "d".repeat(64), installable: false, included: true, reason: "Included with BattleLab; configure its source agent." },
-      { manifest: { identity: { id: "removed-agent", label: "Removed agent", version: "1", publisher: "BattleLab" } }, digest: "e".repeat(64), installable: false, reason: "This agent is not offered by the last accepted remote catalog." },
+      { manifest: { identity: { id: "removed-agent", label: "Removed agent", version: "1", publisher: "BattleLab" } }, digest: "e".repeat(64), installable: false, reason: "Not in the signed agent catalog this host accepted; a catalog update that lists it makes it installable." },
     ],
     plugins: [], operations: [], roster_generation: 1, roster_revision: null,
   };
@@ -102,7 +102,10 @@ for (const state of ["expired", "corrupt"] as const) {
     await page.screenshot({ path: info.outputPath(`agent-catalog-${state}.png`), fullPage: true });
     await page.goto("/settings/agents/setup/new?plugin=removed-agent");
     await expect(page.getByRole("button", { name: "Review installation" })).toBeDisabled();
-    await expect(page.getByRole("combobox", { name: "Agent" }).locator('option[value="sample-api"]')).toHaveJSProperty("disabled", true);
-    await expect(page.getByText("This agent is not offered by the last accepted remote catalog.", { exact: true })).toBeVisible();
+    // An included API agent is never an install option (#2245); what can't be installed is
+    // explained beside the picker, not only once picked.
+    await expect(page.getByRole("combobox", { name: "Agent" }).locator('option[value="sample-api"]')).toHaveCount(0);
+    await expect(page.getByTestId("agents-blocked").getByRole("listitem").filter({ hasText: "Removed agent" }))
+      .toContainText("Not in the signed agent catalog this host accepted; a catalog update that lists it makes it installable.");
   });
 }

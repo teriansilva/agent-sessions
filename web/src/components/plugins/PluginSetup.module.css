@@ -14,6 +14,11 @@ textarea.input { min-height: 180px; resize: vertical; }
 .panel h2, .panel h3 { margin: 0 0 12px; font: 600 var(--fs-body) var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
 .panel p { margin: 0 0 12px; color: var(--text-2); line-height: 1.5; }
 .note { padding: 12px 14px; border-left: 2px solid var(--status-degraded); background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+/* A note that lists (the Add-agent picker's agents that can't be installed, #2245). */
+.listNote { margin: 0 0 12px; }
+.reasons { margin: -4px 0 12px; padding-left: 18px; color: var(--text-2); line-height: 1.5; }
+.note .reasons { margin: 6px 0 0; color: inherit; }
+.reasons li + li { margin-top: 4px; }
 .error { border-color: var(--status-down); color: var(--danger-text); }
 .ok { color: var(--ok-text); }
 .older { font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--warn-text); }

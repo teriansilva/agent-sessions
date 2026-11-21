@@ -221,8 +221,10 @@ One row per agent CLI: whether it is **Ready** or needs you (**Needs setup**, **
 available**, **Not installed**, **Unavailable**, **Disabled**, **Retiring**, **Invalid**), the ways
 it can run (Terminal, API, Chat — each links to that agent's page), and what it has spent. When
 something needs you, the row carries the one button for it. **Needs attention** shows only those
-rows; **Add agent** sets up a new one. The public catalog is the line under the list; open
-**Catalog details** for its links, history and the daily check.
+rows; **Add agent** sets up a new one. Its picker offers only the agents this host can install;
+any it can't install are greyed out and listed under it with the reason. The included API
+agents are named there rather than offered; one whose source agent is missing and can't be
+installed here says which agent it needs first. The public catalog is the line under the list; open **Catalog details** for its links, history and the daily check.
 
 An agent's page starts with its status, the one thing to do if any, and a **⋯** menu for reload,
 disable and remove. Below are its usage (a percentage marked *plan* comes from the agent itself;

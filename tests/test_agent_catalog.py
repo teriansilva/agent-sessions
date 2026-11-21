@@ -88,7 +88,7 @@ def test_remote_removal_cannot_be_undone_by_a_bundled_recipe(bundle, signer, mon
     accept(signer, entries=[])
     for now in (NOW, NOW + 86401):
         monkeypatch.setattr(feed.time, "time", lambda now=now: now)
-        with pytest.raises(ValueError, match="not offered"):
+        with pytest.raises(ValueError, match="Not in the signed agent catalog"):
             manager.review(plugin_id="fixture")
         with pytest.raises(ValueError, match="review this installation again"):
             manager._entry(review, fresh=True)
@@ -165,8 +165,8 @@ def test_a_newer_bundle_cannot_undo_a_remote_removal(bundle, signer, monkeypatch
     if expired:
         monkeypatch.setattr(feed.time, "time", lambda: NOW + 86401)
     removed = choice()
-    assert removed.source is None and "not offered" in removed.reason
-    with pytest.raises(ValueError, match="not offered"):
+    assert removed.source is None and "Not in the signed agent catalog" in removed.reason
+    with pytest.raises(ValueError, match="Not in the signed agent catalog"):
         manager.review(plugin_id="fixture")
 
 
