@@ -5,7 +5,9 @@ import { Link } from "react-router-dom";
 import {
   Crosshair,
   MessageSquare,
+  FileUp,
   Send,
+  Webhook,
   RadioTower,
   Repeat,
   Search,
@@ -38,6 +40,8 @@ const ICON: Record<string, LucideIcon> = {
   forge_review_loop: Repeat,
   tell_hq: RadioTower,
   send_message: Send,
+  call_webhook: Webhook,
+  publish_artifact: FileUp,
 };
 
 export function ActionIcon({ id }: { id: string }) {

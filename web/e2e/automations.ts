@@ -106,6 +106,18 @@ export function scopeLines(config: Json): string[] {
       lines.push(`To ${String(inputs.recipient)}, a recipient you allowed for it`);
       lines.push(messageLine("Message", inputs.message as Json));
     }
+    if (action.plugin === "publish_artifact") {
+      lines.push(`Publishes ${String(inputs.path)} from project ${String(inputs.project_id)}, in /repo`);
+      lines.push("As a PRIVATE artifact: only you can open it until you share it yourself");
+    }
+    if (action.plugin === "call_webhook") {
+      lines.push(`Sends one signed POST to ${String(inputs.destination)}`);
+      lines.push(
+        inputs.allow_private
+          ? "It may reach a private or local network address: you allowed it"
+          : "Never to a private, local or link-local network address",
+      );
+    }
     lines.push("Starts no session and types into none");
   } else if (action.kind === "tell_hq") {
     // `automations.describe` for "Tell HQ" (#2221).
@@ -137,6 +149,10 @@ function messageLine(word: string, m: Json | undefined): string {
   if (m && typeof m.text === "string") return `${word} (plain text):\n${m.text}`;
   return `${word}: template “${m?.template_id}”`;
 }
+
+/** "Call a webhook" (#2248 P2): the signing secrets the fake's create and rotate answer with. */
+export const SIGNING_SECRET = "5ec7e7".padEnd(64, "a");
+export const NEW_SIGNING_SECRET = "0e7".padEnd(64, "b");
 
 /** `automations_store.RECEIPT_MISMATCH`. */
 export const RECEIPT_MISMATCH =
@@ -400,6 +416,14 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
         scope_digest: `digest-new${seq}-1`,
       });
       fake.state.automations.push(a);
+      // "Call a webhook" (#2248 P2): the save that gives a destination its signing secret returns
+      // it in THIS answer only; reads carry the destination's state, never the secret.
+      const act = body?.action as Json | undefined;
+      if (act?.kind === "plugin" && act.plugin === "call_webhook") {
+        const url = String((act.inputs as Json).destination);
+        a.destination = { url, secret_set: true, secret_made_at: 1 };
+        return json(201, { ...a, destination_secret: SIGNING_SECRET });
+      }
       return json(201, a);
     }
     if (parts[0] === "origins") return json(200, { origins: opts.origins ?? {} });
@@ -505,6 +529,11 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
       if (verb === "resume") Object.assign(a, { paused: false, state: "enabled", paused_reason: "" });
       if (verb === "disable") Object.assign(a, { enabled: false, paused: false, state: "off", next_run: null });
       return changed(a);
+    }
+    if (verb === "destination-secret" && method === "POST") {
+      const dest = a.destination as Json | null | undefined;
+      if (!dest) return json(409, { detail: "this automation does not call a webhook" });
+      return json(201, { secret: NEW_SIGNING_SECRET, destination: dest });
     }
     if (verb === "webhook-secret" && method === "POST") {
       // `automations_store.new_hook_secret` (#2202): a fresh 64-hex secret, shown in THIS answer

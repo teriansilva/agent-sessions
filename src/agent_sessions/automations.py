@@ -1317,7 +1317,9 @@ def _local_time(ts: float, tz: object) -> str:
     return f"{datetime.fromtimestamp(ts, ZoneInfo(name)).strftime('%Y-%m-%d %H:%M:%S')} ({name})"
 
 
-def _message_lines(scope: dict, preview: str | None = None) -> list[str]:
+def _message_lines(
+    scope: dict, preview: str | None = None, *, none_if_empty: bool = False
+) -> list[str]:
     """What it sends, in full: plain text verbatim, or the template, its revision and every value.
     Secrets never appear — a typed secret cannot be stored, and a library secret is named only."""
     msg = scope.get("message")
@@ -1343,7 +1345,7 @@ def _message_lines(scope: dict, preview: str | None = None) -> list[str]:
             # The template as it would be sent NOW: its body with these values and the library's
             # text values filled in, and every secret as `[secret: name]` (`message_preview`).
             out.append(f"{word} as it would be sent now:\n{preview}")
-    elif msg is not None:
+    elif msg is not None and not (none_if_empty and msg == {}):
         out.append(f"{word}: {msg!r}")
     if not (isinstance(msg, dict) and "template_id" in msg):
         if scope.get("template_name"):
@@ -1531,10 +1533,12 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
                 ),
             }.get(str(scope.get("autonomy")), f"Autonomy: {scope.get('autonomy')}")
         )
-    if (not review_loop and action != "plugin") or scope.get("message"):
+    if action == "plugin":
+        # A plugin without a message (#2248 P2) still discloses every message field the digest
+        # holds; only the empty message itself is not a line.
+        lines.extend(_message_lines(scope, preview, none_if_empty=True))
+    elif not review_loop or scope.get("message"):
         lines.extend(_message_lines(scope, preview))
-    elif action == "plugin" and scope.get("content"):
-        lines.append(f"Content fingerprint: {scope['content']}")
     trig = scope.get("trigger")
     if trig in ("schedule", "once"):
         lines.append(_cadence_words(scope.get("cadence"), scope.get("tz")))

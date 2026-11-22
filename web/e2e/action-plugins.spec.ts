@@ -8,7 +8,16 @@ import { expect, test, type Page } from "@playwright/test";
 import { ACTIONS_PATH, AUTOMATION_NEW_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { ACTION_GALLERY, messenger, mockActions, mockMessengers, withSetupMissing } from "./actions";
-import { mockAutomations, targetsAndOverflow, toStep, type FakeOptions } from "./automations";
+import {
+  NEW_SIGNING_SECRET,
+  PROJECT,
+  backTo,
+  SIGNING_SECRET,
+  mockAutomations,
+  targetsAndOverflow,
+  toStep,
+  type FakeOptions,
+} from "./automations";
 import { animationsSettled } from "./nightjarShell";
 import { mockRoster } from "./roster";
 import { mockWebhooks, webhook } from "./webhooks";
@@ -202,5 +211,97 @@ for (const theme of ["dark", "light"] as const) {
     await page.getByTestId("send-recipient").selectOption("42");
     await page.getByTestId("message-text").fill("The nightly backup finished");
     await shot("send-message");
+    await page.getByTestId("action-kind-call_webhook").click();
+    await page.getByTestId("webhook-destination").fill("https://hooks.example.org/battlelab");
+    await page.getByTestId("webhook-field-add").click();
+    await page.getByTestId("webhook-field-name").fill("job");
+    await page.getByTestId("webhook-field-value").fill("nightly");
+    await save(page, "Tell the shop");
+    await expect(page.getByTestId("destination-secret")).toBeVisible();
+    await shot("webhook-secret-once");
   });
 }
+
+// ---- Call a webhook -----------------------------------------------------------------------------
+
+test("Call a webhook: an https address, typed fields, and the secret shown once after save", async ({ page }) => {
+  const fake = await setup(page);
+  await page.goto(AUTOMATION_NEW_PATH);
+  await page.getByTestId("trigger-kind").getByRole("button", { name: /When a webhook delivers/ }).click();
+  await page.getByTestId("trigger-webhook").selectOption(SHOP.id);
+  await toStep(page, "What does it do?");
+  await page.getByTestId("action-kind-call_webhook").click();
+  await expect(page.getByTestId("action-kind-call_webhook").getByTestId("action-effect")).toHaveText(
+    "Write · external",
+  );
+  const dest = page.getByTestId("webhook-destination");
+  await dest.fill("http://hooks.example.org/battlelab");
+  await expect(page.getByText("The address must start with https://").first()).toBeVisible();
+  await dest.fill("https://hooks.example.org/battlelab");
+  await expect(page.getByTestId("webhook-allow-private")).not.toBeChecked();
+  await page.getByTestId("webhook-field-add").click();
+  await page.getByTestId("webhook-field-name").nth(0).fill("job");
+  await page.getByTestId("webhook-field-value").nth(0).fill("nightly");
+  await page.getByTestId("webhook-field-add").click();
+  const second = page.getByTestId("webhook-field").nth(1);
+  await second.getByTestId("webhook-field-name").fill("number");
+  await second.getByTestId("webhook-field-source").getByRole("button", { name: "From the delivery" }).click();
+  await second.getByTestId("webhook-field-path").fill("pull_request.number");
+  await second.getByTestId("webhook-field-type").selectOption("number");
+  await animationsSettled(page);
+  await targetsAndOverflow(page, "main");
+  await save(page, "Tell the shop");
+  expect(created(fake).action).toEqual({
+    kind: "plugin",
+    plugin: "call_webhook",
+    version: 1,
+    inputs: {
+      destination: "https://hooks.example.org/battlelab",
+      allow_private: false,
+      fields: { job: "nightly" },
+    },
+    from_delivery: { number: { path: "pull_request.number", type: "number" } },
+  });
+  // The secret from the save's answer, shown once; Done forgets it, and a read never has it.
+  const once = page.getByTestId("destination-secret");
+  await expect(once.getByTestId("destination-secret-value")).toHaveText(SIGNING_SECRET);
+  await expect(once).toContainText("X-BattleLab-Signature");
+  await once.getByTestId("destination-secret-done").click();
+  await expect(page.getByTestId("destination-secret")).toHaveCount(0);
+  await page.reload();
+  await backTo(page, "What does it do?");
+  await expect(page.getByTestId("webhook-secret-state")).toContainText("BattleLab can’t show it again");
+  await expect(page.getByText(SIGNING_SECRET)).toHaveCount(0);
+  // A new one, on demand: shown once again.
+  await page.getByTestId("webhook-new-secret").click();
+  await expect(page.getByTestId("destination-secret-value")).toHaveText(NEW_SIGNING_SECRET);
+});
+
+// ---- Publish an artifact ------------------------------------------------------------------------
+
+test("Publish an artifact: a project, a path inside it, a title from the delivery", async ({ page }) => {
+  const fake = await setup(page);
+  await page.goto(AUTOMATION_NEW_PATH);
+  await page.getByTestId("trigger-kind").getByRole("button", { name: /When a webhook delivers/ }).click();
+  await page.getByTestId("trigger-webhook").selectOption(SHOP.id);
+  await toStep(page, "What does it do?");
+  await page.getByTestId("action-kind-publish_artifact").click();
+  await page.getByTestId("artifact-project").selectOption(PROJECT.id);
+  await page.getByTestId("artifact-path").fill("/etc/passwd");
+  await expect(page.getByText("The path is relative to the project’s folder").first()).toBeVisible();
+  await page.getByTestId("artifact-path").fill("reports/nightly.md");
+  await page.getByTestId("artifact-title-source").getByRole("button", { name: "From the delivery" }).click();
+  await page.getByTestId("artifact-title-path").fill("pull_request.title");
+  await page.getByTestId("artifact-why-value").fill("the nightly run");
+  await expect(page.getByTestId("publish-artifact-what")).toContainText("PRIVATE");
+  await animationsSettled(page);
+  await targetsAndOverflow(page, "main");
+  await save(page, "Publish nightly");
+  expect(created(fake).action).toEqual({
+    kind: "plugin",
+    plugin: "publish_artifact",
+    version: 1,
+    inputs: { project_id: PROJECT.id, path: "reports/nightly.md", title: "", why: "the nightly run" },
+    from_delivery: { title: { path: "pull_request.title", type: "text" } },
+  });
+});

@@ -48,15 +48,25 @@ _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 IP = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
+def embedded_ipv4(ip: IP) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 address carries (mapped ``::ffff:a.b.c.d``, 6to4 ``2002::/16``,
+    NAT64 ``64:ff9b::/96``), or None. Such an address reaches that IPv4 host, so it is judged as
+    it (#2248 P2: one rule for every caller)."""
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return None
+    embedded = ip.ipv4_mapped or ip.sixtofour
+    if embedded is None and ip in _NAT64:
+        embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return embedded
+
+
 def unsafe_ip(ip: IP) -> bool:
     """Refused destinations: link-local (metadata), named metadata addresses, multicast,
     unspecified, reserved. Loopback is allowed on purpose (a local server), including `::1`,
     which `ipaddress` files under reserved `::/8`. An IPv4 address embedded in IPv6 (mapped,
     6to4, NAT64) is judged as itself."""
     if isinstance(ip, ipaddress.IPv6Address):
-        embedded = ip.ipv4_mapped or ip.sixtofour
-        if embedded is None and ip in _NAT64:
-            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        embedded = embedded_ipv4(ip)
         if embedded is not None:
             # Loopback reached through a translator (NAT64, 6to4) is the GATEWAY's loopback, not
             # ours: only the plain mapped form (::ffff:127.x) counts as this host.

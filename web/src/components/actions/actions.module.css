@@ -258,11 +258,8 @@
   .rowLine {
     white-space: normal;
   }
-  .pickChips {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
+  /* With the plugin actions (#2248 P2) there are more categories than a phone's width holds:
+     the chips wrap rather than scroll a chip out of sight. */
   .pickChips :global(.nj-chip) {
     flex: none;
   }

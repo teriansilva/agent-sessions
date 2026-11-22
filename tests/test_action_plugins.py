@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import threading
 import time
 
@@ -293,10 +294,36 @@ def _plugin_scopes() -> dict[str, dict]:
         "plugin": {"of": "send_message", "connector": "c_0123456789ab", "kind": "smtp",
                    "sender": "bot@example.org"},
     }  # fmt: skip
-    return {"send_message": model.scope_of(_scheduled(send), pins_)}
+    hook = model.validate_config(
+        _config(
+            _hook(fields={"job": "nightly"}, mapped={"n": {"path": "number", "type": "number"}}),
+            trigger={"kind": "webhook", "webhook_id": "0a1b2c3d4e5f6a7b"},
+        )
+    )
+    art = model.validate_config(
+        _config(
+            _plugin(
+                "publish_artifact",
+                {"project_id": "p1", "path": "reports/n.md", "title": "Nightly"},
+                {"why": {"path": "pull_request.title", "type": "text"}},
+            ),
+            trigger={"kind": "webhook", "webhook_id": "0a1b2c3d4e5f6a7b"},
+        )
+    )
+    art_pins = {
+        "template": None,
+        "checklist": None,
+        "plugin": {"of": "publish_artifact", "cwd": {"path": "/w/shop", "real": "/srv/shop"}},
+    }
+    return {
+        "publish_artifact": model.scope_of(_scheduled(art), art_pins),
+        "send_message": model.scope_of(_scheduled(send), pins_),
+        "call_webhook": model.scope_of(_scheduled(hook), {"template": None, "checklist": None}),
+    }
 
 
-@pytest.mark.parametrize("pid", sorted(_plugin_scopes()))
+# Every plugin: a plugin without a scope here fails, so none escapes the disclosure check.
+@pytest.mark.parametrize("pid", plugins.PLUGINS)
 def test_describe_discloses_every_field_the_digest_covers(pid):
     scope = _plugin_scopes()[pid]
     base_lines = model.describe(scope)
@@ -447,3 +474,707 @@ def test_a_secret_registered_after_the_save_never_leaves(world):
     res = _execute(_manual_run(aid))
     assert res["run"]["outcome"] == "refused" and "secret" in res["run"]["reason"]
     assert tg.sent == []
+
+
+# ---- Call a webhook -----------------------------------------------------------------------------
+
+HOOK_URL = "https://hooks.example.org/battlelab?team=ops"
+
+
+class Receiver:
+    """A fake destination: records each request; answers what `mode` says."""
+
+    def __init__(self) -> None:
+        self.requests: list = []
+        self.mode = "ok"  # ok | redirect | 400 | 500 | drop
+        self.addresses = {
+            "hooks.example.org": ["93.184.216.34"],
+            "lan.example.org": ["10.0.0.5"],
+            # Hermes on #2275: an IPv6 address that CARRIES a private IPv4 one reaches that host.
+            "nat64.example.org": ["64:ff9b::a00:5"],  # NAT64 of 10.0.0.5
+            "sixtofour.example.org": ["2002:a00:5::"],  # 6to4 of 10.0.0.5
+            "nat64-lo.example.org": ["64:ff9b::7f00:1"],  # NAT64 of 127.0.0.1
+            "nat64-public.example.org": ["64:ff9b::5db8:d822"],  # NAT64 of 93.184.216.34
+        }
+        self.resolve_delay = 0.0
+        self.gate: threading.Event | None = None
+        self.entered = threading.Event()
+
+    async def resolve(self, host, port):
+        if self.resolve_delay:
+            await asyncio.sleep(self.resolve_delay)
+        return self.addresses[host]
+
+    def handler(self, request):
+        import httpx
+
+        self.entered.set()
+        if self.gate is not None:
+            assert self.gate.wait(10)
+        self.requests.append(request)
+        if self.mode == "redirect":
+            return httpx.Response(302, headers={"location": "https://elsewhere.example.org/x"})
+        if self.mode == "drop":
+            raise httpx.ReadTimeout("no reply", request=request)
+        if self.mode in ("400", "500"):
+            return httpx.Response(int(self.mode), json={})
+        return httpx.Response(204)
+
+
+@pytest.fixture
+def receiver(monkeypatch):
+    import httpx
+
+    from agent_sessions.actions import call_webhook
+
+    r = Receiver()
+    monkeypatch.setattr(call_webhook, "_resolve", r.resolve)
+    monkeypatch.setattr(call_webhook, "_TRANSPORT", httpx.MockTransport(r.handler))
+    return r
+
+
+def _hook(dest: str = HOOK_URL, fields=None, mapped=None, allow_private=None) -> dict:
+    inputs: dict = {"destination": dest, "fields": fields or {"job": "nightly"}}
+    if allow_private is not None:
+        inputs["allow_private"] = allow_private
+    return _plugin("call_webhook", inputs, mapped)
+
+
+def _hook_made(action: dict, trigger: dict | None = None) -> tuple[str, str]:
+    out = routes._create(copy.deepcopy(_config(action, trigger)))
+    secret = out["destination_secret"]
+    pub = routes.public(store.get(out["id"]))
+    routes._enable(
+        out["id"],
+        {"revision": pub["revision"], "consent": True, "scope_digest": pub["scope_digest"]},
+    )
+    return out["id"], secret
+
+
+@pytest.mark.parametrize(
+    "dest, extra, why",
+    [
+        ("http://hooks.example.org/x", {}, "must be an https address"),
+        ("https://user:pw@hooks.example.org/x", {}, "user name or password"),
+        ("https://hooks.example.org/x#frag", {}, "#fragment"),
+        ("https:///x", {}, "needs a host"),
+        ("https://10.0.0.5/x", {}, "private or local network"),
+        ("https://127.0.0.1/x", {}, "private or local network"),
+        ("https://169.254.169.254/latest", {"allow_private": True}, "link-local"),
+        ("https://hooks.example.org/a b", {}, "spaces or control"),
+    ],
+)
+def test_the_destination_is_https_only_and_private_addresses_are_refused(dest, extra, why):
+    with pytest.raises(model.AutomationError, match=why):
+        model.validate_action(_plugin("call_webhook", {"destination": dest, **extra}))
+
+
+def test_call_webhook_validates_strictly():
+    got = model.validate_action(_hook("HTTPS://Hooks.Example.org:443/battlelab?team=ops"))
+    assert got["inputs"] == {
+        "destination": HOOK_URL,
+        "allow_private": False,
+        "fields": {"job": "nightly"},
+    }
+    assert model.validate_action(_hook("https://10.0.0.5/x", allow_private=True))
+    for inputs, why in [
+        ({"destination": HOOK_URL, "fields": {"Bad": "x"}}, "not a field name"),
+        ({"destination": HOOK_URL, "allow_private": "yes"}, "true or false"),
+        ({"destination": HOOK_URL, "url": "x"}, "does not take url"),
+        ({"destination": HOOK_URL, "fields": {f"f{i}": "x" for i in range(17)}}, "at most 16"),
+    ]:
+        with pytest.raises(model.AutomationError, match=why):
+            model.validate_action(_plugin("call_webhook", inputs))
+    mapped = {"job": {"path": "action", "type": "text"}}
+    with pytest.raises(model.AutomationError, match="fixed value and a value from the delivery"):
+        model.validate_action(_hook(mapped=mapped))
+
+
+def test_the_secret_is_made_at_save_shown_once_and_never_again(receiver):
+    out = routes._create(copy.deepcopy(_config(_hook())))
+    aid, secret = out["id"], out["destination_secret"]
+    assert len(secret) == 64 and out["destination"]["secret_set"] is True
+    pub = routes.public(store.get(aid))
+    assert "destination_secret" not in pub and secret not in json.dumps(pub)
+    assert pub["destination"] == {
+        "url": HOOK_URL,
+        "secret_set": True,
+        "secret_made_at": pub["destination"]["secret_made_at"],
+    }
+    # A save that keeps the destination shows nothing; a new destination gets a new secret.
+    again = routes._patch(aid, {"name": "renamed", "revision": pub["revision"]})
+    assert "destination_secret" not in again
+    moved = routes._patch(
+        aid,
+        {"action": _hook("https://hooks.example.org/other"), "revision": again["revision"]},
+    )
+    assert moved["destination_secret"] not in (None, secret)
+    fresh = routes._new_destination_secret(aid)
+    assert fresh["secret"] not in (secret, moved["destination_secret"])
+
+
+def test_a_new_secret_is_only_for_an_automation_that_calls_a_webhook(world):
+    aid = routes._create(_config(_send(_messenger()["id"])))["id"]
+    assert routes.public(store.get(aid))["destination"] is None
+    with pytest.raises(model.AutomationError, match="does not call a webhook"):
+        routes._new_destination_secret(aid)
+
+
+def test_a_run_posts_once_signed_with_the_destinations_secret(receiver):
+    import hashlib
+    import hmac
+
+    from agent_sessions.actions import destination_secrets
+
+    aid, secret = _hook_made(_hook())
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert len(receiver.requests) == 1
+    req = receiver.requests[0]
+    assert req.method == "POST" and str(req.url).endswith("/battlelab?team=ops")
+    assert req.headers["host"] == "hooks.example.org"
+    body = req.content
+    want = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    assert req.headers["x-battlelab-signature"] == want
+    doc = json.loads(body)
+    assert doc["fields"] == {"job": "nightly"} and doc["automation"] == aid
+    assert doc["run"] == res["run"]["id"]
+    # The secret is never in a response, a run record or any store file at rest.
+    run_ = store.get_run(res["run"]["id"])
+    assert secret not in json.dumps(run_) and secret not in json.dumps(routes.public_run(run_))
+    assert secret not in json.dumps(routes.public(store.get(aid)))
+    assert want not in json.dumps(run_)
+    for f in [store.db_path(), destination_secrets.path()]:
+        for p in f.parent.glob(f.name + "*"):
+            assert secret.encode() not in p.read_bytes(), p
+
+
+def test_a_redirect_is_reported_and_never_followed(receiver):
+    receiver.mode = "redirect"
+    aid, _ = _hook_made(_hook())
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "failed" and "never followed" in res["run"]["reason"]
+    assert len(receiver.requests) == 1  # nothing went to the Location
+
+
+@pytest.mark.parametrize(
+    "host, why",
+    [
+        ("nat64.example.org", "private or local"),
+        ("sixtofour.example.org", "private or local"),
+        ("nat64-lo.example.org", "always refused"),
+    ],
+)
+def test_an_ipv6_address_carrying_a_private_ipv4_one_is_refused(receiver, host, why):
+    """Hermes on #2275: NAT64 (64:ff9b::/96) and 6to4 (2002::/16) addresses are judged as the
+    IPv4 address they carry, like `net_vetting.unsafe_ip` does; only `::ffff:` was before."""
+    aid, _ = _hook_made(_hook(f"https://{host}/hook"))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused", res["run"]
+    assert why in res["run"]["reason"] and receiver.requests == []
+
+
+def test_a_nat64_address_of_a_public_host_is_still_public(receiver):
+    aid, _ = _hook_made(_hook("https://nat64-public.example.org/hook"))
+    assert _execute(_manual_run(aid))["run"]["outcome"] == "ok"
+    assert len(receiver.requests) == 1
+
+
+@pytest.mark.parametrize("literal", ["[64:ff9b::a00:5]", "[2002:a00:5::]", "[::ffff:10.0.0.5]"])
+def test_a_literal_ipv6_carrying_a_private_ipv4_is_refused_at_save(literal):
+    with pytest.raises(model.AutomationError, match="private or local network"):
+        model.validate_action(_plugin("call_webhook", {"destination": f"https://{literal}/x"}))
+
+
+def test_a_name_that_resolves_to_a_private_address_is_refused_unless_allowed(receiver):
+    aid, _ = _hook_made(_hook("https://lan.example.org/hook"))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused" and "private or local" in res["run"]["reason"]
+    assert receiver.requests == []
+    aid2, _ = _hook_made(_hook("https://lan.example.org/hook", allow_private=True))
+    assert _execute(_manual_run(aid2))["run"]["outcome"] == "ok"
+    assert len(receiver.requests) == 1
+
+
+def test_a_missing_secret_refuses_the_run_and_sends_nothing(receiver):
+    from agent_sessions.actions import destination_secrets
+
+    aid, _ = _hook_made(_hook())
+    destination_secrets.drop(aid)
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused" and "no signing secret" in res["run"]["reason"]
+    assert receiver.requests == []
+
+
+def test_no_answer_is_never_sent_again(receiver):
+    receiver.mode = "drop"
+    aid, _ = _hook_made(_hook())
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "failed" and "not sent again" in res["run"]["reason"]
+    assert len(receiver.requests) == 1
+
+
+def test_a_disable_before_the_post_sends_nothing(receiver, monkeypatch):
+    aid, _ = _hook_made(_hook())
+    real = store.set_inputs
+
+    def then_disabled(rid, inputs):
+        real(rid, inputs)
+        routes._simple(aid, "disable")
+
+    monkeypatch.setattr(store, "set_inputs", then_disabled)
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "stopped" and receiver.requests == []
+
+
+def test_a_cancel_during_the_post_then_a_disable_reports_in_flight_and_one_post(receiver):
+    receiver.gate = threading.Event()
+    aid, _ = _hook_made(_hook())
+    run_ = _manual_run(aid)
+
+    async def go():
+        task = asyncio.ensure_future(automation_runner.execute(run_, registry=None))
+        while not receiver.entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        disabled = await asyncio.to_thread(routes._simple, aid, "disable")
+        receiver.gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return disabled
+
+    disabled = asyncio.run(go())
+    assert disabled["in_flight"] is True
+    assert len(receiver.requests) == 1
+    assert _runs(aid)[0]["outcome"] == "ok"
+
+
+def test_a_delivery_fills_typed_fields_and_never_the_destination(receiver, spawned):
+    pub, _ = webhooks.create("ci")
+    mapped = {
+        "number": {"path": "pull_request.number", "type": "number"},
+        "draft": {"path": "pull_request.draft", "type": "yes_no"},
+    }
+    aid, _ = _hook_made(_hook(mapped=mapped), trigger={"kind": "webhook", "webhook_id": pub["id"]})
+    _deliver(aid, pub["id"], {**PR, "destination": "https://evil.example.org/x"})
+    res = _execute(spawned[0])
+    assert res["run"]["outcome"] == "ok", res["run"]
+    (req,) = receiver.requests
+    assert req.headers["host"] == "hooks.example.org"
+    assert json.loads(req.content)["fields"] == {"draft": False, "job": "nightly", "number": 41}
+
+
+def test_the_destination_is_an_equality_field_of_the_consent(receiver):
+    aid, _ = _hook_made(_hook())
+    scope = routes.public(store.get(aid))["scope"]
+    moved = {**scope, "target": {**scope["target"], "destination": "https://x.example.org/"}}
+    assert model.widened(scope, moved) == ["a different destination"]
+    opened = {**scope, "target": {**scope["target"], "allow_private": True}}
+    assert model.widened(scope, opened) == ["which network addresses it may reach changed"]
+    text = "\n".join(routes.public(store.get(aid))["scope_lines"])
+    assert HOOK_URL in text and "job = nightly" in text and "X-BattleLab-Signature" in text
+
+
+def test_a_rotation_racing_a_destination_change_makes_the_secret_for_the_new_address(
+    receiver, monkeypatch
+):
+    """Hermes on #2275: a rotation that read the OLD address must not overwrite the secret a
+    concurrent save just made for the new one. The rotation re-reads the stored address inside
+    the secrets lock, under the same effect-lock writer a save holds."""
+    from agent_sessions.actions import destination_secrets
+
+    aid, _ = _hook_made(_hook())
+    routes._simple(aid, "disable")  # an enabled one would ask consent for the new address
+    new_url = "https://hooks.example.org/moved"
+    real = destination_secrets.mint
+    raced: list[dict] = []
+
+    def save_moves_it_first(*a, **kw):
+        if not raced:
+            # The operator's save of a new address lands between the rotation's start (it saw
+            # the old address) and its mint.
+            row = store.get(aid)
+            raced.append(
+                routes._patch(aid, {"action": _hook(new_url), "revision": row["revision"]})
+            )
+        return real(*a, **kw)
+
+    monkeypatch.setattr(destination_secrets, "mint", save_moves_it_first)
+    out = routes._new_destination_secret(aid)
+    assert raced and raced[0]["destination"]["url"] == new_url
+    assert out["destination"] == {
+        "url": new_url,
+        "secret_set": True,
+        "secret_made_at": out["destination"]["secret_made_at"],
+    }
+    assert destination_secrets.signing_secret(aid, new_url) == out["secret"]
+    assert destination_secrets.signing_secret(aid, HOOK_URL) is None
+    assert routes.public(store.get(aid))["destination"]["secret_set"] is True
+
+
+def test_a_rotation_that_cannot_take_the_fence_from_a_running_send_mints_nothing(
+    receiver, monkeypatch
+):
+    """Hermes on #2275: a run holds the effect lock with the OLD secret loaded until its first
+    byte. A rotation whose writer wait runs out must not replace the secret (the run would send
+    with a retired one after the rotation said it had stopped): it refuses, retryable, and the
+    old secret still signs."""
+    import threading
+
+    from agent_sessions import automation_effect_lock as effect_lock
+    from agent_sessions.actions import destination_secrets
+
+    aid, old = _hook_made(_hook())
+    monkeypatch.setattr(effect_lock, "WRITER_WAIT_S", 0.05)
+    holding, release = threading.Event(), threading.Event()
+
+    def a_run_mid_send():
+        with effect_lock.runner_sync(aid) as held:
+            assert held
+            holding.set()
+            release.wait(10)
+
+    t = threading.Thread(target=a_run_mid_send)
+    t.start()
+    try:
+        assert holding.wait(5)
+        with pytest.raises(model.AutomationError, match="sending right now") as e:
+            routes._new_destination_secret(aid)
+        assert e.value.status == 409
+        assert destination_secrets.signing_secret(aid, HOOK_URL) == old  # nothing was minted
+    finally:
+        release.set()
+        t.join(10)
+    fresh = routes._new_destination_secret(aid)  # once the run is done, it rotates
+    assert fresh["secret"] != old
+    assert destination_secrets.signing_secret(aid, HOOK_URL) == fresh["secret"]
+
+
+def test_a_rotation_of_an_automation_that_stopped_calling_a_webhook_is_refused(
+    receiver, monkeypatch, world
+):
+    from agent_sessions.actions import destination_secrets
+
+    aid, old = _hook_made(_hook())
+    msg = _send(_messenger()["id"])
+    real = destination_secrets.mint
+
+    def switched_first(*a, **kw):
+        routes._patch(
+            aid, {"action": msg, "revision": store.get(aid)["revision"], "consent": False}
+        )
+        return real(*a, **kw)
+
+    monkeypatch.setattr(destination_secrets, "mint", switched_first)
+    # The automation is enabled: a different action widens, so turn it off first.
+    routes._simple(aid, "disable")
+    with pytest.raises(model.AutomationError, match="does not call a webhook") as e:
+        routes._new_destination_secret(aid)
+    assert e.value.status == 409
+    assert destination_secrets.signing_secret(aid, HOOK_URL) == old  # nothing was minted
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ghp_0123456789abcdefABCDEF0123456789abcd", "Bearer sk-live-abcdef0123456789abcdef0123"],
+)
+def test_a_fixed_field_that_looks_like_a_credential_is_refused_at_save(receiver, value):
+    with pytest.raises(model.AutomationError, match="looks like a credential"):
+        routes._create(_config(_hook(fields={"token": value})))
+
+
+def test_a_fixed_field_holding_a_stored_secret_is_refused_at_save(receiver):
+    template_vars.create_variable({"name": "tok", "kind": "secret", "value": "plain-but-secret-77"})
+    with pytest.raises(model.AutomationError, match="holds a stored secret"):
+        routes._create(_config(_hook(fields={"note": "use plain-but-secret-77 please"})))
+
+
+def test_a_timeout_before_the_request_is_not_sent_never_may_have_been_delivered(
+    receiver, monkeypatch
+):
+    from agent_sessions.actions import call_webhook
+
+    aid, _ = _hook_made(_hook())
+    monkeypatch.setattr(call_webhook, "TOTAL_TIMEOUT_S", 0.2)
+    receiver.resolve_delay = 2.0
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "failed", res["run"]
+    assert "nothing was sent" in res["run"]["reason"]
+    assert "may have been delivered" not in res["run"]["reason"]
+    assert receiver.requests == []
+
+
+# ---- Publish an artifact ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def shop(tmp_path, monkeypatch):
+    from agent_sessions import projects
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "shop"
+    (root / "reports").mkdir(parents=True)
+    (root / "reports" / "nightly.md").write_text("# Nightly\nall green\n")
+    (root / "site").mkdir()
+    (root / "site" / "index.html").write_text("<h1>hi</h1>")
+    (root / "leak.env.txt").write_text("API_KEY=sk-live-abcdef0123456789abcdef0123456789\n")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "x.md").write_text("x")
+    proj = projects.create("shop", folders=[str(root)], default_folder=str(root))
+    return {"id": proj.id, "root": root, "other": other}
+
+
+def _artifact(pid: str, path: str = "reports/nightly.md", **extra) -> dict:
+    mapped = extra.pop("mapped", None)
+    return _plugin(
+        "publish_artifact",
+        {
+            "project_id": pid,
+            "path": path,
+            "title": "Nightly report",
+            "why": "the 03:00 run",
+            **extra,
+        },
+        mapped,
+    )
+
+
+@pytest.mark.parametrize(
+    "path, why",
+    [
+        ("/etc/passwd", "never absolute"),
+        ("~/x", "never absolute"),
+        ("../elsewhere/x.md", "no .."),
+        ("reports/../../x", "no .."),
+        (".git/config", "hidden"),
+        (".", "not all of it"),
+    ],
+)
+def test_the_artifact_path_is_relative_and_inside_the_project(path, why):
+    with pytest.raises(model.AutomationError, match=why):
+        model.validate_action(_artifact("p1", path))
+
+
+def test_publish_artifact_validates_strictly():
+    with pytest.raises(model.AutomationError, match="needs a title"):
+        model.validate_action(_artifact("p1", title=""))
+    with pytest.raises(model.AutomationError, match="only title and why"):
+        model.validate_action(_artifact("p1", mapped={"path": {"path": "x", "type": "text"}}))
+    ok = model.validate_action(
+        _artifact("p1", title="", mapped={"title": {"path": "t", "type": "text"}})
+    )
+    assert ok["from_delivery"] == {"title": {"path": "t", "type": "text"}}
+
+
+def test_an_out_of_scope_or_missing_item_is_refused_at_save(shop):
+    with pytest.raises(model.AutomationError, match="does not exist"):
+        routes._create(_config(_artifact(shop["id"], "reports/nope.md")))
+    os_link = shop["root"] / "out"
+    os_link.symlink_to(shop["other"])
+    with pytest.raises(model.AutomationError, match="symbolic link"):
+        routes._create(_config(_artifact(shop["id"], "out")))
+    from agent_sessions import prefs
+
+    prefs.set_folder_exclusions([str(shop["root"])])
+    with pytest.raises(model.AutomationError, match="outside your project folders"):
+        routes._create(_config(_artifact(shop["id"])))
+
+
+def test_a_run_publishes_a_private_artifact_and_records_its_link(shop):
+    from agent_sessions import artifact_store
+
+    aid = _made(_config(_artifact(shop["id"])))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert "published privately" in res["run"]["reason"]
+    out = store.get_run(res["run"]["id"])["inputs"]["output"]
+    got = artifact_store.get(out["artifact"])
+    assert got["title"] == "Nightly report" and got["visibility"] == "private"
+    assert got["origin"]["engine"] == "automation"
+    # The next run is a new revision behind the same link, still private.
+    (shop["root"] / "reports" / "nightly.md").write_text("# Nightly\none red\n")
+    res2 = _execute(_manual_run(aid))
+    out2 = store.get_run(res2["run"]["id"])["inputs"]["output"]
+    assert out2["artifact"] == out["artifact"] and "revision 2" in res2["run"]["reason"]
+    # Once the operator shares it, a run never puts new content behind the public link.
+    artifact_store.share(out["artifact"])
+    res3 = _execute(_manual_run(aid))
+    out3 = store.get_run(res3["run"]["id"])["inputs"]["output"]
+    assert out3["artifact"] != out["artifact"]
+    assert artifact_store.get(out3["artifact"])["visibility"] == "private"
+
+
+def _first_publish(shop) -> tuple[str, str]:
+    """An automation that has published once (revision 1, private): ``(automation, artifact)``."""
+    aid = _made(_config(_artifact(shop["id"])))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "ok", res["run"]
+    return aid, store.get_run(res["run"]["id"])["inputs"]["output"]["artifact"]
+
+
+def _went_public_mid_publish(shop, monkeypatch, make_public, where: str) -> None:
+    """Hermes on #2276: the operator makes the artifact public AFTER the run chose it (from a
+    private snapshot) and BEFORE the store's revision transaction. The new content must go to a new
+    PRIVATE artifact; the public one keeps its revision."""
+    from agent_sessions import artifact_store
+
+    aid, art = _first_publish(shop)
+    (shop["root"] / "reports" / "nightly.md").write_text("# Nightly\nnew content\n")
+    fired: list[bool] = []
+    # Right before the store's publish call, or while its files are being staged.
+    name = "publish" if where == "publish" else "_judge_staged"
+    real = getattr(artifact_store, name)
+
+    def public_now(*a, **kw):
+        if not fired:
+            fired.append(True)
+            make_public(art)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(artifact_store, name, public_now)
+    res = _execute(_manual_run(aid))
+    assert fired, "the share never landed between the choice and the commit"
+    assert res["run"]["outcome"] == "ok", res["run"]
+    out = store.get_run(res["run"]["id"])["inputs"]["output"]
+    assert out["artifact"] != art, "new content went behind the public link"
+    public = artifact_store.get(art)
+    assert public["revision"] == 1 and public["visibility"] == "public"
+    fresh = artifact_store.get(out["artifact"])
+    assert fresh["visibility"] == "private" and fresh["revision"] == 1
+    assert "published privately" in res["run"]["reason"]
+
+
+def _share_box(art: str) -> None:
+    from agent_sessions import artifact_store
+
+    artifact_store.share(art)
+
+
+def _relay_copy(art: str) -> None:
+    from agent_sessions import artifact_store
+
+    artifact_store.set_relay(art, "relaypub0001", "https://r.example.org/x/", 1)
+
+
+def _relay_pending(art: str) -> None:
+    from agent_sessions import artifact_store
+
+    artifact_store.mark_relay_pending(art, True)
+
+
+@pytest.mark.parametrize("make_public", [_share_box, _relay_copy, _relay_pending])
+@pytest.mark.parametrize("where", ["publish", "staging"])
+def test_an_artifact_made_public_between_the_choice_and_the_commit_is_never_revised(
+    shop, monkeypatch, make_public, where
+):
+    _went_public_mid_publish(shop, monkeypatch, make_public, where)
+
+
+def test_a_file_with_a_secret_refuses_the_publish(shop):
+    aid = _made(_config(_artifact(shop["id"], "leak.env.txt")))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused", res["run"]
+    assert "nothing was published" in res["run"]["reason"]
+    from agent_sessions import artifact_store
+
+    assert artifact_store.list_artifacts()["items"] == []
+
+
+def test_an_item_moved_out_of_scope_after_save_is_refused(shop):
+    from agent_sessions import artifact_store, prefs
+
+    aid = _made(_config(_artifact(shop["id"])))
+    prefs.set_folder_exclusions([str(shop["root"] / "reports")])
+    res = _execute(_manual_run(aid))
+    assert (
+        res["run"]["outcome"] == "refused"
+        and "outside your project folders" in res["run"]["reason"]
+    )
+    assert artifact_store.list_artifacts()["items"] == []
+
+
+def test_a_disable_before_the_publish_publishes_nothing(shop, monkeypatch):
+    from agent_sessions import artifact_store
+
+    aid = _made(_config(_artifact(shop["id"])))
+    real = store.set_inputs
+
+    def then_disabled(rid, inputs):
+        real(rid, inputs)
+        routes._simple(aid, "disable")
+
+    monkeypatch.setattr(store, "set_inputs", then_disabled)
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "stopped"
+    assert artifact_store.list_artifacts()["items"] == []
+
+
+def test_a_cancel_during_the_publish_then_a_disable_reports_in_flight_and_one_artifact(
+    shop, monkeypatch
+):
+    from agent_sessions import artifact_store
+
+    aid = _made(_config(_artifact(shop["id"])))
+    entered, release = threading.Event(), threading.Event()
+    real = artifact_store.publish
+
+    def slow(origin, args, **kw):
+        entered.set()
+        assert release.wait(10)
+        return real(origin, args, **kw)
+
+    monkeypatch.setattr(artifact_store, "publish", slow)
+    run_ = _manual_run(aid)
+
+    async def go():
+        task = asyncio.ensure_future(automation_runner.execute(run_, registry=None))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        disabled = await asyncio.to_thread(routes._simple, aid, "disable")
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return disabled
+
+    disabled = asyncio.run(go())
+    assert disabled["in_flight"] is True
+    assert len(artifact_store.list_artifacts()["items"]) == 1
+    assert _runs(aid)[0]["outcome"] == "ok"
+
+
+def test_a_delivery_fills_the_title_and_never_the_path(shop, spawned):
+    from agent_sessions import artifact_store
+
+    pub, _ = webhooks.create("ci")
+    action = _artifact(
+        shop["id"], title="", mapped={"title": {"path": "pull_request.title", "type": "text"}}
+    )
+    aid = _made(_config(action, trigger={"kind": "webhook", "webhook_id": pub["id"]}))
+    _deliver(aid, pub["id"], {**PR, "path": "../elsewhere/x.md"})
+    res = _execute(spawned[0])
+    assert res["run"]["outcome"] == "ok", res["run"]
+    (item,) = artifact_store.list_artifacts()["items"]
+    assert item["title"] == "Fix totals"
+    files = [f["path"] for f in artifact_store.listing(item["id"])]
+    assert files == ["nightly.md"]
+
+
+def test_a_repointed_project_folder_needs_approval_again(shop, tmp_path):
+    from agent_sessions import projects
+
+    aid = _made(_config(_artifact(shop["id"])))
+    new = tmp_path / "shop2" / "reports"
+    new.mkdir(parents=True)
+    (new / "nightly.md").write_text("x")
+    projects.update(
+        shop["id"], folders=[str(tmp_path / "shop2")], default_folder=str(tmp_path / "shop2")
+    )
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused" and "approval again" in res["run"]["reason"]
+    assert store.get(aid)["needs_reapproval"]

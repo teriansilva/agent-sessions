@@ -324,6 +324,114 @@
       ],
       "available": true,
       "used_by": 0
+    },
+    {
+      "id": "call_webhook",
+      "label": "Call a webhook",
+      "category": "web",
+      "description": "Sends a signed POST with typed fields to an https address you name, and nowhere else.",
+      "effect": "write-external",
+      "executor": "call_webhook",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "destination",
+          "type": "destination",
+          "label": "Address",
+          "required": true
+        },
+        {
+          "name": "allow_private",
+          "type": "yes_no",
+          "label": "Allow private network addresses",
+          "required": false
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "response",
+          "type": "response",
+          "label": "The answer's status"
+        }
+      ],
+      "requires": [],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "publish_artifact",
+      "label": "Publish an artifact",
+      "category": "files",
+      "description": "Publishes a file or a folder from a project as a private artifact at a stable link.",
+      "effect": "write-battlelab",
+      "executor": "publish_artifact",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "file",
+          "label": "File or folder",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "label": "Title",
+          "required": true
+        },
+        {
+          "name": "why",
+          "type": "text",
+          "label": "Why",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "artifact",
+          "type": "artifact",
+          "label": "The artifact link"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "artifacts",
+          "words": "artifacts switched on in Settings",
+          "ok": true,
+          "detail": "artifacts are on",
+          "setup": "artifacts"
+        }
+      ],
+      "available": true,
+      "used_by": 0
     }
   ],
   "categories": [

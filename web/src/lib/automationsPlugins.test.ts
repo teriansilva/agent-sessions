@@ -84,3 +84,97 @@ describe("needsSetup", () => {
     expect(needsSetup(missing)).toEqual({ words: "Needs Telegram", setup: "ai-hq" });
   });
 });
+
+describe("call_webhook", () => {
+  const hookForm = (over: Partial<EditorForm> = {}) =>
+    form({
+      actionKind: "call_webhook",
+      destination: " https://hooks.example.org/x ",
+      bodyFields: [
+        { name: "job", value: "nightly", map: null },
+        { name: "number", value: "", map: { path: "pull_request.number", type: "number", choices: [] } },
+      ],
+      ...over,
+    });
+
+  it("sends the fixed fields as inputs and a mapped one only from a webhook from the list", () => {
+    expect(formAction(hookForm())).toEqual({
+      kind: "plugin",
+      plugin: "call_webhook",
+      version: 1,
+      inputs: { destination: "https://hooks.example.org/x", allow_private: false, fields: { job: "nightly" } },
+    });
+    const hooked = formAction(hookForm({ triggerKind: "webhook", webhookId: "0a1b2c3d4e5f6a7b" }));
+    expect(hooked).toMatchObject({
+      from_delivery: { number: { path: "pull_request.number", type: "number" } },
+    });
+  });
+
+  it("reads a stored one back, fixed and mapped fields both", () => {
+    const action = formAction(hookForm({ triggerKind: "webhook", webhookId: "0a1b2c3d4e5f6a7b", allowPrivate: true }));
+    const f = formFromAutomation(
+      { name: "n", trigger: { kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" }, action, policy: null } as unknown as Automation,
+      "UTC",
+    );
+    expect(f.allowPrivate).toBe(true);
+    expect(formAction(f)).toEqual(action);
+  });
+
+  it("asks for an https address with no credentials and well-named fields", () => {
+    const what = (over: Partial<EditorForm>) => stepProblems(hookForm(over)).what;
+    expect(what({ destination: "http://x.example.org" })).toContain("The address must start with https://");
+    expect(what({ destination: "https://u:p@x.example.org" })).toContain(
+      "The address must not carry a user name or password",
+    );
+    expect(what({ bodyFields: [{ name: "Bad", value: "", map: null }] })[0]).toMatch(/needs a name/);
+    expect(
+      what({ bodyFields: [{ name: "a", value: "", map: null }, { name: "a", value: "", map: null }] }),
+    ).toContain("Two fields have the same name");
+    expect(what({})).toEqual([]);
+  });
+});
+
+describe("publish_artifact", () => {
+  const art = (over: Partial<EditorForm> = {}) =>
+    form({
+      actionKind: "publish_artifact",
+      projectId: "p1",
+      artifactPath: " reports/nightly.md ",
+      artifactTitle: "Nightly",
+      artifactWhy: "",
+      ...over,
+    });
+
+  it("sends the project, the relative path and the lines; a mapped line goes on the action", () => {
+    expect(formAction(art())).toEqual({
+      kind: "plugin",
+      plugin: "publish_artifact",
+      version: 1,
+      inputs: { project_id: "p1", path: "reports/nightly.md", title: "Nightly", why: "" },
+    });
+    const mapped = formAction(
+      art({
+        triggerKind: "webhook",
+        webhookId: "0a1b2c3d4e5f6a7b",
+        lineMaps: { title: { path: "pull_request.title", type: "text", choices: [] }, why: null },
+      }),
+    );
+    expect(mapped).toMatchObject({
+      inputs: { title: "" },
+      from_delivery: { title: { path: "pull_request.title", type: "text" } },
+    });
+    const back = formFromAutomation(
+      { name: "n", trigger: { kind: "webhook", webhook_id: "0a1b2c3d4e5f6a7b" }, action: mapped, policy: null } as unknown as Automation,
+      "UTC",
+    );
+    expect(formAction(back)).toEqual(mapped);
+  });
+
+  it("refuses an absolute path, a climb out and a missing title before the server does", () => {
+    const what = (over: Partial<EditorForm>) => stepProblems(art(over)).what;
+    expect(what({ artifactPath: "/etc/passwd" })).toContain("The path is relative to the project’s folder");
+    expect(what({ artifactPath: "a/../../b" })).toContain("The path must stay inside the project’s folder");
+    expect(what({ artifactTitle: " " })).toContain("Give it a title");
+    expect(what({})).toEqual([]);
+  });
+});

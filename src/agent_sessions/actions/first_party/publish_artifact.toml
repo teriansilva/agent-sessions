@@ -1,0 +1,40 @@
+# A bundled action manifest (#2248 P2). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/publish_artifact.py`).
+contract = 1
+id = "publish_artifact"
+label = "Publish an artifact"
+category = "files"
+description = "Publishes a file or a folder from a project as a private artifact at a stable link."
+effect = "write-battlelab"
+executor = "publish_artifact"
+requires = ["project", "artifacts"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Project"
+required = true
+
+[[inputs]]
+name = "path"
+type = "file"
+label = "File or folder"
+required = true
+
+[[inputs]]
+name = "title"
+type = "text"
+label = "Title"
+required = true
+
+[[inputs]]
+name = "why"
+type = "text"
+label = "Why"
+
+[[outputs]]
+name = "artifact"
+type = "artifact"
+label = "The artifact link"

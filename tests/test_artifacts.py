@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -241,6 +242,93 @@ def test_the_store_and_its_bytes_are_private(origin, proj):
     blob = next(p for p in (artifact_store.content_dir() / "blobs").rglob("*") if p.is_file())
     assert os.stat(blob).st_mode & 0o077 == 0
     assert os.stat(blob.parent).st_mode & 0o077 == 0
+
+
+# ---- private-only revisions (#2248 P2, Hermes on #2276) ------------------------------------------
+
+
+def _first(origin, proj) -> str:
+    (proj / "r.md").write_text("one")
+    return artifact_store.publish(origin, {"path": "r.md", "title": "R", "why": "w"})["id"]
+
+
+def _box_link(aid):
+    artifact_store.share(aid)
+
+
+def _relay_copy(aid):
+    artifact_store.set_relay(aid, "relaypub0001", "https://r.example.org/x/", 1)
+
+
+def _relay_pending(aid):
+    artifact_store.mark_relay_pending(aid, True)
+
+
+@pytest.mark.parametrize("make_public", [_box_link, _relay_copy, _relay_pending])
+def test_a_private_only_publish_never_revises_a_public_artifact(origin, proj, make_public):
+    """Every public state counts: a live box link, a relay copy, a relay publication not settled
+    yet. The content becomes a NEW private artifact; the public one keeps its revision."""
+    aid = _first(origin, proj)
+    make_public(aid)
+    (proj / "r.md").write_text("two")
+    out = artifact_store.publish(
+        origin, {"path": "r.md", "title": "R", "why": "w", "artifact_id": aid}, private_only=True
+    )
+    assert out["id"] != aid and out["started_new_private"] is True
+    assert out["visibility"] == "private" and out["revision"] == 1
+    assert artifact_store.get(aid)["revision"] == 1
+    assert artifact_store.get(aid)["visibility"] == "public"
+
+
+def test_a_private_only_publish_revises_a_private_artifact(origin, proj):
+    aid = _first(origin, proj)
+    (proj / "r.md").write_text("two")
+    out = artifact_store.publish(
+        origin, {"path": "r.md", "title": "R", "why": "w", "artifact_id": aid}, private_only=True
+    )
+    assert out["id"] == aid and out["revision"] == 2 and "started_new_private" not in out
+
+
+def test_an_expired_box_link_is_private_again_for_a_private_only_publish(origin, proj):
+    """`view`'s own rule: a link past its expiry opens nothing, so it reads private."""
+    aid = _first(origin, proj)
+    artifact_store.share(aid, expires_at=time.time() + 3600)
+    with artifact_store._tx() as con:
+        con.execute("UPDATE artifacts SET public_expires_at=? WHERE id=?", (time.time() - 1, aid))
+    out = artifact_store.publish(
+        origin, {"path": "r.md", "title": "R", "why": "w", "artifact_id": aid}, private_only=True
+    )
+    assert out["id"] == aid and out["revision"] == 2
+
+
+def test_the_decision_is_made_inside_the_commit_after_staging(origin, proj, monkeypatch):
+    """A share that lands while the files are being staged (after any caller's snapshot, before the
+    revision transaction) is seen by the commit."""
+    aid = _first(origin, proj)
+    real = artifact_store._judge_staged
+
+    def shared_meanwhile(*a, **kw):
+        artifact_store.share(aid)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(artifact_store, "_judge_staged", shared_meanwhile)
+    (proj / "r.md").write_text("two")
+    out = artifact_store.publish(
+        origin, {"path": "r.md", "title": "R", "why": "w", "artifact_id": aid}, private_only=True
+    )
+    assert out["id"] != aid and artifact_store.get(aid)["revision"] == 1
+
+
+def test_an_agents_publish_is_unchanged_and_may_revise_its_shared_artifact(origin, proj):
+    """Without `private_only` (an agent's own publish) a shared artifact still takes a revision,
+    as it always did: the option is the automation's, not a new rule for agents."""
+    aid = _first(origin, proj)
+    artifact_store.share(aid)
+    (proj / "r.md").write_text("two")
+    out = artifact_store.publish(
+        origin, {"path": "r.md", "title": "R", "why": "w", "artifact_id": aid}
+    )
+    assert out["id"] == aid and out["revision"] == 2
 
 
 # ---- activation ----------------------------------------------------------------------------------

@@ -134,6 +134,8 @@ HTTP_MODULES = frozenset(
         "artifactlink",
         # #2221 P1b: forwards a relayed webhook delivery to this box's own app (loopback only).
         "hooklink",
+        # #2248 P2 "Call a webhook": one signed POST to the destination the operator saved.
+        "call_webhook",
     }
 )
 
@@ -184,6 +186,11 @@ POST_SITES = {
     # #2221 P1b: one POST per relayed webhook delivery, to the box's own `/hooks/w/{id}` on loopback
     # (no redirects, header allowlist, capped body) — never a model endpoint.
     ("hooklink", "_forward"): 1,
+    # #2248 P2 "Call a webhook": ONE signed POST per run to the https destination the operator saved
+    # in the automation (consented; a delivery can't change it), vetted once and pinned, private
+    # addresses refused unless allowed, no redirects, no ambient proxy, a short deadline. It
+    # carries typed fields, never a prompt and never a credential beyond its own HMAC signature.
+    ("call_webhook", "_post"): 1,
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
     # #1530: the same proxy's `/api/files/raw` branch — one STREAMED request to the same local
     # app, read as it arrives so a file over MAX_RAW_RESPONSE is refused before it is held. Same

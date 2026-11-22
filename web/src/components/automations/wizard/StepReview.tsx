@@ -34,6 +34,7 @@ export function StepReview({
   notice,
   inFlight,
   actions,
+  secretPanel,
 }: StepProps & {
   list: AutomationList;
   saved: Automation | null;
@@ -45,6 +46,8 @@ export function StepReview({
   notice: string | null;
   inFlight: string;
   actions: ReactNode;
+  /** "Call a webhook" (#2248 P2): the signing secret from the save that made it, shown once. */
+  secretPanel?: ReactNode;
 }) {
   const trigger = triggerWords(formTrigger(form));
   const events = eventsWords(form, presets);
@@ -138,6 +141,7 @@ export function StepReview({
           {inFlight && <InFlightNote text={inFlight} />}
         </div>
       )}
+      {secretPanel}
       <div className={w.actions}>{actions}</div>
     </>
   );
@@ -160,5 +164,9 @@ function whatWords(form: EditorForm, projectName: (id: string) => string): strin
       return `${label} · a message in your notifications`;
     case "send_message":
       return form.recipient ? `${label} · to ${form.recipient}` : label;
+    case "publish_artifact":
+      return form.artifactPath.trim() ? `${label} · ${form.artifactPath.trim()}` : label;
+    case "call_webhook":
+      return form.destination.trim() ? `${label} · ${form.destination.trim()}` : label;
   }
 }

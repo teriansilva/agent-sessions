@@ -90,6 +90,7 @@ import type {
   AutomationList,
   AutomationOrigin,
   AutomationRun,
+  DestinationState,
   WebhookSecret,
 } from "../types/automations";
 import type { ActionGallery } from "../types/actions";
@@ -3478,6 +3479,13 @@ export const api = {
    *  only; a rotated-out secret keeps working for 24 h. Never cached, never re-read. */
   newWebhookSecret: (id: string) =>
     mutateJson<WebhookSecret>("POST", `${autoPath(id)}/webhook-secret`),
+  /** "Call a webhook" (#2248 P2): a NEW signing secret for its destination, in THIS answer only;
+   *  the previous one stops signing at once. Never cached, never re-read. */
+  newDestinationSecret: (id: string) =>
+    mutateJson<{ secret: string; destination: DestinationState }>(
+      "POST",
+      `${autoPath(id)}/destination-secret`,
+    ),
   // ---- actions (#2248 P1) ------------------------------------------------------------------------
   /** The action gallery: manifest facts, requirements now and use. Read-only. */
   actions: () => getJsonWithDetail<ActionGallery>(ACTIONS_API),

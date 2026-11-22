@@ -57,15 +57,15 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 def _modules() -> dict[str, ModuleType]:
     # At call time: each module imports the stores and transports it needs.
-    from . import send_message
+    from . import call_webhook, publish_artifact, send_message
 
-    return {m.ID: m for m in (send_message,)}
+    return {m.ID: m for m in (send_message, call_webhook, publish_artifact)}
 
 
 #: The closed table of plugin ids, in the gallery's order. A manifest whose executor is not one of
 #: these is refused by the registry; a stored action naming another id is refused at save and runs
 #: nothing.
-PLUGINS = ("send_message",)
+PLUGINS = ("send_message", "call_webhook", "publish_artifact")
 
 
 def module(plugin_id: object) -> ModuleType:
@@ -118,8 +118,9 @@ def validate(raw: dict) -> dict:
         except webhook_events.EventError as e:
             raise model.AutomationError(f"from_delivery: {e}") from None
         clean = mod.validate_inputs(inputs, mapped)
+        # `None`: any name the plugin's own validation accepted (it checked the mapping itself).
         allowed = mod.mappable(clean)
-        bad = sorted(set(mapped) - allowed)
+        bad = [] if allowed is None else sorted(set(mapped) - allowed)
         if bad:
             raise model.AutomationError(
                 f"from_delivery: {bad} can't be filled from a delivery (only {sorted(allowed)})"

@@ -792,9 +792,21 @@ def _stored_bytes(con: sqlite3.Connection) -> int:
     return sum(_held(con).values())
 
 
-def publish(origin: Origin, args: object) -> dict:
+def public_now(row: dict, now: float | None = None) -> bool:
+    """Whether anyone but the operator can open this artifact NOW, in any form: a live box link,
+    a relay copy, or a relay publication whose outcome is not known yet (`view`'s ``public``)."""
+    return _live(row, now) or bool(row.get("relay_public_id")) or bool(row.get("relay_pending"))
+
+
+def publish(origin: Origin, args: object, *, private_only: bool = False) -> dict:
     """Judge and copy one publish; the artifact row as the agent sees it. Raises
-    `ArtifactRefused` (the agent hears its code and, when there is one, the path)."""
+    `ArtifactRefused` (the agent hears its code and, when there is one, the path).
+
+    ``private_only`` (an automation's publish, #2248 P2): a revision is added behind
+    ``artifact_id`` only while that artifact is private (`public_now` is false), decided INSIDE
+    the write transaction that appends it, the same one a share or a relay publication takes. One
+    that is public by then gets nothing; the content becomes a NEW private artifact in that same
+    transaction, and the answer says so (``started_new_private``)."""
     item = _validate(args)
     b = session_boundary(origin.cwd, origin.session_key)
     raw = item["path"]
@@ -840,7 +852,7 @@ def publish(origin: Origin, args: object) -> dict:
         with _con() as con:
             if _stored_bytes(con) + sizes > TOTAL_BYTES_MAX:
                 raise ArtifactRefused("store_full")
-    return _publish_members(origin, item, kind, members, skipped, b)
+    return _publish_members(origin, item, kind, members, skipped, b, private_only=private_only)
 
 
 def _publish_members(
@@ -850,11 +862,15 @@ def _publish_members(
     members: list[tuple[str, str]],
     skipped: int,
     b: mission_shelf.Boundary,
+    *,
+    private_only: bool = False,
 ) -> dict:
     manifest: dict[str, dict] = {}
     staged: dict[str, Path] = {}
     try:
-        return _stage_and_commit(origin, item, kind, members, skipped, b, manifest, staged)
+        return _stage_and_commit(
+            origin, item, kind, members, skipped, b, manifest, staged, private_only=private_only
+        )
     finally:
         for tmp in staged.values():  # placed ones were moved; the rest go now
             with contextlib.suppress(OSError):
@@ -870,6 +886,8 @@ def _stage_and_commit(
     b: mission_shelf.Boundary,
     manifest: dict[str, dict],
     staged: dict[str, Path],
+    *,
+    private_only: bool = False,
 ) -> dict:
     budget = [REVISION_BYTES_MAX]
     for rel, abs_path in members:
@@ -903,14 +921,21 @@ def _stage_and_commit(
         if sum(held.values()) + sum(fresh.values()) > TOTAL_BYTES_MAX:
             raise ArtifactRefused("store_full")
         aid = item["artifact_id"]
+        started_new = False
         if aid is not None:
             row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
             if row is None:
                 raise ArtifactRefused("unknown_artifact", status=404)
             if not owns(row, origin):
                 raise ArtifactRefused("not_yours", status=403)
-            if row["kind"] != kind:
+            if private_only and public_now(dict(row), now):
+                # Shared since the caller chose it: never revise it; a new private one instead,
+                # in THIS transaction (a share takes the same write lock, so it is wholly before
+                # this read or wholly after this commit).
+                aid, started_new = None, True
+            elif row["kind"] != kind:
                 raise ArtifactRefused("kind_mismatch")
+        if aid is not None:
             n = row["latest"] + 1
             con.execute(
                 "UPDATE artifacts SET title=?, why=?, latest=?, updated_at=? WHERE id=?",
@@ -954,6 +979,8 @@ def _stage_and_commit(
         _collect_garbage()
     out = view(dict(row))
     out["skipped_hidden"] = skipped
+    if started_new:
+        out["started_new_private"] = True
     return out
 
 

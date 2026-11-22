@@ -40,6 +40,7 @@ import { StepLimits } from "../components/automations/wizard/StepLimits";
 import { StepReview } from "../components/automations/wizard/StepReview";
 import { StepWhat } from "../components/automations/wizard/StepWhat";
 import { useActions } from "../components/actions/useActions";
+import { DestinationSecretOnce } from "../components/actions/CallWebhookFields";
 import { galleryProblem } from "../lib/actions";
 import { StepWhen } from "../components/automations/wizard/StepWhen";
 import { timeZones } from "../components/automations/wizard/time";
@@ -92,6 +93,17 @@ export default function AutomationEditor() {
   return <Editor key={id ?? "new"} routeId={id} />;
 }
 
+/** "Call a webhook" (#2248 P2): a create that made a signing secret moves to the new automation's
+ *  edit route, which mounts a NEW editor. The secret crosses that one hop in memory only, here,
+ *  taken (and cleared) by the editor for that automation as it mounts — never router state, never
+ *  storage. A reload or any other page never sees it. */
+let createdSecret: { id: string; secret: string } | null = null;
+
+function takeCreatedSecret(id: string | undefined): string | null {
+  // Read here (a state initializer may run twice); cleared by the editor's first effect.
+  return createdSecret && id && createdSecret.id === id ? createdSecret.secret : null;
+}
+
 function Editor({ routeId }: { routeId?: string }) {
   const id = routeId;
   /** Mounted: a create that finishes after the operator left must not pull them back (#1252). */
@@ -122,6 +134,13 @@ function Editor({ routeId }: { routeId?: string }) {
   const [specialists, setSpecialists] = useState<Specialist[] | null>(null);
   // The messengers a "Send a message" action may use (#2248 P2), from Settings → HQ connectors.
   const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
+  // "Call a webhook" (#2248 P2): the signing secret from the ONE answer that made it. Component
+  // state only: never stored, never put in router state, gone on Done or when the page goes.
+  const [newSecret, setNewSecret] = useState<string | null>(() => takeCreatedSecret(routeId));
+  useEffect(() => {
+    createdSecret = null;
+  }, []);
+  const [secretBusy, setSecretBusy] = useState(false);
   const nowS = useNowS();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -306,6 +325,9 @@ function Editor({ routeId }: { routeId?: string }) {
           ...(consentDigest ? { consent: true, scope_digest: consentDigest } : {}),
         });
       }
+      const { destination_secret: madeSecret, ...kept } = a;
+      if (madeSecret) setNewSecret(madeSecret);
+      a = kept;
       const f = formFromAutomation(a, list?.limits.timezone || "UTC");
       setSaved(a);
       setForm(f);
@@ -319,6 +341,7 @@ function Editor({ routeId }: { routeId?: string }) {
       setInFlight(inFlightNote(a));
       // Only while this editor is still the page: a create that lands after the operator moved on
       // is saved (and listed) but never navigates them back.
+      if (!id && mounted.current && madeSecret) createdSecret = { id: a.id, secret: madeSecret };
       if (!id && mounted.current)
         navigate(automationEditPath(a.id), { replace: true, state: { notice: done, step: "review" } });
     } catch (e) {
@@ -389,6 +412,25 @@ function Editor({ routeId }: { routeId?: string }) {
   const reviewerChosen = reviewers.find((r) => r.id === form.reviewerId) ?? null;
   const f = (name: string) => `${uid}-${name}`;
   const props = { form, set, update, f };
+
+  // "Call a webhook" (#2248 P2): a new signing secret for the SAVED destination, shown once.
+  async function makeSecret() {
+    if (!saved) return;
+    setSecretBusy(true);
+    setError(null);
+    try {
+      const r = await api.newDestinationSecret(saved.id);
+      setNewSecret(r.secret);
+      setSaved((x) => (x && x.id === saved.id ? { ...x, destination: r.destination } : x));
+    } catch (e) {
+      setError(errorWords(e, "Couldn’t make a new secret."));
+    } finally {
+      setSecretBusy(false);
+    }
+  }
+  const secretPanel = newSecret ? (
+    <DestinationSecretOnce secret={newSecret} onDone={() => setNewSecret(null)} />
+  ) : null;
 
   // What holds each step: the form's own problems, plus what the last delivery's shape says.
   const shape = hook.detail?.last_shape ?? null;
@@ -498,6 +540,10 @@ function Editor({ routeId }: { routeId?: string }) {
             shape={shape ?? []}
             problems={here}
             warnings={checks.what.warnings}
+            savedDestination={saved?.destination ?? null}
+            onNewSecret={saved?.destination ? () => void makeSecret() : null}
+            newSecretBusy={secretBusy}
+            secretPanel={secretPanel}
           />
         );
       case "limits":
@@ -526,6 +572,7 @@ function Editor({ routeId }: { routeId?: string }) {
             }
             notice={notice}
             inFlight={inFlight}
+            secretPanel={secretPanel}
             actions={
               <>
                 {saved?.enabled && !saved.needs_reapproval && (

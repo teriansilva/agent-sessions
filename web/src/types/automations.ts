@@ -110,8 +110,16 @@ export type AutomationAction =
 
 /** The registry's plugin actions (#2248 P2), stored as ONE kind. `inputs` is the plugin's own,
  *  validated strictly by the server; `from_delivery` maps a webhook delivery's typed values. */
-export type PluginId = "send_message";
-export const PLUGIN_IDS: readonly PluginId[] = ["send_message"];
+export type PluginId = "send_message" | "call_webhook" | "publish_artifact";
+export const PLUGIN_IDS: readonly PluginId[] = ["send_message", "call_webhook", "publish_artifact"];
+
+/** "Call a webhook" (#2248 P2): its destination and whether its signing secret exists. Never the
+ *  secret: that is in the ONE answer that made it (`destination_secret`). */
+export interface DestinationState {
+  url: string;
+  secret_set: boolean;
+  secret_made_at: number | null;
+}
 
 export interface PluginAction {
   kind: "plugin";
@@ -219,6 +227,11 @@ export interface StripDay {
 export interface Automation {
   id: string;
   name: string;
+  /** "Call a webhook" (#2248 P2): the destination's state; `null` for any other action. */
+  destination?: DestinationState | null;
+  /** The signing secret, in the ONE save answer that made it. Never in a read. */
+  destination_secret?: string;
+  destination_secret_error?: string;
   trigger: Trigger | null;
   action: AutomationAction | null;
   policy: AutomationPolicy | null;

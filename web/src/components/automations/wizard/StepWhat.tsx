@@ -40,6 +40,9 @@ import styles from "../automations.module.css";
 import { ActionPicker } from "../../actions/ActionBits";
 import type { useActions } from "../../actions/useActions";
 import { offeredActions } from "../../../lib/actions";
+import { CallWebhookFields } from "../../actions/CallWebhookFields";
+import { PublishArtifactFields } from "../../actions/PublishArtifactFields";
+import type { ReactNode } from "react";
 import { Fold, Seg, StepIssues, type StepProps } from "./bits";
 import { ReviewLoopFields } from "./ReviewLoopFields";
 import w from "./wizard.module.css";
@@ -56,6 +59,8 @@ const KNOWN: readonly Kind[] = Object.keys({
   forge_review_loop: 1,
   tell_hq: 1,
   send_message: 1,
+  call_webhook: 1,
+  publish_artifact: 1,
 } satisfies Record<Kind, 1>) as Kind[];
 
 export function StepWhat({
@@ -79,7 +84,16 @@ export function StepWhat({
   shape,
   problems,
   warnings,
+  savedDestination,
+  onNewSecret,
+  newSecretBusy,
+  secretPanel,
 }: StepProps & {
+  /** "Call a webhook" (#2248 P2): the SAVED destination's state, and making a new secret. */
+  savedDestination: { url: string; secret_set: boolean } | null;
+  onNewSecret: (() => void) | null;
+  newSecretBusy: boolean;
+  secretPanel: ReactNode;
   list: AutomationList;
   /** The action gallery, owned by the editor so its readiness holds the step (#2248 P1). */
   actions: ReturnType<typeof useActions>;
@@ -433,6 +447,33 @@ export function StepWhat({
         </div>
       )}
 
+      {form.actionKind === "publish_artifact" && (
+        <PublishArtifactFields
+          form={form}
+          update={update}
+          f={f}
+          listHook={listHook}
+          shape={shape}
+          projects={projects}
+        />
+      )}
+
+      {form.actionKind === "call_webhook" && (
+        <>
+          <CallWebhookFields
+            form={form}
+            update={update}
+            f={f}
+            listHook={listHook}
+            shape={shape}
+            saved={savedDestination}
+            onNewSecret={onNewSecret}
+            newSecretBusy={newSecretBusy}
+          />
+          {secretPanel}
+        </>
+      )}
+
       {form.actionKind === "send_to_session" && (
         <div className={styles.field}>
           <label className={styles.label} htmlFor={f("session")}>
@@ -473,7 +514,7 @@ export function StepWhat({
         </div>
       )}
 
-      {!loop && (
+      {!loop && form.actionKind !== "call_webhook" && form.actionKind !== "publish_artifact" && (
         <>
           <div className={styles.fields}>
             <div className={styles.field}>

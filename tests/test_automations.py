@@ -1670,8 +1670,9 @@ def test_no_automation_route_exposes_a_parameter_as_request_input(auth_cfg):
         ]
         assert exposed == [], (route.path, exposed)
         assert {p.name for p in flat.path_params} <= {"aid", "run_id"}, route.path
-    # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs, webhook-secret
-    assert seen == 14
+    # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs, webhook-secret,
+    # destination-secret (#2248 P2)
+    assert seen == 15
 
 
 def test_a_repointed_session_folder_is_refused_and_needs_reapproval(session_env):

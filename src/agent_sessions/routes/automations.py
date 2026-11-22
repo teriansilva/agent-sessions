@@ -23,6 +23,7 @@ module accepts, and an unknown field is a 422.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import time
@@ -225,8 +226,61 @@ def public(row: dict, *, now: float | None = None) -> dict:
             if config and config["trigger"]["kind"] == "webhook"
             else None
         ),
+        # "Call a webhook" (#2248 P2): its destination and whether its signing secret exists.
+        "destination": _destination_state(row["id"], config),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def _destination(config: dict | None) -> str | None:
+    """A "Call a webhook" action's destination (#2248 P2), or None."""
+    action = (config or {}).get("action") or {}
+    if action.get("kind") == "plugin" and action.get("plugin") == "call_webhook":
+        return action["inputs"]["destination"]
+    return None
+
+
+def _destination_state(aid: str, config: dict | None) -> dict | None:
+    """Whether the destination has its signing secret, and when it was made. Never the secret."""
+    from ..actions import destination_secrets
+
+    dest = _destination(config)
+    if dest is None:
+        return None
+    secret_set, made_at = destination_secrets.state(aid, dest)  # one read of the document
+    return {"url": dest, "secret_set": secret_set, "secret_made_at": made_at}
+
+
+def _stored_destination(aid: str):
+    """The automation's destination AS STORED NOW, read by `destination_secrets` inside its write
+    lock, so a secret is only ever made for the address the automation has at that moment."""
+
+    def read() -> str | None:
+        return _destination(store.get(aid)["config"])
+
+    return read
+
+
+def _with_new_secret(out: dict, aid: str, config: dict | None) -> dict:
+    """After a save: a destination with no signing secret yet gets one, returned in THIS answer
+    only (`destination_secret`), the way a webhook's secret is shown once (#2248 P2). Decided
+    inside the secrets lock against the STORED destination, never this save's copy of it."""
+    from ..actions import destination_secrets
+
+    if _destination(config) is None:
+        return out
+    try:
+        secret = destination_secrets.mint_if_missing(aid, _stored_destination(aid))
+    except destination_secrets.SecretError as e:
+        # Saved, but unsigned requests are never sent: say so, and let them make one later.
+        return {**out, "destination_secret_error": str(e)}
+    if secret is None:
+        return out  # it already has one (or no longer calls a webhook)
+    return {
+        **out,
+        "destination": _destination_state(aid, store.get(aid)["config"]),
+        "destination_secret": secret,
     }
 
 
@@ -275,7 +329,7 @@ def _create(body: dict) -> dict:
         raise model.AutomationError("pick a webhook from Library → Webhooks (webhook_id)")
     automation_runner.check_save(config)
     row = store.create(config, model.compute_pins(config), now=now)
-    return public(row)
+    return _with_new_secret(public(row), row["id"], config)
 
 
 def _merged(row: dict, body: dict) -> dict:
@@ -329,7 +383,8 @@ def _patch(aid: str, body: dict) -> dict:
 
     with effect_lock.writer(aid) as got:
         row = store.mutate(aid, fn, expect_revision=rev)
-    return {**public(row), **_in_flight(got)}
+        # Under the same lock a rotation takes (`_new_destination_secret`), so the two are ordered.
+        return _with_new_secret({**public(row), **_in_flight(got)}, aid, row["config"])
 
 
 def _enable(aid: str, body: dict) -> dict:
@@ -412,7 +467,42 @@ def _delete(aid: str, rev: int) -> dict:
     with effect_lock.writer(aid) as got:
         store.delete(aid, expect_revision=rev)
     automation_runner.retract(row["failure_episode"])
+    from ..actions import destination_secrets
+
+    with contextlib.suppress(Exception):  # an orphaned envelope opens nothing: ids never repeat
+        destination_secrets.drop(aid)
     return _in_flight(got)
+
+
+def _new_destination_secret(aid: str) -> dict:
+    """A NEW signing secret for a "Call a webhook" automation's destination, shown once (#2248
+    P2). The previous one stops signing at once: the receiver must take the new one."""
+    from ..actions import destination_secrets
+
+    not_a_webhook = model.AutomationError("this automation does not call a webhook", status=409)
+    if _destination(store.get(aid)["config"]) is None:  # exists (404) before any lock file
+        raise not_a_webhook
+    # Ordered with every config write (the effect lock's writer side, which `_patch` holds through
+    # its own mint), and the address is re-read from the row INSIDE the secrets lock: a rotation
+    # that started on an older address makes the secret for the address stored now, or nothing.
+    with effect_lock.writer(aid) as held:
+        if not held:
+            # Unlike withdrawing authority, a rotation must never commit past the fence: a run
+            # still before its first byte holds the OLD secret and would send with it after the
+            # rotation said the old one had stopped (Hermes on #2275). Nothing is minted; retry.
+            raise model.AutomationError(
+                "a run of this automation is sending right now; rotate the secret again in a "
+                "moment",
+                status=409,
+            )
+        try:
+            secret = destination_secrets.mint(aid, current=_stored_destination(aid))
+        except destination_secrets.SecretError as e:
+            raise model.AutomationError(str(e), status=503) from None
+        if secret is None:
+            raise not_a_webhook
+        row = store.get(aid)
+    return {"secret": secret, "destination": _destination_state(aid, row["config"])}
 
 
 def _unattended_engines() -> list[dict]:
@@ -580,6 +670,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return {"secret": secret, "webhook": public(store.get(aid))["webhook"]}
 
         out = await _run(_new)
+        return out if isinstance(out, JSONResponse) else _json(out, 201)
+
+    @app.post(PREFIX + "/{aid}/destination-secret")
+    async def new_destination_secret(
+        aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # "Call a webhook" (#2248 P2): makes a new signing secret and returns it ONCE.
+        out = await _run(_new_destination_secret, aid)
         return out if isinstance(out, JSONResponse) else _json(out, 201)
 
     @app.get(PREFIX + "/{aid}/runs")

@@ -245,6 +245,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Actions (#2248): the gallery — every action automations can take, what it needs and how many use it (read-only) | GET /api/actions | P4 R (HQ's action tools are #2248 P4) |
 | Automations: a review loop's webhook secret (make or rotate, shown once) (#2202) | POST /api/automations/{aid}/webhook-secret | **never** (a credential) |
+| Automations: a "Call a webhook" action's signing secret (make a new one, shown once) (#2248 P2) | POST /api/automations/{aid}/destination-secret | **never** (a credential) |
 | Webhooks (#2221): list, read (field names and types), rename, delete an unused one | GET/PATCH/DELETE /api/webhooks* | P7 R/W |
 | Webhooks (#2221): create, rotate (the secret is shown once) | POST /api/webhooks, POST /api/webhooks/{wid}/rotate | **never** (a credential) |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
@@ -375,6 +376,7 @@ POST   /api/automations/{aid}/pause                                             
 POST   /api/automations/{aid}/resume                                              P4
 POST   /api/automations/{aid}/run                                                 P4
 POST   /api/automations/{aid}/webhook-secret                                      never  # a credential, shown once (#2202)
+POST   /api/automations/{aid}/destination-secret                                  never  # a credential, shown once (#2248 P2)
 GET    /api/automations/{aid}/runs                                                P4
 POST   /api/chat/new                                                              P7
 GET    /api/chat/{sid}                                                            P7

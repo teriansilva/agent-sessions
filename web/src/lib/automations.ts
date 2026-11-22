@@ -281,6 +281,8 @@ export function actionLabel(
   kind: ActionKind | "plugin" | undefined,
 ): string {
   if (kind === "send_message") return "Send a message";
+  if (kind === "call_webhook") return "Call a webhook";
+  if (kind === "publish_artifact") return "Publish an artifact";
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
@@ -320,7 +322,46 @@ export function targetWords(
 function pluginTargetWords(action: PluginAction): string {
   const i = action.inputs;
   if (action.plugin === "send_message") return `a message to ${String(i.recipient ?? "")}`;
+  if (action.plugin === "call_webhook") return hostOf(String(i.destination ?? ""));
+  if (action.plugin === "publish_artifact") return String(i.path ?? "");
   return action.plugin;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** One body field of "Call a webhook" as the wizard edits it (#2248 P2): a fixed value, or (on a
+ *  webhook from the list) a typed value from the delivery. */
+export interface BodyFieldDraft {
+  name: string;
+  value: string;
+  /** Set when the value comes from the delivery. */
+  map: MappingDraft | null;
+}
+
+export const BODY_FIELDS_MAX = 16;
+const BODY_FIELD_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
+/** The destination as the server will check it: https, a host, no user name or password, no
+ *  fragment. The server's check at save is the authority (and it refuses private addresses). */
+export function destinationProblem(url: string): string | null {
+  const u = url.trim();
+  if (!u) return "Name the address to call";
+  let p: URL;
+  try {
+    p = new URL(u);
+  } catch {
+    return "The address is not a valid URL";
+  }
+  if (p.protocol !== "https:") return "The address must start with https://";
+  if (p.username || p.password) return "The address must not carry a user name or password";
+  if (p.hash) return "The address must not have a #fragment";
+  return null;
 }
 
 /** The messengers a "Send a message" action may pick (#2248 P2): connector instances that can
@@ -611,6 +652,16 @@ export interface EditorForm {
   // "Send a message" (#2248 P2): a messenger connector and one of its saved recipients.
   connector: string;
   recipient: string;
+  // "Call a webhook" (#2248 P2): the https destination, private addresses, the body's fields.
+  destination: string;
+  allowPrivate: boolean;
+  bodyFields: BodyFieldDraft[];
+  // "Publish an artifact" (#2248 P2): a path inside the project's folder (`projectId`), and the
+  // artifact's title and why line, each fixed or (on a webhook) from the delivery.
+  artifactPath: string;
+  artifactTitle: string;
+  artifactWhy: string;
+  lineMaps: { title: MappingDraft | null; why: MappingDraft | null };
 }
 
 /** A condition as the wizard edits it. Each value is its own element with its OWN type, kept as
@@ -686,6 +737,13 @@ export function blankForm(tz: string): EditorForm {
     fromDelivery: {},
     connector: "",
     recipient: "",
+    destination: "",
+    allowPrivate: false,
+    bodyFields: [],
+    artifactPath: "",
+    artifactTitle: "",
+    artifactWhy: "",
+    lineMaps: { title: null, why: null },
   };
 }
 
@@ -809,6 +867,29 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.connector = String(i.connector ?? "");
       f.recipient = String(i.recipient ?? "");
     }
+    if (act.plugin === "call_webhook") {
+      f.destination = String(i.destination ?? "");
+      f.allowPrivate = i.allow_private === true;
+      const fixed = (i.fields ?? {}) as Record<string, string>;
+      f.bodyFields = [
+        ...Object.entries(fixed).map(([name, value]) => ({ name, value: String(value), map: null })),
+        ...Object.entries(act.from_delivery ?? {}).map(([name, m]) => ({
+          name,
+          value: "",
+          map: { path: m.path, type: m.type, choices: [...(m.choices ?? [])] },
+        })),
+      ].sort((x, y) => x.name.localeCompare(y.name));
+    }
+    if (act.plugin === "publish_artifact") {
+      f.projectId = String(i.project_id ?? "");
+      f.artifactPath = String(i.path ?? "");
+      f.artifactTitle = String(i.title ?? "");
+      f.artifactWhy = String(i.why ?? "");
+      for (const k of ["title", "why"] as const) {
+        const m = act.from_delivery?.[k];
+        f.lineMaps[k] = m ? { path: m.path, type: m.type, choices: [...(m.choices ?? [])] } : null;
+      }
+    }
     const msg = i.message as AutomationMessage | undefined;
     if (msg && "text" in msg) {
       f.messageMode = "text";
@@ -818,8 +899,9 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.templateId = msg.template_id;
       f.values = { ...msg.values };
     }
-    for (const [field, m] of Object.entries(act.from_delivery ?? {}))
-      f.fromDelivery[field] = { path: m.path, type: m.type, choices: [...(m.choices ?? [])] };
+    if (msg)
+      for (const [field, m] of Object.entries(act.from_delivery ?? {}))
+        f.fromDelivery[field] = { path: m.path, type: m.type, choices: [...(m.choices ?? [])] };
   } else if (act) {
     f.actionKind = act.kind;
     const msg = act.kind === "start_mission" ? act.instruction : act.message;
@@ -912,6 +994,37 @@ export function formTrigger(f: EditorForm): Trigger {
 /** A plugin action (#2248 P2): its inputs, and what a delivery fills on the ACTION (never inside
  *  the message), exactly the fields the server's strict validator accepts. */
 function formPlugin(f: EditorForm, plugin: PluginId): PluginAction {
+  if (plugin === "publish_artifact") {
+    const drafts: Record<string, MappingDraft> = {};
+    const hook = fromListHook(f);
+    if (hook && f.lineMaps.title) drafts.title = f.lineMaps.title;
+    if (hook && f.lineMaps.why) drafts.why = f.lineMaps.why;
+    const inputs: Record<string, unknown> = {
+      project_id: f.projectId,
+      path: f.artifactPath.trim(),
+      title: drafts.title ? "" : f.artifactTitle.trim(),
+      why: drafts.why ? "" : f.artifactWhy.trim(),
+    };
+    const mapped = mappingBody(drafts);
+    const out: PluginAction = { kind: "plugin", plugin, version: 1, inputs };
+    return Object.keys(mapped).length ? { ...out, from_delivery: mapped } : out;
+  }
+  if (plugin === "call_webhook") {
+    const fields: Record<string, string> = {};
+    const drafts: Record<string, MappingDraft> = {};
+    for (const b of f.bodyFields) {
+      if (b.map && fromListHook(f)) drafts[b.name] = b.map;
+      else if (!b.map) fields[b.name] = b.value;
+    }
+    const mappedBody = mappingBody(drafts);
+    const out: PluginAction = {
+      kind: "plugin",
+      plugin,
+      version: 1,
+      inputs: { destination: f.destination.trim(), allow_private: f.allowPrivate, fields },
+    };
+    return Object.keys(mappedBody).length ? { ...out, from_delivery: mappedBody } : out;
+  }
   const { from_delivery: mapped, ...message } = formMessage(f) as AutomationMessage & {
     from_delivery?: Record<string, DeliveryMapping>;
   };
@@ -1077,6 +1190,36 @@ function whatProblems(f: EditorForm): string[] {
   if (f.actionKind === "send_message") {
     if (!f.connector) out.push("Choose what to send with");
     else if (!f.recipient) out.push("Choose who receives it");
+  }
+  if (f.actionKind === "publish_artifact") {
+    if (!f.projectId) out.push("Choose a project");
+    const p = f.artifactPath.trim();
+    if (!p) out.push("Name the file or folder to publish");
+    else if (p.startsWith("/") || p.startsWith("~"))
+      out.push("The path is relative to the project’s folder");
+    else if (p.split("/").some((s) => s === ".."))
+      out.push("The path must stay inside the project’s folder");
+    const hook = fromListHook(f);
+    if (!(hook && f.lineMaps.title) && !f.artifactTitle.trim()) out.push("Give it a title");
+    for (const k of ["title", "why"] as const) {
+      const m = hook ? f.lineMaps[k] : null;
+      if (m && !validPath(m.path)) out.push(`${k}: pick a field of the delivery`);
+    }
+    return out;
+  }
+  if (f.actionKind === "call_webhook") {
+    const why = destinationProblem(f.destination);
+    if (why) out.push(why);
+    const names = f.bodyFields.map((b) => b.name);
+    if (names.length > BODY_FIELDS_MAX) out.push(`At most ${BODY_FIELDS_MAX} fields`);
+    if (names.some((n) => !BODY_FIELD_RE.test(n)))
+      out.push("Each field needs a name: lower-case letters, digits and _ (starting with a letter)");
+    if (new Set(names).size !== names.length) out.push("Two fields have the same name");
+    for (const b of f.bodyFields)
+      if (b.map && fromListHook(f)) {
+        if (!validPath(b.map.path)) out.push(`${b.name || "A field"}: pick a field of the delivery`);
+      }
+    return out; // its body is its fields: there is no message to write
   }
   if (fromListHook(f) && !apiTarget(f))
     out.push("A webhook starts or messages an API session only; pick an API agent");

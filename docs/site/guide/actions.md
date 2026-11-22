@@ -52,6 +52,8 @@ The other classes are listed so you know what a later action means when it arriv
 | Review loop | Forge | Write · BattleLab | a webhook only ([Review loop with Forgejo](/guide/review-loop)) |
 | Tell HQ | BattleLab | Notify | any trigger |
 | Send a message | Messaging | Notify | any trigger |
+| Call a webhook | Web | Write · external | any trigger |
+| Publish an artifact | Files | Write · BattleLab | any trigger |
 
 What each one asks for, and how its approval works, is in [Automations](/guide/automations), step 3 (*What*).
 
@@ -85,6 +87,75 @@ in **Settings → AI → HQ → HQ connectors**: Telegram, Matrix or mail.
 - Sending shares the messenger's limit with HQ: at most 20 messages an hour through one messenger.
 - A message whose answer never came back is recorded as *may have been sent* and is never sent
   again.
+
+## Call a webhook
+
+**What it is for.** Telling another service that something happened, for example a deploy tool, a
+chat bridge of your own, or a status page: one signed `POST` with a few fields.
+
+**What you set.**
+
+- **Address:** an `https://` address. It is saved in the automation and is part of what you
+  approve; a webhook delivery can never change it.
+- **Allow a private or local network address:** off by default. While it is off, an address that
+  is (or whose name resolves to) a private, local or shared network address is refused, at save and
+  again before every request. Turn it on only for a service on your own network. Link-local and
+  cloud-metadata addresses are always refused.
+- **Fields:** the JSON body's fields. Each is a fixed value or, when a webhook starts the
+  automation, a typed value from the delivery (a number stays a number, yes/no becomes
+  `true`/`false`).
+
+The body is `{"event": "battlelab.automation", "automation": …, "run": …, "sent_at": …,
+"fields": {…}}`.
+
+**The signing secret.** When you first save the automation, BattleLab makes a secret for this
+address and shows it **once**, with a Copy button. Give it to the receiving service. Each request
+carries `X-BattleLab-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw body under that secret,
+so the receiver can check that the request came from your BattleLab and was not changed. The
+secret is never shown again, never in a run's record and never in a log. Lost it? Press **Make a
+new secret** in the action's settings; the old one stops at once. (If a call is being sent at
+that very moment, BattleLab asks you to try again in a moment rather than let that call go out
+with the old secret.) A new address gets a new secret when you save.
+
+**What keeps it safe.**
+
+- Your approval names the address, whether private addresses are allowed, and every fixed field.
+  A different address, or allowing private addresses, asks for your approval again.
+- No redirect is followed: an answer that points elsewhere is reported, and nothing is sent there.
+- Each request waits at most 15 seconds and uses no proxy from the environment.
+- Right before the request leaves, BattleLab checks again that the automation is still on. A fixed
+  field that looks like a credential or holds one of your stored secrets is refused when you save
+  (the signature already proves who sent the request), and checked again at every run.
+- An address that only reaches a private network through an IPv6 translation (NAT64, 6to4) counts
+  as the private address it reaches.
+- A request whose answer never came back is recorded as *may have been delivered* and is never sent
+  again.
+
+## Publish an artifact
+
+**What it is for.** Putting a file or a small site that a project produces (a nightly report, a
+build's coverage page) at a stable artifact link (Library → Artifacts) you can open from anywhere.
+
+**What you pick.**
+
+- **Project** and **File or folder:** a path inside the project's folder, for example
+  `reports/nightly.md`. It can't be absolute, can't climb out with `..` and can't be hidden. A
+  folder is published as a site.
+- **Title** and **Why:** fixed, or on a webhook a short text from the delivery. A delivery never
+  chooses the project or the path.
+
+**What keeps it safe.**
+
+- It goes through the same checks as an agent's publish: inside your project folders and outside
+  your excluded folders, no symbolic link, no hidden or key file, and **a file with a secret in it
+  refuses the whole publish**.
+- The artifact is **private**: only you can open it until you share it. Each run adds a revision
+  behind the same link while it is private. Once you share it publicly, the next run starts a new,
+  private artifact, so an automation never puts new content behind a public link.
+- The project's folder is pinned when you approve the automation. If the project is moved to
+  another folder, the automation pauses until you approve it again. Before every run the path is
+  checked again, and artifacts must still be on for the project.
+- The run records the artifact's link.
 
 ## More actions later
 
