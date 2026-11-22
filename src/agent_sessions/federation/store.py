@@ -61,6 +61,12 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
+#: How long the pre-migration backup (`_backup`) keeps retrying a source it cannot lock (#2240).
+#: Without it SQLite's backup retries a busy source with no end of its own, so with no request
+#: deadline one connection holding the file for good stalled the cold migration for good. It
+#: bounds CONTENTION, not copy time: only a step that came back busy is checked, and a step that
+#: copied the file is always kept. A request deadline can only shorten it.
+MIGRATION_BACKUP_MAX_S = 30.0
 #: A TRANSACTION held longer than this (a write from its `BEGIN IMMEDIATE`, a multi-statement
 #: read from its first lock) is logged with the store method that held it and for how long, and a
 #: wait that ended busy with the method that waited — names and durations only, never content
@@ -448,6 +454,10 @@ class StoreBusy(StoreError):
 #: ``SQLITE_LOCKED``: without a shared cache that is a conflict on the SAME connection, a code bug,
 #: never a retryable busy answer.
 _SQLITE_BUSY = 5
+#: The step results CPython's ``Connection.backup`` sleeps on and retries (``SQLITE_BUSY``,
+#: ``SQLITE_LOCKED``): the only ones `_backup`'s bound may end (#2240).
+_SQLITE_LOCKED = 6
+_BACKUP_RETRIED = frozenset({_SQLITE_BUSY, _SQLITE_LOCKED})
 
 
 def _is_busy(exc: BaseException) -> bool:
@@ -986,22 +996,30 @@ def _version(con: sqlite3.Connection) -> int:
 def _backup(p: Path, version: int) -> Path:
     """A complete copy of an existing store, taken BEFORE its first migration (the house pattern:
     ``specialists_store._backup``). A random suffix: two processes migrating in the same second
-    never collide on the name."""
+    never collide on the name.
+
+    SQLite's backup retries a busy source with no end of its own. A step that came back busy
+    past :data:`MIGRATION_BACKUP_MAX_S` from the start, or past a request deadline if that comes
+    first, raises :class:`StoreBusy` (#2236, #2240): the partial copy is removed and no migration
+    runs. The answer comes within the bound plus at most one source busy wait. A step that copied
+    the file is never thrown away, however long it took, so a slow uninterrupted copy of a large
+    store always survives: this bounds contention, not copy time."""
     dest = p.with_name(f"{p.name}.bak-v{version}-{int(time.time())}-{secrets.token_hex(3)}")
     os.close(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))
+    give_up_at = time.monotonic() + MIGRATION_BACKUP_MAX_S
 
-    def within_deadline(status: int, remaining: int, total: int) -> None:  # noqa: ARG001
-        # SQLite's backup retries a busy source with no end of its own: inside a
-        # `request_deadline` it gives up with the deadline (#2228, Hermes on #2236).
-        left = _remaining_s()
-        if left is not None and left <= 0:
+    def left_s() -> float:
+        left = give_up_at - time.monotonic()
+        deadline = _remaining_s()
+        return left if deadline is None else min(left, deadline)
+
+    def bounded(status: int, remaining: int, total: int) -> None:  # noqa: ARG001
+        # CPython calls this after EVERY step and retries while it returns BUSY or LOCKED.
+        if status in _BACKUP_RETRIED and left_s() <= 0:
             raise StoreBusy()
 
     try:
-        left = _remaining_s()
-        wait_s = BUSY_TIMEOUT_MS / 1000
-        if left is not None:
-            wait_s = max(0.001, min(left, wait_s))
+        wait_s = max(0.001, min(left_s(), BUSY_TIMEOUT_MS / 1000))
         src = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=wait_s)
         try:
             out = sqlite3.connect(str(dest))
@@ -1009,8 +1027,8 @@ def _backup(p: Path, version: int) -> Path:
                 # The WHOLE file in one step (`pages=-1`, as before): a stepwise copy releases the
                 # source between steps and restarts on every write in between, so under steady
                 # writes it never finishes. A busy whole-file step still returns BUSY, and the
-                # progress callback aborts it at the deadline.
-                src.backup(out, pages=-1, progress=within_deadline, sleep=0.05)
+                # progress callback aborts it at the bound.
+                src.backup(out, pages=-1, progress=bounded, sleep=0.05)
             finally:
                 out.close()
         finally:

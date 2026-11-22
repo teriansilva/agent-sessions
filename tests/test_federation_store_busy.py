@@ -478,3 +478,160 @@ def test_the_migration_backup_finishes_under_steady_writes(tmp_path):
         assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         check.close()
+
+
+# ---- #2240: the migration backup ends with no request deadline ---------------------------------
+
+
+def _user_version(db) -> int:
+    con = sqlite3.connect(str(db))
+    try:
+        return con.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        con.close()
+
+
+def _lock_after_the_probe(monkeypatch, db, holders: list) -> None:
+    """A real writer takes `BEGIN EXCLUSIVE` between the cold version probe and the FIRST backup
+    (the probe would otherwise fail first and the backup's own wait would never be exercised).
+    Later attempts run unlocked."""
+    real_backup = store._backup
+    calls: list[int] = []
+
+    def locked(p, version):
+        if not calls:
+            h = sqlite3.connect(str(db), timeout=0.1, isolation_level=None, check_same_thread=False)
+            h.execute("BEGIN EXCLUSIVE")
+            holders.append(h)
+        calls.append(version)
+        return real_backup(p, version)
+
+    monkeypatch.setattr(store, "_backup", locked)
+
+
+def _release(holders: list) -> None:
+    while holders:
+        h = holders.pop()
+        h.execute("ROLLBACK")
+        h.close()
+
+
+def _in_thread(fn):
+    """Run ``fn`` on a daemon thread. A backup that never ends must fail the test, not hang it."""
+    import threading
+
+    out: dict = {}
+
+    def run():
+        try:
+            out["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — handed back to the test
+            out["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t, out
+
+
+def test_the_default_migration_backup_bound_is_thirty_seconds():
+    """The bound is generous: it counts only waiting on a locked source, never copy time."""
+    assert store.MIGRATION_BACKUP_MAX_S == 30.0
+
+
+def test_the_migration_backup_ends_busy_with_no_request_deadline(tmp_path, monkeypatch):
+    """#2240: with no request deadline, SQLite's backup retried a busy source without end, so a
+    connection holding the file for good stalled the cold migration (and the schema lock) for
+    good. It now gives up at `MIGRATION_BACKUP_MAX_S` with the retryable `StoreBusy`, leaves no
+    partial copy and no migration, and migrates once the file is free."""
+    monkeypatch.setattr(store, "MIGRATION_BACKUP_MAX_S", 0.4, raising=False)
+    monkeypatch.setattr(store, "BUSY_TIMEOUT_MS", 100)
+    directory = tmp_path / "fed"
+    st = _v4_store(directory)
+    db = directory / store.DB_FILE
+    holders: list[sqlite3.Connection] = []
+    _lock_after_the_probe(monkeypatch, db, holders)
+    t0 = time.monotonic()
+    t, out = _in_thread(st.list_peers)
+    t.join(3.0)
+    elapsed = time.monotonic() - t0
+    try:
+        assert not t.is_alive(), "the migration backup never ended with no request deadline"
+    finally:
+        _release(holders)
+        t.join(10)
+    assert isinstance(out.get("error"), store.StoreBusy), out
+    # ~0.5 s expected (0.4 s bound + one 0.1 s busy wait); generous for a loaded shared runner,
+    # still far below main, which never ends.
+    assert elapsed < 2.5, f"{elapsed:.2f}s: past the bound plus one busy wait"
+    assert not list(directory.glob(f"{store.DB_FILE}.bak-*")), "a partial backup was left"
+    assert _user_version(db) == 4, "a migration ran without a complete backup"
+    assert st.list_peers() == []  # the file is free: the migration completes
+    assert _user_version(db) == store.SCHEMA_VERSION
+    assert len(list(directory.glob(f"{store.DB_FILE}.bak-v4-*"))) == 1
+
+
+def test_a_lock_released_within_the_bound_lets_the_backup_finish(tmp_path, monkeypatch):
+    """The success control: a holder that lets go before the bound costs a wait, not the
+    migration."""
+    import threading
+
+    monkeypatch.setattr(store, "MIGRATION_BACKUP_MAX_S", 5.0, raising=False)
+    monkeypatch.setattr(store, "BUSY_TIMEOUT_MS", 100)
+    directory = tmp_path / "fed"
+    st = _v4_store(directory)
+    db = directory / store.DB_FILE
+    holders: list[sqlite3.Connection] = []
+    _lock_after_the_probe(monkeypatch, db, holders)
+    real_backup = store._backup
+
+    def release_soon(p, version):
+        threading.Timer(0.4, _release, args=(holders,)).start()
+        return real_backup(p, version)
+
+    monkeypatch.setattr(store, "_backup", release_soon)
+    t, out = _in_thread(st.list_peers)
+    t.join(4.0)
+    try:
+        assert not t.is_alive(), "the backup did not finish after the lock was released"
+    finally:
+        _release(holders)
+        t.join(10)
+    assert out == {"value": []}, out
+    assert _user_version(db) == store.SCHEMA_VERSION
+    (bak,) = list(directory.glob(f"{store.DB_FILE}.bak-v4-*"))
+    check = sqlite3.connect(f"file:{bak}?mode=ro", uri=True)
+    try:
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 4
+    finally:
+        check.close()
+
+
+def test_a_finished_copy_is_kept_when_the_deadline_passed_while_it_ran(tmp_path, monkeypatch):
+    """#2240 (Hermes on the issue): the bound covers contention, not copy time. A whole-file step
+    that COMPLETED is never thrown away, even when the request deadline ran out during it (the
+    progress callback runs after the step): the copy is kept and the migration runs. Here the
+    deadline reads as spent for every clock read inside the backup, whatever their order."""
+    directory = tmp_path / "fed"
+    st = _v4_store(directory)
+    db = directory / store.DB_FILE
+    real_backup = store._backup
+    real_remaining = store._remaining_s
+    in_backup: list[int] = []
+
+    def remaining():
+        return -1.0 if in_backup else real_remaining()
+
+    def backup(p, version):
+        in_backup.append(1)
+        try:
+            return real_backup(p, version)
+        finally:
+            in_backup.clear()
+
+    monkeypatch.setattr(store, "_remaining_s", remaining)
+    monkeypatch.setattr(store, "_backup", backup)
+    with store.request_deadline(5.0):
+        assert st.list_peers() == []
+    assert _user_version(db) == store.SCHEMA_VERSION
+    assert len(list(directory.glob(f"{store.DB_FILE}.bak-v4-*"))) == 1
