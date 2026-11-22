@@ -1075,6 +1075,19 @@ export const SWEEP = [
   { id: "route:project-general", path: "/projects/p-orbital", mock: { projectsAdmin: true }, present: "#identity-h" },
   { id: "route:project-defaults", path: "/projects/p-orbital?tab=defaults", mock: { projectsAdmin: true }, present: "[data-testid='project-session-defaults']" },
   { id: "route:project-memory", path: "/projects/p-orbital?tab=memory", mock: { projectsAdmin: true, variables: true, automationsShowcase: true }, present: "#memory-h" },
+  // Project → Playbook (#1949): applied with an update waiting (and a verify run on open), the phone
+  // sheet, a project with none (the library), a current one, and a failed status read.
+  { id: "route:project-playbook", path: "/projects/p-orbital?tab=playbook", mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']" },
+  { id: "project-playbook:phone", path: "/projects/p-orbital?tab=playbook", widths: ["phone"], mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']", fullPage: true },
+  { id: "project-playbook:current", path: "/projects/p-harbor?tab=playbook", mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']" },
+  { id: "project-playbook:none", path: "/projects/p-atlas?tab=playbook", mock: { projectsAdmin: true }, present: "[aria-label='Playbook'][role='radiogroup']" },
+  {
+    id: "project-playbook:read-failed",
+    path: "/projects/p-orbital?tab=playbook",
+    mock: { projectsAdmin: true },
+    api: { "/api/projects/p-orbital/playbook": { status: 503, json: { detail: "Service unavailable" } } },
+    present: "[data-testid='playbook-read-failed']",
+  },
   { id: "route:variables", path: "/library/variables", mock: { variables: true }, present: "article[aria-label='deploy_token']" },
   // ---- PR4b library A ---- (#1574 Phase 10: templates, variables, memory)
   // Suggestions on demand: the analysed result, its dossier cards and the withheld note.

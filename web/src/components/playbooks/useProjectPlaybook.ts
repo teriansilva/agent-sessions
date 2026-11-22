@@ -99,6 +99,17 @@ export function useProjectPlaybook(
   const epoch = useRef(0);
   const busyRef = useRef(false);
   const attempt = useRef<Attempt | null>(null);
+  /** The operation ids the held attempt will retry with, mirrored for rendering: a project page
+   *  offers Retry only when they are the ones the server recorded (#1949). */
+  const [held, setHeld] = useState<{ bind: string; apply: string } | null>(null);
+  const hold = useCallback((next: Attempt | null) => {
+    attempt.current = next;
+    setHeld(next ? { bind: next.bindId, apply: next.applyId } : null);
+  }, []);
+  const project = useRef(projectId);
+  useEffect(() => {
+    project.current = projectId;
+  }, [projectId]);
   // Retained separately from a deployment attempt: a definite project-create refusal can
   // leave our folder on disk even when the source or inputs need a new review.
   const createdTargets = useRef(new Map<string, CreatedTarget>());
@@ -139,7 +150,7 @@ export function useProjectPlaybook(
       setReviewed(null);
       setConfirmed([]);
       setError("");
-      attempt.current = null;
+      hold(null);
       unresolvedCreates.current.clear();
       if (!next) {
         setLoading(false);
@@ -153,7 +164,8 @@ export function useProjectPlaybook(
         ]);
         if (!live.current || request !== epoch.current) return;
         setAgents(schema.agents);
-        const reason = assignmentUnavailable(data);
+        // An existing project may take secret-reference files; only a pre-project review refuses them.
+        const reason = assignmentUnavailable(data, !project.current);
         if (isDefault && reason) {
           setId(null);
           setDefaultNotice(
@@ -175,7 +187,7 @@ export function useProjectPlaybook(
         if (live.current && request === epoch.current) setLoading(false);
       }
     },
-    [],
+    [hold],
   );
   const reloadLibrary = useCallback(async () => {
     try {
@@ -258,12 +270,12 @@ export function useProjectPlaybook(
         return;
       }
       unresolvedCreates.current.set(held.inputs.destination, held);
-      attempt.current = null;
+      hold(null);
     }
     const parked = target ? undefined : unresolvedCreates.current.get(destination);
     if (parked) {
       unresolvedCreates.current.delete(destination);
-      attempt.current = parked;
+      hold(parked);
       setReviewed({ inputs: parked.inputs, plan: parked.plan });
       setConfirmed(parked.confirmed);
       setError(unconfirmedCreate);
@@ -322,7 +334,7 @@ export function useProjectPlaybook(
           plan.destination.device !== target.device || plan.destination.inode !== target.inode))
         throw new Error("The created folder was replaced. Choose another folder, or restart the wizard to explicitly review the replacement.");
       if (live.current && requestedSignature === currentSignature.current) {
-        attempt.current = null;
+        hold(null);
         if (target) setExistingTargetPath(destination);
         if (fresh) {
           setDetail(fresh);
@@ -372,7 +384,7 @@ export function useProjectPlaybook(
           plan: reviewed.plan,
           confirmed,
         };
-        attempt.current = accepted;
+        hold(accepted);
       }
       if (JSON.stringify(accepted.inputs) !== JSON.stringify(reviewed.inputs)) {
         setError(
@@ -397,10 +409,11 @@ export function useProjectPlaybook(
     }
   }
 
-  /** All later retries use the same project and operation IDs, including lost responses. */
-  async function deploy(project: string) {
+  /** All later retries use the same project and operation IDs, including lost responses. Returns
+   *  the closing verification, or null when the deployment did not get that far. */
+  async function deploy(project: string): Promise<PlaybookVerify | null> {
     const accepted = attempt.current;
-    if (!accepted || busyRef.current || !live.current) return;
+    if (!accepted || busyRef.current || !live.current) return null;
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -415,7 +428,7 @@ export function useProjectPlaybook(
           accepted.bindId,
         );
       }
-      if (!live.current) return;
+      if (!live.current) return null;
       if (!accepted.applied) {
         setStage("apply");
         const result = await api.applyPlaybook(
@@ -430,7 +443,7 @@ export function useProjectPlaybook(
         setReviewed(null);
         setRecovering(false);
       }
-      if (!live.current) return;
+      if (!live.current) return null;
       setStage("verify");
       const result = await api.verifyPlaybook(project);
       if (live.current) {
@@ -438,8 +451,9 @@ export function useProjectPlaybook(
         setStage("done");
         setChoices({});
       }
+      return result;
     } catch (e) {
-      if (!live.current) return;
+      if (!live.current) return null;
       setError(errorText(e));
       try {
         const current = await api.playbookDeployment(project);
@@ -447,6 +461,7 @@ export function useProjectPlaybook(
       } catch {
         if (live.current) setStatus(null);
       }
+      return null;
     } finally {
       busyRef.current = false;
       if (live.current) setBusy(false);
@@ -497,7 +512,7 @@ export function useProjectPlaybook(
       if (!live.current) return;
       setReviewed({ inputs: next, plan });
       setRecovering(true);
-      attempt.current = null;
+      hold(null);
     } catch (e) {
       if (live.current) setError(errorText(e));
     } finally {
@@ -539,7 +554,7 @@ export function useProjectPlaybook(
     busy: busy || removing,
     setRemoving,
     removed: (result: DeploymentStatus) => {
-      attempt.current = null;
+      hold(null);
       setStatus(result);
       setVerification(null);
       setError("");
@@ -549,6 +564,7 @@ export function useProjectPlaybook(
       setStage("done");
     },
     error,
+    held,
     stage,
     status,
     verification,

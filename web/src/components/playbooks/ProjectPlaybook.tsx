@@ -39,8 +39,11 @@ function counts(card: PlaybookCardData): string[] {
 
 export function ProjectPlaybookLibrary({
   book,
+  noneHint = "Create the project without files or workflow instructions.",
 }: {
   book: ProjectPlaybookState;
+  /** What choosing "No playbook" means where the library is shown. */
+  noneHint?: string;
 }) {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
@@ -119,9 +122,7 @@ export function ProjectPlaybookLibrary({
           />
           <span className={styles.optionHead}>
             <b>No playbook</b>
-            <span className={styles.optionHint}>
-              Create the project without files or workflow instructions.
-            </span>
+            <span className={styles.optionHint}>{noneHint}</span>
           </span>
         </label>
         {shown.map((card) => {

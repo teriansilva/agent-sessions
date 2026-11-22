@@ -181,12 +181,14 @@ test.describe("HQ → Projects (#2143; was Settings → Projects, #361/#448)", (
 
   test("a project's tabs switch by pointer and keys; a phone shows short labels, full names, the touch floor", async ({ page, isMobile }) => {
     await projectsRoute(page, [SAMPLEPROJECT]);
+    await page.route("**/api/projects/p-1/playbook", (r) => r.fulfill({ json: { project_id: "p-1", state: "none" } }));
     // A short viewport: the page is taller than the pane, which once squeezed the tab row to nothing.
     await page.setViewportSize({ width: page.viewportSize()!.width, height: 520 });
     await page.goto(projectPath("p-1"));
     const tabs = page.getByRole("tablist", { name: "SampleProject settings" });
     for (const [name, short, heading] of [
       ["Session defaults", "Defaults", "Agent for new sessions"],
+      ["Playbook", "Playbook", "^Playbook"],
       ["Memory & equipment", "Memory", "Project memory"],
       ["General", "General", "Identity"],
     ] as const) {

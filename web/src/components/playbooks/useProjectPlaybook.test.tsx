@@ -411,3 +411,83 @@ test("a double create preparation admits only one request", async () => {
   expect(api.confirmPlaybook).toHaveBeenCalledTimes(1);
   expect(api.createPlaybookTarget).toHaveBeenCalledTimes(1);
 });
+
+// HQ → Projects → Playbook (#1949): the same hook on a project that already exists.
+describe("existing-project mode", () => {
+  async function existing() {
+    const hook = renderHook(() => useProjectPlaybook("/tmp/project", false, "p-existing"));
+    await waitFor(() => expect(hook.result.current.library).not.toBeNull());
+    act(() => hook.result.current.select("demo"));
+    await waitFor(() => expect(hook.result.current.selectedReady).toBe(true));
+    return hook;
+  }
+
+  test("review names the project and never asks for a folder to be created", async () => {
+    const { result } = await existing();
+    await act(() => result.current.review());
+    const inputs = vi.mocked(api.reviewPlaybook).mock.calls[0][1];
+    expect(inputs).toMatchObject({ destination: "/tmp/project", project_id: "p-existing" });
+    expect(inputs).not.toHaveProperty("create");
+    expect(result.current.projectExists).toBe(true);
+    await act(async () => {
+      expect(await result.current.prepare()).toBe(true);
+    });
+    expect(api.createPlaybookTarget).not.toHaveBeenCalled();
+  });
+
+  test("deploy binds and applies on the existing project and returns the closing verification", async () => {
+    const verified = { deployment_id: "d-demo", ok: true, checks: { materials: { ok: true } } };
+    vi.mocked(api.verifyPlaybook).mockResolvedValue(verified);
+    const { result } = await existing();
+    await act(() => result.current.review());
+    await act(() => result.current.prepare());
+    let returned: unknown;
+    await act(async () => {
+      returned = await result.current.deploy("p-existing");
+    });
+    expect(returned).toEqual(verified);
+    expect(api.bindPlaybook).toHaveBeenCalledWith("p-existing", "demo", expect.objectContaining({ project_id: "p-existing" }), "review-receipt", expect.any(String));
+    expect(api.applyPlaybook).toHaveBeenCalledWith("p-existing", "bound-receipt", expect.any(String));
+    expect(result.current.stage).toBe("done");
+  });
+
+  test("the held operation ids are the ones a retry sends, and a failed deploy returns null", async () => {
+    vi.mocked(api.applyPlaybook).mockRejectedValueOnce(new Error("lost response"));
+    const { result } = await existing();
+    expect(result.current.held).toBeNull();
+    await act(() => result.current.review());
+    await act(() => result.current.prepare());
+    const held = result.current.held;
+    expect(held).not.toBeNull();
+    let first: unknown = "unset";
+    await act(async () => {
+      first = await result.current.deploy("p-existing");
+    });
+    expect(first).toBeNull();
+    expect(vi.mocked(api.bindPlaybook).mock.calls[0][4]).toBe(held!.bind);
+    expect(vi.mocked(api.applyPlaybook).mock.calls[0][2]).toBe(held!.apply);
+    await act(() => result.current.deploy("p-existing"));
+    expect(api.bindPlaybook).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.applyPlaybook).mock.calls[1][2]).toBe(held!.apply);
+    expect(result.current.held).toEqual(held);
+  });
+
+  test("a removal drops the held operation", async () => {
+    const { result } = await existing();
+    await act(() => result.current.review());
+    await act(() => result.current.prepare());
+    expect(result.current.held).not.toBeNull();
+    act(() => result.current.removed({ project_id: "p-existing", state: "removed" }));
+    expect(result.current.held).toBeNull();
+  });
+
+  test("a playbook that writes secret-reference files is choosable on an existing project only", async () => {
+    vi.mocked(api.playbook).mockResolvedValue({ ...detail(), files: { "env.txt": "{{ secret_path:token }}" } });
+    const { result } = await existing();
+    expect(result.current.loadError).toBe("");
+    const wizard = renderHook(() => useProjectPlaybook("/tmp/project", true));
+    await waitFor(() => expect(wizard.result.current.library).not.toBeNull());
+    act(() => wizard.result.current.select("demo"));
+    await waitFor(() => expect(wizard.result.current.loadError).toMatch(/needs an existing project/));
+  });
+});

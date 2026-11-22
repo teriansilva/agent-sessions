@@ -50,6 +50,11 @@ Automatic mission step dispatch and review/fix transitions are still being imple
 steps describe the intended process; they do not grant permission to merge, deploy, publish or
 send messages. Project-file deployment and flow execution are separate operations.
 
+A playbook's files and inputs reach a project in one of two places: the **New project** wizard, for
+a new project, or the project's **Playbook** tab in [HQ → Projects](/guide/projects),
+for one that exists. Both use the same reviewed flow, and the tab also verifies, updates, changes and
+removes a deployed playbook.
+
 An external actor names work performed by a service you operate; its label does not connect or
 invoke that service. The existing review probe checks authorized reviews at the current head,
 but does not filter by the requested reviewer username. Keep the Forgejo template's manual

@@ -52,7 +52,31 @@ export async function answerExtra(path, q, method, req, state) {
           : [],
       });
     }
-    return json({ ...book, ...playbookDocuments(book), recovery_total: 0 });
+    return json({ ...book, ...playbookDocuments(book, !!state?.projectsAdmin), recovery_total: 0 });
+  }
+  // A project's own deployment (#1949), in the `projectsAdmin` state: Orbital runs ship-it with an
+  // update waiting and one input to fill; Harbor runs bug-hunt, current and passing.
+  const dep = /^\/api\/projects\/([a-z0-9-]+)\/playbook(\/verify)?$/.exec(path);
+  if (dep && method === "GET" && state?.projectsAdmin) {
+    const book = { "p-orbital": "ship-it", "p-harbor": "bug-hunt" }[dep[1]];
+    if (!dep[2])
+      return json(book ? { project_id: dep[1], deployment_id: `d-${dep[1]}`, playbook_id: book, state: "applied", generation: 1, rituals: [], instructions_missing: [] } : { project_id: dep[1], state: "none" });
+    if (!book) return undefined;
+    const attention = dep[1] === "p-orbital";
+    return json({
+      project_id: dep[1],
+      deployment_id: `d-${dep[1]}`,
+      playbook_id: book,
+      update_available: attention,
+      ok: !attention,
+      checks: {
+        variables: attention ? { ok: false, problems: { SENTRY_DSN: "missing" } } : { ok: true, problems: {} },
+        materials: { ok: true, drift: [] },
+        binaries: { ok: true, missing: [] },
+        instructions: { ok: true, missing: [] },
+        connections: { probed: false, targets: [{ id: "connection:staging" }] },
+      },
+    });
   }
   const nyd = /^\/api\/pulse\/needs-you\/([^/]+)\/details$/.exec(path);
   if (nyd && method === "GET") {
@@ -902,11 +926,22 @@ export const AUTHORING_SCHEMA = {
   probes: { supervisor_judged: { outputs: [], args: {} }, none: { outputs: [], args: {} } },
   limits: { flows: 20, steps: 30, items: 12, variables: 32, distinct: 8, rework_min: 1, rework_max: 10 },
 };
-function playbookDocuments(book) {
+function playbookDocuments(book, withInputs = false) {
   const manifest = {
     format: 2,
     identity: { id: book.id, name: book.name, publisher: book.publisher, version: book.version, domain: book.domain },
     flows: { default: "main" },
+    // HQ → Projects → Playbook (#1949) lists the inputs a deployed playbook declares.
+    ...(withInputs
+      ? {
+          variables: [
+            { name: "DEPLOY_HOST", type: "text" },
+            { name: "STAGING_URL", type: "url" },
+            { name: "FORGEJO_TOKEN", kind: "secret", type: "text" },
+            { name: "SENTRY_DSN", kind: "secret", type: "text" },
+          ],
+        }
+      : {}),
   };
   const steps = book.flows[0].steps.map((st, i, all) => ({
     id: st.id,

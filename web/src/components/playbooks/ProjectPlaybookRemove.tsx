@@ -15,11 +15,24 @@ export function ProjectPlaybookRemove({
   disabled,
   onBusy,
   onRemoved,
+  onFailed,
+  label = "Review removal of this playbook",
+  buttonClassName = buttons.ghost,
+  note,
+  testId,
 }: {
   project: string;
   disabled: boolean;
   onBusy: (busy: boolean) => void;
   onRemoved: (status: DeploymentStatus) => void;
+  /** A removal that failed may have been interrupted part-way: the caller re-reads the status. */
+  onFailed?: () => void;
+  /** The button's words; a held operation always reads "Resume this removal". */
+  label?: string;
+  buttonClassName?: string;
+  /** A line shown first in the dialog (Change playbook… says what comes after the removal). */
+  note?: string;
+  testId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [plan, setPlan] = useState<DeploymentRemoval | null>(null);
@@ -89,7 +102,10 @@ export function ProjectPlaybookRemove({
         onRemoved(result);
       }
     } catch (e) {
-      if (live.current) setError(errorText(e));
+      if (live.current) {
+        setError(errorText(e));
+        onFailed?.();
+      }
     } finally {
       busyRef.current = false;
       if (live.current) {
@@ -101,11 +117,13 @@ export function ProjectPlaybookRemove({
   return (
     <div className={styles.root}>
       <button
-        className={buttons.ghost}
+        type="button"
+        className={buttonClassName}
         disabled={disabled || busy}
         onClick={(e) => void review(e.currentTarget)}
+        data-testid={testId}
       >
-        {operation ? "Resume this removal" : "Review removal of this playbook"}
+        {operation ? "Resume this removal" : label}
       </button>
       {error && !plan && <p role="alert">{error}</p>}
       {open && plan && (
@@ -123,6 +141,7 @@ export function ProjectPlaybookRemove({
           returnFocusTo={trigger}
         >
           <div className={styles.root}>
+            {note && <p>{note}</p>}
             <p>
               The project and its folders stay. Only files proven to belong to
               this deployment are removed or restored; project-owned seeds and

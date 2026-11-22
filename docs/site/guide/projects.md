@@ -18,13 +18,24 @@ it.
   does). A folder a project has adopted is managed on that project's page; an unassigned folder can be
   switched off or renamed here.
 
-A project's own page (`/projects/<id>`) has three tabs:
+A project's own page (`/projects/<id>`) has four tabs:
 
 - **General**: name, colour, default project, default folder, the project's folders (add or
   release one), and archive or delete.
 - **Session defaults**: what new sessions in the project start with (see
   [Session defaults](#session-defaults)) and its artifacts default, saved together. If one of the two
   saves fails, the other stays saved, and the page says which one didn't save.
+- **Playbook**: the project's [playbook](/guide/playbooks). With none, the library: choose one, set
+  its inputs, **Review playbook changes** to see every file and binding it would write, then **Apply
+  reviewed changes to this project**. Nothing is written before Apply. With one applied, the tab shows
+  what is deployed and **verifies it when you open the tab** (and again on **Verify again**): each
+  check is green, amber when it needs you (an input with no value), red when it found a real failure
+  (a missing binary, a file that drifted). **Review update** appears when the playbook has a newer
+  revision; **Change playbook…** removes the current one through its reviewed removal, then offers the
+  library; **Remove playbook…** shows the removal plan first. If an apply or removal is interrupted,
+  the tab shows what each file reached; **Retry** resumes that same operation from the page that
+  started it, and never starts a second one. An archived project can't take a playbook: verify and
+  remove still work. A refusal from the server is shown in its own words.
 - **Memory & equipment**: the project's memory switch (the same switch as Library → Memory), the
   secrets bound to the project and the automations that target it. Secrets and automations are
   listed read-only, with links to where you edit them.

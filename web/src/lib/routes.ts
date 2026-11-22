@@ -149,8 +149,8 @@ export const PROJECTS_PATH = "/projects";
 export type ProjectsIndexTab = "projects" | "folders";
 export const PROJECTS_FOLDERS_PATH = `${PROJECTS_PATH}?tab=folders`;
 
-/** One project's page tabs, in order (the Playbook tab joins in #2143 P2). `general` is the page's own URL. */
-export const PROJECT_TABS = ["general", "defaults", "memory"] as const;
+/** One project's page tabs, in order. `general` is the page's own URL. */
+export const PROJECT_TABS = ["general", "defaults", "playbook", "memory"] as const;
 export type ProjectTab = (typeof PROJECT_TABS)[number];
 
 /** One project's page, optionally on a tab other than General. */

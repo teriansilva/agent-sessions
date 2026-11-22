@@ -1,5 +1,5 @@
 /** One project's page (#2143): everything its setup needs, in tabs — General · Session defaults ·
- *  Memory & equipment (the Playbook tab joins in P2, #1949). The page reads the project list
+ *  Playbook (#1949) · Memory & equipment. The page reads the project list
  *  (archived included) and finds its project there: the same read and the same PATCH / archive /
  *  delete calls Settings → Projects made, from a new route. */
 import { ArrowLeft, Folder, Star } from "lucide-react";
@@ -11,6 +11,7 @@ import { PROJECT_TABS, PROJECTS_PATH, type ProjectTab } from "../../lib/routes";
 import { ProjectDefaults } from "./ProjectDefaults";
 import { ProjectGeneral } from "./ProjectGeneral";
 import { ProjectMemory } from "./ProjectMemory";
+import { ProjectPlaybookTab } from "./ProjectPlaybookTab";
 import { ProjectSwatch, ReadFailed, StaleNotice, TabLabel } from "./ProjectBits";
 import { useProjectEntities } from "./projectsData";
 import styles from "./projects.module.css";
@@ -18,6 +19,7 @@ import styles from "./projects.module.css";
 const TAB_LABELS: Record<ProjectTab, { long: string; short: string }> = {
   general: { long: "General", short: "General" },
   defaults: { long: "Session defaults", short: "Defaults" },
+  playbook: { long: "Playbook", short: "Playbook" },
   memory: { long: "Memory & equipment", short: "Memory" },
 };
 
@@ -110,6 +112,8 @@ export default function ProjectPage() {
         panel={(id) =>
           id === "defaults" ? (
             <ProjectDefaults key={entity.id} entity={entity} onSaved={entities.reload} />
+          ) : id === "playbook" ? (
+            <ProjectPlaybookTab key={entity.id} entity={entity} />
           ) : id === "memory" ? (
             <ProjectMemory key={entity.id} entity={entity} />
           ) : (
