@@ -66,6 +66,44 @@ BUSY_TIMEOUT_MS = 5000
 #: wait that ended busy with the method that waited — names and durations only, never content
 #: (#2228: name what holds the file, never mistake a waiting reader for it).
 SLOW_HOLD_S = 1.0
+#: The journal mode (#2273). In rollback-journal mode a writer's commit locks out every reader, so
+#: one stalled commit (a liveness write, under host I/O pressure) made every federation read
+#: answer busy for up to a minute. WAL lets readers read the last committed state meanwhile. The
+#: switch is made once per process on the cold schema path, with its own lock budget, and only
+#: when the file is not already in the wanted mode; a switch that cannot get its lock keeps the
+#: current mode (logged) and the next process tries again.
+#: ``AGENT_SESSIONS_FEDERATION_WAL=0`` (install env file first, then the environment) is the
+#: operator's way back: the next cold start converts the file to rollback mode, which folds the
+#: WAL into the main file. Absent or any other value means WAL.
+WAL_KEY = "AGENT_SESSIONS_FEDERATION_WAL"
+JOURNAL_SWITCH_BUSY_MS = 1000
+#: Store connections are short-lived. Two things follow in WAL mode (independent review of #2273,
+#: both reproduced): closing the LAST connection checkpoints under an EXCLUSIVE lock with two
+#: fsyncs (readers locked out again), and a WAL that no connection keeps open is re-indexed from
+#: scratch by the next one, which forgets what was checkpointed, so it never restarts and grows
+#: without bound. So each process keeps ONE idle anchor connection per WAL file (:func:`_anchor`):
+#: with it open, no other connection's close is the last, and the WAL index stays valid, so the
+#: WAL restarts after each checkpoint. No connection checkpoints on close
+#: (``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``, Python 3.12+), the anchor included. Checkpoints are
+#: SQLite's passive autocheckpoint inside a writer's COMMIT every
+#: :data:`WAL_AUTOCHECKPOINT_PAGES`, which readers never wait for, and a restarted WAL is trimmed
+#: to :data:`WAL_SIZE_LIMIT_BYTES`.
+WAL_AUTOCHECKPOINT_PAGES = 1000
+WAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024
+#: The anchors: database path -> (its inode, the connection). Process-wide, like the file.
+_ANCHORS: dict[str, tuple[int, sqlite3.Connection]] = {}
+_ANCHORS_LOCK = threading.Lock()
+#: (path, wanted mode) pairs whose switch failed in this process: not retried until the next
+#: process, however many ``Store`` objects are made over the same file.
+_JOURNAL_FAILED: set[tuple[str, str]] = set()
+_JOURNAL_FAILED_LOCK = threading.Lock()
+#: The liveness timestamp (#2273). ``last_seen_at`` is display-only, and the keepalive asks to
+#: write it every 30 s per peer: it is written at most once per :data:`TOUCH_EVERY_S` per peer,
+#: a write that met a busy file is retried no sooner than :data:`TOUCH_RETRY_S`, and its lock
+#: wait is :data:`TOUCH_DEADLINE_S`. A reconnect writes at once.
+TOUCH_EVERY_S = 300.0
+TOUCH_RETRY_S = 60.0
+TOUCH_DEADLINE_S = 1.0
 DB_FILE = "federation.db"
 PEERS_MAX = 64
 NAME_MAX = 64
@@ -779,7 +817,140 @@ def _raw_connect(p: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(p), timeout=wait_ms / 1000, isolation_level=None)
     con.row_factory = sqlite3.Row
     con.execute(f"PRAGMA busy_timeout={int(wait_ms)}")
+    _no_checkpoint_on_close(con)
     return con
+
+
+def _durable(con: sqlite3.Connection) -> None:
+    """``synchronous=FULL``: per connection, never persistent, so every connection sets it. A
+    committed revoke or grant end must survive a power loss in WAL too (#2273: WAL is taken for
+    readers, never for fewer fsyncs). It reads the schema, so it can meet a lock: callers run it
+    where a busy error is translated."""
+    con.execute("PRAGMA synchronous=FULL")
+    con.execute(f"PRAGMA journal_size_limit={WAL_SIZE_LIMIT_BYTES}")
+    con.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES}")
+
+
+def _no_checkpoint_on_close(con: sqlite3.Connection) -> None:
+    flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    if flag is not None and hasattr(con, "setconfig"):  # Python 3.12+; the anchor covers 3.11
+        con.setconfig(flag, True)
+
+
+def _drop_anchor(path: str) -> None:
+    with _ANCHORS_LOCK:
+        held = _ANCHORS.pop(path, None)
+    if held is not None:
+        with contextlib.suppress(sqlite3.Error):
+            held[1].close()
+
+
+def close_anchors() -> None:
+    """Close every anchor this process holds (tests; a process that ends drops them anyway)."""
+    with _ANCHORS_LOCK:
+        held = list(_ANCHORS)
+    for path in held:
+        _drop_anchor(path)
+
+
+def _anchor(p: Path, mode: str) -> None:
+    """Keep this process's one idle connection to a WAL file open (see
+    :data:`WAL_AUTOCHECKPOINT_PAGES`). Best-effort: it never holds a transaction, is re-opened
+    when the file was replaced (another inode), is not kept for a rollback-mode file, and one
+    that cannot be opened now is tried again on the next cold path."""
+    path = os.path.realpath(p)
+    if mode != "wal":
+        _drop_anchor(path)
+        return
+    try:
+        ino = os.stat(path).st_ino
+    except OSError:
+        return
+    with _ANCHORS_LOCK:
+        held = _ANCHORS.get(path)
+        if held is not None and held[0] == ino:
+            return
+    _drop_anchor(path)
+    wait_ms = JOURNAL_SWITCH_BUSY_MS
+    left = _remaining_s()
+    if left is not None:
+        if left <= 0:
+            return  # no budget left for it in this request; the next cold path anchors
+        wait_ms = max(1, min(wait_ms, int(left * 1000)))
+    try:
+        # ``mode=rw``: a file that vanished meanwhile is never created here.
+        con = sqlite3.connect(
+            f"file:{path}?mode=rw",
+            uri=True,
+            timeout=wait_ms / 1000,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+    except sqlite3.Error:
+        return
+    try:
+        _no_checkpoint_on_close(con)
+        con.execute(f"PRAGMA busy_timeout={wait_ms}")
+        con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()  # maps the WAL index
+    except sqlite3.Error:
+        con.close()
+        return
+    with _ANCHORS_LOCK:
+        if path in _ANCHORS:  # another thread anchored it meanwhile
+            con.close()
+        else:
+            _ANCHORS[path] = (ino, con)
+
+
+def _wal_wanted() -> bool:
+    """WAL unless the operator wrote ``AGENT_SESSIONS_FEDERATION_WAL=0`` (#2273)."""
+    from .. import update
+
+    v = update._env_get(WAL_KEY)
+    if v is None:
+        v = os.environ.get(WAL_KEY)
+    return v is None or v.strip() != "0"
+
+
+def _ensure_journal(con: sqlite3.Connection) -> str:
+    """Put the file in the wanted journal mode, or keep the one it has (#2273). Returns the mode
+    the file is in afterwards. Never raises busy: the switch needs every other connection gone,
+    so one that cannot get its lock within :data:`JOURNAL_SWITCH_BUSY_MS` (or what is left of a
+    :func:`request_deadline`) leaves the file as it is, says so once, and the next process tries
+    again. Data is never touched; SQLite answers with the mode it actually ended in."""
+    want = "wal" if _wal_wanted() else "delete"
+    have = str(con.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    if have == want:
+        return have
+    path = str(con.execute("PRAGMA database_list").fetchone()[2])
+    with _JOURNAL_FAILED_LOCK:
+        if (path, want) in _JOURNAL_FAILED:
+            return have  # already tried in this process; the next process tries again
+    if want != "wal":
+        _drop_anchor(os.path.realpath(path))  # this process's own anchor would block the switch
+    wait_ms = JOURNAL_SWITCH_BUSY_MS
+    left = _remaining_s()
+    if left is not None:
+        wait_ms = max(1, min(wait_ms, int(left * 1000)))
+    con.execute(f"PRAGMA busy_timeout={wait_ms}")
+    why = "refused"
+    try:
+        got = str(con.execute(f"PRAGMA journal_mode={want.upper()}").fetchone()[0]).lower()
+    except sqlite3.OperationalError as exc:
+        # Busy, or the switch itself failed (a filesystem without shared memory, say): the file
+        # worked in the mode it has, so it keeps it. Errors anywhere else still raise.
+        why = getattr(exc, "sqlite_errorname", None) or type(exc).__name__
+        got = have
+    if got != want:
+        with _JOURNAL_FAILED_LOCK:
+            _JOURNAL_FAILED.add((path, want))
+        log.warning(
+            "federation store: kept the %s journal (%s); switching to %s waits for the next start",
+            got,
+            why,
+            want,
+        )
+    return got
 
 
 def _holder() -> str:
@@ -908,6 +1079,11 @@ class Store:
         self._directory = directory
         self._schema_lock = threading.Lock()
         self._schema_done = False
+        # #2273: per peer, (the last SUCCESSFUL liveness write, the earliest retry after a busy
+        # one), on this monotonic clock. In-process only: a new process writes at its first touch.
+        self._touch_lock = threading.Lock()
+        self._touched: dict[str, tuple[float | None, float]] = {}
+        self._touch_clock = time.monotonic
 
     @property
     def db_path(self) -> Path:
@@ -921,7 +1097,12 @@ class Store:
             os.close(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))
         con = _raw_connect(p)
         try:
+            _durable(con)
             self._ensure_schema_on(con, p)
+            # After the version checks (a newer file is refused untouched), for every version,
+            # the current one included (#2273).
+            mode = _ensure_journal(con)
+            _anchor(p, mode)
         except sqlite3.OperationalError as exc:
             if _is_busy(exc):
                 raise StoreBusy() from exc
@@ -1001,9 +1182,12 @@ class Store:
                 v = _version(con)
                 if v > SCHEMA_VERSION:
                     raise StoreUnsupported(v)
-                if v < SCHEMA_VERSION:  # replaced under this object by an older file: migrate
+                # Replaced under this object by an older file: migrate. Under WAL a file is only
+                # ever replaced with its -wal and -shm moved aside too (docs/invariants).
+                if v < SCHEMA_VERSION:
                     with self._schema_locked():
                         self._ensure_schema(p)
+                _durable(con)
                 _cap_wait(con)
                 yield con
             except sqlite3.OperationalError as exc:
@@ -1251,11 +1435,41 @@ class Store:
                 (doc, time.time(), peer_id, doc),
             )
 
-    def touch_seen(self, peer_id: str) -> None:
-        with self._write() as con:
-            con.execute(
-                "UPDATE peers SET last_seen_at = ? WHERE peer_id = ?", (time.time(), peer_id)
+    def touch_seen(self, peer_id: str, *, reconnect: bool = False) -> bool:
+        """Record that ``peer_id`` was seen, at most once per :data:`TOUCH_EVERY_S` (#2273).
+        ``last_seen_at`` is display-only and the keepalive asks every 30 s, so a durable write on
+        every ping was the transaction that held the file when a commit stalled. ``reconnect``
+        (a peer's hello) writes at once. A busy file is NOT an error here: the write is dropped,
+        retried no sooner than :data:`TOUCH_RETRY_S`, and its lock wait is
+        :data:`TOUCH_DEADLINE_S` (a lock budget; a stalled fsync is not bounded by it). Every
+        other error raises. Returns whether it wrote."""
+        now = self._touch_clock()
+        with self._touch_lock:
+            written_at, retry_after = (
+                (None, 0.0) if reconnect else self._touched.get(peer_id, (None, 0.0))
             )
+            if written_at is not None and now - written_at < TOUCH_EVERY_S:
+                return False
+            if now < retry_after:
+                return False
+        try:
+            with request_deadline(TOUCH_DEADLINE_S), self._write() as con:
+                con.execute(
+                    "UPDATE peers SET last_seen_at = ? WHERE peer_id = ?", (time.time(), peer_id)
+                )
+        except StoreBusy:
+            with self._touch_lock:
+                # The NEWEST success stands (a concurrent touch may have written meanwhile).
+                latest = self._touched.get(peer_id, (None, 0.0))[0]
+                self._touched[peer_id] = (latest, now + TOUCH_RETRY_S)
+            log.warning(
+                "federation store: touch_seen met a busy file; the next try is in %.0fs or more",
+                TOUCH_RETRY_S,
+            )
+            return False
+        with self._touch_lock:
+            self._touched[peer_id] = (now, 0.0)
+        return True
 
     # ── grants (owner side) ───────────────────────────────────────────
     @staticmethod

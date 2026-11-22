@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import sqlite3
 import stat
+import sys
 import time
 
 import pytest
@@ -1312,6 +1314,129 @@ def test_a_revoke_while_settling_is_never_undone_by_the_proof(tmp_path):
         await until(lambda: pairing_of(a, mine)["state"] == "failed")
         assert peers_of(a)[b.peer_id]["state"] == "revoked"
         assert a.store.trusted_key(b.public_key) is None
+        await _stop(a, b)
+
+    run(go())
+
+
+# ── a busy store (#2273) ──────────────────────────────────────────────
+
+
+def _busy_for_touch(monkeypatch, fed) -> list[int]:
+    """``touch_seen``'s write meets a busy file; every other write is untouched. Returns the
+    count of busy writes it caused, as a one-item list."""
+    real = fed.store._write
+    busy = [0]
+
+    def write():
+        if sys._getframe(1).f_code.co_name == "touch_seen":
+            busy[0] += 1
+            raise store.StoreBusy()
+        return real()
+
+    monkeypatch.setattr(fed.store, "_write", write)
+    return busy
+
+
+def test_a_busy_liveness_write_neither_ends_the_keepalive_nor_skips_the_hello(
+    tmp_path, monkeypatch
+):
+    """A ``StoreBusy`` from ``touch_seen`` used to end ``_keepalive`` (it catches only
+    ``CallError``: pings stopped for that channel) and to skip ``refresh_remote`` in the hello."""
+    monkeypatch.setattr(service, "DIAL_TICK_S", 0.05)
+    monkeypatch.setattr(service, "PING_EVERY_S", 0.05)
+    # No throttle and no backoff: every keepalive touch reaches the busy write (independent
+    # review: with the defaults only the hello's touch did, so the keepalive path went untested).
+    monkeypatch.setattr(store, "TOUCH_EVERY_S", 0.0)
+    monkeypatch.setattr(store, "TOUCH_RETRY_S", 0.0)
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        refreshed: list[str] = []
+        real_refresh = a.refresh_remote
+
+        def refresh(peer_id):
+            refreshed.append(peer_id)
+            return real_refresh(peer_id)
+
+        monkeypatch.setattr(a, "refresh_remote", refresh)
+        pings: list[ch.Channel] = []
+        real_call = ch.Channel.call
+
+        async def call(self, verb, *args, **kwargs):
+            if verb == "peer.ping":
+                pings.append(self)
+            return await real_call(self, verb, *args, **kwargs)
+
+        monkeypatch.setattr(ch.Channel, "call", call)
+        await _trusted_pair(net, a, b)
+        busy = _busy_for_touch(monkeypatch, a)
+        a.start()
+        b.start()
+        await _same_channel(a, b)
+        await until(lambda: b.peer_id in refreshed)  # the hello went past the busy write
+        mine = a.channel_for(b.peer_id)
+        sent = sum(1 for c in pings if c is mine)
+        # Pings keep going over the same channel: the keepalive survived its busy writes.
+        hit = busy[0]
+        await until(lambda: sum(1 for c in pings if c is mine) >= sent + 3)
+        assert a.channel_for(b.peer_id) is mine
+        assert busy[0] >= hit + 2  # the keepalive's own touches met the busy file, and survived
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_busy_dialer_round_is_one_line_and_other_failures_keep_their_traceback(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(service, "DIAL_TICK_S", 0.02)
+
+    async def go():
+        net = Net()
+        a = net.add("alpha", tmp_path)
+        failures: list[Exception] = [store.StoreBusy(), RuntimeError("boom")]
+
+        async def dial_round():
+            if failures:
+                raise failures.pop(0)
+
+        async def nothing():
+            return None
+
+        monkeypatch.setattr(a, "_dial_round", dial_round)
+        monkeypatch.setattr(a, "_hold_owner_lock", lambda: True)
+        monkeypatch.setattr(a, "refresh_relay_address", nothing)
+        caplog.set_level(logging.WARNING, logger=service.__name__)
+        a.start()
+        await until(lambda: any("dialer round failed" in r.getMessage() for r in caplog.records))
+        await _stop(a)
+
+    run(go())
+    busy = [r for r in caplog.records if "the store was busy" in r.getMessage()]
+    assert len(busy) == 1 and busy[0].exc_info is None and busy[0].levelno == logging.WARNING
+    failed = [r for r in caplog.records if "dialer round failed" in r.getMessage()]
+    assert len(failed) == 1 and failed[0].exc_info is not None
+
+
+def test_a_hello_is_a_reconnect_and_writes_at_once(tmp_path, monkeypatch):
+    """The hello passes ``reconnect=True``: inside the touch interval, a reconnect still records
+    the peer as seen (a throttled touch would keep the time of the previous connection)."""
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        await _trusted_pair(net, a, b)
+        monkeypatch.setattr(a, "refresh_remote", lambda peer_id: None)
+        clock = [1000.0]
+        a.store._touch_clock = lambda: clock[0]
+        assert a.store.touch_seen(b.peer_id) is True
+        first = a.store.get(b.peer_id).last_seen_at
+        clock[0] += 1  # well inside TOUCH_EVERY_S
+        await asyncio.sleep(0.01)
+        await a._peer_said_hello(b.peer_id, {})
+        assert a.store.get(b.peer_id).last_seen_at > first
         await _stop(a, b)
 
     run(go())

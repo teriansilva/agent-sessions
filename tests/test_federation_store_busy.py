@@ -2,9 +2,10 @@
 
 Production (release b565752, 2026-11-20 10:20:50): `GET /api/federation/grants` failed with
 `sqlite3.OperationalError: database is locked` at the store's version probe, as a 500. Here a
-second, real SQLite connection holds the file (`BEGIN EXCLUSIVE`, which blocks readers in the
-store's rollback-journal mode) while the route and the store are asked; a `BEGIN IMMEDIATE`
-(reserved) lock, which still lets readers in, is the negative control.
+second, real SQLite connection holds the file (`BEGIN EXCLUSIVE`, which blocks readers in
+rollback-journal mode, the mode this module pins; WAL is the default since #2273) while the
+route and the store are asked; a `BEGIN IMMEDIATE` (reserved) lock, which still lets readers in,
+is the negative control.
 """
 
 from __future__ import annotations
@@ -41,6 +42,15 @@ def _login(c, cfg):
 
 def _db():
     return identity.state_dir() / store.DB_FILE
+
+
+@pytest.fixture(autouse=True)
+def _rollback_journal(monkeypatch):
+    """These tests pin the busy CONTRACT (#2228), so they need a lock that blocks readers: an
+    EXCLUSIVE holder does that in rollback-journal mode only. The store's default is WAL since
+    #2273 (readers read through it: ``test_federation_wal.py``), so this module asks for the
+    operator's rollback mode explicitly rather than lose its lock assumptions."""
+    monkeypatch.setenv("AGENT_SESSIONS_FEDERATION_WAL", "0")
 
 
 class _Holder:

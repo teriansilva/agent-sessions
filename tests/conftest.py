@@ -1277,3 +1277,13 @@ def gnupg_home(tmp_path):
     home.mkdir(mode=0o700)
     with stopped_gnupg(home):
         yield home
+
+
+@pytest.fixture(autouse=True)
+def _close_federation_anchors():
+    """The federation store keeps one idle connection per WAL file per process (#2273). A test's
+    store lives under its own ``tmp_path``, so its anchor is closed when the test ends."""
+    yield
+    fed_store = sys.modules.get("agent_sessions.federation.store")
+    if fed_store is not None:
+        fed_store.close_anchors()

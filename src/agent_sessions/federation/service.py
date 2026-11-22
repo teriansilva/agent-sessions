@@ -1237,12 +1237,15 @@ class Federation:
             while True:
                 await asyncio.sleep(PING_EVERY_S)
                 await channel.call("peer.ping")
+                # Throttled and never busy-raising (#2273): a busy store can't end the keepalive.
                 await asyncio.to_thread(self.store.touch_seen, peer_id)
         except ch.CallError as exc:
             channel.close(f"keepalive: {exc.code}")
 
     async def _peer_said_hello(self, peer_id: str, hello: dict) -> None:
-        await asyncio.to_thread(self.store.touch_seen, peer_id)
+        # A (re)connect is written at once; a busy file is dropped, never raised (#2273), so
+        # the rest of the hello (refresh_remote) always runs.
+        await asyncio.to_thread(self.store.touch_seen, peer_id, reconnect=True)
         self._refused.discard(peer_id)
         self._backoff.pop(peer_id, None)
         # The channel is up: ask what this peer shares with this instance.
@@ -1474,6 +1477,10 @@ class Federation:
                 if self._hold_owner_lock():
                     await self.refresh_relay_address()
                     await self._dial_round()
+            except store.StoreBusy:
+                # Expected while another transaction holds the file (#2273): one line, the round
+                # is retried at the next tick. Every other failure keeps its traceback.
+                log.warning("federation dialer round skipped: the store was busy")
             except Exception:
                 log.exception("federation dialer round failed")
             self._kick.clear()
