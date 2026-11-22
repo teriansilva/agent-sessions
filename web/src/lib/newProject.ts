@@ -40,6 +40,9 @@ export function returnTarget(from: unknown): string | null {
  *  still carries a `cwdOverride` key has it dropped by `readDraft`, never applied. */
 export interface NewSessionDraft {
   engineChoice: string;
+  /** An agent TILE tapped on the form (#2282): the family key, never a client — its client is the
+   *  family decision when the form comes back, so the create keeps that family's provenance. */
+  familyChoice?: string;
   bypassChoice: boolean | null;
   /** The map-return intent (#936): only `MAP_PATH` means anything. */
   returnTo: string | null;
@@ -68,6 +71,7 @@ export function readDraft(v: unknown): NewSessionDraft | null {
   const d = v as Record<string, unknown>;
   return {
     engineChoice: str(d.engineChoice) ?? "",
+    ...(str(d.familyChoice) && !str(d.engineChoice) ? { familyChoice: str(d.familyChoice) as string } : {}),
     bypassChoice: typeof d.bypassChoice === "boolean" ? d.bypassChoice : null,
     returnTo: d.returnTo === MAP_PATH ? MAP_PATH : null,
     projectChoice: str(d.projectChoice),

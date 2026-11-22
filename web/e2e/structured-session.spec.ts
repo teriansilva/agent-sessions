@@ -500,7 +500,7 @@ test("a lost connection keeps the turn and resumes from the cursor; nothing is r
   await noOverflow(page);
 });
 
-test("New session: API clients are their own group, unavailable ones say why; a guarded Start creates on the server", async ({
+test("New session: an agent's API client is its mode, unavailable ones say why; a guarded Start creates on the server", async ({
   page,
 }) => {
   await setup(page, "dark", ["claude", "codex-api"]);
@@ -512,18 +512,18 @@ test("New session: API clients are their own group, unavailable ones say why; a 
   await serveSession(page, () => snapshot());
   await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
-  // Terminal and API groups; a client that cannot start is a disabled tile with its reason on it
-  // (#1436 — no separate "unavailable" or "API client · ready" box).
-  const group = page.getByRole("radiogroup", { name: "Agent" });
-  await expect(group.getByText("Terminal", { exact: true })).toBeVisible();
-  await expect(group.getByText("API — structured, no terminal")).toBeVisible();
+  // One tile per agent, no Terminal / API split; the selected agent's mode row lists a client
+  // that cannot start, disabled, with its reason on it (#1436 — no separate box).
+  await expect(page.getByText("API — structured, no terminal")).toHaveCount(0);
   await expect(agent.radio("unavailable:claude-api")).toBeDisabled();
   await expect(page.getByTestId("new-session-unavailable")).toContainText("2.1.287 or later");
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toBeVisible();
   await agent.selectOption("codex-api");
   await expect(agent.radio("codex-api")).toBeChecked();
   await expect(page.getByTestId("new-session-api-about")).toHaveCount(0);
-  await expect(page.locator('label:has(> input[value="codex-api"])')).toContainText("via Codex CLI");
+  await expect(page.locator('label:has(> input[name="new-session-agent"][value="codex-api"])')).toContainText(
+    "structured",
+  );
   // #1339: the toggle is offered for an API client whose adapter maps it; unticked = guarded.
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await expect(skip).toBeVisible();

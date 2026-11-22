@@ -10,7 +10,7 @@ import { listenSessionLimit } from "../lib/sessionLimit";
 import { mintNewSessionId } from "../lib/newSession";
 import { projectPickerStore } from "../lib/projectPickerStore";
 import { structuredModelsStore } from "../lib/structuredModelsStore";
-import type { NewSessionDraft } from "../lib/newProject";
+import { readDraft, type NewSessionDraft } from "../lib/newProject";
 import { MAP_PATH, NEW_PROJECT_PATH, projectPath } from "../lib/routes";
 import type { AppConfig, EngineInfo } from "../types/api";
 import { NewSessionLanding } from "./NewSessionLanding";
@@ -59,15 +59,29 @@ const checkedIn = (name: string) =>
     (r) => r.checked,
   )?.value;
 const projectValue = () => checkedIn("Project");
-const agentValue = () => checkedIn("Agent");
+/** The agent picker is two radio groups: one tile per agent (its family) and, under them, the
+ *  selected agent's mode (API / Terminal) — whose radio value is the client id the form sends. */
+const agentRadio = (id: string) =>
+  document.querySelector(`input[name="new-session-agent"][value="${id}"]`) as HTMLInputElement | null;
+const agentValue = () =>
+  (document.querySelector('input[name="new-session-agent"]:checked') as HTMLInputElement | null)?.value;
 async function chooseProject(user: ReturnType<typeof userEvent.setup>, id: string) {
   const radio = radioIn(await findProjects(), id);
   if (!radio) throw new Error(`no project radio ${id}`);
   await user.click(radio);
 }
 async function chooseAgent(user: ReturnType<typeof userEvent.setup>, id: string) {
-  const radio = radioIn(await screen.findByRole("radiogroup", { name: "Agent" }), id);
+  await screen.findByRole("radiogroup", { name: "Agent" });
+  if (!agentRadio(id)) {
+    // Another agent: its tile first, then its mode.
+    const tile = document.querySelector(`label[data-clients~="${id}"] > input`) as HTMLInputElement | null;
+    if (!tile) throw new Error(`no agent tile for ${id}`);
+    await user.click(tile);
+  }
+  const radio = agentRadio(id);
   if (!radio) throw new Error(`no agent radio ${id}`);
+  // Always clicked, also when the tile already selected it: a tap on the selected mode is the
+  // operator choosing it explicitly (`onReaffirm`), exactly as a person would.
   await user.click(radio);
 }
 /** The resolved launch folder — the start summary carries it as `data-cwd` (#1458: the folder
@@ -602,31 +616,53 @@ test("a restored choice the roster no longer offers is shown and SENT, never swa
 
 // ---- Native API clients (#1311) -------------------------------------------------------------------
 
-test("agents are grouped Console vs API; an unavailable client is listed, disabled, with why", async () => {
+test("one tile per agent; its API and Terminal clients are the mode under it; an unavailable client is listed, disabled, with why", async () => {
   setRoster(FIXTURE);
+  const user = userEvent.setup();
   renderLanding(["claude", "codex", "codex-api"], {
+    agent_defaults: { default_engine: "claude", bypass: true },
     unavailable_clients: [
       { id: "claude-api", label: "Claude — API", reason: "claude 2.1.287 or later is required" },
     ],
   });
+  // No Terminal / API split: one tile per agent, each naming the ways it runs here.
   const group = await screen.findByRole("radiogroup", { name: "Agent" });
-  expect(within(group).getByText("Terminal")).toBeInTheDocument();
-  expect(within(group).getByText("API — structured, no terminal")).toBeInTheDocument();
-  // The unavailable client is a disabled tile whose reason is part of its accessible name — no
-  // separate box (#1436), and never silently absent (#1311).
-  const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
-  expect(radios.map((r) => [r.value, r.disabled])).toEqual([
+  expect(screen.queryByText("API — structured, no terminal")).toBeNull();
+  const tiles = within(group).getAllByRole("radio") as HTMLInputElement[];
+  expect(tiles.map((r) => r.value)).toEqual(["claude", "codex"]);
+  expect(tiles[0]).toBeChecked();
+  expect(tiles[1]).toHaveAccessibleName(/API · Terminal/);
+  // The selected agent's mode row lists its unavailable API client, disabled, with the reason as
+  // part of its accessible name — no separate box (#1436), never silently absent (#1311).
+  const mode = screen.getByTestId("new-session-mode");
+  const modes = within(mode).getAllByRole("radio") as HTMLInputElement[];
+  expect(modes.map((r) => [r.value, r.disabled])).toEqual([
     ["claude", false],
-    ["codex", false],
-    ["codex-api", false],
     ["unavailable:claude-api", true],
   ]);
-  expect(
-    within(group).getByRole("radio", { name: /claude — api.*claude 2\.1\.287 or later is required/i }),
-  ).toBeDisabled();
+  expect(within(mode).getByRole("radio", { name: /api.*claude 2\.1\.287 or later is required/i })).toBeDisabled();
   expect(screen.getByTestId("new-session-unavailable")).toHaveTextContent(
     "claude 2.1.287 or later is required",
   );
+  // A tap on another agent's tile selects its API client where it has one (API first).
+  await user.click(tiles[1]);
+  expect(agentValue()).toBe("codex-api");
+  expect(
+    (within(screen.getByTestId("new-session-mode")).getAllByRole("radio") as HTMLInputElement[]).map(
+      (r) => r.value,
+    ),
+  ).toEqual(["codex-api", "codex"]);
+});
+
+test("an agent whose every client is unavailable is a disabled tile with the reason", async () => {
+  setRoster(FIXTURE);
+  renderLanding(["claude"], {
+    unavailable_clients: [{ id: "codex-api", label: "Codex — API", reason: "signed out" }],
+  });
+  const group = await screen.findByRole("radiogroup", { name: "Agent" });
+  const down = within(group).getByRole("radio", { name: /codex.*signed out/i });
+  expect(down).toBeDisabled();
+  expect((down as HTMLInputElement).value).toBe("unavailable:codex");
 });
 
 test("an API client's Skip permission prompts follows the stored default, only when its adapter maps it (#1473)", async () => {
@@ -639,9 +675,9 @@ test("an API client's Skip permission prompts follows the stored default, only w
   // The console agent follows the stored default (on)…
   expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
   await chooseAgent(user, "codex-api");
-  // The old "API client · ready" box is gone (#1436): the tile names the CLI it drives.
+  // The old "API client · ready" box is gone (#1436): the mode segment says what the client is.
   expect(screen.queryByTestId("new-session-api-about")).toBeNull();
-  expect(screen.getByRole("radio", { name: /codex — api/i })).toHaveAccessibleName(/via codex cli/i);
+  expect(agentRadio("codex-api")).toHaveAccessibleName(/api.*structured/i);
   const skip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
   // …and so does the API client now (operator decision on #1473, superseding #1339's
   // "unticked by default"), with the warning saying what that means.
@@ -2307,8 +2343,9 @@ function apiFirst(row = familyRow(API_CLIENT.id, "api_ready")) {
     .mockResolvedValue({ session_key: `${API_CLIENT.id}:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f` } as never);
 }
 
-const tileFor = (id: string) =>
-  document.querySelector(`label[data-engine="${id}"]`) as HTMLElement;
+/** A client's mode segment (API / Terminal) under the selected agent's tile — where its family
+ *  mark is; the mark's explanation is on the mode row (`new-session-mode`). */
+const tileFor = (id: string) => agentRadio(id)?.closest("label") as HTMLElement;
 
 test("a family with a ready API client preselects it, marked default; Terminal is one tap away (#1728)", async () => {
   apiFirst();
@@ -2325,6 +2362,105 @@ test("a family with a ready API client preselects it, marked default; Terminal i
   setRoster(FIXTURE);
 });
 
+test("a tap on an agent tile selects its API default and is not remembered as an explicit pick (#2282)", async () => {
+  apiFirst();
+  const other = FIXTURE.find((e) => e.runtime === "pty" && e.family !== FAMILY && e.id !== "shell")!;
+  const user = userEvent.setup();
+  renderLanding([CONSOLE.id, API_CLIENT.id, other.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  expect(agentValue()).toBe(API_CLIENT.id);
+  // Away to another agent's tile and back: the family's API default again, not its terminal.
+  const tile = (key: string) =>
+    document.querySelector(`input[name="new-session-family"][value="${key}"]`) as HTMLInputElement;
+  await user.click(tile(other.family ?? other.id));
+  expect(agentValue()).toBe(other.id);
+  await user.click(tile(FAMILY));
+  expect(agentValue()).toBe(API_CLIENT.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  // Still the automatic default, and nothing is remembered for the family.
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][7]).toBe("automatic");
+  expect(localStorage.getItem("battlelab.familyChoice.v1") ?? "").not.toContain(FAMILY);
+  setRoster(FIXTURE);
+});
+
+const familyTile = (key: string) =>
+  document.querySelector(`input[name="new-session-family"][value="${key}"]`) as HTMLInputElement;
+const OTHER = FIXTURE.find((e) => e.runtime === "pty" && e.family !== FAMILY && e.id !== "shell")!;
+
+test("a tapped tile follows its family's default through a roster refresh and stays automatic (#2282)", async () => {
+  // Tapped while the API client is unready: the terminal stands in…
+  apiFirst(familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "signed out" }));
+  const user = userEvent.setup();
+  renderLanding([CONSOLE.id, API_CLIENT.id, OTHER.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await user.click(familyTile(OTHER.family ?? OTHER.id));
+  await user.click(familyTile(FAMILY));
+  expect(agentValue()).toBe(CONSOLE.id);
+  // …then a refresh says the API client is ready: the form moves with the family, visibly.
+  act(() => setRoster(FIXTURE, [], [familyRow(API_CLIENT.id, "api_ready")]));
+  expect(agentValue()).toBe(API_CLIENT.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(1));
+  // Still the automatic default, so the server can refuse it if it moves again.
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][7]).toBe("automatic");
+  setRoster(FIXTURE);
+});
+
+test("a tapped tile refused as a stale default (409) shows the new default and retries as automatic (#2282)", async () => {
+  apiFirst();
+  vi.mocked(api.structuredCreate).mockImplementationOnce(async () => {
+    // The refusal's roster refresh: the family's default is now its terminal.
+    setRoster(FIXTURE, [], [familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "signed out" })]);
+    throw new ApiError(409, `the default changed to ${CONSOLE.label} since this was shown — nothing was started`, {
+      default: { family: FAMILY, engine: CONSOLE.id, reason: "api_unready" },
+    });
+  });
+  const user = userEvent.setup();
+  renderLanding([CONSOLE.id, API_CLIENT.id, OTHER.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await user.click(familyTile(OTHER.family ?? OTHER.id));
+  await user.click(familyTile(FAMILY));
+  expect(agentValue()).toBe(API_CLIENT.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(await screen.findByTestId("start-error")).toHaveTextContent("press Start again");
+  expect(agentValue()).toBe(CONSOLE.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalled());
+  const [, opts] = navigateMock.mock.calls.at(-1) as [string, { state: { fresh: { choice?: string } } }];
+  expect(opts.state.fresh.choice).toBe("automatic");
+  setRoster(FIXTURE);
+});
+
+test("a tapped tile survives the New project detour as its family, re-resolved on return (#2282)", async () => {
+  apiFirst();
+  const user = userEvent.setup();
+  const first = renderLanding([CONSOLE.id, API_CLIENT.id, OTHER.id], { ...GUARDED, default_project: "/d" });
+  await findProjects();
+  await user.click(familyTile(OTHER.family ?? OTHER.id));
+  await user.click(familyTile(FAMILY));
+  await user.click(screen.getByRole("link", { name: /new project/i }));
+  const [, { state }] = navigateMock.mock.calls.at(-1) as [string, { state: { draft: NewSessionDraft } }];
+  // The draft carries the FAMILY, not a pinned client.
+  expect(state.draft).toMatchObject({ engineChoice: "", familyChoice: FAMILY });
+  expect(readDraft(JSON.parse(JSON.stringify(state.draft)))).toMatchObject({ familyChoice: FAMILY });
+  first.unmount();
+
+  // The default moved during the detour: the form comes back on the new default, still automatic.
+  navigateMock.mockReset();
+  setRoster(FIXTURE, [], [familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "signed out" })]);
+  renderLanding([CONSOLE.id, API_CLIENT.id, OTHER.id], { ...GUARDED, default_project: "/d" }, {
+    restoreDraft: { ...state.draft, projectChoice: "" },
+  });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock.mock.calls.some(([, o]) => (o as { state?: { fresh?: unknown } })?.state?.fresh)).toBe(true));
+  const launch = navigateMock.mock.calls.find(([, o]) => (o as { state?: { fresh?: unknown } })?.state?.fresh)!;
+  expect((launch[1] as { state: { fresh: { choice?: string } } }).state.fresh.choice).toBe("automatic");
+  setRoster(FIXTURE);
+});
+
 test("an unready API client leaves the terminal as the default here, with the reason (#1728)", async () => {
   apiFirst(familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "the CLI needs an update" }));
   renderLanding([CONSOLE.id], {
@@ -2335,7 +2471,9 @@ test("an unready API client leaves the terminal as the default here, with the re
   await findProjects();
   expect(agentValue()).toBe(CONSOLE.id);
   expect(tileFor(CONSOLE.id)).toHaveTextContent("default here");
-  expect(tileFor(CONSOLE.id)).toHaveTextContent("used because the API client is unavailable");
+  expect(screen.getByTestId("new-session-mode")).toHaveTextContent(
+    "used because the API client is unavailable",
+  );
   const user = userEvent.setup();
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));

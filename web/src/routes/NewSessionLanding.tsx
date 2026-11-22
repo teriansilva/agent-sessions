@@ -41,6 +41,7 @@ import { useProjectPicker } from "../app/useProjectPicker";
 import { usePrefetchStructuredModels, useStructuredModels } from "../app/useStructuredModels";
 import { listAgeMinutes, structuredModelsStore } from "../lib/structuredModelsStore";
 import { AgentTiles, ProjectList } from "../components/newSession/NewSessionControls";
+import { groupFamilies } from "../components/newSession/agentFamilies";
 import {
   createStructuredSession,
   isStoredAttempt,
@@ -269,6 +270,12 @@ export function NewSessionForm({
   // Whether the agent on the form was picked by a tile here (rather than a specialist or a draft):
   // only such a pick is remembered for its family once it starts.
   const [tilePicked, setTilePicked] = useState(false);
+  // The agent TILE tapped on this form (#2282): a family key, never a client. A tile chooses the
+  // agent, not its mode, so its client is resolved LIVE from the family decision below: a roster
+  // refresh that moves the family's default moves the form with it, visibly, and the create keeps
+  // stating that family's own provenance (`automatic`, or `explicit` for a remembered pick) —
+  // never an operator override the operator did not make. Kept through the New project detour.
+  const [familyTap, setFamilyTap] = useState<string | null>(restore.draft?.familyChoice ?? null);
   // The roster is loaded once per app; readiness moves (a sign-in, an update), so the form asks
   // again on arrival. The create re-checks anyway, and refuses a default that moved (409 / 4412).
   useEffect(() => {
@@ -287,20 +294,54 @@ export function NewSessionForm({
   const globalPick = storedPick?.engine ? storedPick : fallbackFamily ? pickFor(fallbackFamily) : null;
   // The global default as it resolves here: the family's client, else the plain resolver's.
   const globalEngine = globalPick?.engine ?? defaultChoice.engine;
-  const familyPick = !engineChoice && !projectEngine && globalPick?.engine ? globalPick : null;
+  const runtimeOf = (id: string) => engineInfo(id)?.runtime;
+  const unavailable = config?.unavailable_clients ?? [];
+  // What a tap on each agent tile selects: the family's preselected client (API first where it can
+  // start, else the device's remembered pick or the console standing in) — and with no family
+  // decision (an older server), its first offered API client, else its first client.
+  const familyDefaults: Record<string, string> = {};
+  for (const group of groupFamilies(engines, unavailable)) {
+    const fam = group.offered.length ? familyOf(group.offered[0]) : undefined;
+    const picked = fam ? pickFor(fam).engine : null;
+    const target =
+      (picked && group.offered.includes(picked) ? picked : null) ??
+      group.offered.find((id) => runtimeOf(id) === "api") ??
+      group.offered[0];
+    if (target) familyDefaults[group.key] = target;
+  }
+  // The tapped tile's family decision, resolved now (not when it was tapped).
+  const tapFamily = familyTap ? roster.families.find((f) => f.family === familyTap) : undefined;
+  const tapPick = !engineChoice && tapFamily ? pickFor(tapFamily) : null;
+  const tapEngine = engineChoice || !familyTap ? "" : (familyDefaults[familyTap] ?? "");
+  const familyPick =
+    !engineChoice && !tapEngine && !projectEngine && globalPick?.engine ? globalPick : null;
   const engine =
-    engineChoice || projectEngine || familyPick?.engine || defaultChoice.engine || engines[0] || "";
+    engineChoice ||
+    tapEngine ||
+    projectEngine ||
+    familyPick?.engine ||
+    defaultChoice.engine ||
+    engines[0] ||
+    "";
+  // The family decision the form is showing, for its remembered / stale hints: a tapped tile's, else
+  // the global default's.
+  const shownPick = tapPick?.engine === engine ? tapPick : familyPick;
   // What the create states about the client it names: the family's automatic default (refused by
   // the server if that default has moved since this screen) or the operator's explicit choice
   // (honoured while it can start). Unsaid when the server gave no families (an older server).
-  const createChoice: "automatic" | "explicit" | undefined =
-    engineChoice || projectEngine
-      ? familyOf(engine)
-        ? "explicit"
-        : undefined
-      : familyPick?.engine === engine
-        ? familyPick.choice
-        : undefined;
+  const createChoice: "automatic" | "explicit" | undefined = !familyOf(engine)
+    ? undefined
+    : engineChoice
+      ? "explicit"
+      : tapEngine
+        ? tapPick?.engine === engine
+          ? tapPick.choice
+          : "explicit"
+        : projectEngine
+          ? "explicit"
+          : familyPick?.engine === engine
+            ? familyPick.choice
+            : undefined;
   // Each family's preselected client carries its mark on its tile (#1728 mockup).
   const familyMarks: Record<string, { word: string; sub?: string }> = {};
   for (const fam of roster.families) {
@@ -325,10 +366,6 @@ export function NewSessionForm({
     rememberFamilyChoice(family, null);
     setRemembered(readFamilyChoices());
   };
-  const runtimeOf = (id: string) => engineInfo(id)?.runtime;
-  const apiEngines = engines.filter((id) => runtimeOf(id) === "api" || runtimeOf(id) === "chat");
-  const consoleEngines = engines.filter((id) => !apiEngines.includes(id));
-  const unavailable = config?.unavailable_clients ?? [];
   const isApi = runtimeOf(engine) === "api";
   const apiSource = engineInfo(engine)?.api?.source ?? "";
   const apiCanBypass = isApi && engineInfo(engine)?.api?.can_bypass === true;
@@ -497,6 +534,7 @@ export function NewSessionForm({
     }
     const b = bindingOf(option.spec);
     setEngineChoice(b.engine);
+    setFamilyTap(null);
     setTilePicked(false); // the specialist chose this agent, not the operator's own pick
     setModelChoice({ engine: b.engine, model: b.model });
     setEffortChoice({ engine: b.engine, model: b.model, effort: b.effort ?? "default" });
@@ -529,6 +567,8 @@ export function NewSessionForm({
   // finishing — or cancelling — brings the form back exactly as it is now.
   const draft: NewSessionDraft = {
     engineChoice,
+    // A tapped agent tile survives the detour as the FAMILY (#2282), resolved again on return.
+    ...(familyTap && !engineChoice ? { familyChoice: familyTap } : {}),
     bypassChoice,
     returnTo: returnToMap ? MAP_PATH : null,
     projectChoice,
@@ -933,8 +973,18 @@ export function NewSessionForm({
               Agent
             </h2>
             <AgentTiles
-              consoleEngines={consoleEngines}
-              apiEngines={apiEngines}
+              engines={engines}
+              familyDefaults={familyDefaults}
+              onFamily={(key) => {
+                // Another agent: its family's preselected client, resolved live — not an explicit
+                // mode pick, so nothing is remembered for it.
+                setEngineChoice("");
+                setFamilyTap(key);
+                setTilePicked(false);
+                dropSpecialist();
+                setModelChoice(null);
+                setApiBypassChoice(null);
+              }}
               unavailable={unavailable}
               value={engine}
               defaultEngine={globalEngine ?? ""}
@@ -944,37 +994,39 @@ export function NewSessionForm({
                 // Choosing the preselected client explicitly: remembered once it starts, and sent
                 // as `explicit`. Model, effort and permission choices stay as they are.
                 setEngineChoice(id);
+                setFamilyTap(null);
                 setTilePicked(true);
               }}
               onChange={(id) => {
                 setEngineChoice(id);
+                setFamilyTap(null);
                 setTilePicked(true);
                 dropSpecialist(); // another agent: a plain session
                 setModelChoice(null); // a model belongs to the engine it was chosen for
                 setApiBypassChoice(null); // a skip choice never survives an agent change (Hermes 5913)
               }}
             />
-            {familyPick?.reason === "remembered_explicit" && (
+            {shownPick?.reason === "remembered_explicit" && (
               <p className={styles.hint} data-testid="new-session-remembered">
-                Remembered: you last chose <b>{engineLabel(familyPick.engine ?? "")}</b> for{" "}
-                {familyPick.family.family} on this device.{" "}
+                Remembered: you last chose <b>{engineLabel(shownPick.engine ?? "")}</b> for{" "}
+                {shownPick.family.family} on this device.{" "}
                 <button
                   type="button"
                   className={styles.linkButton}
                   data-testid="new-session-use-default"
-                  onClick={() => forgetFamilyPick(familyPick.family.family)}
+                  onClick={() => forgetFamilyPick(shownPick.family.family)}
                 >
-                  {engineInfo(familyPick.family.interactive_default.engine ?? "")?.runtime === "api"
+                  {engineInfo(shownPick.family.interactive_default.engine ?? "")?.runtime === "api"
                     ? "Use API"
                     : "Use the default"}
                 </button>
               </p>
             )}
-            {familyPick?.stale && (
+            {shownPick?.stale && (
               <p className={styles.hint} role="status" data-testid="new-session-remembered-stale">
-                Your last choice for {familyPick.family.family},{" "}
-                <b>{engineLabel(familyPick.stale.engine)}</b>, isn’t used: {familyPick.stale.why}.
-                {familyPick.engine ? ` Starting ${engineLabel(familyPick.engine)} instead.` : ""}
+                Your last choice for {shownPick.family.family},{" "}
+                <b>{engineLabel(shownPick.stale.engine)}</b>, isn’t used: {shownPick.stale.why}.
+                {shownPick.engine ? ` Starting ${engineLabel(shownPick.engine)} instead.` : ""}
               </p>
             )}
           </section>

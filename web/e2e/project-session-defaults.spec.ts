@@ -126,7 +126,9 @@ async function mockApp(
   return state;
 }
 
-const tile = (page: Page, engine: string) => page.locator(`label[data-engine="${engine}"]`);
+/** The agent tile holding `engine` — one tile per agent; the `project` badge is on it. */
+const tile = (page: Page, engine: string) =>
+  page.locator(`label[data-clients~="${engine}"]:has(> input[name="new-session-family"])`);
 const agentChecked = (page: Page, engine: string) => agentPicker(page).radio(engine);
 const chooseProject = async (page: Page, id: string) => {
   await projectPicker(page).selectOption(id);

@@ -71,7 +71,7 @@ test("pick an agent tile and a project, start — the project's folder, no folde
   const agent = agentPicker(page);
   const project = projectPicker(page);
   await expect(agent.radio("claude")).toBeChecked(); // the stored default…
-  await expect(page.locator('label:has(> input[value="claude"])')).toContainText("default");
+  await expect(page.locator('label:has(> input[name="new-session-family"][value="claude"])')).toContainText("default");
   // The old boxes are gone; the unavailable client is a disabled tile with its reason.
   await expect(page.getByTestId("new-session-api-about")).toHaveCount(0);
   await expect(agent.radio("unavailable:claude-api")).toBeDisabled();
@@ -108,7 +108,7 @@ test("every tile, row and the Start button are ≥44px tall (#1436, design §8)"
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
   const boxes = await page
     .locator(
-      'label:has(> input[name="new-session-agent"]), label:has(> input[name="new-session-project"])',
+      'label:has(> input[name="new-session-family"]), label:has(> input[name="new-session-agent"]), label:has(> input[name="new-session-project"])',
     )
     .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
   expect(boxes.length).toBeGreaterThan(6);
@@ -133,7 +133,12 @@ test("arrow keys move the agent choice; Ctrl+Enter starts (#1436)", async ({ pag
   await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
   await expect(agent.radio("claude")).toBeChecked();
-  await agent.radio("claude").focus();
+  // The arrows move between agent tiles; the tile selects that agent's client.
+  await page.locator('input[name="new-session-family"][value="claude"]').focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(agent.radio("codex-api")).toBeChecked(); // API first where the agent has one
+  // …and within the mode row, the arrows move to its terminal.
+  await agent.radio("codex-api").focus();
   await page.keyboard.press("ArrowRight");
   await expect(agent.radio("codex")).toBeChecked();
   await page.keyboard.press("Control+Enter");

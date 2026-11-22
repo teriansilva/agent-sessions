@@ -14,7 +14,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { NEW_SESSION_PATH } from "../src/lib/routes";
-import { agentPicker, projectPicker } from "./newSessionForm";
+import { projectPicker } from "./newSessionForm";
 import { storeMotionChoice } from "./nightjarShell";
 import { mockRoster } from "./roster";
 import { TOUCH_FLOOR } from "./touchTarget";
@@ -92,7 +92,8 @@ const INSET = { style: "solid", width: "2px", offset: "-3px", isAccentText: true
 test("every control on the form is a 44px target (design §8)", async ({ page }) => {
   await open(page);
   const targets: [string, Locator][] = [
-    ["agent tile", page.locator('label:has(> input[name="new-session-agent"])').first()],
+    ["agent tile", page.locator('label:has(> input[name="new-session-family"])').first()],
+    ["agent mode", page.locator('label:has(> input[name="new-session-agent"])').first()],
     ["project row", page.locator('label:has(> input[name="new-session-project"])').first()],
     ["model select", page.getByTestId("new-session-model")],
     ["skip permission row", page.locator("label", { has: page.getByRole("checkbox", { name: /skip permission/i }) })],
@@ -125,11 +126,11 @@ for (const width of [320, 390, 800, 1280]) {
 
 test("the focus ring is drawn inset, in --accent-text (design §6)", async ({ page }) => {
   await open(page);
-  const agent = agentPicker(page);
-  await agent.radio("claude").focus();
+  const family = (v: string) => page.locator(`input[name="new-session-family"][value="${v}"]`);
+  await family("claude").focus();
   await page.keyboard.press("ArrowRight"); // keyboard focus: :focus-visible
-  await expect(agent.radio("codex")).toBeFocused();
-  expect(await ring(page.locator('label:has(> input[value="codex"])'))).toEqual(INSET);
+  await expect(family("codex")).toBeFocused();
+  expect(await ring(page.locator('label:has(> input[name="new-session-family"][value="codex"])'))).toEqual(INSET);
 
   const project = projectPicker(page);
   await project.radio("p-1").focus();
@@ -152,7 +153,7 @@ test("the chrome is the v2 primitives: display heading, plates, a clipped list f
   const look = await page.evaluate(() => {
     const heading = document.querySelector("h1")!;
     const start = [...document.querySelectorAll("button")].find((b) => /start session/i.test(b.textContent ?? ""))!;
-    const tile = document.querySelector('label:has(> input[name="new-session-agent"])')!;
+    const tile = document.querySelector('label:has(> input[name="new-session-family"])')!;
     const list = document.querySelector('[role="radiogroup"][aria-label="Project"]')!.parentElement!;
     const before = (el: Element) => getComputedStyle(el, "::before").clipPath;
     return {
@@ -177,17 +178,24 @@ test("the chrome is the v2 primitives: display heading, plates, a clipped list f
   expect(look.radii.every((r) => r === "0px")).toBe(true);
 });
 
+// The lock-on is a one-shot of a few frames, over long before a second action could read it on a
+// loaded runner (#2282: CI red, local green). So these tap the agent TILE itself and read which
+// animation the checked tile is given — the rule, not the frames it happens to be on.
+const codexTile = (page: Page) =>
+  page.locator('label:has(> input[name="new-session-family"][value="codex"])');
+const lockOn = (page: Page) => codexTile(page).evaluate((el) => getComputedStyle(el).animationName);
+
 test("choosing a tile locks on in Full (design §8)", async ({ page }) => {
   await open(page, "full");
-  await agentPicker(page).selectOption("codex");
-  const tile = page.locator('label:has(> input[value="codex"])');
-  const names = await tile.evaluate((el) => el.getAnimations().map((a) => (a as CSSAnimation).animationName));
-  expect(names).toContain("nj-glitch-step");
+  await codexTile(page).click();
+  await expect(page.locator('input[name="new-session-family"][value="codex"]')).toBeChecked();
+  expect(await lockOn(page)).toBe("nj-glitch-step");
 });
 
 test("in Off, choosing a tile runs no animation", async ({ page }) => {
   await open(page, "off");
-  await agentPicker(page).selectOption("codex");
-  const tile = page.locator('label:has(> input[value="codex"])');
-  expect(await tile.evaluate((el) => el.getAnimations().length)).toBe(0);
+  await codexTile(page).click();
+  await expect(page.locator('input[name="new-session-family"][value="codex"]')).toBeChecked();
+  expect(await lockOn(page)).toBe("none");
+  expect(await codexTile(page).evaluate((el) => el.getAnimations().length)).toBe(0);
 });

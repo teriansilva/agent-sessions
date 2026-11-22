@@ -1518,6 +1518,23 @@ PENDING_START_TTL = 600.0
 #: it is presumed gone, and the view offers Start again as before.
 START_ADMISSION_TIMEOUT = 120.0
 
+#: A send's tries at the journal revision before it is refused "kept changing" (#1995). While a turn
+#: streams, every observation moves the revision between the read and the claim, and back-to-back
+#: tries lose that race every time; a short wait between them lets one land between two writes.
+SUBMIT_ATTEMPTS = 8
+#: The wait before each retry (never before the first try): doubling from the first value, held
+#: at the last. 50 + 100 + 200 + 4 * 400 ms = 1.95 s at most before the refusal.
+SUBMIT_RETRY_WAITS = (0.05, 0.1, 0.2, 0.4)
+
+
+def _submit_retry_wait(attempt: int) -> float:
+    """The wait before try ``attempt`` (1-based retries; try 0 never waits)."""
+    return SUBMIT_RETRY_WAITS[min(attempt - 1, len(SUBMIT_RETRY_WAITS) - 1)]
+
+
+async def _submit_pause(attempt: int) -> None:
+    await asyncio.sleep(_submit_retry_wait(attempt))
+
 
 # The skip-start state machine (#1339; operator decision on #1341 after review 5926). ONE field,
 # `record["start"] = {"state", "gen", "expires_at"}`, only on `bypass` creations; every transition
@@ -4179,7 +4196,9 @@ async def submit(
     # An explicit expectation still holds when the only records since are a SUCCESSOR's startup:
     # this send relaunched an idled-out worker, and a fresh generation journals before any claim.
     prior = await asyncio.to_thread(_live_worker, session_id)
-    for _ in range(3):
+    for attempt in range(SUBMIT_ATTEMPTS):
+        if attempt:
+            await _submit_pause(attempt)
         journal = await asyncio.to_thread(_journal, prov, session_id)
         receipt = _replay(journal, turn_id, immutable)
         if receipt is not None and journal.operations[turn_id].queued:

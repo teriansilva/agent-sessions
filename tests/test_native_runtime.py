@@ -1011,6 +1011,156 @@ async def test_a_turn_sent_at_the_seen_revision_survives_a_background_report(
     assert reported and reported[0] > seen and turn["reply"] == "echo:two"
 
 
+def test_a_send_waits_longer_between_each_revision_retry_and_never_before_its_first_try():
+    """#1995: the waits double from the first and hold at the last; the whole budget is bounded."""
+    waits = [native_runtime._submit_retry_wait(a) for a in range(1, native_runtime.SUBMIT_ATTEMPTS)]
+    assert native_runtime.SUBMIT_ATTEMPTS == 8
+    assert waits == [0.05, 0.1, 0.2, 0.4, 0.4, 0.4, 0.4]
+    assert sum(waits) == pytest.approx(1.95)
+
+
+_ACTIVITY = {"state": "activity", "active": True}
+
+
+async def _moving_revision(project, monkeypatch, moves: int, report: dict = _ACTIVITY, claim=None):
+    """A live codex session whose journal moves before each of the first ``moves`` claims, the
+    way a streaming turn's observations do between the send's read and its claim (#1995).
+    ``claim`` replaces the real claim (it gets the real one and the call's arguments)."""
+    key = await _codex(project)
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    await settle(key, first)
+    gen = native_runtime._generation(key.partition(":")[2])
+    binding = native_ipc.Binding(
+        key, gen.worker_id, gen.config["connection_id"], gen.config["adapter"]
+    )
+    root = native_runtime._journal_root(native_runtime._api_provider(ENGINES["codex"]))
+    effect, claims, pauses = native_runtime._effect, [], []
+
+    async def move_then_claim(*args, **kwargs):
+        if args[2] == "submit":
+            claims.append(kwargs)
+            if len(claims) <= moves:
+                native_journal.append_events(
+                    root, binding, [{"kind": "background", "data": report}]
+                )
+            if claim is not None:
+                return await claim(effect, *args, **kwargs)
+        return await effect(*args, **kwargs)
+
+    async def pause(attempt):
+        pauses.append(attempt)
+
+    monkeypatch.setattr(native_runtime, "_effect", move_then_claim)
+    # Replace every wait, so the tests never sleep for real. Unconditional: a renamed or removed
+    # hook must fail the harness instead of silently exercising the loop with real sleeps.
+    monkeypatch.setattr(native_runtime, "_submit_pause", pause)
+    seen = (await runtime.snapshot(key))["revision"]
+    return key, claims, pauses, seen
+
+
+@pytest.mark.anyio
+async def test_a_send_during_a_streaming_turn_lands_after_the_revision_settles(
+    host, project, monkeypatch
+):
+    """#1995: three back-to-back tries all lost to streamed output and the operator saw "the
+    conversation kept changing". The revision moves under five claims; the sixth lands, once."""
+    key, claims, pauses, _ = await _moving_revision(project, monkeypatch, moves=5)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two"
+    assert len(claims) == 6 and pauses == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.anyio
+async def test_a_send_whose_revision_never_settles_is_still_refused_with_retry(
+    host, project, monkeypatch
+):
+    """#1995: the retry is bounded — every try loses, and the refusal is the same one as before,
+    after ``SUBMIT_ATTEMPTS`` claims and a wait before each retry, none before the first."""
+    key, claims, pauses, _ = await _moving_revision(project, monkeypatch, moves=10**6)
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.submit_turn(key, operation_id=ident(), text="two")
+    assert refused.value.status == 409
+    assert refused.value.detail == "the conversation kept changing; retry"
+    assert refused.value.remedy == "retry"
+    assert len(claims) == native_runtime.SUBMIT_ATTEMPTS
+    assert pauses == list(range(1, native_runtime.SUBMIT_ATTEMPTS))
+
+
+@pytest.mark.anyio
+async def test_a_send_that_lands_on_its_first_try_does_not_wait(host, project, monkeypatch):
+    key, claims, pauses, _ = await _moving_revision(project, monkeypatch, moves=0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    await settle(key, nxt)
+    assert len(claims) == 1 and pauses == []
+
+
+@pytest.mark.anyio
+async def test_a_send_at_the_seen_revision_is_refused_at_once_by_real_activity(
+    host, project, monkeypatch
+):
+    """#1995 keeps the explicit rule: a turn the agent started for itself after the operator's
+    read is activity they have not seen. Refused on the first claim, with no wait and no retry."""
+    started = {"state": "running", "active": True, "background_turn": str(uuid.uuid4())}
+    key, claims, pauses, seen = await _moving_revision(
+        project, monkeypatch, moves=1, report=started
+    )
+    with pytest.raises(runtime.StructuredError) as stale:
+        await runtime.submit_turn(key, operation_id=ident(), text="two", expected_revision=seen)
+    assert stale.value.status == 409 and "revision changed" in stale.value.detail
+    assert stale.value.reason == native_ipc.REVISION_MOVED
+    assert len(claims) == 1 and pauses == []
+
+
+@pytest.mark.anyio
+async def test_a_send_at_the_seen_revision_retries_past_status_reports(host, project, monkeypatch):
+    """#1995: status reports with nothing to review keep retrying, now with a wait between."""
+    key, claims, pauses, seen = await _moving_revision(project, monkeypatch, moves=3)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two", expected_revision=seen)
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two"
+    assert len(claims) == 4 and pauses == [1, 2, 3]
+
+
+@pytest.mark.anyio
+async def test_a_send_that_landed_before_its_refusal_is_replayed_not_sent_again(
+    host, project, monkeypatch
+):
+    """#1995: every retry re-reads the journal first. A claim that landed although its answer
+    came back "revision changed" is returned from the journal: one operation, one claim."""
+
+    async def landed_then_refused(effect, *args, **kwargs):
+        await effect(*args, **kwargs)
+        raise native_runtime.NativeError(409, native_journal.REVISION_CHANGED)
+
+    key, claims, pauses, _ = await _moving_revision(
+        project, monkeypatch, moves=0, claim=landed_then_refused
+    )
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two"
+    assert len(claims) == 1 and pauses == [1]
+    snap = await runtime.snapshot(key)
+    assert [t["turn_id"] for t in snap["turns"]].count(nxt) == 1
+
+
+@pytest.mark.anyio
+async def test_a_send_refused_for_another_reason_is_not_retried(host, project, monkeypatch):
+    async def refused(effect, *args, **kwargs):
+        raise native_runtime.NativeError(409, "the native worker is no longer running")
+
+    key, claims, pauses, _ = await _moving_revision(project, monkeypatch, moves=0, claim=refused)
+    with pytest.raises(runtime.StructuredError) as other:
+        await runtime.submit_turn(key, operation_id=ident(), text="two")
+    assert other.value.detail == "the native worker is no longer running"
+    assert len(claims) == 1 and pauses == []
+
+
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host, source):
     """#1406: the agent's own id is the app session key, on every adapter, beside the sanitized

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -11,6 +12,7 @@ import { engineColor, engineInfo, engineLabel } from "../../app/engineRoster";
 import { shortCwd } from "../../lib/format";
 import type { ProjectPickerEntity } from "../../lib/projectPickerStore";
 import type { UnavailableClient } from "../../types/api";
+import { familyKeyOf, groupFamilies, type AgentFamily } from "./agentFamilies";
 import styles from "./NewSessionControls.module.css";
 
 /** The New session form's pickers (#1436): the agent tiles and the project list. Each is a group of
@@ -19,28 +21,60 @@ import styles from "./NewSessionControls.module.css";
  *  the caller's business: these never name one. There is no folder picker here (#1458): the project
  *  owns the launch folder, and the start summary names it. */
 
-/** What an agent tile says under its name: an API client names the CLI it drives (what the old
- *  "API client · ready" note explained in a paragraph); a chat agent has no tools. */
-function agentSubtitle(id: string): string {
+/** An agent tile's name: the agent itself (its console client's label) when the roster knows it,
+ *  else the one client it has. */
+function familyLabel(fam: AgentFamily): string {
+  if (engineInfo(fam.key)) return engineLabel(fam.key);
+  const first = fam.offered[0];
+  return first ? engineLabel(first) : (fam.unavailable[0]?.label ?? fam.key);
+}
+
+/** How a client runs, as its segment says it: `API`, `Chat` or `Terminal`. A family with more than
+ *  one API client names each by its own label. */
+function modeLabel(id: string, fam: AgentFamily): string {
+  const runtime = engineInfo(id)?.runtime;
+  if (runtime === "chat") return "Chat";
+  if (runtime === "api") {
+    const apis = [...fam.offered, ...fam.unavailable.map((c) => c.id)].filter(
+      (c) => engineInfo(c)?.runtime === "api",
+    );
+    return apis.length > 1 ? engineLabel(id) : "API";
+  }
+  return "Terminal";
+}
+
+/** What a mode segment says under its name. */
+function modeSub(id: string): string {
   const info = engineInfo(id);
-  if (info?.runtime === "chat") return "chat · no tools";
-  const source = info?.api?.source;
-  return source ? `via ${engineLabel(source)} CLI` : "";
+  if (info?.runtime === "chat") return "no tools";
+  if (info?.runtime === "api") return "structured";
+  return "full TUI";
+}
+
+/** What an agent tile says under its name: the ways it can run here. */
+function familySub(fam: AgentFamily): string {
+  if (fam.offered.length === 1 && engineInfo(fam.offered[0])?.runtime === "chat")
+    return "chat · no tools";
+  const modes = [...fam.offered, ...fam.unavailable.map((c) => c.id)]
+    .sort((a, b) => Number(engineInfo(b)?.runtime === "api") - Number(engineInfo(a)?.runtime === "api"))
+    .map((id) => modeLabel(id, fam));
+  return [...new Set(modes)].join(" · ");
 }
 
 export function AgentTiles({
-  consoleEngines,
-  apiEngines,
+  engines,
   unavailable,
   value,
   defaultEngine,
   projectEngine = "",
   marks = {},
+  familyDefaults,
+  onFamily,
   onChange,
   onReaffirm,
 }: {
-  consoleEngines: string[];
-  apiEngines: string[];
+  /** The clients that can start a session here, in roster order. */
+  engines: string[];
   unavailable: UnavailableClient[];
   value: string;
   defaultEngine: string;
@@ -48,25 +82,78 @@ export function AgentTiles({
   projectEngine?: string;
   /** Each family's preselected client (#1728): `default` (its API client is ready), `default here`
    *  (the console stands in for an unavailable API client) or `remembered` (this device's own
-   *  pick), with a line saying why. The server's family decision, never derived here. */
+   *  pick), with a line saying why. The server's family decision, never derived here. Shown on the
+   *  client's mode segment. */
   marks?: Record<string, { word: string; sub?: string }>;
+  /** Family key → the client a tap on its tile selects (the caller's family decision: API first
+   *  where it can start). A family missing here selects its first offered client. */
+  familyDefaults: Record<string, string>;
+  /** A tap on another agent's tile, by family key: its preselected client is the caller's to
+   *  resolve (live) — not an explicit mode pick. */
+  onFamily: (familyKey: string) => void;
+  /** A mode segment picked: an explicit choice of that client. */
   onChange: (id: string) => void;
-  /** A tap on the tile that is ALREADY selected (#1728): the operator choosing the preselected
-   *  client explicitly — e.g. Terminal while it stands in for an unready API client — so the pick
-   *  can be remembered. Nothing else about the form changes (a radio fires no change for it). */
+  /** A tap on the mode segment that is ALREADY selected (#1728): the operator choosing the
+   *  preselected client explicitly — e.g. Terminal while it stands in for an unready API client —
+   *  so the pick can be remembered. Nothing else about the form changes (a radio fires no change). */
   onReaffirm?: (id: string) => void;
 }) {
-  const tile = (id: string) => {
-    const sub = agentSubtitle(id);
-    const mark = id === projectEngine ? undefined : marks[id];
+  const modeHead = useId();
+  const families = groupFamilies(engines, unavailable);
+  const selected = families.find((f) => f.offered.includes(value));
+  const projectFamily = projectEngine ? familyKeyOf(projectEngine) : "";
+  const defaultFamily = defaultEngine ? familyKeyOf(defaultEngine) : "";
+
+  const tile = (fam: AgentFamily) => {
+    const target = familyDefaults[fam.key] || fam.offered[0];
+    const down = !target;
+    const colorId = engineInfo(fam.key) ? fam.key : (fam.offered[0] ?? fam.key);
     return (
       <label
-        key={id}
+        key={fam.key}
         className={styles.tile}
-        data-engine={id}
+        data-engine={fam.key}
+        data-clients={[...fam.offered, ...fam.unavailable.map((c) => c.id)].join(" ")}
+        data-testid={down ? "new-session-unavailable" : undefined}
         // The tile's rail is the agent's identity colour (NIGHTJAR, #1531) — never a state.
-        style={{ "--eng": engineColor(id) } as CSSProperties}
+        style={down ? undefined : ({ "--eng": engineColor(colorId) } as CSSProperties)}
       >
+        <input
+          type="radio"
+          name="new-session-family"
+          value={down ? `unavailable:${fam.key}` : fam.key}
+          checked={selected?.key === fam.key}
+          disabled={down}
+          onChange={() => target && onFamily(fam.key)}
+        />
+        <span className={styles.tileName}>
+          {down && <span className={styles.ledDown} aria-hidden="true" />}
+          {familyLabel(fam)}
+          {!down &&
+            (fam.key === projectFamily ? (
+              <span className={styles.badge}>project</span>
+            ) : (
+              fam.key === defaultFamily && !projectEngine && <span className={styles.badge}>default</span>
+            ))}
+        </span>
+        {down ? (
+          // A client that cannot start is listed, disabled, with its reason ON the tile — its
+          // absence is explained, never silent (#1311), without a separate box.
+          <span className={styles.tileSub}>
+            <span className="sr-only">unavailable: </span>
+            {fam.unavailable.map((c) => c.reason).join("; ")}
+          </span>
+        ) : (
+          <span className={styles.tileSub}>{familySub(fam)}</span>
+        )}
+      </label>
+    );
+  };
+
+  const segment = (id: string, fam: AgentFamily) => {
+    const mark = id === projectEngine ? undefined : marks[id];
+    return (
+      <label key={id} className={styles.mode} data-mode={engineInfo(id)?.runtime ?? ""}>
         <input
           type="radio"
           name="new-session-agent"
@@ -77,48 +164,48 @@ export function AgentTiles({
             if (value === id) onReaffirm?.(id);
           }}
         />
-        <span className={styles.tileName}>
-          {engineLabel(id)}
-          {id === projectEngine ? (
-            <span className={styles.badge}>project</span>
-          ) : mark ? (
+        <span className={styles.modeName}>
+          {modeLabel(id, fam)}
+          {mark && (
             <span className={styles.badge} data-testid="new-session-family-mark">
               {mark.word}
             </span>
-          ) : (
-            id === defaultEngine && !projectEngine && <span className={styles.badge}>default</span>
           )}
         </span>
-        {sub && <span className={styles.tileSub}>{sub}</span>}
-        {mark?.sub && <span className={styles.tileSub}>{mark.sub}</span>}
+        <span className={styles.tileSub}>{modeSub(id)}</span>
       </label>
     );
   };
+
+  // API first: the mode row lists a family's API client(s) before its terminal.
+  const apiFirst = (ids: string[]) =>
+    [...ids].sort(
+      (a, b) => Number(engineInfo(b)?.runtime === "api") - Number(engineInfo(a)?.runtime === "api"),
+    );
+  const selectedMark = selected ? marks[value] : undefined;
+
   return (
-    <div role="radiogroup" aria-label="Agent" className={styles.group}>
-      {consoleEngines.length > 0 && (
-        <>
-          <span className={styles.groupHead}>Terminal</span>
-          <div className={styles.tiles}>{consoleEngines.map(tile)}</div>
-        </>
-      )}
-      {(apiEngines.length > 0 || unavailable.length > 0) && (
-        <>
-          <span className={styles.groupHead}>API — structured, no terminal</span>
-          <div className={styles.tiles}>
-            {apiEngines.map(tile)}
-            {/* A client that cannot start is listed, disabled, with its reason ON the tile — its
-                absence is explained, never silent (#1311), without a separate box. */}
-            {unavailable.map((c) => (
+    <div className={styles.group}>
+      <div role="radiogroup" aria-label="Agent" className={styles.tiles}>
+        {families.map(tile)}
+      </div>
+      {selected && (
+        <div className={styles.modeRow} data-testid="new-session-mode">
+          <span className={styles.groupHead} id={modeHead}>
+            Run {familyLabel(selected)} as
+          </span>
+          <div role="radiogroup" aria-labelledby={modeHead} className={styles.modes}>
+            {apiFirst(selected.offered).map((id) => segment(id, selected))}
+            {selected.unavailable.map((c) => (
               <label
                 key={`unavailable:${c.id}`}
-                className={styles.tile}
+                className={styles.mode}
                 data-testid="new-session-unavailable"
               >
                 <input type="radio" name="new-session-agent" value={`unavailable:${c.id}`} disabled />
-                <span className={styles.tileName}>
+                <span className={styles.modeName}>
                   <span className={styles.ledDown} aria-hidden="true" />
-                  {c.label}
+                  {modeLabel(c.id, selected)}
                 </span>
                 <span className={styles.tileSub}>
                   <span className="sr-only">unavailable: </span>
@@ -127,7 +214,10 @@ export function AgentTiles({
               </label>
             ))}
           </div>
-        </>
+          {value !== projectEngine && selectedMark?.sub && (
+            <span className={styles.tileSub}>{selectedMark.sub}</span>
+          )}
+        </div>
       )}
     </div>
   );

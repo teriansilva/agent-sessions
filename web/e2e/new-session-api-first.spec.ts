@@ -106,7 +106,12 @@ async function mockBackend(
   return creates;
 }
 
-const tile = (page: Page, id: string) => page.locator(`label[data-engine="${id}"]`);
+/** A client's mode segment (API / Terminal) under the selected agent — where its family mark is. */
+const tile = (page: Page, id: string) =>
+  page.locator(`label:has(> input[name="new-session-agent"][value="${id}"])`);
+/** An agent's tile — one per family. */
+const agentTile = (page: Page, family: string) =>
+  page.locator(`label:has(> input[name="new-session-family"][value="${family}"])`);
 
 test("a ready API client is preselected and marked default; Terminal is one tap away (#1728)", async ({ page }) => {
   await mockBackend(page);
@@ -115,16 +120,21 @@ test("a ready API client is preselected and marked default; Terminal is one tap 
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
   await expect(agent.radio("claude-api")).toBeChecked();
   await expect(tile(page, "claude-api").getByTestId("new-session-family-mark")).toHaveText("default");
-  // Another family whose API client cannot start: its terminal is the default THERE, said why.
-  await expect(tile(page, "codex")).toContainText("default here");
-  await expect(tile(page, "codex")).toContainText("used because the API client is unavailable");
-  await expect(page.getByTestId("new-session-unavailable").filter({ hasText: "Codex — API" })).toContainText(
-    "0.164 not admitted",
-  );
-  // One tap to the terminal, and every tile is a 44 px target.
-  for (const id of ["claude", "claude-api"]) {
-    expect((await tile(page, id).boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  // One tile per agent: both claude clients are its modes, every tile and mode a 44 px target.
+  for (const l of [agentTile(page, "claude"), tile(page, "claude"), tile(page, "claude-api")]) {
+    expect((await l.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
+  // Another family whose API client cannot start: a tap on its tile selects its terminal, the
+  // default THERE, said why; its API client is listed, disabled, with the reason.
+  await agentTile(page, "codex").click();
+  await expect(agent.radio("codex")).toBeChecked();
+  await expect(tile(page, "codex")).toContainText("default here");
+  await expect(page.getByTestId("new-session-mode")).toContainText("used because the API client is unavailable");
+  await expect(agent.radio("unavailable:codex-api")).toBeDisabled();
+  await expect(page.getByTestId("new-session-unavailable")).toContainText("0.164 not admitted");
+  // Back to claude: its tile selects the API default again; the terminal is one tap away.
+  await agentTile(page, "claude").click();
+  await expect(agent.radio("claude-api")).toBeChecked();
   await agent.selectOption("claude");
   await expect(agent.radio("claude")).toBeChecked();
 });
