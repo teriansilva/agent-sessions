@@ -5,9 +5,13 @@ own lists (`automations.ACTION_KINDS`, `WEBHOOK_ACTIONS`) and the runner its tab
 (`automation_runner._ACTIONS`); they are the authority at save and at run, exactly as before. The
 registry must AGREE with them, and `tests/test_actions.py` fails on any difference:
 
-* `kinds()` == `automations.ACTION_KINDS` == `automation_runner._ACTIONS`, in order;
-* `webhook_kinds()` (the actions whose manifest lists the ``webhook`` trigger) ==
-  `automations.WEBHOOK_ACTIONS`.
+* `builtin_kinds()` + ``("plugin",)`` == `automations.ACTION_KINDS` ==
+  `automation_runner._ACTIONS`, in order;
+* `plugin_ids()` == `plugins.PLUGINS`: the plugin actions (#2248 P2) are ONE stored kind,
+  ``plugin``, and the plugin table is the authority for which exist;
+* the built-in actions whose manifest lists the ``webhook`` trigger, plus ``plugin``, ==
+  `automations.WEBHOOK_ACTIONS`; a plugin's manifest lists ``webhook`` exactly when its module
+  says a delivery may start it.
 
 Choosing a parity test over making those lists views of this one keeps the save and run paths
 byte-for-byte what they were: a manifest that failed to load could never take automations down.
@@ -70,7 +74,31 @@ def get(action_id: str) -> Action | None:
 
 
 def kinds() -> tuple[str, ...]:
+    """Every action id: the five built-in kinds, then the plugin ids."""
     return tuple(a.manifest.id for a in actions())
+
+
+def builtin_kinds() -> tuple[str, ...]:
+    from .executors import BUILTIN
+
+    return tuple(k for k in kinds() if k in BUILTIN)
+
+
+def plugin_ids() -> tuple[str, ...]:
+    from .executors import BUILTIN
+
+    return tuple(k for k in kinds() if k not in BUILTIN)
+
+
+def action_id(action: object) -> str | None:
+    """The gallery id of a stored action: its kind, or its plugin id for a plugin action."""
+    if not isinstance(action, dict):
+        return None
+    kind = action.get("kind")
+    if kind == "plugin":
+        pid = action.get("plugin")
+        return pid if isinstance(pid, str) else None
+    return kind if isinstance(kind, str) else None
 
 
 def webhook_kinds() -> tuple[str, ...]:
@@ -97,6 +125,30 @@ def _api_agent() -> tuple[bool, str]:
     return False, "needs an API agent that can start unattended (Settings → Agents)"
 
 
+def _messenger() -> tuple[bool, str]:
+    """Whether some messenger connector can send now: switched on, tested, with recipients bound
+    to its bot (`connectors.store.sendable`, the same test the send's token fetch applies)."""
+    from ..connectors import store
+
+    try:
+        doc = store.read()
+    except Exception:  # noqa: BLE001 — unreadable settings: not set up
+        return False, "the connector settings could not be read"
+    if any(store.MESSENGER_KEYS <= set(i) and store.sendable(i) for i in doc["instances"]):
+        return True, "a messenger can send"
+    return False, "needs Telegram, Matrix or mail set up to send"
+
+
+def _artifacts() -> tuple[bool, str]:
+    from .. import artifact_store
+
+    try:
+        on = artifact_store.enabled()
+    except Exception:  # noqa: BLE001
+        return False, "the artifact settings could not be read"
+    return (True, "artifacts are on") if on else (False, "needs artifacts switched on")
+
+
 def _forge() -> tuple[bool, str]:
     from .. import prefs
 
@@ -113,19 +165,33 @@ def _forge() -> tuple[bool, str]:
 
 #: The requirements this read can check now. The rest depend on a choice made in the wizard (which
 #: project, which session, which reviewer) and are checked there and at save.
-_CHECKS = {"api_agent": _api_agent, "forge": _forge}
+_CHECKS = {
+    "api_agent": _api_agent,
+    "forge": _forge,
+    "messenger": _messenger,
+    "artifacts": _artifacts,
+}
+
+#: Where a requirement that does not hold is set up: a Settings section id (`settingsTabs.ts`).
+SETUP = {
+    "api_agent": "agents",
+    "messenger": "ai-hq",
+    "artifacts": "artifacts",
+}
 
 
 def requirement(rid: str) -> dict:
     words = mf.REQUIREMENTS[rid]
     check = _CHECKS.get(rid)
+    setup = SETUP.get(rid)
+    extra = {"setup": setup} if setup else {}
     if check is None:
-        return {"id": rid, "words": words, "ok": None, "detail": ""}
+        return {"id": rid, "words": words, "ok": None, "detail": "", **extra}
     try:
         ok, detail = check()
     except Exception:  # noqa: BLE001 — a check that fails says so, never "ready"
         ok, detail = False, "could not be checked right now"
-    return {"id": rid, "words": words, "ok": ok, "detail": detail}
+    return {"id": rid, "words": words, "ok": ok, "detail": detail, **extra}
 
 
 def _used_by() -> dict[str, int] | None:
@@ -139,8 +205,8 @@ def _used_by() -> dict[str, int] | None:
         return None
     out: dict[str, int] = {}
     for r in rows:
-        kind = ((r.get("config") or {}).get("action") or {}).get("kind")
-        if isinstance(kind, str):
+        kind = action_id((r.get("config") or {}).get("action"))
+        if kind is not None:
             out[kind] = out.get(kind, 0) + 1
     return out
 

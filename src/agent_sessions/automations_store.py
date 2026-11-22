@@ -1403,7 +1403,7 @@ def record_delivery(
 
 #: The actions a generic webhook delivery starts through `begin_delivery` (#2221 P2), and the
 #: message to HQ (#2221).
-DELIVERY_ACTIONS = ("start_session", "send_to_session", "tell_hq")
+DELIVERY_ACTIONS = ("start_session", "send_to_session", "tell_hq", "plugin")
 
 
 def begin_delivery(

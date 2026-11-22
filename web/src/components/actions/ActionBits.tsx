@@ -1,9 +1,11 @@
 /** Library → Actions (#2248 P1): an action's icon, its effect tag, its gallery card and the wizard's
  *  compact picker. Every fact comes from `GET /api/actions` (the manifest); nothing here runs. */
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Crosshair,
   MessageSquare,
+  Send,
   RadioTower,
   Repeat,
   Search,
@@ -17,12 +19,14 @@ import {
   categoryChips,
   categoryLabel,
   effectOf,
+  needsSetup,
   requirementLine,
   usedByWords,
   visibleActions,
   type CategoryFilter,
 } from "../../lib/actions";
 import type { ActionEffect, ActionEntry, ActionGallery } from "../../types/actions";
+import { settingsPath, type SettingsSectionId } from "../../routes/settingsTabs";
 import lib from "../library/library.module.css";
 import styles from "./actions.module.css";
 
@@ -33,6 +37,7 @@ const ICON: Record<string, LucideIcon> = {
   send_to_session: MessageSquare,
   forge_review_loop: Repeat,
   tell_hq: RadioTower,
+  send_message: Send,
 };
 
 export function ActionIcon({ id }: { id: string }) {
@@ -146,6 +151,43 @@ export function ActionPicker({
       <div className={styles.rows} role="group" aria-label="What it does" data-testid={testId}>
         {rows.map((a) => {
           const req = requirementLine(a);
+          const setup = value === a.id ? null : needsSetup(a);
+          if (setup)
+            // The needs-setup state (#2248 P2): a requirement checked now does not hold, so the
+            // action can't be picked; the row says why and links to where it is set up.
+            return (
+              <div
+                key={a.id}
+                className={`${styles.row} ${styles.rowBlocked}`}
+                aria-disabled="true"
+                data-value={a.id}
+                data-testid={`${testId}-${a.id}`}
+                data-state="needs-setup"
+              >
+                <ActionIcon id={a.id} />
+                <span className={styles.rowText}>
+                  <span className={styles.rowName}>{a.label}</span>
+                  <span className={styles.rowNeeds} data-testid="action-needs">
+                    {setup.words}
+                  </span>
+                </span>
+                <span className={styles.rowRight}>
+                  {setup.setup ? (
+                    <Link
+                      className={styles.setup}
+                      to={settingsPath(setup.setup as SettingsSectionId)}
+                      data-testid="action-setup"
+                      aria-label={`Set up ${a.label}`}
+                    >
+                      <span className={styles.setupLed} aria-hidden="true" />
+                      Set up
+                    </Link>
+                  ) : (
+                    <EffectTag gallery={gallery} effect={a.effect} />
+                  )}
+                </span>
+              </div>
+            );
           return (
             <button
               key={a.id}

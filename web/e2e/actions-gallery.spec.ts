@@ -13,7 +13,8 @@ import { ACTIONS_PATH, AUTOMATIONS_PATH, AUTOMATION_NEW_PATH, automationEditPath
 import { ACTIONS_API } from "../src/lib/apiPaths";
 import type { ActionGallery } from "../src/types/actions";
 import type { Route } from "@playwright/test";
-import { ACTION_GALLERY, mockActions } from "./actions";
+// The five (#2248 P1); the plugin actions have their own spec (`action-plugins.spec.ts`).
+import { BUILTIN_GALLERY as ACTION_GALLERY, mockActions } from "./actions";
 import {
   PROJECT,
   automation,

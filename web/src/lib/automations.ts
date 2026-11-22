@@ -12,7 +12,10 @@ import {
   isActive,
   runsInTerminal,
 } from "../app/engineRoster";
+import type { ConnectorCatalog, ConnectorInstance } from "./connectors";
+import { PLUGIN_IDS } from "../types/automations";
 import type {
+  ActionKind,
   Automation,
   AutomationAction,
   AutomationConfig,
@@ -35,6 +38,8 @@ import type {
   UnattendedEngine,
   Weekday,
   WebhookCondition,
+  PluginAction,
+  PluginId,
 } from "../types/automations";
 import type { Session, Template } from "../types/api";
 import type { Specialist } from "../types/specialists";
@@ -262,9 +267,20 @@ export const AUTONOMY_WORDS: Record<Autonomy, string> = {
     "Dispatches and may answer menus on its own (retired: HQ plans missions)",
 };
 
+/** A stored action's gallery id: its kind, or its plugin's id (#2248 P2). */
+export function actionIdOf(action: AutomationAction | null | undefined): ActionKind | undefined {
+  if (!action) return undefined;
+  return action.kind === "plugin" ? action.plugin : action.kind;
+}
+
+export function isPluginId(kind: string): kind is PluginId {
+  return (PLUGIN_IDS as readonly string[]).includes(kind);
+}
+
 export function actionLabel(
-  kind: AutomationAction["kind"] | undefined,
+  kind: ActionKind | "plugin" | undefined,
 ): string {
+  if (kind === "send_message") return "Send a message";
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
@@ -297,7 +313,30 @@ export function targetWords(
   if (action.kind === "forge_review_loop")
     return projectName(action.project_id);
   if (action.kind === "tell_hq") return "your notifications";
+  if (action.kind === "plugin") return pluginTargetWords(action);
   return action.session_key;
+}
+
+function pluginTargetWords(action: PluginAction): string {
+  const i = action.inputs;
+  if (action.plugin === "send_message") return `a message to ${String(i.recipient ?? "")}`;
+  return action.plugin;
+}
+
+/** The messengers a "Send a message" action may pick (#2248 P2): connector instances that can
+ *  send NOW (switched on, tested, recipients bound — the server's `sendable`), with their saved
+ *  recipients. The server's check at save is the authority. */
+export function messengers(catalog: ConnectorCatalog | null): {
+  instance: ConnectorInstance;
+  label: string;
+}[] {
+  if (!catalog) return [];
+  return catalog.instances
+    .filter((i) => Array.isArray(i.recipients))
+    .map((i) => ({
+      instance: i,
+      label: catalog.catalog.find((m) => m.id === i.manifest_id)?.label ?? i.manifest_id,
+    }));
 }
 
 // ---- time words ----------------------------------------------------------------------------------
@@ -534,7 +573,7 @@ export interface EditorForm {
   time: string;
   days: Weekday[];
   day: number;
-  actionKind: AutomationAction["kind"];
+  actionKind: ActionKind;
   projectId: string;
   autonomy: Autonomy;
   engine: string;
@@ -569,6 +608,9 @@ export interface EditorForm {
   when: ConditionDraft[];
   /** Template fields filled from the delivery, by field name (#2221 P2). */
   fromDelivery: Record<string, MappingDraft>;
+  // "Send a message" (#2248 P2): a messenger connector and one of its saved recipients.
+  connector: string;
+  recipient: string;
 }
 
 /** A condition as the wizard edits it. Each value is its own element with its OWN type, kept as
@@ -642,6 +684,8 @@ export function blankForm(tz: string): EditorForm {
     legacyHook: false,
     when: [],
     fromDelivery: {},
+    connector: "",
+    recipient: "",
   };
 }
 
@@ -758,6 +802,24 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     f.roundsIssue = act.max_rounds.issue;
     f.roundsPr = act.max_rounds.pr;
     f.returnToOrigin = act.return_to_origin;
+  } else if (act?.kind === "plugin") {
+    f.actionKind = act.plugin;
+    const i = act.inputs;
+    if (act.plugin === "send_message") {
+      f.connector = String(i.connector ?? "");
+      f.recipient = String(i.recipient ?? "");
+    }
+    const msg = i.message as AutomationMessage | undefined;
+    if (msg && "text" in msg) {
+      f.messageMode = "text";
+      f.text = msg.text;
+    } else if (msg) {
+      f.messageMode = "template";
+      f.templateId = msg.template_id;
+      f.values = { ...msg.values };
+    }
+    for (const [field, m] of Object.entries(act.from_delivery ?? {}))
+      f.fromDelivery[field] = { path: m.path, type: m.type, choices: [...(m.choices ?? [])] };
   } else if (act) {
     f.actionKind = act.kind;
     const msg = act.kind === "start_mission" ? act.instruction : act.message;
@@ -847,8 +909,24 @@ export function formTrigger(f: EditorForm): Trigger {
   return { kind: "schedule", cadence, tz: f.tz };
 }
 
+/** A plugin action (#2248 P2): its inputs, and what a delivery fills on the ACTION (never inside
+ *  the message), exactly the fields the server's strict validator accepts. */
+function formPlugin(f: EditorForm, plugin: PluginId): PluginAction {
+  const { from_delivery: mapped, ...message } = formMessage(f) as AutomationMessage & {
+    from_delivery?: Record<string, DeliveryMapping>;
+  };
+  const inputs: Record<string, unknown> = {
+    connector: f.connector,
+    recipient: f.recipient,
+    message,
+  };
+  const out: PluginAction = { kind: "plugin", plugin, version: 1, inputs };
+  return mapped && Object.keys(mapped).length ? { ...out, from_delivery: mapped } : out;
+}
+
 export function formAction(f: EditorForm): AutomationAction {
   if (f.actionKind === "forge_review_loop") return formReviewLoop(f);
+  if (isPluginId(f.actionKind)) return formPlugin(f, f.actionKind);
   const message = formMessage(f);
   if (f.actionKind === "start_mission")
     return {
@@ -996,6 +1074,10 @@ function whatProblems(f: EditorForm): string[] {
     out.push("Choose a folder");
   if (f.actionKind === "send_to_session" && !f.sessionKey)
     out.push("Choose a session");
+  if (f.actionKind === "send_message") {
+    if (!f.connector) out.push("Choose what to send with");
+    else if (!f.recipient) out.push("Choose who receives it");
+  }
   if (fromListHook(f) && !apiTarget(f))
     out.push("A webhook starts or messages an API session only; pick an API agent");
   if (f.actionKind === "forge_review_loop") {

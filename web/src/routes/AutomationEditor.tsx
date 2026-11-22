@@ -60,6 +60,7 @@ import {
   eventsSkipped,
   formFromAutomation,
   inFlightNote,
+  messengers,
   reconsent,
   reviewerOptions,
   stepProblems,
@@ -69,6 +70,7 @@ import {
 import { AUTOMATIONS_PATH, WEBHOOK_NEW_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Session, Template, TemplateVariable } from "../types/api";
 import type { Specialist } from "../types/specialists";
+import type { ConnectorCatalog } from "../lib/connectors";
 import type { Automation, AutomationList, ConsentRequired } from "../types/automations";
 import type { NewWebhookHandoff } from "./WebhookNew";
 import styles from "../components/automations/automations.module.css";
@@ -118,6 +120,8 @@ function Editor({ routeId }: { routeId?: string }) {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   /** The specialist pool, for a review loop's reviewer. `null` until read; `[]` if it can't be. */
   const [specialists, setSpecialists] = useState<Specialist[] | null>(null);
+  // The messengers a "Send a message" action may use (#2248 P2), from Settings → HQ connectors.
+  const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
   const nowS = useNowS();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -214,6 +218,10 @@ function Editor({ routeId }: { routeId?: string }) {
       .sessions({ limit: 100 })
       .then((r) => live && setSessions(r.sessions))
       .catch(() => live && setSessions([]));
+    Promise.resolve()
+      .then(() => api.connectors())
+      .then((r) => live && setConnectors(r))
+      .catch(() => live && setConnectors({ catalog: [], instances: [], disclosure: "" }));
     Promise.resolve()
       .then(() => api.specialists())
       .then((r) => live && setSpecialists(Array.isArray(r?.specialists) ? r.specialists : []))
@@ -467,6 +475,7 @@ function Editor({ routeId }: { routeId?: string }) {
               sessionKey: saved?.action?.kind === "send_to_session" ? saved.action.session_key : "",
             }}
             projects={liveProjects}
+            messengers={connectors ? messengers(connectors) : null}
             sessions={sessions}
             templates={templates}
             variables={variables}

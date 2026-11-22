@@ -105,7 +105,24 @@ export type AutomationAction =
    *  told only that a message from this automation arrived, never what it says, and never acts on
    *  it. No target, agent or permissions of its own. */
   | { kind: "tell_hq"; message: AutomationMessage }
-  | ReviewLoopAction;
+  | ReviewLoopAction
+  | PluginAction;
+
+/** The registry's plugin actions (#2248 P2), stored as ONE kind. `inputs` is the plugin's own,
+ *  validated strictly by the server; `from_delivery` maps a webhook delivery's typed values. */
+export type PluginId = "send_message";
+export const PLUGIN_IDS: readonly PluginId[] = ["send_message"];
+
+export interface PluginAction {
+  kind: "plugin";
+  plugin: PluginId;
+  version: 1;
+  inputs: Record<string, unknown>;
+  from_delivery?: Record<string, DeliveryMapping>;
+}
+
+/** What the wizard picks: one of the five built-in kinds, or a plugin's id. */
+export type ActionKind = Exclude<AutomationAction["kind"], "plugin"> | PluginId;
 
 /** The Forgejo review loop (#2202): one repository, one pinned reviewer specialist VERSION, one
  *  reviewer login, inside one project. Every field is part of the consent scope. */

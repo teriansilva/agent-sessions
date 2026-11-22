@@ -22,6 +22,7 @@ import {
   CHOICES_MAX,
   agentPicker,
   fromListHook,
+  type messengers as messengersOf,
   legacyTrigger,
   mappableFields,
   reviewerOptions,
@@ -54,6 +55,7 @@ const KNOWN: readonly Kind[] = Object.keys({
   send_to_session: 1,
   forge_review_loop: 1,
   tell_hq: 1,
+  send_message: 1,
 } satisfies Record<Kind, 1>) as Kind[];
 
 export function StepWhat({
@@ -65,6 +67,7 @@ export function StepWhat({
   actions,
   stored,
   projects,
+  messengers,
   sessions,
   templates,
   variables,
@@ -84,6 +87,8 @@ export function StepWhat({
    *  visible in its picker, stamped, though a new automation is offered API agents only. */
   stored: { engine: string; sessionKey: string };
   projects: { id: string; name: string; default_folder?: string | null }[];
+  /** The messengers "Send a message" may use, or `null` while they load (#2248 P2). */
+  messengers: ReturnType<typeof messengersOf> | null;
   sessions: Session[] | null;
   templates: Template[] | null;
   variables: TemplateVariable[];
@@ -121,6 +126,7 @@ export function StepWhat({
   const sessionChoices = sessionPicker(sessions ?? [], keepSessions);
   const sessionKnown = sessionChoices.some((s) => s.id === form.sessionKey);
   const terminal = (engine: string) => listHook && runsInTerminal(engine) === true;
+  const messenger = messengers?.find((m) => m.instance.id === form.connector) ?? null;
   const msgWord =
     form.actionKind === "start_mission"
       ? "Instruction"
@@ -361,6 +367,70 @@ export function StepWhat({
           The message goes in your notifications (the bell). HQ is told that a message from this automation
           arrived — never what it says — and may comment on it. HQ never acts on it by itself.
         </p>
+      )}
+
+      {form.actionKind === "send_message" && (
+        <div className={styles.fields} data-testid="send-message-fields">
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={f("connector")}>
+              Send with
+            </label>
+            <select
+              id={f("connector")}
+              className={styles.control}
+              value={form.connector}
+              onChange={(e) => update((x) => ({ ...x, connector: e.target.value, recipient: "" }))}
+              data-testid="send-connector"
+            >
+              <option value="">{messengers == null ? "Loading…" : "Choose a messenger…"}</option>
+              {(messengers ?? []).map((m) => (
+                <option key={m.instance.id} value={m.instance.id} disabled={!m.instance.send}>
+                  {m.label}
+                  {m.instance.tested?.login ? ` · ${m.instance.tested.login}` : ""}
+                  {m.instance.send ? "" : " — can’t send now: set it up"}
+                </option>
+              ))}
+              {form.connector && !messenger && <option value={form.connector}>{form.connector}</option>}
+            </select>
+            {messengers != null && !messengers.some((m) => m.instance.send) && (
+              <p className={styles.hint} data-testid="send-connector-none">
+                No messenger can send yet.{" "}
+                <Link className={styles.link} to={settingsPath("ai-hq", "hq-connectors")}>
+                  Set one up in Settings → HQ
+                </Link>
+              </p>
+            )}
+          </div>
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={f("recipient")}>
+              {messenger?.instance.sender !== undefined ? "To" : "Chat"}
+            </label>
+            <select
+              id={f("recipient")}
+              className={styles.control}
+              value={form.recipient}
+              disabled={!form.connector}
+              onChange={(e) => set("recipient", e.target.value)}
+              data-testid="send-recipient"
+            >
+              <option value="">Choose who receives it…</option>
+              {(messenger?.instance.recipients ?? []).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                  {r.label !== r.id ? ` · ${r.id}` : ""}
+                </option>
+              ))}
+              {form.recipient && !messenger?.instance.recipients?.some((r) => r.id === form.recipient) && (
+                <option value={form.recipient}>{form.recipient}</option>
+              )}
+            </select>
+          </div>
+          <p className={`${styles.hint} ${styles.full}`} data-testid="send-message-what">
+            Only a recipient you allowed for this messenger. A delivery never changes the messenger
+            or who receives it{messenger?.instance.sender ? `; mail goes from ${messenger.instance.sender}` : ""}.
+            Before each send it checks that sending is still on and the recipient is still allowed.
+          </p>
+        </div>
       )}
 
       {form.actionKind === "send_to_session" && (
@@ -628,7 +698,12 @@ export function StepWhat({
               </div>
             </>
           )}
-          {form.actionKind === "tell_hq" ? (
+          {form.actionKind === "send_message" ? (
+            <p className={styles.hint}>
+              A message never carries a secret: it leaves BattleLab in clear text, so a template
+              with a secret is refused. Mail takes its first line as the subject.
+            </p>
+          ) : form.actionKind === "tell_hq" ? (
             <p className={styles.hint}>
               A message to HQ never carries a secret: it is shown in your notifications, so a template
               with a secret is refused.

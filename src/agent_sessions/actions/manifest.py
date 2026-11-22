@@ -66,6 +66,10 @@ REQUIREMENTS: dict[str, str] = {
     "running_session": "a running API session to message",
     "forge": "a Forgejo set up in Settings → Forge",
     "reviewer": "a reviewer specialist",
+    # #2248 P2
+    "messenger": "a messenger (Telegram, Matrix or mail) that can send",
+    "artifacts": "artifacts switched on in Settings",
+    "memory": "project memory switched on for the project",
 }
 
 #: The triggers that may start an action (`automations.TRIGGER_KINDS`).
@@ -76,6 +80,13 @@ INPUT_TYPES = frozenset(
     {
         "agent",
         "choice",
+        # #2248 P2: a messenger, one of its saved recipients, an operator-set https destination,
+        # typed body fields, and a file or folder inside a project.
+        "connector",
+        "destination",
+        "fields",
+        "file",
+        "recipient",
         "folder",
         "forge_login",
         "message",
@@ -89,7 +100,9 @@ INPUT_TYPES = frozenset(
     }
 )
 #: An output's type: what a later step could use.
-OUTPUT_TYPES = frozenset({"mission", "notification", "session"})
+OUTPUT_TYPES = frozenset(
+    {"mission", "notification", "session", "message", "artifact", "note", "response"}
+)
 
 #: Field names that would carry behaviour. Refused by name at every level, before the unknown-field
 #: check, so the refusal names what is wrong rather than only that something is unknown.

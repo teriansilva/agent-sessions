@@ -158,5 +158,7 @@ function whatWords(form: EditorForm, projectName: (id: string) => string): strin
       return form.repo.trim() ? `${label} on ${form.repo.trim()}` : label;
     case "tell_hq":
       return `${label} · a message in your notifications`;
+    case "send_message":
+      return form.recipient ? `${label} · to ${form.recipient}` : label;
   }
 }

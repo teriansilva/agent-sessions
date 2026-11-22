@@ -37,6 +37,7 @@ import {
   AUTONOMY_WORDS,
   errorWords,
   inFlightNote,
+  actionIdOf,
   actionLabel,
   apiSwitchFor,
   duplicateBody,
@@ -591,7 +592,7 @@ function Row({
       </div>
       <div className={styles.cell}>
         <span className={styles.cellLabel}>Action</span>
-        <span>{actionLabel(act?.kind)}</span>
+        <span>{actionLabel(actionIdOf(act))}</span>
         <small>{actDetail}</small>
         {terminal && <LegacyTerminalStamp />}
         {switchTo && (

@@ -282,6 +282,11 @@ def check_save(config: dict) -> None:
         from . import review_loop_runner
 
         review_loop_runner.check_save(config)
+    elif action["kind"] == "plugin":
+        # #2248 P2: the plugin's own world checks (connector, destination, folder, memory).
+        from .actions import plugins
+
+        plugins.check_save(config)
     elif action["kind"] == "start_mission":
         from .routes import missions as mroutes
 
@@ -955,12 +960,21 @@ async def _review_loop(run: dict, config: dict, pins: dict, *, registry) -> tupl
     return await review_loop_runner.launch_review(run, config, pins, registry=registry)
 
 
+async def _plugin(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
+    """A plugin action (#2248 P2): the whole effect on one worker thread under the effect lock,
+    joined on cancellation (`actions.plugins.run`)."""
+    from .actions import plugins
+
+    return await plugins.run(run, config, pins, registry=registry)
+
+
 _ACTIONS = {
     "start_mission": _start_mission,
     "start_session": _start_session,
     "send_to_session": _send_to_session,
     "forge_review_loop": _review_loop,
     "tell_hq": _tell_hq,
+    "plugin": _plugin,
 }
 
 
@@ -998,10 +1012,9 @@ def with_delivered(config: dict, run: dict) -> dict:
     template's values for this run only. Anything else — a missing value, an unmapped one — is
     refused: nothing is partly filled."""
     action = config["action"]
-    if action["kind"] not in ("start_session", "send_to_session", "tell_hq"):
+    if action["kind"] not in ("start_session", "send_to_session", "tell_hq", "plugin"):
         return config
-    msg = action["message"]
-    mapped = msg.get("from_delivery") or {}
+    mapped = model.mapping_of(action)
     delivered = (run.get("inputs") or {}).get("delivered") or {}
     if not mapped:
         if delivered:
@@ -1009,6 +1022,11 @@ def with_delivered(config: dict, run: dict) -> dict:
         return config
     if set(delivered) != set(mapped) or not all(isinstance(v, str) for v in delivered.values()):
         raise RunRefused(409, "this run's delivery values don't match what its automation maps")
+    if action["kind"] == "plugin":
+        from .actions import plugins
+
+        return {**config, "action": plugins.fill(action, delivered)}
+    msg = action["message"]
     values = {**msg["values"], **delivered}
     filled = {k: v for k, v in msg.items() if k != "from_delivery"}
     filled["values"] = dict(sorted(values.items()))

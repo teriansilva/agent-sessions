@@ -63,6 +63,15 @@ function capital(s: string): string {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
+/** Whether the wizard may pick this action now: a requirement that is checked and does NOT hold
+ *  makes it unpickable (the needs-setup state), with where to set it up. One not checkable here
+ *  (`ok: null`) never blocks. */
+export function needsSetup(a: ActionEntry): { words: string; setup: string | null } | null {
+  const failing = a.requires.find((r) => r.ok === false);
+  if (!failing) return null;
+  return { words: capital(failing.detail || `needs ${failing.words}`), setup: failing.setup ?? null };
+}
+
 /** The card's requirement line: Ready (with what still depends on the wizard's choice), or the
  *  first requirement that does not hold, in its own words. Colour goes with the word (the LED). */
 export function requirementLine(a: ActionEntry): {

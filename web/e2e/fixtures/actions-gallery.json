@@ -106,7 +106,8 @@
           "id": "api_agent",
           "words": "an API agent that can start unattended",
           "ok": true,
-          "detail": "an API agent is ready"
+          "detail": "an API agent is ready",
+          "setup": "agents"
         }
       ],
       "available": true,
@@ -271,6 +272,58 @@
       "requires": [],
       "available": true,
       "used_by": 4
+    },
+    {
+      "id": "send_message",
+      "label": "Send a message",
+      "category": "messaging",
+      "description": "Posts to a chat or an inbox you set up: Telegram, Matrix or mail, to a recipient you allowed.",
+      "effect": "notify",
+      "executor": "send_message",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "connector",
+          "type": "connector",
+          "label": "Send with",
+          "required": true
+        },
+        {
+          "name": "recipient",
+          "type": "recipient",
+          "label": "To",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "message",
+          "type": "message",
+          "label": "The message sent"
+        }
+      ],
+      "requires": [
+        {
+          "id": "messenger",
+          "words": "a messenger (Telegram, Matrix or mail) that can send",
+          "ok": true,
+          "detail": "a messenger can send",
+          "setup": "ai-hq"
+        }
+      ],
+      "available": true,
+      "used_by": 0
     }
   ],
   "categories": [

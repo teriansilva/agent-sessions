@@ -257,7 +257,8 @@ def test_the_scope_digest_of_every_stored_shape_is_pinned(shape):
 
 def test_the_shapes_cover_every_action_and_every_trigger_kind():
     configs = [_stored(raw) for raw, _p, _g in SHAPES.values()]
-    assert {c["action"]["kind"] for c in configs} == set(model.ACTION_KINDS)
+    # The five built-in kinds; the plugin kind's shapes are pinned in `test_action_plugins.py`.
+    assert {c["action"]["kind"] for c in configs} == set(model.ACTION_KINDS) - {"plugin"}
     assert {c["trigger"]["kind"] for c in configs} == set(model.TRIGGER_KINDS)
 
 
@@ -307,10 +308,15 @@ def test_run_delegates_to_the_runners_own_action(monkeypatch):
 
 
 def test_the_registry_the_model_and_the_runner_agree():
-    assert registry.kinds() == model.ACTION_KINDS
+    from agent_sessions.actions import plugins
+
+    assert (*registry.builtin_kinds(), "plugin") == model.ACTION_KINDS
     assert tuple(automation_runner._ACTIONS) == model.ACTION_KINDS
-    assert tuple(executors.EXECUTORS) == model.ACTION_KINDS
-    assert set(registry.webhook_kinds()) == set(model.WEBHOOK_ACTIONS)
+    assert registry.plugin_ids() == plugins.PLUGINS
+    assert tuple(executors.EXECUTORS) == (*executors.BUILTIN, *plugins.PLUGINS)
+    assert registry.kinds() == tuple(executors.EXECUTORS)
+    builtin_hooks = {k for k in registry.webhook_kinds() if k in executors.BUILTIN}
+    assert builtin_hooks | {"plugin"} == set(model.WEBHOOK_ACTIONS)
 
 
 def test_a_manifest_trigger_list_matches_what_the_model_accepts():
@@ -320,6 +326,11 @@ def test_a_manifest_trigger_list_matches_what_the_model_accepts():
     for a in registry.actions():
         m = a.manifest
         assert set(m.triggers) <= set(model.TRIGGER_KINDS)
+        if m.id in registry.plugin_ids():
+            from agent_sessions.actions import plugins
+
+            assert ("webhook" in m.triggers) == plugins.module(m.id).WEBHOOK, m.id
+            continue
         assert ("webhook" in m.triggers) == (m.id in model.WEBHOOK_ACTIONS)
         if m.id == "forge_review_loop":
             assert m.triggers == ("webhook",)
@@ -346,7 +357,7 @@ def _doc(**over) -> dict:
 
 def test_the_bundled_manifests_load():
     got = mf.bundled()
-    assert sorted(m.id for m in got) == sorted(model.ACTION_KINDS)
+    assert sorted(m.id for m in got) == sorted(registry.kinds())
     assert mf.validate(_doc()).id == "tell_hq"
 
 
@@ -462,7 +473,7 @@ def test_the_gallery_lists_the_five_with_their_facts_requirements_and_use(monkey
     monkeypatch.setitem(registry._CHECKS, "forge", lambda: (True, "Forgejo is set up"))
     g = registry.gallery()
     by = {a["id"]: a for a in g["actions"]}
-    assert list(by) == list(model.ACTION_KINDS)
+    assert list(by) == list(registry.kinds())
     assert by["tell_hq"]["used_by"] == 2 and by["send_to_session"]["used_by"] == 1
     assert by["start_mission"]["used_by"] == 0
     assert by["tell_hq"]["effect"] == "notify" and by["tell_hq"]["requires"] == []
@@ -473,6 +484,7 @@ def test_the_gallery_lists_the_five_with_their_facts_requirements_and_use(monkey
             "words": mf.REQUIREMENTS["api_agent"],
             "ok": False,
             "detail": "no API agent",
+            "setup": "agents",
         }
     ]
     # A requirement that depends on the wizard's choice is not checked here: never "missing".
@@ -509,7 +521,7 @@ def test_the_gallery_route_needs_a_login():
     routes.register(app, logged_in=lambda: "op")
     r = TestClient(app).get(routes.ACTIONS_API)
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
-    assert [a["id"] for a in r.json()["actions"]] == list(model.ACTION_KINDS)
+    assert [a["id"] for a in r.json()["actions"]] == list(registry.kinds())
 
 
 # ---- the browser fixture is the server's own answer -------------------------------------------
@@ -524,6 +536,9 @@ def test_the_committed_browser_fixture_is_what_the_server_sends(monkeypatch):
     `AGENT_SESSIONS_WRITE_FIXTURES=1`."""
     monkeypatch.setitem(registry._CHECKS, "api_agent", lambda: (True, "an API agent is ready"))
     monkeypatch.setitem(registry._CHECKS, "forge", lambda: (True, "Forgejo is set up"))
+    # Every requirement met; the browser specs flip one to meet the needs-setup state.
+    monkeypatch.setitem(registry._CHECKS, "messenger", lambda: (True, "a messenger can send"))
+    monkeypatch.setitem(registry._CHECKS, "artifacts", lambda: (True, "artifacts are on"))
     used = {"start_session": 3, "send_to_session": 1, "forge_review_loop": 2, "tell_hq": 4}
     monkeypatch.setattr(registry, "_used_by", lambda: used)
     text = json.dumps(registry.gallery(), indent=2, ensure_ascii=False) + "\n"

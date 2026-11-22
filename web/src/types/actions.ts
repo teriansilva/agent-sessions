@@ -26,6 +26,8 @@ export interface ActionRequirement {
   words: string;
   ok: boolean | null;
   detail: string;
+  /** Where it is set up: a Settings section id (`settingsTabs.ts`), when there is one. */
+  setup?: string;
 }
 
 export interface ActionEntry {

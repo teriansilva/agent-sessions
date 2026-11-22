@@ -82,7 +82,7 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry, source
     if not webhook_events.matches(config["trigger"].get("when") or [], payload):
         await asyncio.to_thread(store.note_delivery, aid, label, IGNORED)
         return False
-    mapping = model.message_of(config["action"]).get("from_delivery") or {}
+    mapping = model.mapping_of(config["action"])
     try:
         delivered = webhook_events.extract(mapping, payload)
     except webhook_events.ValueRejected as e:

@@ -97,6 +97,16 @@ export function scopeLines(config: Json): string[] {
     );
     lines.push(`At most ${caps.pr} rounds per pull request and ${caps.issue} per issue; then one notification`);
     lines.push("Never posts, merges or labels anything on the forge");
+  } else if (action.kind === "plugin") {
+    // `automations.describe` for a plugin action (#2248 P2): its action line, then its own lines.
+    const inputs = action.inputs as Json;
+    lines.push(`Action: ${String(action.plugin)} (plugin ${String(action.plugin)}, version 1)`);
+    if (action.plugin === "send_message") {
+      lines.push(`Sends a message through Telegram (connector ${String(inputs.connector)}, kind telegram)`);
+      lines.push(`To ${String(inputs.recipient)}, a recipient you allowed for it`);
+      lines.push(messageLine("Message", inputs.message as Json));
+    }
+    lines.push("Starts no session and types into none");
   } else if (action.kind === "tell_hq") {
     // `automations.describe` for "Tell HQ" (#2221).
     lines.push("Puts a message in your notifications (the bell) and tells HQ an automation reported");

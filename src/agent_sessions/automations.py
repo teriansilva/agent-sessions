@@ -65,11 +65,15 @@ ACTION_KINDS = (
     "send_to_session",
     "forge_review_loop",
     "tell_hq",
+    # The registry's plugin actions (#2248 P2): ONE stored kind, `{kind: "plugin", plugin, version,
+    # inputs, from_delivery?}`; `actions/plugins.py` is the authority for which plugins exist.
+    "plugin",
 )
 #: The actions a webhook delivery may start (#2221 P2). `tell_hq` (#2221) puts a message in the
 #: bell and tells HQ that an automation reported: HQ learns the class and the automation's name,
 #: never the message or any delivered value (`hq_dispatch.CLASS_AUTOMATION_MESSAGE`).
-WEBHOOK_ACTIONS = ("forge_review_loop", "start_session", "send_to_session", "tell_hq")
+#: A plugin action (#2248 P2) may be webhook-started only when its plugin says so (`WEBHOOK`).
+WEBHOOK_ACTIONS = ("forge_review_loop", "start_session", "send_to_session", "tell_hq", "plugin")
 #: The webhook signature schemes. Only Forgejo's for now (#2202); `github`/`battlelab` are #1201's.
 WEBHOOK_SCHEMES = ("forgejo",)
 #: A forge repository ``owner/name`` and a forge login (Forgejo's alphabets, bounded).
@@ -323,6 +327,11 @@ def validate_message(raw: object, what: str) -> dict:
 
 
 def validate_action(raw: object) -> dict:
+    if isinstance(raw, dict) and raw.get("kind") == "plugin":
+        # #2248 P2: the registry's plugin actions validate through their own reviewed module.
+        from .actions import plugins
+
+        return plugins.validate(raw)
     a = _obj(
         raw,
         "action",
@@ -574,13 +583,17 @@ def validate_config(raw: object, *, now: float | None = None) -> dict:
         raise AutomationError("a review loop picks its own events; it takes no conditions")
     if trig.get("scheme") and kind != "forge_review_loop":
         raise AutomationError("a review loop's own webhook starts only that review loop")
-    if hook and kind not in WEBHOOK_ACTIONS:
+    if hook and (
+        kind not in WEBHOOK_ACTIONS
+        or (kind == "plugin" and not _plugins().webhook_ok(out["action"]))
+    ):
         raise AutomationError(
             "a webhook can start a review loop, start a session, message a session or tell HQ"
+            + ("" if kind != "plugin" else ", but not this action")
         )
     if trig.get("when") and not trig.get("webhook_id"):
         raise AutomationError("conditions go with a webhook from the list")
-    if message_of(out["action"]).get("from_delivery") and not hook:
+    if mapping_of(out["action"]) and not hook:
         raise AutomationError("only a webhook delivery can fill a value from the delivery")
     return out
 
@@ -777,11 +790,28 @@ def _library_kinds(template: dict) -> dict[str, str]:
     return {n: ("secret" if n in secret else "text" if n in text else "missing") for n in names}
 
 
+def _plugins():
+    from .actions import plugins
+
+    return plugins
+
+
 def message_of(action: dict) -> dict:
-    """The action's message, or ``{}`` for a review loop, whose briefs are BattleLab's own text."""
+    """The action's message, or ``{}`` for a review loop, whose briefs are BattleLab's own text.
+    A plugin action's (#2248 P2) is its P2a message, or ``{}`` when it carries none."""
     if action["kind"] == "forge_review_loop":
         return {}
+    if action["kind"] == "plugin":
+        return _plugins().message_of(action)
     return action.get("instruction") if action["kind"] == "start_mission" else action["message"]
+
+
+def mapping_of(action: dict) -> dict:
+    """What a webhook delivery fills (#2221 P2): the message's mapping for the five, the action's
+    own ``from_delivery`` for a plugin action (#2248 P2)."""
+    if action["kind"] == "plugin":
+        return _plugins().mapping_of(action)
+    return message_of(action).get("from_delivery") or {}
 
 
 def compute_pins(config: dict) -> dict:
@@ -816,6 +846,12 @@ def compute_pins(config: dict) -> dict:
         # The folder's IDENTITY, not its spelling: a symlink repointed after consent is a drift,
         # and the launch uses `real` (#1201 review).
         pins["cwd"] = folder_identity(action["folder"])
+    elif action["kind"] == "plugin":
+        # What a plugin action is bound to beyond its config (#2248 P2): only when it has any, so
+        # the five's pins keep their exact shape.
+        extra = _plugins().pins(action)
+        if extra is not None:
+            pins["plugin"] = extra
     return pins
 
 
@@ -912,6 +948,8 @@ def pins_drift(stored: dict, current: dict) -> str:
     if stored.get("specialist") != current.get("specialist"):
         why = (current.get("specialist") or {}).get("missing")
         return why or "the reviewer specialist changed since you approved this automation"
+    if "plugin" in stored or "plugin" in current:
+        return _plugins().drift(stored, current)
     return ""
 
 
@@ -964,6 +1002,8 @@ def check_template(config: dict) -> dict | None:
                 "store it in the variable library"
             )
     secret = template_has_secret(t)
+    if secret and action["kind"] == "plugin":
+        raise AutomationError(_plugins().secret_refusal(action))
     if secret and action["kind"] == "start_mission":
         raise AutomationError(
             "a mission brief never carries a secret, so this template cannot start a mission"
@@ -1024,6 +1064,9 @@ def scope_of(config: dict, pins: dict) -> dict:
     elif action["kind"] == "tell_hq":
         # Nothing is started or typed into: the bell and HQ's dispatch are the whole effect.
         target = {}
+    elif action["kind"] == "plugin":
+        # #2248 P2: the destination, recipient or folder, as equality fields of the target.
+        target = _plugins().target(action, pins)
     else:
         target = {"session_key": action["session_key"]}
     if action["kind"] == "forge_review_loop":
@@ -1065,12 +1108,15 @@ def scope_of(config: dict, pins: dict) -> dict:
         "webhook": trigger["kind"] == "webhook",
         # The template fields a delivery fills, typed (#2221 P2): a ladder — a new or changed
         # entry widens, a removed one narrows.
-        "mapped": webhook_events.mapping_lines(message_of(action).get("from_delivery") or {}),
+        "mapped": webhook_events.mapping_lines(mapping_of(action)),
         # Which webhook from the list (#2221): only when one was picked, so a #2202 review loop's
         # stored receipt (which has no such field) still equals its scope.
         **({"webhook_source": trigger["webhook_id"]} if trigger.get("webhook_id") else {}),
         # Which events it acts on (#2221 P2): an equality field, only when some were chosen.
         **({"when": trigger["when"]} if trigger.get("when") else {}),
+        # A plugin action's other inputs (#2248 P2): only for one, so the five's scopes keep their
+        # exact shape and digest.
+        **({"inputs": _plugins().data(action)} if action["kind"] == "plugin" else {}),
     }
 
 
@@ -1106,6 +1152,7 @@ _CHANGED = {
     "concurrency": "what happens when a run is still going changed",
     "content": "what it sends changed",
     "message": "what it sends changed",
+    "inputs": "what it sends changed",
     "template": "the template changed",
     "template_library": "the template changed",
     "template_name": "the template changed",
@@ -1200,6 +1247,16 @@ def widened(old: dict | None, new: dict) -> list[str]:
                 if o == n:
                     add(CHECKLIST_RETIRED)
                     continue
+        if (
+            key == "target"
+            and isinstance(old.get(key), dict)
+            and isinstance(new.get(key), dict)
+            and (old[key].get("plugin") or new[key].get("plugin"))
+        ):
+            if old[key] != new[key]:
+                for words in _plugins().target_changes(old[key], new[key]):
+                    add(words)
+            continue
         if key in LADDER_FIELDS:
             if key not in old or key not in new:
                 add(_LADDER_WORDS[key])
@@ -1402,6 +1459,8 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("If that session isn't running, the run is refused; nothing is started")
     elif action == "forge_review_loop":
         lines.extend(_review_loop_lines(scope, t))
+    elif action == "plugin":
+        lines.extend(_plugins().lines(scope))
     elif action == "tell_hq":
         lines.append(
             "Puts a message in your notifications (the bell) and tells HQ an automation reported"
@@ -1436,7 +1495,7 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("Permission bypass: off (automated missions never bypass)")
     elif action == "start_session":
         lines.append("Permission bypass: off")
-    elif action == "tell_hq":
+    elif action in ("tell_hq", "plugin"):
         lines.append("Starts no session and types into none")
     else:
         lines.append("Permission bypass: unchanged — whatever that session already runs with")
@@ -1472,8 +1531,10 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
                 ),
             }.get(str(scope.get("autonomy")), f"Autonomy: {scope.get('autonomy')}")
         )
-    if not review_loop or scope.get("message"):
+    if (not review_loop and action != "plugin") or scope.get("message"):
         lines.extend(_message_lines(scope, preview))
+    elif action == "plugin" and scope.get("content"):
+        lines.append(f"Content fingerprint: {scope['content']}")
     trig = scope.get("trigger")
     if trig in ("schedule", "once"):
         lines.append(_cadence_words(scope.get("cadence"), scope.get("tz")))

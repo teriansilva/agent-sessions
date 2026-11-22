@@ -204,6 +204,36 @@
   font-size: var(--fs-meta);
   color: var(--warn-text);
 }
+/* The needs-setup state (#2248 P2): unpickable, a dashed border, the reason and a Set up link. */
+.rowBlocked {
+  border-style: dashed;
+  cursor: default;
+  color: var(--text-3, var(--text-2));
+}
+.rowBlocked:hover {
+  color: var(--text-3, var(--text-2));
+}
+.setup {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px;
+  color: var(--accent-text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+/* The needs-setup LED (a state: the action can't run until it is set up). */
+.setupLed {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn-text);
+}
 .rowRight {
   display: flex;
   flex-direction: column;

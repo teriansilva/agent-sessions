@@ -14,6 +14,11 @@ So a stored automation's config, its consent scope, its digest and its consent l
 what they were: no receipt changes because the registry exists (`tests/test_actions.py` pins the
 digests). Each function refuses an action of another kind rather than silently doing that kind's
 work: an executor is one action, never a dispatcher.
+
+**Plugin executors (#2248 P2).** The plugin actions (`plugins.PLUGINS`) are stored as ONE kind,
+``plugin``, and each has its own executor here, named by its plugin id. Its five functions go
+through the same `automations` / `automation_runner` entry points as the five (whose ``plugin``
+branch calls the plugin's reviewed module), and refuse an action of another plugin.
 """
 
 from __future__ import annotations
@@ -75,8 +80,57 @@ def _adapter(kind: str) -> Executor:
     )
 
 
-#: The table, in the order the gallery and the wizard list it (today's `automations.ACTION_KINDS`).
-EXECUTORS: dict[str, Executor] = {
-    k: _adapter(k)
-    for k in ("start_mission", "start_session", "send_to_session", "forge_review_loop", "tell_hq")
-}
+def _plugin_executor(pid: str) -> Executor:
+    """A plugin action's executor (#2248 P2): the ``plugin`` kind, this plugin only."""
+
+    def _mine(action: object, what: str) -> None:
+        a = action if isinstance(action, dict) else {}
+        if a.get("kind") != "plugin" or a.get("plugin") != pid:
+            raise model.AutomationError(f"{what} is not a {pid!r} action")
+
+    def _scope_mine(scope_: dict) -> None:
+        if scope_.get("action") != "plugin" or (scope_.get("target") or {}).get("plugin") != pid:
+            raise model.AutomationError(f"this scope is not a {pid!r} action's")
+
+    def validate(raw: object) -> dict:
+        _mine(raw, "this action")
+        return model.validate_action(raw)
+
+    def scope(config: dict, pins: dict) -> dict:
+        _mine(config.get("action"), "this automation")
+        return model.scope_of(config, pins)
+
+    def describe(scope_: dict, preview: str | None = None) -> list[str]:
+        _scope_mine(scope_)
+        return model.describe(scope_, preview)
+
+    def widened(old: dict | None, new: dict) -> list[str]:
+        _scope_mine(new)
+        return model.widened(old, new)
+
+    async def run(run_: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
+        _mine(config.get("action"), "this automation")
+        from .. import automation_runner
+
+        return await automation_runner._ACTIONS["plugin"](run_, config, pins, registry=registry)
+
+    return Executor(
+        id=pid, validate=validate, scope=scope, describe=describe, widened=widened, run=run
+    )
+
+
+#: The five actions automations had before the registry (their own stored kinds).
+BUILTIN = ("start_mission", "start_session", "send_to_session", "forge_review_loop", "tell_hq")
+
+
+def _table() -> dict[str, Executor]:
+    from .plugins import PLUGINS
+
+    return {
+        **{k: _adapter(k) for k in BUILTIN},
+        **{p: _plugin_executor(p) for p in PLUGINS},
+    }
+
+
+#: The table, in the order the gallery and the wizard list it: the five, then the plugins.
+EXECUTORS: dict[str, Executor] = _table()
