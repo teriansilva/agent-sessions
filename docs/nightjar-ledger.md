@@ -42,7 +42,7 @@ the same list.
 | `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
-| `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
+| `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq popup:hq-hints-draft popup:hq-hints-focus | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar; hints (#2265) none: static buttons, hover and focus only move the edge |
 | `components/ask/AskHome.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-recent popup:needs-you-details popup:recent-work | rows arrive (slide + tint flash), needs-you LEDs blink in Full (steady in Reduced/Off), first read Acquiring (scan bar) |
 | `components/ask/AskShown.module.css` | css | 4 | done | popup:hq | none (a static row under the answer, #2102) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |

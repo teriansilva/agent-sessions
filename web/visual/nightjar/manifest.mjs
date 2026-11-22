@@ -509,6 +509,23 @@ export const SWEEP = [
     open: [{ testId: "hq-primary-contact" }],
     expectCss: '[data-testid="ask-sidebar"][data-open="true"]',
   },
+  // Hints in the empty thread (#2265): `popup:hq` shows the default set. A draft in the box locks
+  // them with the visible reason; Shift+Tab from the box (focused on open, desktop) reaches the
+  // last hint with its inset focus ring.
+  {
+    id: "popup:hq-hints-draft",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }, { testId: "composer-input", fill: "Why did the nightly build fail" }],
+    expectCss: '[data-testid="hq-hints-locked"]',
+  },
+  {
+    id: "popup:hq-hints-focus",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }, { testId: "hq-hints", wait: "visible" }, { press: "Shift+Tab" }],
+    expectCss: '[data-testid="hq-hints"]',
+  },
   // HQ's tasks (#2103): the working mark beside the HQ icon and the strip it opens — one task
   // running, two queued, one parked on a question, and the recent ones. A popover above 800px,
   // a bottom sheet on a phone.

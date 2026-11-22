@@ -3397,3 +3397,147 @@ test("nothing is marked seen when the cursor already covers what is shown", asyn
   await new Promise((r) => setTimeout(r, 50));
   expect(api.askSeen).not.toHaveBeenCalled();
 });
+
+// ---- hints in the empty thread (#2265) ----------------------------------------------------------
+
+import { HINTS, resetHintMemory, STORAGE_KEY } from "./hqHints";
+
+/** Every faked API call so far, by name: a hint must add none. */
+function apiCalls(): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(api as unknown as Record<string, { mock?: { calls: unknown[] } }>)
+      .filter(([, f]) => f?.mock)
+      .map(([k, f]) => [k, f.mock!.calls.length]),
+  );
+}
+const hintIds = () => screen.getAllByTestId("hq-hint").map((b) => b.getAttribute("data-hint"));
+
+function freshHints() {
+  window.localStorage.removeItem(STORAGE_KEY);
+  resetHintMemory();
+}
+
+test("an empty configured thread shows three hints, the first from the manual (#2265)", async () => {
+  freshHints();
+  mount(<AskConsole configured />);
+  const hints = within(screen.getByTestId("ask-empty")).getAllByTestId("hq-hint");
+  expect(hints).toHaveLength(3);
+  const first = HINTS.find((h) => h.id === hints[0].getAttribute("data-hint"))!;
+  expect(first.kind).toBe("manual");
+  // A named region, never a second heading in the panel (the title is its one h2).
+  expect(screen.getByRole("region", { name: "Try asking HQ" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: /try asking/i })).toBeNull();
+});
+
+test("no endpoint, no hints: the setup note stands alone (#2265)", () => {
+  freshHints();
+  mount(<AskConsole configured={false} />);
+  expect(screen.getByTestId("ask-needs-endpoint")).toBeInTheDocument();
+  expect(screen.queryByTestId("hq-hints")).toBeNull();
+});
+
+test("hints leave with the first question (#2265)", async () => {
+  freshHints();
+  answerWith({ answer: "ok" });
+  mount(<AskConsole configured />);
+  expect(screen.getByTestId("hq-hints")).toBeInTheDocument();
+  await userEvent.type(screen.getByTestId("composer-input"), "x");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByTestId("ask-answer");
+  expect(screen.queryByTestId("hq-hints")).toBeNull();
+});
+
+test.each([
+  ["a tap", async (b: HTMLElement) => userEvent.click(b)],
+  ["Enter", async (b: HTMLElement) => { b.focus(); await userEvent.keyboard("{Enter}"); }],
+  ["Space", async (b: HTMLElement) => { b.focus(); await userEvent.keyboard(" "); }],
+])("%s on a hint fills and focuses the composer and sends nothing (#2265)", async (_how, act) => {
+  freshHints();
+  mount(<AskConsole configured />);
+  const button = screen.getAllByTestId("hq-hint")[1];
+  const text = HINTS.find((h) => h.id === button.getAttribute("data-hint"))!.text;
+  const before = apiCalls();
+  await act(button);
+  const input = screen.getByTestId("composer-input") as HTMLTextAreaElement;
+  await waitFor(() => expect(input).toHaveValue(text));
+  await waitFor(() => expect(input).toHaveFocus());
+  expect(input.selectionStart).toBe(text.length);
+  expect(apiCalls()).toEqual(before); // zero requests: nothing is asked until Send
+});
+
+test("a typed draft locks the hints, says why in plain view, and is never overwritten (#2265)", async () => {
+  freshHints();
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "my own words");
+  expect(screen.getByTestId("hq-hints-locked")).toHaveTextContent("Clear your draft to use a hint.");
+  for (const b of screen.getAllByTestId("hq-hint")) expect(b).toBeDisabled();
+  await userEvent.click(screen.getAllByTestId("hq-hint")[0]);
+  expect(input).toHaveValue("my own words");
+  await userEvent.clear(input);
+  await waitFor(() => expect(screen.queryByTestId("hq-hints-locked")).toBeNull());
+  for (const b of screen.getAllByTestId("hq-hint")) expect(b).toBeEnabled();
+});
+
+test("a staged file alone locks the hints too (#2265)", async () => {
+  freshHints();
+  const upload = vi.fn(() => new Promise<never>(() => {}));
+  (api as unknown as { askUploadAttachment: unknown }).askUploadAttachment = upload;
+  try {
+    mount(<AskConsole configured />);
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("ask-attach-input"), { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByTestId("hq-hints-locked")).toBeInTheDocument());
+    expect(screen.getByTestId("composer-input")).toHaveValue("");
+    for (const b of screen.getAllByTestId("hq-hint")) expect(b).toBeDisabled();
+  } finally {
+    delete (api as unknown as { askUploadAttachment?: unknown }).askUploadAttachment;
+  }
+});
+
+test("a re-render keeps the set and records nothing; New conversation shows a new set (#2265)", async () => {
+  freshHints();
+  const { rerender } = mount(<AskConsole configured />);
+  const first = hintIds();
+  const stored = window.localStorage.getItem(STORAGE_KEY);
+  rerender(
+    <MemoryRouter>
+      <AskConsole configured />
+    </MemoryRouter>,
+  );
+  expect(hintIds()).toEqual(first);
+  expect(window.localStorage.getItem(STORAGE_KEY)).toBe(stored);
+  // New conversation is offered once the thread has a question; it returns to an empty thread.
+  answerWith({ answer: "ok" });
+  await userEvent.type(screen.getByTestId("composer-input"), "x");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByTestId("ask-answer");
+  await userEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  await waitFor(() => expect(screen.getAllByTestId("hq-hint")).toHaveLength(3));
+  for (const id of hintIds()) expect(first).not.toContain(id);
+});
+
+test("Other ideas shows three different hints right away (#2265)", async () => {
+  freshHints();
+  mount(<AskConsole configured />);
+  const first = hintIds();
+  await userEvent.click(screen.getByTestId("hq-hints-more"));
+  for (const id of hintIds()) expect(first).not.toContain(id);
+});
+
+test("the sidebar stays mounted while closed, yet each reopen shows a new set (#2265)", async () => {
+  freshHints();
+  const { rerender } = mount(<AskConsole configured visible />);
+  const first = hintIds();
+  const again = (visible: boolean) =>
+    rerender(
+      <MemoryRouter>
+        <AskConsole configured visible={visible} />
+      </MemoryRouter>,
+    );
+  again(false);
+  expect(hintIds()).toEqual(first); // closing changes nothing on screen
+  again(true);
+  await waitFor(() => expect(hintIds()).not.toEqual(first));
+  for (const id of hintIds()) expect(first).not.toContain(id);
+});

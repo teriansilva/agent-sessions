@@ -105,6 +105,7 @@ import { askAgainText, foldable, foldTally, specialistWatch } from "./specialist
 import { AttachmentList } from "./AskAttachments";
 import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
+import { HqHints } from "./HqHints";
 import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
@@ -1712,6 +1713,27 @@ export function AskConsole({
     setPrefill((cur) => ({ key: (cur?.key ?? 0) + 1, text: `Step ${n}: ` }));
     window.setTimeout(() => inputRef.current?.focus(), 0);
   };
+  /** Each time the console comes into view (the sidebar opening; the page is always in view), the
+   *  hints get a new set (#2265): the sidebar stays MOUNTED while closed, so a remount alone would
+   *  show the same three on every reopen. Adjusted while rendering, as React prescribes. */
+  const [opens, setOpens] = useState(0);
+  const [hintsInView, setHintsInView] = useState(visible);
+  if (visible !== hintsInView) {
+    setHintsInView(visible);
+    if (visible) setOpens((n) => n + 1);
+  }
+  /** A hint (#2265) fills the EMPTY composer and focuses it, caret at the end. Never sends: the
+   *  hints are disabled while a draft is in the box, so `prefill` only ever lands in an empty one. */
+  const pickHint = (text: string) => {
+    if (hasDraft) return;
+    setPrefill((cur) => ({ key: (cur?.key ?? 0) + 1, text }));
+    window.setTimeout(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }, 0);
+  };
   const endSteps = async (listId: string) => {
     if (!cid || stepsEnding) return;
     setStepsEnding(true);
@@ -1902,6 +1924,11 @@ export function AskConsole({
               Ask about anything your sessions and missions hold — answers are
               read from the transcripts this install can already see.
             </p>
+            {configured ? (
+              /* Keyed by thread and by each time the console comes into view: New conversation
+                 and every reopen of the sidebar remount it, so each open shows a new set. */
+              <HqHints key={`${thread}:${opens}`} locked={hasDraft} onPick={pickHint} />
+            ) : null}
             {!configured ? (
               <p className={a.needsEndpoint} data-testid="ask-needs-endpoint">
                 Ask needs an AI endpoint — it has no local fallback. Set one up

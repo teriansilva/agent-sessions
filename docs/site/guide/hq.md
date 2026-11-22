@@ -350,6 +350,24 @@ keeps the last **50** conversations for **30 days**. What it
 stores is your questions and its answers — never the screens or transcripts it read to answer —
 and any text that looks like a password or a token is stored as *withheld*.
 
+## Hints in an empty conversation
+
+An empty HQ conversation shows **Try asking HQ**: three example questions under the greeting, so you
+meet what HQ can do while you use it. One is always a question the [manual](#ask-hq-how-battlelab-works)
+answers; the other two come from different areas (sessions, missions, starting work, memory, the
+Library, artifacts, usage, automations, the map).
+
+- **Something new each time.** Each time an empty conversation opens (the sidebar opening, the HQ
+  page, **New conversation**) you get the three you have seen least recently. The manual hint goes
+  through every manual question before one comes back. **↻ Other ideas** shows the next three at
+  once.
+- **A tap never sends.** It puts the question in the box and focuses it; edit it or press **Send**.
+  The keyboard works too: Tab to a hint, then Enter or Space.
+- **Your draft wins.** While the box holds text or a staged file, the hints are greyed out and say
+  "Clear your draft to use a hint." They never overwrite what you typed.
+- Which hints you have seen is remembered in this browser only; nothing is sent. Without an AI
+  endpoint there are no hints, because asking can't work yet.
+
 ## Ask HQ how BattleLab works
 
 HQ can explain BattleLab itself: how a feature works, where a setting lives, how to set
@@ -716,5 +734,5 @@ With an endpoint that does use tools, HQ decides by itself whether to search, an
 settings change nothing.
 
 ::: info Verified against
-`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events, _prefilter_hits`; `src/agent_sessions/ask_orchestrator.py § _route, _no_tools_turn`; `src/agent_sessions/docs_index.py § CHUNK_MAX, SEARCH_MAX, resolve_root`; `src/agent_sessions/ask_docs.py § ROUTED_HITS, ROUTED_CONTEXT_MAX, NOT_COVERED`; `src/agent_sessions/prefs.py § HQ_ROUTE_DEFAULTS`; `web/src/routes/HqRouteSettings.tsx`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
+`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events, _prefilter_hits`; `src/agent_sessions/ask_orchestrator.py § _route, _no_tools_turn`; `web/src/components/ask/hqHints.ts § HINTS, pickHints, recordShown`; `src/agent_sessions/docs_index.py § CHUNK_MAX, SEARCH_MAX, resolve_root`; `src/agent_sessions/ask_docs.py § ROUTED_HITS, ROUTED_CONTEXT_MAX, NOT_COVERED`; `src/agent_sessions/prefs.py § HQ_ROUTE_DEFAULTS`; `web/src/routes/HqRouteSettings.tsx`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
 :::

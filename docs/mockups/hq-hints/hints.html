@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HQ hints mockup</title>
+<link rel="stylesheet" href="../../../web/src/tokens.css">
+<link rel="stylesheet" href="../../../web/src/theme/fonts.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: #2a2c31;
+    font-family: "Inter", "DejaVu Sans", "Liberation Sans", sans-serif;
+    padding: 28px;
+  }
+  button, input, textarea { font-family: inherit; font-size: inherit; line-height: inherit; color: inherit; }
+  .board { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .cap {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: #c9ccd2; margin: 0 0 8px;
+  }
+  .frame { display: flex; flex-direction: column; }
+  /* --- the HQ surface ------------------------------------------------------------------ */
+  .hq {
+    background: var(--bg-0); color: var(--text-1);
+    display: flex; flex-direction: column;
+    border: 1px solid var(--line-strong);
+  }
+  .hq.desk { width: 440px; height: 720px; }
+  .hq.phone { width: 390px; height: 780px; }
+  .head {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 52px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-1);
+  }
+  .head .title { font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: .08em; }
+  .head .switch { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+  .head .sp { flex: 1; }
+  .head .ico { width: 44px; height: 44px; display: grid; place-items: center; color: var(--text-2); font-size: 18px; }
+  .pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 0 18px; }
+  .intro { margin-block: auto; padding-block: 24px; }
+  .greeting { color: var(--text-2); font-size: 14px; line-height: 1.5; margin: 0 0 22px; }
+  /* the hints block */
+  .hints-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .hints-label {
+    font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-2);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .hints-label::before { content: ""; width: 6px; height: 6px; background: var(--accent); }
+  .more {
+    min-height: 44px; padding: 0 10px; border: 0; background: transparent; cursor: pointer;
+    font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: .12em;
+    text-transform: uppercase; color: var(--text-2);
+  }
+  .hint {
+    --c: 8px;
+    position: relative; isolation: isolate;
+    display: grid; grid-template-columns: 1fr; gap: 3px;
+    width: 100%; min-height: 56px; margin: 0 0 8px; padding: 9px 14px 10px 16px;
+    border: 0; background: transparent; text-align: left; cursor: pointer;
+  }
+  .hint::before, .hint::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  }
+  .hint::before { background: var(--line-strong); }
+  .hint::after { inset: 1px; background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1)); }
+  .hint .kind {
+    font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-2);
+  }
+  .hint .q { font-size: 14px; line-height: 1.35; color: var(--text-1); }
+  .hint.picked::before { background: var(--hud); }
+  .hint.kbd { outline: 2px solid var(--accent-text); outline-offset: -3px; }
+  .hint.kbd::before { background: var(--hud); }
+  .hint[disabled] { cursor: default; }
+  .hint[disabled] .q, .hint[disabled] .kind { color: var(--text-3); }
+  .hint[disabled]::after { background: color-mix(in srgb, var(--text-1) 2%, var(--bg-1)); }
+  .lock { font-size: 13px; color: var(--text-2); margin: 2px 0 10px; display: flex; gap: 8px; align-items: center; }
+  .lock::before { content: ""; width: 6px; height: 6px; background: var(--line-strong); flex: none; }
+  .note { font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: .1em; color: var(--text-2); margin-top: 6px; text-transform: uppercase; }
+  .needs {
+    border-left: 3px solid var(--line-strong); padding: 8px 12px; color: var(--text-2); font-size: 13px; line-height: 1.45;
+  }
+  .needs a { color: var(--hud); }
+  /* composer */
+  .dock { padding: 12px 14px 14px; border-top: 1px solid var(--line); background: var(--bg-1); }
+  .input {
+    min-height: 64px; padding: 10px 12px; font-size: 16px; line-height: 1.4;
+    background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--text-3);
+  }
+  .input.filled { color: var(--text-1); border-color: var(--hud); }
+  .caret { display: inline-block; width: 2px; height: 1.1em; background: var(--hud); vertical-align: -2px; margin-left: 1px; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .foot .k { font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: .12em; color: var(--text-3); text-transform: uppercase; }
+  .send {
+    min-width: 88px; height: 44px; border: 0; cursor: pointer;
+    background: var(--accent); color: #14161a;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  }
+  .send[disabled] { background: var(--line-strong); color: var(--text-3); }
+  .callout {
+    max-width: 300px; color: #e8e9ec; font-size: 13px; line-height: 1.45; margin-top: 10px;
+    border-left: 3px solid #ffb000; padding: 6px 10px; background: rgba(255,255,255,.04);
+  }
+</style>
+</head>
+<body>
+<div class="board" id="board"></div>
+<template id="hq">
+  <div class="frame">
+    <p class="cap"></p>
+    <div class="hq">
+      <div class="head">
+        <span class="title">HQ</span><span class="switch">New conversation ▾</span>
+        <span class="sp"></span><span class="ico">＋</span><span class="ico">✕</span>
+      </div>
+      <div class="pane">
+        <div class="intro">
+          <p class="greeting">Ask about anything your sessions and missions hold — answers are read from the transcripts this install can already see.</p>
+          <div class="slot"></div>
+        </div>
+      </div>
+      <div class="dock">
+        <div class="input">Ask about your sessions and missions…</div>
+        <div class="foot"><span class="k">Enter sends · Shift+Enter new line</span><button class="send" disabled>Send</button></div>
+      </div>
+    </div>
+  </div>
+</template>
+<script>
+  const SETS = {
+    a: [
+      ["Manual", "How do I pair Home Free with my phone?"],
+      ["Sessions", "Which sessions need me right now?"],
+      ["Library", "Which playbooks do I have for code review?"],
+    ],
+    b: [
+      ["Manual", "What is a playbook flow, and when would I use one?"],
+      ["Missions", "How far along is the release mission, and what is it waiting on?"],
+      ["Start work", "Start a Claude session in the api project to update the dependencies"],
+    ],
+    c: [
+      ["Manual", "How do I set the session limit?"],
+      ["Memory", "Remember that we only deploy on Fridays before 14:00"],
+      ["Artifacts", "Give me the link to the report an agent published yesterday"],
+    ],
+  };
+  function hintsBlock(set, picked, locked, kbd) {
+    const rows = SETS[set].map(([k, q], i) =>
+      `<button class="hint${picked === i ? " picked" : ""}${kbd === i ? " kbd" : ""}"${locked ? " disabled" : ""}><span class="kind">${k}</span><span class="q">${q}</span></button>`
+    ).join("");
+    const lock = locked ? `<p class="lock">Clear your draft to use a hint.</p>` : "";
+    return `<div class="hints-head"><span class="hints-label">Try asking HQ</span><button class="more">↻ Other ideas</button></div>${lock}${rows}`;
+  }
+  function frame({ cap, theme, phone, set, picked, needs, callout, draft, kbd }) {
+    const t = document.getElementById("hq").content.cloneNode(true);
+    t.querySelector(".cap").textContent = cap;
+    const hq = t.querySelector(".hq");
+    hq.setAttribute("data-theme-scope", theme);
+    hq.classList.add(phone ? "phone" : "desk");
+    const slot = t.querySelector(".slot");
+    if (needs) {
+      slot.innerHTML = `<p class="needs">Ask needs an AI endpoint — it has no local fallback. Set one up in <a>Settings → Endpoint &amp; model</a>, then come back.</p>`;
+      t.querySelector(".input").textContent = "Needs an AI endpoint";
+    } else {
+      slot.innerHTML = hintsBlock(set, picked, !!draft, kbd);
+    }
+    if (draft) {
+      const inp = t.querySelector(".input");
+      inp.classList.add("filled");
+      inp.innerHTML = draft + '<span class="caret"></span>';
+      t.querySelector(".send").removeAttribute("disabled");
+    }
+    if (picked !== undefined) {
+      const inp = t.querySelector(".input");
+      inp.classList.add("filled");
+      inp.innerHTML = SETS[set][picked][1] + '<span class="caret"></span>';
+      t.querySelector(".send").removeAttribute("disabled");
+    }
+    if (callout) {
+      const c = document.createElement("p");
+      c.className = "callout"; c.innerHTML = callout;
+      t.querySelector(".frame").appendChild(c);
+    }
+    document.getElementById("board").appendChild(t);
+  }
+  const which = new URLSearchParams(location.search).get("board") || "main";
+  if (which === "main") {
+    frame({ cap: "Desktop · dark · sidebar, empty thread", theme: "dark", set: "a" });
+    frame({ cap: "Desktop · light", theme: "light", set: "a" });
+    frame({ cap: "Phone · dark", theme: "dark", phone: true, set: "a" });
+    frame({ cap: "Phone · light", theme: "light", phone: true, set: "a" });
+  } else {
+    frame({ cap: "Open #2 · a new set", theme: "dark", set: "b",
+      callout: "Each time an empty thread opens: the three least recently shown hints, one always from the manual, no two of a kind. Device-local, nothing sent." });
+    frame({ cap: "Tapped a hint", theme: "dark", set: "b", picked: 2,
+      callout: "A tap puts the question in the composer and focuses it. Nothing is sent: edit it, or press Send." });
+    frame({ cap: "Light · ↻ Other ideas", theme: "light", set: "c",
+      callout: "↻ Other ideas shows the next three right away." });
+    frame({ cap: "Draft protects · dark", theme: "dark", set: "b", draft: "Why did the nightly build fail",
+      callout: "The composer holds text (or a staged file): the hints are disabled and say why in plain view, not only on hover. A typed draft is never overwritten." });
+    frame({ cap: "Keyboard focus · light", theme: "light", set: "c", kbd: 1,
+      callout: "Tab reaches each hint (native buttons): the inset 2px --accent-text ring and the --hud edge. Enter or Space fills the composer, the same as a tap." });
+    frame({ cap: "No AI endpoint", theme: "dark", needs: true,
+      callout: "No endpoint: no hints. Asking can't work yet, so the setup note stands alone." });
+  }
+</script>
+</body>
+</html>

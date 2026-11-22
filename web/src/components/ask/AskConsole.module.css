@@ -1215,3 +1215,142 @@
   font-weight: 600;
   color: var(--text-1);
 }
+
+/* Hints in the empty thread (#2265): "TRY ASKING HQ" and three example questions. Each is a
+ * full-width clipped-corner button on the chip face (>= 56px: the 44px target rule), a mono kind
+ * label above the question. No status colour; hover and focus move the edge to --hud, focus adds
+ * the inset ring (docs/design.md). */
+.hqHints {
+  min-width: 0;
+  margin-top: var(--sp-5);
+}
+.hqHintsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.hqHintsLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The flat 6px accent square: the non-status bullet (never an LED). */
+.hqHintsLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.hqHintsMore {
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hqHintsMore:hover {
+  color: var(--text-1);
+}
+.hqHintsMore:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hqHintsLock {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.hqHintsLock::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--line-strong);
+}
+.hqHintList {
+  display: grid;
+  /* A shrinkable column: a long question wraps inside the panel, never widens it. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hqHint {
+  --c: 8px;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 9px 14px 10px 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.hqHint::before,
+.hqHint::after {
+  content: "";
+  position: absolute;
+  z-index: var(--z-under);
+  pointer-events: none;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+}
+.hqHint::before {
+  inset: 0;
+  background: var(--line-strong);
+}
+.hqHint::after {
+  inset: 1px;
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+}
+.hqHint:not(:disabled):hover::before,
+.hqHint:focus-visible::before {
+  background: var(--hud);
+}
+.hqHint:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hqHint:disabled {
+  cursor: default;
+}
+.hqHintKind {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hqHintText {
+  font-size: var(--fs-body);
+  line-height: 1.35;
+  color: var(--text-1);
+}
+.hqHint:disabled .hqHintKind,
+.hqHint:disabled .hqHintText {
+  color: var(--text-3);
+}
