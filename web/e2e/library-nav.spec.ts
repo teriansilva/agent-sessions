@@ -55,6 +55,7 @@ test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills
     "Memory",
     "Artifacts",
     "Automations",
+    "Actions",
     "Webhooks",
     "Skills",
     "Specialists",

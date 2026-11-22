@@ -1,0 +1,329 @@
+{
+  "actions": [
+    {
+      "id": "start_mission",
+      "label": "Start a mission",
+      "category": "battlelab",
+      "description": "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts.",
+      "effect": "write-battlelab",
+      "executor": "start_mission",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "instruction",
+          "type": "message",
+          "label": "What the mission should do",
+          "required": true
+        },
+        {
+          "name": "autonomy",
+          "type": "choice",
+          "label": "What it may do on its own",
+          "required": false,
+          "choices": [
+            "propose",
+            "dispatch",
+            "dispatch_auto_choose"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mission",
+          "type": "mission",
+          "label": "The mission it created"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "start_session",
+      "label": "Start a session",
+      "category": "battlelab",
+      "description": "Starts a new agent session in a folder with your first message: one agent, one message.",
+      "effect": "write-battlelab",
+      "executor": "start_session",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "engine",
+          "type": "agent",
+          "label": "Agent",
+          "required": true
+        },
+        {
+          "name": "folder",
+          "type": "folder",
+          "label": "Folder",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "First message",
+          "required": true
+        },
+        {
+          "name": "bypass",
+          "type": "yes_no",
+          "label": "Skip permission prompts",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "session",
+          "type": "session",
+          "label": "The session it started"
+        }
+      ],
+      "requires": [
+        {
+          "id": "api_agent",
+          "words": "an API agent that can start unattended",
+          "ok": true,
+          "detail": "an API agent is ready"
+        }
+      ],
+      "available": true,
+      "used_by": 3
+    },
+    {
+      "id": "send_to_session",
+      "label": "Message a session",
+      "category": "battlelab",
+      "description": "Sends a message to an existing session that is already running.",
+      "effect": "write-battlelab",
+      "executor": "send_to_session",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "session_key",
+          "type": "session",
+          "label": "Session",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [],
+      "requires": [
+        {
+          "id": "running_session",
+          "words": "a running API session to message",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 1
+    },
+    {
+      "id": "forge_review_loop",
+      "label": "Review loop",
+      "category": "forge",
+      "description": "A specialist reviews each issue and PR on a Forgejo repository, round by round, until it is approved or out of rounds.",
+      "effect": "write-battlelab",
+      "executor": "forge_review_loop",
+      "triggers": [
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "repo",
+          "type": "repo",
+          "label": "Repository",
+          "required": true
+        },
+        {
+          "name": "reviewer",
+          "type": "specialist",
+          "label": "Reviewer",
+          "required": true
+        },
+        {
+          "name": "reviewer_login",
+          "type": "forge_login",
+          "label": "The reviewer's forge login",
+          "required": true
+        },
+        {
+          "name": "legs",
+          "type": "choice",
+          "label": "What it reviews",
+          "required": false,
+          "choices": [
+            "issues",
+            "pulls"
+          ],
+          "many": true
+        },
+        {
+          "name": "max_rounds",
+          "type": "number",
+          "label": "Rounds at most",
+          "required": false
+        },
+        {
+          "name": "return_to_origin",
+          "type": "yes_no",
+          "label": "Return the verdict to its session",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "review",
+          "type": "session",
+          "label": "The reviewer's session"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "forge",
+          "words": "a Forgejo set up in Settings → Forge",
+          "ok": true,
+          "detail": "Forgejo is set up"
+        },
+        {
+          "id": "reviewer",
+          "words": "a reviewer specialist",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 2
+    },
+    {
+      "id": "tell_hq",
+      "label": "Tell HQ",
+      "category": "battlelab",
+      "description": "Puts a message in your notifications; HQ may comment on it but never acts on it.",
+      "effect": "notify",
+      "executor": "tell_hq",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "notification",
+          "type": "notification",
+          "label": "The notification"
+        }
+      ],
+      "requires": [],
+      "available": true,
+      "used_by": 4
+    }
+  ],
+  "categories": [
+    {
+      "id": "battlelab",
+      "label": "BattleLab"
+    },
+    {
+      "id": "messaging",
+      "label": "Messaging"
+    },
+    {
+      "id": "forge",
+      "label": "Forge"
+    },
+    {
+      "id": "files",
+      "label": "Files"
+    },
+    {
+      "id": "run_locally",
+      "label": "Run locally"
+    },
+    {
+      "id": "web",
+      "label": "Web"
+    }
+  ],
+  "effects": [
+    {
+      "id": "read",
+      "level": 1,
+      "label": "Read"
+    },
+    {
+      "id": "notify",
+      "level": 2,
+      "label": "Notify"
+    },
+    {
+      "id": "write-battlelab",
+      "level": 3,
+      "label": "Write · BattleLab"
+    },
+    {
+      "id": "write-external",
+      "level": 4,
+      "label": "Write · external"
+    },
+    {
+      "id": "run-local",
+      "level": 5,
+      "label": "Run · local"
+    }
+  ]
+}

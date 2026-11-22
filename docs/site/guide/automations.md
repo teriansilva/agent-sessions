@@ -51,7 +51,9 @@ delivery is flagged in amber: the condition may never match.
 
 ### 3. What
 
-Choose what it does:
+Choose what it does from a short, searchable list: the same actions **Library → Actions** shows
+(see [Actions](/guide/actions) for what each effect class means). The list holds only what the
+trigger from step 1 can start:
 
 - **Start a session**: an agent, a folder and a first message. The model is the agent's default.
   **Permission bypass** is under *Model and permissions*; turning it on asks for your consent again.

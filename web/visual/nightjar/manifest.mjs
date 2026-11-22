@@ -411,6 +411,30 @@ const libPlan = (o) => ({
   summary: "Design note, API change with its tests, the web change behind it, one review, then both pull requests.",
   origin_kind: "mission", created_at: 1, updated_at: 1, counts: { objectives: 4, slots: 2, steps: 11 }, ...o,
 });
+// The action gallery (#2248 P1), shaped like `actions/registry.gallery()`: the five, one needing an
+// API agent that isn't set up.
+const LIB_ACTION = (id, label, category, effect, description, triggers, requires = [], used_by = 0) => ({
+  id, label, category, description, effect, executor: id, triggers, inputs: [], outputs: [], requires,
+  available: !requires.some((r) => r.ok === false), used_by,
+});
+const LIB_ACTIONS = {
+  actions: [
+    LIB_ACTION("start_mission", "Start a mission", "battlelab", "write-battlelab", "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts.", ["once", "schedule", "manual"], [{ id: "project", words: "a project", ok: null, detail: "" }]),
+    LIB_ACTION("start_session", "Start a session", "battlelab", "write-battlelab", "Starts a new agent session in a folder with your first message: one agent, one message.", ["once", "schedule", "manual", "webhook"], [{ id: "api_agent", words: "an API agent that can start unattended", ok: false, detail: "needs an API agent that can start unattended (Settings → Agents)" }], 3),
+    LIB_ACTION("send_to_session", "Message a session", "battlelab", "write-battlelab", "Sends a message to an existing session that is already running.", ["once", "schedule", "manual", "webhook"], [{ id: "running_session", words: "a running API session to message", ok: null, detail: "" }], 1),
+    LIB_ACTION("forge_review_loop", "Review loop", "forge", "write-battlelab", "A specialist reviews each issue and PR on a Forgejo repository, round by round, until it is approved or out of rounds.", ["webhook"], [{ id: "forge", words: "a Forgejo set up in Settings → Forge", ok: true, detail: "Forgejo is set up" }], 2),
+    LIB_ACTION("tell_hq", "Tell HQ", "battlelab", "notify", "Puts a message in your notifications; HQ may comment on it but never acts on it.", ["once", "schedule", "manual", "webhook"], [], 4),
+  ],
+  categories: [
+    { id: "battlelab", label: "BattleLab" }, { id: "messaging", label: "Messaging" }, { id: "forge", label: "Forge" },
+    { id: "files", label: "Files" }, { id: "run_locally", label: "Run locally" }, { id: "web", label: "Web" },
+  ],
+  effects: [
+    { id: "read", level: 1, label: "Read" }, { id: "notify", level: 2, label: "Notify" },
+    { id: "write-battlelab", level: 3, label: "Write · BattleLab" }, { id: "write-external", level: 4, label: "Write · external" },
+    { id: "run-local", level: 5, label: "Run · local" },
+  ],
+};
 const LIB_PLANS = {
   plans: [
     libPlan({}),
@@ -1273,6 +1297,18 @@ export const SWEEP = [
     present: "[data-testid='specialist-card-retired']",
   },
   { id: "route:specialists-empty", path: "/library/specialists", api: { "/api/specialists": { ...LIB_SPECIALISTS, specialists: [] } }, present: "[data-testid='library-import-tile']" },
+  // Library → Actions (#2248 P1): the gallery (cards, chips, effect pips, a requirement not met),
+  // its failed read, and the automation wizard's What step picking from it.
+  { id: "route:actions", path: "/library/actions", api: { "/api/actions": LIB_ACTIONS }, present: "[data-testid='action-card']" },
+  { id: "route:actions-error", path: "/library/actions", api: { "/api/actions": { status: 503, json: { detail: "The automations store is unavailable." } } }, expect: "alert" },
+  {
+    id: "route:automation-wizard-what",
+    path: "/mission/automations/new",
+    mock: { automationsShowcase: true },
+    api: { "/api/actions": LIB_ACTIONS },
+    open: [{ role: "button", name: "Next" }],
+    present: "[data-testid='action-kind']",
+  },
   { id: "route:mission-plans", path: "/library/mission-plans", api: { "/api/mission-plans": LIB_PLANS }, present: "[data-testid='mission-plan-card-plan-1a2b3c4d']" },
   { id: "route:mission-plans-empty", path: "/library/mission-plans", api: { "/api/mission-plans": { plans: [] } }, present: "[data-testid='mission-plans-empty']" },
   { id: "route:mission-plan-detail", path: "/library/mission-plans/plan-1a2b3c4d", api: { "/api/mission-plans/plan-1a2b3c4d": LIB_PLAN_DETAIL }, present: "h1" },

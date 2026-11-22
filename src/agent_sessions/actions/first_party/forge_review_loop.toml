@@ -1,0 +1,58 @@
+# A bundled action manifest (#2248 P1). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py. Its inputs are the stored action's own fields, unchanged.
+contract = 1
+id = "forge_review_loop"
+label = "Review loop"
+category = "forge"
+description = "A specialist reviews each issue and PR on a Forgejo repository, round by round, until it is approved or out of rounds."
+effect = "write-battlelab"
+executor = "forge_review_loop"
+requires = ["project", "forge", "reviewer"]
+triggers = ["webhook"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Project"
+required = true
+
+[[inputs]]
+name = "repo"
+type = "repo"
+label = "Repository"
+required = true
+
+[[inputs]]
+name = "reviewer"
+type = "specialist"
+label = "Reviewer"
+required = true
+
+[[inputs]]
+name = "reviewer_login"
+type = "forge_login"
+label = "The reviewer's forge login"
+required = true
+
+[[inputs]]
+name = "legs"
+type = "choice"
+label = "What it reviews"
+choices = ["issues", "pulls"]
+many = true
+
+[[inputs]]
+name = "max_rounds"
+type = "number"
+label = "Rounds at most"
+
+[[inputs]]
+name = "return_to_origin"
+type = "yes_no"
+label = "Return the verdict to its session"
+
+[[outputs]]
+name = "review"
+type = "session"
+label = "The reviewer's session"

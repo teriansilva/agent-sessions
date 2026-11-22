@@ -1,0 +1,22 @@
+# A bundled action manifest (#2248 P1). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py. Its inputs are the stored action's own fields, unchanged.
+contract = 1
+id = "tell_hq"
+label = "Tell HQ"
+category = "battlelab"
+description = "Puts a message in your notifications; HQ may comment on it but never acts on it."
+effect = "notify"
+executor = "tell_hq"
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "message"
+type = "message"
+label = "Message"
+required = true
+
+[[outputs]]
+name = "notification"
+type = "notification"
+label = "The notification"

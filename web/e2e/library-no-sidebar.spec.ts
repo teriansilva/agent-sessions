@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { AUTOMATIONS_PATH, NEW_SESSION_PATH, SKILLS_PATH, WEBHOOKS_PATH } from "../src/lib/routes";
+import { ACTIONS_PATH, AUTOMATIONS_PATH, NEW_SESSION_PATH, SKILLS_PATH, WEBHOOKS_PATH } from "../src/lib/routes";
 import { mockAutomations } from "./automations";
 
 /** Skills and Automations render WITHOUT a sidebar, like the rest of the Library (operator,
@@ -24,6 +24,8 @@ const ROUTES: [string, string][] = [
   // #2221: Webhooks, and its subtree.
   ["Webhooks", WEBHOOKS_PATH],
   ["a new webhook", `${WEBHOOKS_PATH}/new`],
+  // #2248: the action gallery.
+  ["Actions", ACTIONS_PATH],
 ];
 
 for (const [name, path] of ROUTES) {

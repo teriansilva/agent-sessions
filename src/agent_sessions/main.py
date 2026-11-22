@@ -95,6 +95,7 @@ from .auth import (
 )
 from .devicelink import DeviceLinkStore
 from .federation.service import Federation
+from .routes import actions as actions_routes
 from .routes import ai_review as ai_review_routes
 from .routes import artifacts as artifacts_routes
 from .routes import ask as ask_routes
@@ -915,6 +916,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
     )
+    # Library → Actions (#2248 P1): the action gallery, read-only, same login as automations.
+    actions_routes.register(app, logged_in=_logged_in)
     # The review loop's Forgejo webhook (#2202): NO cookie, CSRF or Origin — it authenticates
     # itself by the delivery's HMAC signature and answers one uniform 404 otherwise.
     hooks_routes.register(app, registry=registry)

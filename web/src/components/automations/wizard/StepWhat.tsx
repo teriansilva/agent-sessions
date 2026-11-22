@@ -6,7 +6,10 @@
  *  A template message's fields each take a FIXED value or, on a webhook from the list, a value FROM
  *  THE DELIVERY: one field of it (never a list), read as a type (number, choice from a list, short
  *  text, yes/no). A value that fails its type refuses that delivery and nothing starts. Only the
- *  template's own typed fields can be filled this way — never a library field, never a secret. */
+ *  template's own typed fields can be filled this way — never a library field, never a secret.
+ *
+ *  The action is picked from the action gallery (#2248 P1, `GET /api/actions`): a compact,
+ *  searchable list of what this trigger can start, the same list Library → Actions shows. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -33,23 +36,25 @@ import type { Session, Template, TemplateVariable } from "../../../types/api";
 import type { AutomationList, Autonomy, MappedType } from "../../../types/automations";
 import type { ShapeField } from "../../../types/webhooks";
 import styles from "../automations.module.css";
-import { Cards, Fold, Seg, StepIssues, type CardOption, type StepProps } from "./bits";
+import { ActionPicker } from "../../actions/ActionBits";
+import type { useActions } from "../../actions/useActions";
+import { offeredActions } from "../../../lib/actions";
+import { Fold, Seg, StepIssues, type StepProps } from "./bits";
 import { ReviewLoopFields } from "./ReviewLoopFields";
 import w from "./wizard.module.css";
 
 type Kind = EditorForm["actionKind"];
 
-const CARD: Record<Kind, CardOption<Kind>> = {
-  start_mission: { value: "start_mission", title: "Start a mission", sub: "HQ drafts it in a project" },
-  start_session: { value: "start_session", title: "Start a session", sub: "one agent, one message" },
-  send_to_session: { value: "send_to_session", title: "Message a session", sub: "an existing one" },
-  forge_review_loop: {
-    value: "forge_review_loop",
-    title: "Review loop",
-    sub: "a specialist reviews each issue and PR",
-  },
-  tell_hq: { value: "tell_hq", title: "Tell HQ", sub: "a message in your notifications; HQ may comment" },
-};
+/** The actions this wizard knows how to set up. The gallery (`GET /api/actions`) says which exist,
+ *  what each is called and which trigger starts it; an action this build has no fields for is not
+ *  offered (#2248 P1). */
+const KNOWN: readonly Kind[] = Object.keys({
+  start_mission: 1,
+  start_session: 1,
+  send_to_session: 1,
+  forge_review_loop: 1,
+  tell_hq: 1,
+} satisfies Record<Kind, 1>) as Kind[];
 
 export function StepWhat({
   form,
@@ -57,6 +62,7 @@ export function StepWhat({
   update,
   f,
   list,
+  actions,
   stored,
   projects,
   sessions,
@@ -72,6 +78,8 @@ export function StepWhat({
   warnings,
 }: StepProps & {
   list: AutomationList;
+  /** The action gallery, owned by the editor so its readiness holds the step (#2248 P1). */
+  actions: ReturnType<typeof useActions>;
   /** What the SAVED automation targets ("" for none, or a new one): a terminal target stays
    *  visible in its picker, stamped, though a new automation is offered API agents only. */
   stored: { engine: string; sessionKey: string };
@@ -98,11 +106,11 @@ export function StepWhat({
   // A review loop's own webhook starts only its loop — while it IS the trigger. On a schedule or Run
   // now the stored identity waits, for a switch back, and offers what those triggers can start.
   const legacy = legacyTrigger(form);
-  const kinds: Kind[] = legacy
-    ? ["forge_review_loop"]
-    : hook
-      ? ["start_session", "send_to_session", "forge_review_loop", "tell_hq"]
-      : ["start_mission", "start_session", "send_to_session", "tell_hq"];
+  // What it does comes from the action gallery (#2248 P1): the actions whose manifest says this
+  // trigger starts them, in the gallery's order. The server's check at save is the authority.
+  const offered = actions.gallery
+    ? offeredActions(actions.gallery.actions, form.triggerKind, legacy, KNOWN)
+    : [];
   const loop = form.actionKind === "forge_review_loop";
   const template = templates?.find((t) => t.id === form.templateId) ?? null;
   const mappable = listHook ? mappableFields(template) : [];
@@ -127,13 +135,40 @@ export function StepWhat({
 
   return (
     <>
-      <Cards<Kind>
-        label="What it does"
-        value={form.actionKind}
-        onChange={(v) => update((x) => withAction(x, v, maxConcurrent))}
-        testId="action-kind"
-        options={kinds.map((k) => CARD[k])}
-      />
+      {actions.error && (
+        <div className={`${styles.notice} ${styles.noticeBad}`} role="alert" data-testid="action-kind-error">
+          <strong>Couldn’t load the actions</strong>
+          <span>
+            {actions.error}. Nothing was changed
+            {actions.gallery ? "; the list below is the last one read" : ""}. Next waits until they load.
+          </span>
+          <div className={styles.noticeRow}>
+            <button type="button" className={styles.ghost} onClick={actions.reload} disabled={actions.loading}>
+              {actions.loading ? "Retrying…" : "Retry"}
+            </button>
+          </div>
+        </div>
+      )}
+      {actions.gallery && actions.loading && !actions.error && (
+        <p className={styles.hint} role="status" data-testid="action-kind-checking">
+          Checking the action list… Next waits for it.
+        </p>
+      )}
+      {actions.gallery ? (
+        <ActionPicker
+          gallery={actions.gallery}
+          offered={offered}
+          value={form.actionKind}
+          onChange={(v) => update((x) => withAction(x, v as Kind, maxConcurrent))}
+          testId="action-kind"
+        />
+      ) : (
+        !actions.error && (
+          <p className={styles.hint} role="status">
+            Loading actions…
+          </p>
+        )
+      )}
       <p className={styles.hint} data-testid="action-why">
         {legacy
           ? "Its own Forgejo webhook starts only its review loop."

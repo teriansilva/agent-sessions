@@ -69,6 +69,7 @@ import type {
 } from "../types/artifacts";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
+  ACTIONS_API,
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
   DIRECTION_PREVIEW_PATH,
@@ -91,6 +92,7 @@ import type {
   AutomationRun,
   WebhookSecret,
 } from "../types/automations";
+import type { ActionGallery } from "../types/actions";
 import type {
   Webhook,
   WebhookCreated,
@@ -3464,6 +3466,9 @@ export const api = {
    *  only; a rotated-out secret keeps working for 24 h. Never cached, never re-read. */
   newWebhookSecret: (id: string) =>
     mutateJson<WebhookSecret>("POST", `${autoPath(id)}/webhook-secret`),
+  // ---- actions (#2248 P1) ------------------------------------------------------------------------
+  /** The action gallery: manifest facts, requirements now and use. Read-only. */
+  actions: () => getJsonWithDetail<ActionGallery>(ACTIONS_API),
   // ---- webhooks (#2221) --------------------------------------------------------------------------
   webhooks: () => getJsonWithDetail<WebhookList>(WEBHOOKS_API),
   /** The webhook and its last delivery's SHAPE (field names + types). Never a secret. */

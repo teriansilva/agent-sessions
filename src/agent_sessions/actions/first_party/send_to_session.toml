@@ -1,0 +1,24 @@
+# A bundled action manifest (#2248 P1). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py. Its inputs are the stored action's own fields, unchanged.
+contract = 1
+id = "send_to_session"
+label = "Message a session"
+category = "battlelab"
+description = "Sends a message to an existing session that is already running."
+effect = "write-battlelab"
+executor = "send_to_session"
+requires = ["running_session"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "session_key"
+type = "session"
+label = "Session"
+required = true
+
+[[inputs]]
+name = "message"
+type = "message"
+label = "Message"
+required = true

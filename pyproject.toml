@@ -85,6 +85,7 @@ agent_sessions = [
     "plugins/catalog-signers",  # the agents-only catalog key (#2082); ships empty
     "playbooks/bundled/*/*.toml", "playbooks/bundled/*/*.md", "playbooks/bundled/*/flows/*.toml",
     "connectors/first_party/*.toml",  # the bundled connector manifests (#1750)
+    "actions/first_party/*.toml",  # the bundled action manifests (#2248)
     # The pages outside the SPA (#1596): the app's palette and primitives, emitted by
     # web/scripts/emit-page-tokens.mjs, plus their layout sheet and the self-hosted fonts.
     "static/*.js", "static/nightjar/*.css", "static/nightjar/fonts/*.woff2",

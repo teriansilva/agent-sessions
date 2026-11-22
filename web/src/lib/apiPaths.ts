@@ -18,6 +18,10 @@ export const AUTOMATION_ORIGINS_API = `${AUTOMATIONS_API}/origins`;
 export const WEBHOOKS_API = "/api/webhooks";
 export const webhookApiPath = (id: string) => `${WEBHOOKS_API}/${encodeURIComponent(id)}`;
 
+/** `GET` — Library → Actions (#2248 P1): every action an automation can take, with its manifest
+ *  facts, what it needs and how many automations use it. Read-only; the wizard picks from it too. */
+export const ACTIONS_API = "/api/actions";
+
 /** `POST` — stop one running HQ turn (#2076). It names the turn, so it can never end another. */
 export const askStopTurnPath = (cid: string, turnId: string) =>
   `/api/ask/conversations/${encodeURIComponent(cid)}/turns/${encodeURIComponent(turnId)}/stop`;

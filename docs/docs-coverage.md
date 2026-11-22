@@ -44,6 +44,7 @@ sub:mcp              ->  guide/mcp-servers                # Library → MCP serv
 sub:memory           ->  guide/memory                     # Library → Memory
 sub:artifacts        ->  gap #2250                        # Library → Artifacts
 sub:automations      ->  guide/automations                # Library → Automations
+sub:actions          ->  guide/actions                    # Library → Actions
 sub:webhooks         ->  guide/webhooks                   # Library → Webhooks
 sub:skills           ->  gap #2250                        # Library → Skills
 sub:specialists      ->  guide/specialists                # Library → Specialists

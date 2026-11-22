@@ -110,6 +110,7 @@ import {
   MCP_SERVER_ROUTE,
   WEBHOOKS_PATH,
   WEBHOOK_NEW_PATH,
+  ACTIONS_PATH,
   WEBHOOK_ROUTE,
   MEMORY_PATH,
   ARTIFACTS_PATH,
@@ -180,6 +181,7 @@ const McpServers = lazyWithReload(() => import("../routes/McpServers"), "mcp-ser
 const McpWizard = lazyWithReload(() => import("../routes/McpWizard"), "mcp-wizard");
 const McpServer = lazyWithReload(() => import("../routes/McpServer"), "mcp-server");
 const Webhooks = lazyWithReload(() => import("../routes/Webhooks"), "webhooks");
+const Actions = lazyWithReload(() => import("../routes/Actions"), "actions");
 const WebhookNew = lazyWithReload(() => import("../routes/WebhookNew"), "webhook-new");
 const WebhookDetail = lazyWithReload(() => import("../routes/WebhookDetail"), "webhook-detail");
 const Artifacts = lazyWithReload(() => import("../routes/Artifacts"), "artifacts");
@@ -451,7 +453,8 @@ function Layout() {
     location.pathname === AUTOMATIONS_PATH ||
     location.pathname.startsWith(`${AUTOMATIONS_PATH}/`) ||
     location.pathname === WEBHOOKS_PATH ||
-    location.pathname.startsWith(`${WEBHOOKS_PATH}/`);
+    location.pathname.startsWith(`${WEBHOOKS_PATH}/`) ||
+    location.pathname === ACTIONS_PATH;
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);
@@ -960,6 +963,7 @@ function Layout() {
                   <Route path={MCP_PATH} element={<McpServers />} />
                   <Route path={MCP_NEW_PATH} element={<McpWizard />} />
                   <Route path={MCP_SERVER_ROUTE} element={<McpServer />} />
+                  <Route path={ACTIONS_PATH} element={<Actions />} />
                   <Route path={WEBHOOKS_PATH} element={<Webhooks />} />
                   <Route path={WEBHOOK_NEW_PATH} element={<WebhookNew />} />
                   <Route path={WEBHOOK_ROUTE} element={<WebhookDetail />} />

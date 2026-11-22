@@ -1,0 +1,239 @@
+/* Library → Actions (#2248 P1): the gallery's card parts and the wizard's compact picker.
+ *
+ * The page, toolbar, grid and card frame are `library.module.css`'s (#2144); this sheet adds only
+ * what an action card has that others don't: the effect tag (pips + words), the icon box, the
+ * requirement line, and the picker's square option rows. The effect is a CLASS, never a state: its
+ * pips count how far it reaches and never take a status hue. Tokens only (docs/design.md v2). */
+
+/* ---- the effect tag: pips (level 1–5) and its words --------------------------------------- */
+.fx {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.pips {
+  display: inline-flex;
+  gap: 2px;
+}
+.pips i {
+  width: 4px;
+  height: 6px;
+  background: var(--line-strong);
+}
+.pips i.on {
+  background: currentColor;
+}
+
+/* ---- the card ------------------------------------------------------------------------------ */
+.cat {
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.top .fx {
+  margin-left: auto;
+}
+/* An action's line is its whole description (one sentence, bounded by the manifest): never clamped,
+ * unlike the Library card's two-line summary. Three classes outrank `library.module.css`'s
+ * `.card .sum`. */
+.full.full.full {
+  display: block;
+  overflow: visible;
+}
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.icobox {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--hud-text);
+}
+.needs {
+  --nj-edge: color-mix(in srgb, var(--status-degraded) 45%, var(--line-strong));
+}
+.needs .icobox {
+  color: var(--text-3);
+}
+.state {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 7px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.state b {
+  font-weight: 600;
+}
+.up b {
+  color: var(--ok-text);
+}
+.degraded b {
+  color: var(--warn-text);
+}
+.used {
+  font: 400 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* ---- the legend under the toolbar --------------------------------------------------------- */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: calc(-1 * var(--sp-2)) 0 var(--sp-4);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.coming {
+  max-width: 72ch;
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ---- the wizard's picker: a search, the chips, square option rows -------------------------- */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.pickSearch {
+  position: relative;
+}
+.pickSearch > svg {
+  position: absolute;
+  left: var(--sp-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.pickSearch input:global(.nj-field)[type="search"] {
+  width: 100%;
+  min-height: 44px;
+  padding-left: 36px;
+  font-size: var(--fs-row);
+}
+.pickChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.pickChips :global(.nj-chip) {
+  min-height: 44px;
+  min-width: 44px;
+}
+.pickChips :global(.nj-chip[aria-pressed="true"]) {
+  color: var(--text-1);
+}
+.rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  color: var(--text-1);
+}
+.row[aria-pressed="true"] {
+  color: var(--text-1);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-2));
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.rowText {
+  min-width: 0;
+}
+.rowName {
+  display: block;
+  font-weight: 600;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.rowLine {
+  display: block;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rowNeeds {
+  display: block;
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+}
+.rowRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.none {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* A phone: the line wraps, and the effect tag moves under the name. */
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+  .rowRight {
+    grid-column: 2;
+    align-items: flex-start;
+  }
+  .rowLine {
+    white-space: normal;
+  }
+  .pickChips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .pickChips :global(.nj-chip) {
+    flex: none;
+  }
+}

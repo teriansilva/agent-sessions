@@ -130,6 +130,9 @@ export function automationEditPath(id: string): string {
   return `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}/edit`;
 }
 
+/** Library → Actions (#2248 P1): the gallery of the steps an automation can take. Read-only. */
+export const ACTIONS_PATH = "/library/actions";
+
 /** Library → Webhooks (#2221): a name, an address and a secret any service can deliver to and any
  *  automation can pick. `WEBHOOK_NEW_PATH` makes one (its secret shown once); one webhook's page is
  *  `webhookPath(id)`. */

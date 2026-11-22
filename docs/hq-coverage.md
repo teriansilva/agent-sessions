@@ -243,6 +243,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: runs, run detail, origins | GET /api/automations/{aid}/runs, …/runs/{run_id}, …/origins | P4 R |
 | Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
+| Actions (#2248): the gallery — every action automations can take, what it needs and how many use it (read-only) | GET /api/actions | P4 R (HQ's action tools are #2248 P4) |
 | Automations: a review loop's webhook secret (make or rotate, shown once) (#2202) | POST /api/automations/{aid}/webhook-secret | **never** (a credential) |
 | Webhooks (#2221): list, read (field names and types), rename, delete an unused one | GET/PATCH/DELETE /api/webhooks* | P7 R/W |
 | Webhooks (#2221): create, rotate (the secret is shown once) | POST /api/webhooks, POST /api/webhooks/{wid}/rotate | **never** (a credential) |
@@ -314,6 +315,7 @@ POST   /api/2fa/confirm                                                         
 POST   /api/2fa/disable                                                           never  # credentials
 POST   /api/2fa/enroll                                                            never  # credentials
 POST   /api/2fa/recovery-codes                                                    never  # credentials
+GET    /api/actions                                                               P4  # read: the action gallery (#2248 P1); HQ's action tools are #2248 P4
 PATCH  /api/agents/budgets                                                        P2
 GET    /api/agent-accounts                                                         P2  # read: pools, labels and health, never a path (#1820, HQ is its P5)
 POST   /api/agent-accounts/{engine}                                                P2

@@ -39,6 +39,8 @@ import { StepEvents } from "../components/automations/wizard/StepEvents";
 import { StepLimits } from "../components/automations/wizard/StepLimits";
 import { StepReview } from "../components/automations/wizard/StepReview";
 import { StepWhat } from "../components/automations/wizard/StepWhat";
+import { useActions } from "../components/actions/useActions";
+import { galleryProblem } from "../lib/actions";
 import { StepWhen } from "../components/automations/wizard/StepWhen";
 import { timeZones } from "../components/automations/wizard/time";
 import wiz from "../components/automations/wizard/wizard.module.css";
@@ -133,6 +135,9 @@ function Editor({ routeId }: { routeId?: string }) {
   const [consentError, setConsentError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const webhooks = useWebhooks();
+  /** The action gallery the What step picks from (#2248 P1). Owned HERE, not by the step, so its
+   *  readiness holds Next, the rail past What and the save (Hermes on PR #2266). */
+  const actions = useActions();
   /** A draft handed back by the New webhook page (#2221), adopted once on the first load. */
   const handedBack = useRef(
     (location.state as { webhookPick?: { id: string; draft: EditorForm } } | null)?.webhookPick ?? null,
@@ -382,10 +387,15 @@ function Editor({ routeId }: { routeId?: string }) {
   const byStep = stepProblems(form);
   const checks = deliveryChecks(form, shape);
   const skipped = eventsSkipped(form);
+  const gallery = galleryProblem(actions);
   const problemsOf = (s: WizardStepId): string[] =>
     s === "events" && skipped
       ? []
-      : [...byStep[s], ...(s === "events" || s === "what" ? checks[s].problems : [])];
+      : [
+          ...byStep[s],
+          ...(s === "events" || s === "what" ? checks[s].problems : []),
+          ...(s === "what" && gallery ? [gallery] : []),
+        ];
   const allProblems = WIZARD_STEPS.flatMap((s) => problemsOf(s.id));
   const stepId = WIZARD_STEPS[step].id;
   const here = problemsOf(stepId);
@@ -451,6 +461,7 @@ function Editor({ routeId }: { routeId?: string }) {
           <StepWhat
             {...props}
             list={list}
+            actions={actions}
             stored={{
               engine: saved?.action?.kind === "start_session" ? saved.action.engine : "",
               sessionKey: saved?.action?.kind === "send_to_session" ? saved.action.session_key : "",

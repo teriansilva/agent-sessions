@@ -38,6 +38,7 @@ the same list.
 | `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu headers:topbar headers:topbar-menu headers:hq-views | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
 | `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour headers:topbar | none: the brand kit's logo (#1590) is a still image |
 | `components/call/call.module.css` | css | 4 | done | popup:hq-call | the call panel fades in (Full), none in Reduced/Off; LEDs carry the call state (steady outside Full); no other motion |
+| `components/actions/actions.module.css` | css | 10 | done | route:actions route:actions-error route:automation-wizard-what | the cards arrive as the Library's do (`library.module.css`); the picker row and the chips light in the chrome on press; the effect pips are static (a class, never a state) |
 | `components/agents/AgentAccounts.module.css` | css | 11 | todo |  |  |
 | `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |

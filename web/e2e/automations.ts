@@ -7,6 +7,7 @@
  *  exercised against real text. */
 import { expect, type Page, type Route } from "@playwright/test";
 
+import { mockActions } from "./actions";
 import { commonMocks } from "./mission-directions";
 import { mockMissions } from "./mission-console";
 
@@ -314,6 +315,9 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
   // The editor's webhook picker reads the list (#2221); a spec that needs webhooks registers
   // `mockWebhooks` (./webhooks.ts) after this, which wins.
   await page.route("**/api/webhooks", (r) => r.fulfill({ json: { webhooks: [] } }));
+  // The wizard's What step picks from the action gallery (#2248 P1): the server's own answer. A
+  // spec that needs another registers `mockActions` (./actions.ts) after this, which wins.
+  await mockActions(page);
   if (opts.sessions)
     await page.route("**/api/sessions**", (r) =>
       r.fulfill({
