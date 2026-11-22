@@ -19,6 +19,16 @@ The pool starts empty. BattleLab creates nothing for you.
 Only agents that can load BattleLab's tools can carry skills. The agent list marks the others with
 "cannot load skills", and the editor won't save a specialist with skills on one of them.
 
+## The pool
+
+Each card shows the specialist's job, the agent and model it runs on with its grade, how many run
+against its capacity, and its skills. Tap anywhere on a card to open it. Filter the pool by grade,
+or choose **Archived** to see the archived ones. **Export** on a card shares that specialist (and
+the skills it pins); **Import from file** closes the grid. See [Sharing](/guide/sharing).
+
+A specialist's page is its editor, under the same bar as every Library item: **Export**,
+**Import…**, and a **⋯** menu with **Archive** / **Unarchive**.
+
 ## Versions
 
 Saving an existing specialist makes a new version. Older versions never change, so anything that

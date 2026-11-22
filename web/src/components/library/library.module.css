@@ -90,7 +90,8 @@
   gap: var(--sp-2);
 }
 /* The pressed chip keeps the chrome tint as its selection; its ink is --text-1, because the
- * primitive's --hud-text on that tint measures 4.2:1 in the light theme (under AA). */
+ * primitive's --hud-text on that tint measures 4.2:1 in the light theme (under AA). Library-local
+ * until the primitive is fixed (#2255); remove this rule with that fix. */
 .chips :global(.nj-chip[aria-pressed="true"]) {
   color: var(--text-1);
 }
@@ -110,13 +111,6 @@
 }
 .error button {
   margin: var(--sp-2);
-}
-.notice {
-  margin: var(--sp-3) 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-left: 2px solid var(--hud-dim);
-  background: var(--bg-2);
-  color: var(--text-1);
 }
 .empty {
   margin: var(--sp-4) 0;
@@ -274,6 +268,46 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* A specialist's "runs on" keeps its engine accent on the left edge: an engine token (set inline by
+ * the adapter), never a status hue. */
+.runs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--sp-2);
+  padding-left: var(--sp-2);
+  border-left: 3px solid var(--line-strong);
+}
+.grade {
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.grade.ungraded {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  color: var(--text-2);
+}
+.card .meta .over {
+  color: var(--warn-text);
+}
+/* A held slot on a specialist: its line and its own Release, raised above the card's link. */
+.held {
+  position: relative;
+  z-index: var(--z-raised);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--warn-text);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
 .card .note {
   margin: 0;
   font-size: var(--fs-row);
@@ -312,14 +346,23 @@
 .actions {
   position: relative;
   z-index: var(--z-raised);
+  /* The row itself passes a tap through to the card; only its controls catch one. */
+  pointer-events: none;
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   margin-left: auto;
 }
+.actions > * {
+  pointer-events: auto;
+}
+.actions > .have {
+  pointer-events: none;
+}
 /* A public entry you already hold: a fact with its mark, not a state colour. */
 .have {
+  pointer-events: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -415,6 +458,10 @@
 }
 .after {
   margin-top: var(--sp-4);
+}
+/* A detail whose contents are an editor (a specialist): one column, no facts panel. */
+.cols.solo {
+  grid-template-columns: minmax(0, 1fr);
 }
 .back {
   display: inline-flex;
@@ -559,6 +606,11 @@
 .facts dd p:not([class]) {
   margin: 0;
 }
+.facts .plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .small {
   display: block;
   font-size: var(--fs-meta);
@@ -582,15 +634,17 @@
   .page {
     padding: var(--sp-4) var(--sp-3);
   }
+  /* The title keeps its line; the primary wraps under it when both don't fit (#2256 review: a
+   * long title broke its last letter onto a second line). */
   .head {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
   }
   .page .intro,
   .intro.intro {
     font-size: var(--fs-row);
   }
-  /* The search takes the row; the chips scroll sideways inside their OWN strip, so the page itself
-   * never does, and every chip keeps the 44px floor. */
+  /* The search takes the row; the chips wrap under it (never a sideways strip whose last chip
+   * hides past the edge), and every chip keeps the 44px floor. */
   .search {
     flex: 1 1 100%;
   }
@@ -599,12 +653,6 @@
   }
   .chips {
     flex: 1 1 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .chips > * {
-    flex: none;
   }
   .count {
     display: none;

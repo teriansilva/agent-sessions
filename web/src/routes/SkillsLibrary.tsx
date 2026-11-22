@@ -1,19 +1,30 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import {
-  ArrowLeft,
-  ArrowRight,
-  Copy,
-  FileText,
-  Plus,
-} from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Copy, GalleryHorizontal, Pencil, Plus } from "lucide-react";
 import { api } from "../lib/api";
 import { SKILL_LOCAL_ID } from "../components/gallery/galleryRules";
 import { GALLERY_SKILLS_PATH, SKILLS_PATH } from "../lib/routes";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import type { LocalSkill } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
-import { ImportedMark, ShareActions } from "../components/share/ShareDialogs";
+import { ImportedMark } from "../components/share/ShareDialogs";
+import { useExportEntry, useImportEntry } from "../components/share/useLibraryShare";
+import {
+  CardExport,
+  Count,
+  Dot,
+  LibraryCard,
+  type LibrarySource,
+} from "../components/library/LibraryCard";
+import {
+  ActionBar,
+  Fact,
+  LibraryDetail,
+  MoreMenu,
+  SourceFact,
+} from "../components/library/LibraryDetail";
+import { LibraryGrid, LibraryHead, LibraryToolbar, type Facet } from "../components/library/LibraryGrid";
+import lib from "../components/library/library.module.css";
 import { useShareImports } from "../components/share/useShareImports";
 import { FileRow, LeaveGuard, Origin, PendingOperation } from "../components/gallery/Shared";
 import { beginOperation, finishOperation, errorText, ownValue } from "../components/gallery/operations";
@@ -22,102 +33,255 @@ import styles from "../components/gallery/gallery.module.css";
 
 export default function SkillsLibrary() {
   const { skillId } = useParams();
-  // A completed import re-reads the list (and the imported marks) by remounting it.
-  const [round, setRound] = useState(0);
   return (
-    <main className={styles.page}>
-      <div className={`nj-kicker ${styles.kicker}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Skills</b></div>
-      {!skillId && (
-        <>
-          <div className={styles.header}>
-            <h1>Skills</h1>
-            <ShareActions kind="skill" onImported={() => setRound((n) => n + 1)} />
-          </div>
-          <ViewTabs kind="skill" view="local" />
-          <p className={styles.intro}>
-            Editable instruction files kept in your BattleLab library. Saving here
-            does not activate a skill in an agent.
-          </p>
-        </>
-      )}
+    <main className={styles.page} data-testid="skills-page">
       <LandingNote />
       <PendingOperation />
-      {skillId ? <Detail key={skillId} id={skillId} /> : <List key={round} round={round} />}
+      {skillId ? <Detail key={skillId} id={skillId} /> : <List />}
     </main>
   );
 }
-function List({ round }: { round: number }) {
+
+type Show = "all" | LibrarySource;
+const FACETS: { value: Show; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "local", label: "Local" },
+  { value: "imported", label: "Imported" },
+  { value: "gallery", label: "Gallery" },
+];
+
+/** What a local skill copy IS: from the public gallery (its recorded origin), a file (the
+ *  share-import ledger) or this host. */
+function skillSource(skill: LocalSkill, fromFile: boolean): LibrarySource {
+  if (skill.gallery_origin) return "gallery";
+  return fromFile ? "imported" : "local";
+}
+
+/** Size of a skill's files as text. */
+function sizeText(files: Record<string, string>): string {
+  const bytes = Object.values(files).reduce((n, v) => n + new Blob([v]).size, 0);
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function skillProvenance(skill: LocalSkill, source: LibrarySource) {
+  if (source === "gallery")
+    return (
+      <>
+        <GalleryHorizontal size={14} aria-hidden />
+        From the gallery
+        {skill.gallery_origin?.publisher && (
+          <>
+            {" · "}
+            <b>{skill.gallery_origin.publisher}</b>
+          </>
+        )}
+      </>
+    );
+  if (source === "imported") return <ImportedMark />;
+  return "Local copy · no gallery origin";
+}
+
+/** One local skill on the Library grid (#2144). The list carries no summary or version of its
+ *  own: the title is the gallery origin's (else the ID), and the meta row is what the list has. */
+function SkillCard({ skill, source }: { skill: LocalSkill; source: LibrarySource }) {
+  const title = skill.gallery_origin?.title ?? skill.id;
+  const files = Object.keys(skill.files ?? {}).length;
+  return (
+    <LibraryCard
+      testId={`skill-card-${skill.id}`}
+      to={skill.error ? undefined : `${SKILLS_PATH}/${encodeURIComponent(skill.id)}`}
+      title={title}
+      kind="Skill"
+      version={skill.gallery_origin?.version}
+      source={source}
+      invalid={!!skill.error}
+      meta={
+        <>
+          {title !== skill.id && (
+            <>
+              <span>{skill.id}</span>
+              <Dot />
+            </>
+          )}
+          <Count n={files} one="file" />
+          <Dot />
+          <b>{sizeText(skill.files ?? {})}</b>
+          {skill.revision && (
+            <>
+              <Dot />
+              <span>rev {skill.revision.slice(0, 7)}</span>
+            </>
+          )}
+        </>
+      }
+      provenance={skillProvenance(skill, source)}
+      actions={skill.error ? undefined : <CardExport kind="skill" id={skill.id} title={title} />}
+    >
+      {skill.error && (
+        <p role="note" className={lib.note}>
+          {skill.error}
+        </p>
+      )}
+    </LibraryCard>
+  );
+}
+
+function List() {
   const read = usePlaybookRead(useCallback(() => api.localSkills(), []));
+  const [round, setRound] = useState(0);
   const imported = useShareImports(round);
+  const [search, setSearch] = useState("");
+  const [show, setShow] = useState<Show>("all");
+  const importer = useImportEntry(() => {
+    setRound((n) => n + 1);
+    void read.reload();
+  });
+  const rows = (read.data?.skills ?? []).map((skill) => ({
+    skill,
+    source: skillSource(skill, imported.has(`skill:${skill.id}`)),
+  }));
+  const needle = search.trim().toLowerCase();
+  const matching = rows.filter(({ skill }) =>
+    [skill.id, skill.gallery_origin?.title, ...Object.keys(skill.files ?? {})]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
+  );
+  const shown = matching.filter((r) => show === "all" || r.source === show);
+  const facets: Facet<Show>[] = FACETS.map((f) => ({
+    ...f,
+    n: f.value === "all" ? matching.length : matching.filter((r) => r.source === f.value).length,
+  })).filter((f) => f.value === "all" || f.value === show || f.n > 0);
   return (
     <>
+      {/* No header primary and no New tile: creating a skill is HQ's (#1611), not a UI editor. */}
+      <LibraryHead section="skills" title="Skills" count={read.data ? rows.length : undefined} />
+      <ViewTabs kind="skill" view="local" />
+      <p className={lib.intro}>
+        Editable instruction files kept in your BattleLab library. Saving here does not activate a
+        skill in an agent.
+      </p>
+      <LibraryToolbar
+        label="Search skills"
+        placeholder="Name or file…"
+        search={search}
+        onSearch={setSearch}
+        facets={read.data ? facets : undefined}
+        facet={show}
+        onFacet={setShow}
+        count={read.data ? `${shown.length} ${shown.length === 1 ? "skill" : "skills"}` : undefined}
+      />
       {read.error && (
         <p role="alert" className={styles.error}>
           {read.error}
         </p>
       )}
       {read.loading && !read.data && <p role="status">Loading local skills…</p>}
-      {read.data && !read.data.skills.length && (
+      {read.data && !rows.length && (
         <section className={styles.empty}>
           <h2>No skills yet</h2>
           <p>
-            Skills you add from the <Link to={GALLERY_SKILLS_PATH}>gallery</Link> appear
-            here.
+            Skills you add from the <Link to={GALLERY_SKILLS_PATH}>public gallery</Link>, import
+            from a file or draft with HQ appear here.
           </p>
         </section>
       )}
-      <div className={`${styles.grid} ${styles.listTop}`}>
-        {read.data?.skills.map((skill) => (
-          <article className={styles.card} key={skill.id}>
-            <div className={`${styles.tag} ${styles.stamp}`}>
-              <FileText size={14} aria-hidden />
-              Skill
-              <span className={styles.stampId}>
-                {skill.gallery_origin ? `v${skill.gallery_origin.version}` : "local"}
-              </span>
-            </div>
-            <h2>{skill.gallery_origin?.title ?? skill.id}</h2>
-            <p>
-              <code>{skill.id}</code>
-            </p>
-            {imported.has(`skill:${skill.id}`) && <ImportedMark />}
-            {skill.error ? (
-              <p className={styles.error}>{skill.error}</p>
-            ) : (
-              <Link
-                className={`${buttons.ghost} ${styles.cardAction}`}
-                to={`${SKILLS_PATH}/${encodeURIComponent(skill.id)}`}
-              >
-                Open skill
-                <ArrowRight size={16} aria-hidden />
-              </Link>
-            )}
-          </article>
-        ))}
-      </div>
+      {read.data && !!rows.length && !shown.length && (
+        <section className={styles.empty}>
+          <p>No skills match.</p>
+          <button
+            className={buttons.ghost}
+            onClick={() => {
+              setSearch("");
+              setShow("all");
+            }}
+          >
+            Clear filters
+          </button>
+        </section>
+      )}
+      {(read.data || read.error) && (
+        <LibraryGrid
+          testId="skill-grid"
+          onImport={importer.open}
+          importHint="A .battlelab file someone shared with you. Skills also arrive from the public gallery and from HQ."
+        >
+          {shown.map(({ skill, source }) => (
+            <SkillCard key={skill.id} skill={skill} source={source} />
+          ))}
+        </LibraryGrid>
+      )}
+      {importer.dialog}
     </>
   );
 }
 function Detail({ id }: { id: string }) {
   const read = usePlaybookRead(useCallback(() => api.localSkill(id), [id]));
+  const [round, setRound] = useState(0);
+  const imported = useShareImports(round);
+  // Import… here makes NEW copies only, so this skill is unchanged; the list re-reads on return.
+  const importer = useImportEntry(() => setRound((n) => n + 1));
   if (!read.data)
     return (
-      <p
-        role={read.error ? "alert" : "status"}
-        className={read.error ? styles.error : undefined}
-      >
-        {read.error ?? "Loading skill…"}
-      </p>
+      <>
+        <Link className={lib.back} to={SKILLS_PATH}>
+          <ArrowLeft size={16} aria-hidden />
+          All skills
+        </Link>
+        <p
+          role={read.error ? "alert" : "status"}
+          className={read.error ? styles.error : undefined}
+        >
+          {read.error ?? "Loading skill…"}
+        </p>
+      </>
     );
-  return <Editor initial={read.data} reload={read.reload} />;
+  return (
+    <>
+      <Editor
+        initial={read.data}
+        reload={read.reload}
+        source={skillSource(read.data, imported.has(`skill:${read.data.id}`))}
+        onImport={importer.open}
+      />
+      {importer.dialog}
+    </>
+  );
 }
+
+/** The skill detail's ⋯ (#2144): Duplicate saves an unchanged copy under a free ID. */
+function SkillMenu({ title, onDuplicate, held }: { title: string; onDuplicate: () => void; held: boolean }) {
+  return (
+    <MoreMenu
+      title={title}
+      items={[
+        {
+          key: "duplicate",
+          label: "Duplicate",
+          icon: <Copy size={16} aria-hidden />,
+          disabled: held,
+          onSelect: onDuplicate,
+        },
+      ]}
+    />
+  );
+}
+
 function Editor({
   initial,
   reload,
+  source,
+  onImport,
 }: {
   initial: LocalSkill;
   reload: () => Promise<LocalSkill | null>;
+  source: LibrarySource;
+  onImport: () => void;
 }) {
+  const navigate = useNavigate();
+  const exporter = useExportEntry("skill");
+  const released = useRef(false);
   const [base, setBase] = useState(initial);
   const [files, setFiles] = useState(initial.files);
   const [path, setPath] = useState("");
@@ -148,20 +312,84 @@ function Editor({
           : newId === base.id
             ? "Choose an ID different from the original skill."
             : "";
+  const title = base.gallery_origin?.title ?? base.id;
+  const duplicate = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const taken = new Set((await api.localSkills()).skills.map((s) => s.id));
+      const stem = `${base.id.slice(0, 43)}-copy`;
+      let copyId = stem;
+      for (let n = 2; taken.has(copyId); n += 1) copyId = `${stem}-${n}`;
+      const operation = beginOperation();
+      const value = await api.saveLocalSkill(
+        base.id, copyId, base.revision, base.gallery_origin?.pointer ?? null, base.files, operation,
+      );
+      finishOperation(value);
+      if (!live.current) return;
+      if (value.state === "complete" && value.result) {
+        // The copy is saved and nothing here is unsaved: open it without the leave question,
+        // even though `busy` is still true in the guard's last render.
+        released.current = true;
+        navigate(`${SKILLS_PATH}/${encodeURIComponent(value.result.id)}`);
+      }
+      else setError(value.message ?? "Check status above before retrying.");
+    } catch (e) {
+      if (live.current) setError(errorText(e));
+    } finally {
+      if (live.current) setBusy(false);
+    }
+  };
   return (
-    <>
-      <LeaveGuard dirty={dirty || busy} />
-      <Link className={`${buttons.ghost} ${styles.back}`} to={SKILLS_PATH}>
-        <ArrowLeft size={16} aria-hidden />
-        Back to skills
-      </Link>
-      <header className={styles.detailHead}>
-        <div className={styles.tag}>
-          <FileText size={14} aria-hidden />
-          Skill // {base.id}
-        </div>
-        <h1>{base.gallery_origin?.title ?? base.id}</h1>
-      </header>
+    <LibraryDetail
+      testId="skill-detail"
+      back={{ to: SKILLS_PATH, label: "All skills" }}
+      kicker="skills"
+      kind="Skill"
+      version={base.gallery_origin?.version}
+      source={source}
+      title={title}
+      by={title !== base.id ? <code>{base.id}</code> : undefined}
+      bar={
+        <ActionBar
+          primary={
+            <button
+              type="button"
+              className={buttons.primary}
+              disabled={busy || !!done}
+              onClick={() => {
+                const draft = document.querySelector<HTMLTextAreaElement>(
+                  "[data-testid='skill-detail'] textarea",
+                );
+                draft?.closest("details")?.setAttribute("open", "");
+                draft?.focus();
+              }}
+            >
+              <Pencil size={16} aria-hidden />
+              Edit
+            </button>
+          }
+          onExport={() => exporter.open(base.id)}
+          onImport={onImport}
+        >
+          <SkillMenu title={title} held={busy || dirty || base.gallery_origin?.state === "unavailable"} onDuplicate={() => void duplicate()} />
+        </ActionBar>
+      }
+      facts={
+        <>
+          <Fact label="Version">
+            {base.gallery_origin?.version ? `v${base.gallery_origin.version}` : "Unversioned"}
+            <span className={lib.small}>revision {base.revision.slice(0, 7)}</span>
+          </Fact>
+          <SourceFact word={skillProvenance(base, source)} />
+          <Fact label={`Files · ${Object.keys(base.files).length}`}>
+            {sizeText(base.files)}
+            <span className={lib.small}>Saving here doesn't turn the skill on in any agent.</span>
+          </Fact>
+        </>
+      }
+    >
+      <LeaveGuard dirty={dirty || busy} released={released} />
       <Origin
         value={base.gallery_origin}
         kind="skill"
@@ -360,6 +588,7 @@ function Editor({
             </button>
           </div>
       </div>
-    </>
+      {exporter.dialog}
+    </LibraryDetail>
   );
 }

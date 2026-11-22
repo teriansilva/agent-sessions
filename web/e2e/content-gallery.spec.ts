@@ -538,7 +538,7 @@ for (const theme of ["dark", "light"]) {
       const writes = await setup(page, { conflict: true });
       await page.goto(`${SKILLS_PATH}/my-skill`);
       await page.getByLabel("Your draft: SKILL.md").fill("My retained instructions");
-      await page.getByRole("link", { name: "Back to skills", exact: true }).click();
+      await page.getByRole("link", { name: "All skills", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Leave this draft?" })).toBeVisible();
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await page.getByRole("button", { name: "Save edited copy" }).click();

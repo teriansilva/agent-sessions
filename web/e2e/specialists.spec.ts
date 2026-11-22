@@ -214,8 +214,9 @@ test("the pool shows grades, ungraded, missing and outdated skills, and fits the
   await noHorizontalOverflow(page.getByTestId("specialists-page"));
   // Archived ones are hidden from the pool, never lost: one toggle shows them.
   await expect(page.getByTestId("specialist-card-retired")).toHaveCount(0);
-  await page.getByTestId("specialists-show-archived").click();
-  await expect(page.getByTestId("specialist-card-retired")).toContainText("archived");
+  // #2144: the Show archived toggle became the toolbar's Archived chip.
+  await page.getByRole("group", { name: "Show" }).getByRole("button", { name: /^Archived/ }).click();
+  await expect(page.getByTestId("specialist-card-retired")).toContainText("Archived");
   await expect(page.getByTestId("specialist-card-implementer")).toHaveCount(0);
 });
 
@@ -299,10 +300,13 @@ test("archive and unarchive from the editor, fenced on the current revision", as
   const posts: unknown[] = [];
   await backend(page, { posts });
   await page.goto(specialistPath("implementer"));
-  await page.getByRole("button", { name: "Archive" }).click();
+  // #2144: Archive / Unarchive live in the detail's ⋯.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
   await expect(page.getByTestId("specialist-archived")).toBeVisible();
   await expect(page.getByRole("button", { name: /Save as/ })).toBeDisabled();
-  await page.getByRole("button", { name: "Unarchive" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Unarchive" }).click();
   await expect(page.getByTestId("specialist-archived")).toHaveCount(0);
   expect(posts).toEqual([
     { url: "archive", revision: 3 },
@@ -403,10 +407,13 @@ test("archive and unarchive keep unsaved edits in the form", async ({ page }) =>
   const title = page.getByRole("textbox", { name: "Title" });
   await expect(title).toHaveValue("Implementer");
   await title.fill("Builder");
-  await page.getByRole("button", { name: "Archive" }).click();
+  // #2144: Archive / Unarchive live in the detail's ⋯.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
   await expect(page.getByTestId("specialist-archived")).toBeVisible();
   await expect(title).toHaveValue("Builder");
-  await page.getByRole("button", { name: "Unarchive" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Unarchive" }).click();
   await expect(page.getByTestId("specialist-archived")).toHaveCount(0);
   await expect(title).toHaveValue("Builder");
   await page.getByRole("button", { name: "Remove skill ledger-rules" }).click();

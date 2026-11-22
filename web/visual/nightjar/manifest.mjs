@@ -368,6 +368,87 @@ const ART_PRIVATE_API = {
   "re:/api/artifacts/5449-5592-2107-4372$": ART_DETAIL({ ...ART_SITE, visibility: "private", public_url: null, public_since: null }),
 };
 
+
+/** One Library gallery (#2144 P2): the kinds the promo fixtures don't hold, for the captures of
+ *  Skills, Specialists and Mission plans on the shared card, grid and detail. Invented data. */
+const LIB_REV = "4be019c" + "0".repeat(57);
+const LIB_SKILLS = {
+  skills: [
+    {
+      id: "code-review", revision: LIB_REV, editable: true,
+      files: { "SKILL.md": "# Code review\nRead the diff before merge.\n", "checklist.md": "- tests\n- security\n" },
+      gallery_origin: {
+        state: "verified", kind: "skill", id: "code-review", version: "1.3", title: "Code review",
+        publisher: "BattleLab", entry_digest: "e".repeat(64), base_revision: LIB_REV,
+      },
+    },
+    { id: "changelog-writer", revision: "91d2a07" + "0".repeat(57), editable: true, files: { "SKILL.md": "# Changelog writer\n" } },
+    { id: "sql-migrations", revision: "5ea8b42" + "0".repeat(57), editable: true, files: { "SKILL.md": "# SQL migrations\n", "rollback.md": "Rehearse it.\n" } },
+  ],
+};
+const libJob = (o) => ({
+  version: 4, title: "Reviewer", summary: "Reads every diff before merge and blocks on security findings.",
+  skills: [{ id: "code-review", revision: LIB_REV }], engine: "claude", model: "opus", effort: null,
+  capacity: 2, created_at: 1, ...o,
+});
+const LIB_SPECIALISTS = {
+  specialists: [
+    { id: "reviewer", revision: 4, archived: false, grade: "frontier", live: 1, skills_missing: [], skills_outdated: [], current: libJob({}) },
+    {
+      id: "implementer", revision: 6, archived: false, grade: "strong", live: 2, skills_missing: [], skills_outdated: [],
+      current: libJob({ version: 6, title: "Implementer", summary: "Builds the change on a branch with tests and opens the pull request.", model: "sonnet", capacity: 3 }),
+      held: [{ reservation_id: "r" + "a".repeat(24), session_key: "claude:held", reason: "the session's state is unknown", since: 1, attempt: 3, rev: 7 }],
+    },
+    { id: "bookkeeper", revision: 2, archived: false, grade: null, live: 0, skills_missing: [], skills_outdated: [], current: libJob({ version: 2, title: "Bookkeeper", summary: "Sorts, files and renames; never edits code.", model: "default", capacity: 2 }) },
+    { id: "retired", revision: 2, archived: true, grade: null, live: 0, skills_missing: [], skills_outdated: [], current: libJob({ version: 1, title: "Retired triager", summary: "Hidden from new use." }) },
+  ],
+  templates: [],
+  max_instances: 8,
+  live_total: 3,
+};
+const libPlan = (o) => ({
+  id: "plan-1a2b3c4d", version: 2, revision: 1, archived: false, title: "Ship a feature across web and API",
+  summary: "Design note, API change with its tests, the web change behind it, one review, then both pull requests.",
+  origin_kind: "mission", created_at: 1, updated_at: 1, counts: { objectives: 4, slots: 2, steps: 11 }, ...o,
+});
+const LIB_PLANS = {
+  plans: [
+    libPlan({}),
+    libPlan({ id: "plan-5e6f7a8b", version: 1, title: "Incident follow-through", summary: "Postmortem, the fix, the regression test and the runbook update.", origin_kind: "file", counts: { objectives: 4, slots: 1, steps: 8 } }),
+    libPlan({ id: "plan-9c0d1e2f", version: 3, archived: true, title: "Quarterly audit (old)", summary: "Replaced by the monthly run.", counts: { objectives: 2, slots: 1, steps: 4 } }),
+  ],
+};
+const LIB_PLAN_DETAIL = {
+  ...LIB_PLANS.plans[0],
+  document: {
+    format: 1, title: LIB_PLANS.plans[0].title, summary: LIB_PLANS.plans[0].summary,
+    slots: [{ id: "p1", label: "Web" }, { id: "p2", label: "API" }],
+    objectives: [
+      { id: "o1", slot: "p2", procedure: { source: "playbook", flow_id: "dev", title: "API change", playbook_id: "ship-it" }, inputs: [] },
+      { id: "o2", slot: "p1", procedure: { source: "mission_local", flow_id: "dev", title: "Web change" }, inputs: [], after: ["o1"] },
+    ],
+  },
+  steps: [
+    { id: "o1.impl", objective: "o1", title: "Implement the endpoint", actor: "agent", after: [], role: { skills: ["python"], min_grade: "strong" } },
+    { id: "o2.impl", objective: "o2", title: "Wire the page", actor: "agent", after: [], role: { skills: ["typescript"], min_grade: "strong" } },
+  ],
+};
+const LIB_ENTRY = (id, title, available, d) => ({
+  content: {
+    format: 1, kind: "playbook", id, version: "1.0.0", title, author: "BattleLab", publisher: "BattleLab",
+    summary: "Reproduce the report, find the smallest failing case and hand a fix plan to an implementer.",
+    source: "https://example.com/" + id, requirements: available ? [] : ["gh"],
+    files: { "playbook.toml": "format = 5\n", "README.md": "# " + title + "\n" },
+  },
+  digest: d.repeat(64),
+  available,
+});
+const LIB_LISTING = {
+  state: "ready",
+  entries: [LIB_ENTRY("bug-triage", "Bug triage", true, "4"), LIB_ENTRY("old-release", "Old release train", false, "5")],
+  sequence: 418, digest: "7c1e" + "0".repeat(56) + "a90b", expires_at: 1795000000, error: null,
+};
+
 export const SWEEP = [
   // The primitives gallery (Phase 2): one capture per section, plus the whole page.
   { id: "gallery:all", path: "/__nightjar", ready: "nightjar-gallery", fullPage: true },
@@ -1109,9 +1190,10 @@ export const SWEEP = [
   // preview with a rename, a refused dependency and an invalid playbook (boards A and B).
   {
     id: "popup:share-export",
-    path: "/library/skills",
+    // #2144: Export is each card's own (the header's Export… is gone); the picker is the same.
+    path: "/library/playbooks",
     api: { "/api/share/catalog": { method: "GET", status: 200, json: SHARE_CATALOG } },
-    open: [{ role: "button", name: "Export…" }, { css: "[data-testid='share-export-row-playbook:research-brief'] input" }],
+    open: [{ css: "[data-testid='card-export']" }, { css: "[data-testid='share-export-row-playbook:research-brief'] input" }],
     expect: "dialog",
   },
   {
@@ -1119,12 +1201,37 @@ export const SWEEP = [
     path: "/library/skills",
     api: { "/api/share/import/preview": { method: "POST", status: 200, json: SHARE_PREVIEW } },
     open: [
-      { role: "button", name: "Import…" },
+      // #2144: Import from file closes the Library grid.
+      { testId: "library-import-tile" },
       { testId: "share-file", upload: "research-kit.battlelab" },
       { css: "[data-testid='share-preview-row-skill:research-review'] input" },
     ],
     expect: "dialog",
   },
+  // One Library gallery (#2144 P2): Skills, Specialists and Mission plans on the shared card, grid
+  // and detail, with their empty, error, archived and withdrawn states.
+  { id: "route:skills-library", path: "/library/skills", api: { "/api/library/skills": LIB_SKILLS }, present: "[data-testid='skill-card-code-review']" },
+  {
+    id: "route:skill-detail",
+    path: "/library/skills/code-review",
+    // A copy from the gallery reads the listing for its update check: a real one, not the catch-all `{}`.
+    api: { "/api/library/skills/code-review": LIB_SKILLS.skills[0], "/api/gallery": LIB_LISTING, "/api/gallery/refresh": LIB_LISTING },
+    present: "[data-testid='skill-detail'] h1",
+  },
+  { id: "route:specialists", path: "/library/specialists", api: { "/api/specialists": LIB_SPECIALISTS }, present: "[data-testid='specialist-card-reviewer']" },
+  {
+    id: "route:specialists-archived",
+    path: "/library/specialists",
+    api: { "/api/specialists": LIB_SPECIALISTS },
+    open: [{ css: "[role='group'][aria-label='Show'] button:last-child" }],
+    present: "[data-testid='specialist-card-retired']",
+  },
+  { id: "route:specialists-empty", path: "/library/specialists", api: { "/api/specialists": { ...LIB_SPECIALISTS, specialists: [] } }, present: "[data-testid='library-import-tile']" },
+  { id: "route:mission-plans", path: "/library/mission-plans", api: { "/api/mission-plans": LIB_PLANS }, present: "[data-testid='mission-plan-card-plan-1a2b3c4d']" },
+  { id: "route:mission-plans-empty", path: "/library/mission-plans", api: { "/api/mission-plans": { plans: [] } }, present: "[data-testid='mission-plans-empty']" },
+  { id: "route:mission-plan-detail", path: "/library/mission-plans/plan-1a2b3c4d", api: { "/api/mission-plans/plan-1a2b3c4d": LIB_PLAN_DETAIL }, present: "h1" },
+  { id: "route:playbooks-error", path: "/library/playbooks", api: { "/api/playbooks": { status: 503, json: { detail: "The playbook store is unavailable." } } }, expect: "alert" },
+  { id: "route:gallery-playbooks", path: "/library/gallery/playbooks", api: { "/api/gallery": LIB_LISTING, "/api/gallery/refresh": LIB_LISTING }, present: "[data-testid='gallery-card-old-release']" },
   // ---- /PR4b library B ----
   { id: "route:new-project", path: "/projects/new" },
   { id: "route:settings-interface", path: "/settings/appearance" },

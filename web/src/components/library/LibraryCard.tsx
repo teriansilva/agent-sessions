@@ -97,8 +97,8 @@ export function LibraryCard({
   source?: LibrarySource;
   /** The two-line summary. Omitted when the kind carries none (a local skill). */
   summary?: ReactNode;
-  /** The per-kind mono meta row. */
-  meta?: ReactNode;
+  /** The per-kind mono meta row (or rows, one per entry). */
+  meta?: ReactNode | ReactNode[];
   provenance?: ReactNode;
   /** The card's own controls, raised above the stretched link. */
   actions?: ReactNode;
@@ -127,7 +127,11 @@ export function LibraryCard({
         )}
       </h2>
       {summary !== undefined && <p className={styles.sum}>{summary}</p>}
-      {meta && <p className={styles.meta}>{meta}</p>}
+      {(Array.isArray(meta) ? meta : meta ? [meta] : []).map((row, i) => (
+        <p key={i} className={styles.meta}>
+          {row}
+        </p>
+      ))}
       {children}
       {(provenance || actions) && (
         <div className={styles.foot}>
@@ -161,7 +165,7 @@ export function CardExport({ kind, id, title }: { kind: ShareKind; id: string; t
     <>
       <button
         type="button"
-        className={`${buttons.ghost} ${buttons.compact}`}
+        className={`${buttons.ghost} ${buttons.tight}`}
         aria-label={`Export ${title}`}
         data-testid="card-export"
         onClick={() => entry.open(id)}

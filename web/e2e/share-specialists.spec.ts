@@ -164,7 +164,8 @@ async function tall44(locator: Locator) {
 
 async function openPreview(page: Page) {
   await page.goto(SPECIALISTS_PATH);
-  await page.getByRole("button", { name: "Import…" }).click();
+  // #2144: Import from file closes the pool's grid.
+  await page.getByTestId("library-import-tile").click();
   const dialog = page.getByTestId("share-import");
   await dialog.getByTestId("share-file").setInputFiles({
     name: "review-team.battlelab",
@@ -177,10 +178,29 @@ async function openPreview(page: Page) {
 
 test("export: a specialist brings its pinned skills, locked; one whose pin is gone says how to fix it", async ({ page }) => {
   const writes = await setup(page);
+  await page.route("**/api/specialists", (r) =>
+    r.fulfill({
+      json: {
+        specialists: [
+          {
+            id: "implementer", revision: 1, archived: false, grade: null, live: 0,
+            skills_missing: [], skills_outdated: [],
+            current: {
+              version: 1, title: "Implementer", summary: "", engine: "claude", model: "opus",
+              effort: null, capacity: 1, created_at: 1,
+              skills: [{ id: "tdd", revision: "r-tdd" }, { id: "forgejo-pr-flow", revision: "r-pr" }],
+            },
+          },
+        ],
+        templates: [], max_instances: 6, live_total: 0,
+      },
+    }),
+  );
   await page.goto(SPECIALISTS_PATH);
-  await page.getByRole("button", { name: "Export…" }).click();
+  // #2144: Export is the card's own; it opens with that specialist chosen.
+  await page.getByRole("button", { name: "Export Implementer" }).click();
   const dialog = page.getByTestId("share-export");
-  await dialog.getByLabel("Specialist Implementer").check();
+  await expect(dialog.getByLabel("Specialist Implementer")).toBeChecked();
   for (const sid of ["tdd", "forgejo-pr-flow"]) {
     await expect(dialog.getByLabel(`Skill ${sid} (included)`)).toBeDisabled();
     await expect(dialog.getByTestId(`share-export-row-skill:${sid}`)).toContainText("Included — pinned by implementer");

@@ -1,6 +1,7 @@
-/* Library → Gallery and Skills (#1371, #1417), on NIGHTJAR (#1531 Phase 10, #1574): cards are
- * clipped panels that arrive once, fields are square with the inset ring, section heads carry the
- * callsign notch, and a pressed segment is lit in the chrome (`--hud`). Every action is an
+/* Library → Public gallery and Skills (#1371, #1417), on NIGHTJAR (#1531 Phase 10, #1574): the page
+ * wrapper, file rows, review, compare and the save bar. The card, grid and detail frame are the
+ * shared Library gallery's (components/library, #2144). Fields are square with the inset ring,
+ * section heads carry the callsign notch, and a pressed segment is lit in the chrome (`--hud`). Every action is an
  * `actionButton.module.css` variant, every value a token. The conflict marker is the global
  * `.hud-led attention` plus text. */
 
@@ -59,62 +60,6 @@
 .tag svg {
   flex: none;
   color: var(--accent-text);
-}
-.header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 16px;
-}
-/* The page title (`nj-h1`'s voice): display caps in the chrome's ink. */
-.header h1 {
-  margin: var(--sp-1) 0;
-  font-family: var(--font-display);
-  font-size: var(--fs-h1);
-  font-weight: 600;
-  line-height: 1.1;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--hud-text);
-}
-.intro {
-  max-width: 760px;
-}
-
-/* ── Search + kind filter. ── */
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 12px 16px;
-  margin: 20px 0 16px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--line);
-}
-.search {
-  display: grid;
-  gap: 6px;
-  flex: 1 1 280px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-.searchBox {
-  position: relative;
-}
-.searchBox svg {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-2);
-  pointer-events: none;
-}
-.page .searchBox input[type="search"] {
-  padding-left: 36px;
 }
 
 /* One joined row of ghost buttons; the pressed one is lit in the chrome (`nj-seg`'s voice): a
@@ -176,21 +121,6 @@
   line-height: 1.6;
   resize: vertical;
 }
-.check {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  font-size: var(--fs-row);
-  line-height: 1.5;
-  color: var(--text-1);
-}
-.check input {
-  width: 18px;
-  height: 18px;
-  flex: none;
-  accent-color: var(--accent);
-}
 
 /* ── Callouts: one rule, a coloured left edge, no box. ── */
 .notice,
@@ -239,67 +169,6 @@
   font-family: var(--font-display);
   font-size: var(--fs-title);
 }
-
-/* ── Gallery cards: the Playbooks library's dossier card, so the Library reads as one surface. ── */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-  gap: var(--sp-4);
-  align-items: stretch;
-}
-.card {
-  composes: nj-frame-sm nj-arrive from global;
-  --nj-edge: var(--line-strong);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: var(--sp-4);
-  border-top-color: var(--hud-dim);
-}
-/* The dossier's short rail under the top edge (the board's `.dc::before`). */
-.card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: calc(var(--c) + 2px);
-  width: 34%;
-  height: 2px;
-  background: var(--hud);
-  box-shadow: var(--glow-rail);
-  pointer-events: none;
-}
-.card:hover,
-.card:focus-within {
-  --nj-edge: var(--hud-dim);
-  --nj-face: color-mix(in srgb, var(--hud) 5%, var(--bg-1));
-}
-/* The stamp line: kind on the left, the version lit on the right. */
-.stamp {
-  flex-wrap: nowrap;
-}
-.stampId {
-  margin-left: auto;
-  color: var(--hud-text);
-  letter-spacing: 0.12em;
-}
-.card h2 {
-  margin: var(--sp-1) 0 0;
-  font-family: var(--font-display);
-  font-size: var(--fs-title);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-.card .meta {
-  font-size: var(--fs-row);
-}
-.card > :last-child {
-  margin-top: auto;
-}
-/* The card's action sits at its content width (the board's left plate), at the 44px floor. */
-.cardAction {
-  align-self: flex-start;
-  margin-top: 8px;
-}
 .withdrawn {
   align-self: flex-start;
   padding: 2px var(--sp-2);
@@ -315,11 +184,6 @@
   padding: var(--sp-4) var(--sp-5);
   border: 1px dashed var(--line-strong);
   background: var(--bg-1);
-}
-.listTop {
-  margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--line);
 }
 .empty h2 {
   margin: 0 0 var(--sp-2);
@@ -340,23 +204,6 @@
 .back {
   margin: 4px 0 12px;
 }
-.detail {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-  /* Review first, then the action, then the folded facts (#1440): on one column the Add button
-   * follows the Files, never the title; on two it rides beside the content. */
-  grid-template-areas:
-    "main side"
-    "tech side";
-  gap: 0 32px;
-  align-items: start;
-}
-.main {
-  grid-area: main;
-}
-.tech {
-  grid-area: tech;
-}
 .detailHead h1 {
   margin: 6px 0 var(--sp-1);
   font-family: var(--font-display);
@@ -371,7 +218,6 @@
 }
 .section h2,
 .section h3,
-.side h2,
 .compare h3 {
   margin: 0 0 var(--sp-2);
   font-family: var(--font-mono);
@@ -382,14 +228,12 @@
   color: var(--text-2);
 }
 /* A section's callsign: the hazard notch before its mono title. */
-.section > h2,
-.side > h2 {
+.section > h2 {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
 }
-.section > h2::before,
-.side > h2::before {
+.section > h2::before {
   content: "";
   flex: none;
   width: 22px;
@@ -407,17 +251,6 @@
 .section h4 {
   margin: var(--sp-3) 0 var(--sp-1);
   font-size: var(--fs-body);
-}
-.side {
-  grid-area: side;
-  position: sticky;
-  top: 0;
-  padding: 16px 0 16px 24px;
-  border-left: 1px solid var(--line);
-}
-.wide {
-  width: 100%;
-  margin-top: 8px;
 }
 
 /* ── Files: one ruled row per file, the chevron turns when open. ── */
@@ -676,23 +509,6 @@
 .addFile .field {
   flex: 1 1 240px;
   margin: 0;
-}
-
-@media (max-width: 960px) {
-  .detail {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "main"
-      "side"
-      "tech";
-    gap: 8px;
-  }
-  .side {
-    position: static;
-    padding: 16px 0 0;
-    border-left: 0;
-    border-top: 1px solid var(--line-strong);
-  }
 }
 @media (max-width: 800px) {
   .page {

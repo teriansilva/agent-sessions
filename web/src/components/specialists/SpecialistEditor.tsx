@@ -20,6 +20,11 @@ import type {
   SpecialistTemplate,
 } from "../../types/specialists";
 import { GRADE_HINT, GRADE_LABEL, gradeOf, useModelGrades } from "./grades";
+import { Archive, ArchiveRestore } from "lucide-react";
+import { ActionBar, LibraryDetail, MoreMenu } from "../library/LibraryDetail";
+import lib from "../library/library.module.css";
+import { useExportEntry, useImportEntry } from "../share/useLibraryShare";
+import { useShareImports } from "../share/useShareImports";
 import buttons from "../ui/actionButton.module.css";
 import pb from "../playbooks/playbooks.module.css";
 import styles from "./specialists.module.css";
@@ -65,6 +70,11 @@ export function SpecialistEditor({ id }: { id?: string }) {
   const [revision, setRevision] = useState<number | null>(null);
   const [version, setVersion] = useState<number | null>(null);
   const [archived, setArchived] = useState(false);
+  const [round, setRound] = useState(0);
+  const imported = useShareImports(round);
+  // Import… makes NEW copies only; this specialist is unchanged.
+  const importer = useImportEntry(() => setRound((n) => n + 1));
+  const exporter = useExportEntry("specialist");
   // The capacity field's own text: an empty field mid-edit is not "1".
   const [capacityText, setCapacityText] = useState(String(EMPTY.capacity));
   const [loadError, setLoadError] = useState("");
@@ -216,17 +226,20 @@ export function SpecialistEditor({ id }: { id?: string }) {
   // Editing an id whose record never loaded (or is archived) can't save.
   const blocked = !!id && (revision === null || archived);
 
-  return (
-    <div className={styles.editor} data-testid="specialist-editor">
+  const head = (
+    <>
       <div className={`nj-kicker ${pb.kicker}`}>
         <span className="nj-notch" aria-hidden="true" />
         {/* One flow item: the kicker is a flex row, and loose text nodes would wrap apart. */}
         <span>
-          Library // <Link to={SPECIALISTS_PATH}>specialists</Link> //{" "}
-          <b>{id ? `${draft.title || id}${version ? ` · v${version}` : ""}` : "new"}</b>
+          Library // <Link to={SPECIALISTS_PATH}>specialists</Link> // <b>new</b>
         </span>
       </div>
-      <h1>{id ? "Edit specialist" : "New specialist"}</h1>
+      <h1>New specialist</h1>
+    </>
+  );
+  const body = (
+    <>
       {loadError && (
         <p className={pb.error} role="alert" data-testid="specialist-load-error">
           {loadError} Nothing can be saved until it loads.
@@ -478,16 +491,6 @@ export function SpecialistEditor({ id }: { id?: string }) {
         <Link className={buttons.ghost} to={SPECIALISTS_PATH}>
           {id ? "Back" : "Cancel"}
         </Link>
-        {id && revision !== null && (
-          <button
-            type="button"
-            className={buttons.ghost}
-            disabled={busy}
-            onClick={() => void toggleArchived()}
-          >
-            {archived ? "Unarchive" : "Archive"}
-          </button>
-        )}
         <button
           type="button"
           className={buttons.primary}
@@ -497,6 +500,75 @@ export function SpecialistEditor({ id }: { id?: string }) {
           {id ? `Save as v${(version ?? 0) + 1}` : "Create specialist"}
         </button>
       </div>
+    </>
+  );
+  if (!id)
+    return (
+      <div className={styles.editor} data-testid="specialist-editor">
+        {head}
+        {body}
+      </div>
+    );
+  // #2144: an existing specialist wears the Library detail's header and action bar; the editor
+  // form below is its contents, unchanged.
+  return (
+    <div className={styles.editor} data-testid="specialist-editor">
+      <LibraryDetail
+        back={{ to: SPECIALISTS_PATH, label: "All specialists" }}
+        kicker="specialists"
+        kind="Specialist"
+        version={version !== null ? String(version) : null}
+        source={imported.has(`specialist:${id}`) ? "imported" : "local"}
+        badges={archived ? <span className={lib.grade}>Archived</span> : undefined}
+        title={draft.title || id}
+        bar={
+          <ActionBar
+            onExport={revision !== null ? () => exporter.open(id) : undefined}
+            onImport={importer.open}
+          >
+            {revision !== null && (
+              <SpecialistMenu
+                title={draft.title || id}
+                archived={archived}
+                busy={busy}
+                onToggle={() => void toggleArchived()}
+              />
+            )}
+          </ActionBar>
+        }
+      >
+        {body}
+      </LibraryDetail>
+      {importer.dialog}
+      {exporter.dialog}
     </div>
+  );
+}
+
+/** The specialist detail's ⋯ (#2144): Archive / Unarchive. */
+function SpecialistMenu({
+  title,
+  archived,
+  busy,
+  onToggle,
+}: {
+  title: string;
+  archived: boolean;
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <MoreMenu
+      title={title}
+      items={[
+        {
+          key: "archive",
+          label: archived ? "Unarchive" : "Archive",
+          icon: archived ? <ArchiveRestore size={16} aria-hidden /> : <Archive size={16} aria-hidden />,
+          disabled: busy,
+          onSelect: onToggle,
+        },
+      ]}
+    />
   );
 }

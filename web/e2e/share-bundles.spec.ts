@@ -182,9 +182,11 @@ test("export: a chosen playbook locks in its skills and downloads exactly the ch
   const writes = await setup(page);
   await page.goto(SKILLS_PATH);
   await expect(page.getByTestId("imported-from-file")).toBeVisible();
-  await page.getByRole("button", { name: "Export…" }).click();
+  // #2144: Export is each card's own; the dialog still offers every exportable item.
+  await page.getByRole("button", { name: "Export tdd" }).click();
   const dialog = page.getByTestId("share-export");
   await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Skill tdd").uncheck();
   const playbook = dialog.getByLabel("Playbook Research brief");
   await target44(page.locator("label[for='share-x-playbook:research-brief']"));
   await playbook.check();

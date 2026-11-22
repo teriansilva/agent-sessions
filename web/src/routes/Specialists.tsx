@@ -7,7 +7,11 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { SpecialistCard } from "../components/specialists/SpecialistCard";
 import { SpecialistEditor } from "../components/specialists/SpecialistEditor";
-import { ShareActions } from "../components/share/ShareDialogs";
+import { useImportEntry } from "../components/share/useLibraryShare";
+import { LibraryGrid, LibraryHead, LibraryToolbar, type Facet } from "../components/library/LibraryGrid";
+import { GRADES, GRADE_LABEL } from "../components/specialists/grades";
+import type { Grade } from "../types/specialists";
+import lib from "../components/library/library.module.css";
 import { useShareImports } from "../components/share/useShareImports";
 import { api } from "../lib/api";
 import { SPECIALIST_NEW_PATH } from "../lib/routes";
@@ -19,7 +23,7 @@ export default function Specialists() {
   const { specialistId } = useParams();
   const isNew = useLocation().pathname === SPECIALIST_NEW_PATH;
   return (
-    <main className={pb.page} data-testid="specialists-page">
+    <main className={`${pb.page} ${lib.page}`} data-testid="specialists-page">
       {isNew ? (
         <SpecialistEditor key="new" />
       ) : specialistId ? (
@@ -91,38 +95,70 @@ function PoolLimit({ live, limit, onSaved }: { live: number; limit: number; onSa
   );
 }
 
+type Show = "all" | Grade | "ungraded" | "archived";
+
 function Pool() {
   const read = useCallback(() => api.specialists(), []);
   const { data, error, loading, reload } = usePlaybookRead(read);
-  // Archived specialists are hidden from new use, never lost: one toggle shows them instead.
-  const [showArchived, setShowArchived] = useState(false);
+  const [search, setSearch] = useState("");
+  // Archived specialists are hidden from new use, never lost: the Archived chip shows them.
+  const [show, setShow] = useState<Show>("all");
   const [round, setRound] = useState(0);
   const imported = useShareImports(round);
+  const importer = useImportEntry(() => {
+    setRound((n) => n + 1);
+    void reload();
+  });
   const all = data?.specialists ?? [];
-  const archivedCount = all.filter((s) => s.archived).length;
-  const rows = all.filter((s) => s.archived === showArchived);
+  const needle = search.trim().toLowerCase();
+  const matching = all.filter((s) =>
+    [
+      s.id,
+      s.current.title,
+      s.current.summary,
+      s.current.engine,
+      s.current.model,
+      ...s.current.skills.map((k) => k.id),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
+  );
+  const active = matching.filter((s) => !s.archived);
+  const pick = (v: Show) =>
+    v === "archived"
+      ? matching.filter((s) => s.archived)
+      : v === "all"
+        ? active
+        : v === "ungraded"
+          ? active.filter((s) => !s.grade)
+          : active.filter((s) => s.grade === v);
+  const rows = pick(show);
+  const facets: Facet<Show>[] = (
+    [
+      { value: "all", label: "All" },
+      ...[...GRADES].reverse().map((g) => ({ value: g, label: GRADE_LABEL[g] })),
+      { value: "ungraded", label: "Ungraded" },
+      { value: "archived", label: "Archived" },
+    ] as { value: Show; label: string }[]
+  )
+    .map((f) => ({ ...f, n: pick(f.value).length }))
+    .filter((f) => f.value === "all" || f.value === show || f.n > 0);
   return (
     <>
-      <div className={`nj-kicker ${pb.kicker}`}>
-        <span className="nj-notch" aria-hidden="true" />
-        Library // <b>specialists</b>
-        {data ? ` // ${rows.length}` : ""}
-      </div>
-      <div className={pb.header}>
-        <h1>Specialists</h1>
-        <ShareActions
-          kind="specialist"
-          onImported={() => {
-            setRound((n) => n + 1);
-            void reload();
-          }}
-        >
+      <LibraryHead
+        section="specialists"
+        title="Specialists"
+        count={data ? active.length : undefined}
+        primary={
           <Link className={buttons.primary} to={SPECIALIST_NEW_PATH}>
+            <Plus size={16} aria-hidden />
             New specialist
           </Link>
-        </ShareActions>
-      </div>
-      <p className={pb.intro}>
+        }
+      />
+      <p className={lib.intro}>
         The jobs HQ staffs your missions from. Each one has the skills it brings, the
         agent and model it runs on, and how many can work at once. Its grade comes
         from the model: map your models in Settings → Agents.
@@ -135,8 +171,18 @@ function Pool() {
           onSaved={() => void reload()}
         />
       )}
+      <LibraryToolbar
+        label="Search specialists"
+        placeholder="Title, skill or model…"
+        search={search}
+        onSearch={setSearch}
+        facets={data ? facets : undefined}
+        facet={show}
+        onFacet={setShow}
+        count={data ? `${rows.length} ${rows.length === 1 ? "specialist" : "specialists"}` : undefined}
+      />
       {error && (
-        <div className={pb.error} role="alert">
+        <div className={lib.error} role="alert">
           {error}{" "}
           <button className={buttons.ghost} onClick={() => void reload()}>
             Try again
@@ -144,19 +190,8 @@ function Pool() {
         </div>
       )}
       {loading && !data && <p role="status">Loading specialists…</p>}
-      {archivedCount > 0 && (
-        <button
-          type="button"
-          className={buttons.ghost}
-          aria-pressed={showArchived}
-          data-testid="specialists-show-archived"
-          onClick={() => setShowArchived((v) => !v)}
-        >
-          {showArchived ? "Show active" : `Show archived (${archivedCount})`}
-        </button>
-      )}
-      {data && !rows.length && !showArchived && (
-        <div className={pb.empty}>
+      {data && !all.some((s) => !s.archived) && show === "all" && (
+        <div className={lib.empty}>
           <h2>No specialists yet.</h2>
           <p>
             Start from a template (Intern, Implementer, Reviewer, Bookkeeper, Researcher) and
@@ -164,24 +199,32 @@ function Pool() {
           </p>
         </div>
       )}
-      <div className={pb.grid}>
-        {rows.map((s, i) => (
-          <SpecialistCard
-            key={s.id}
-            specialist={s}
-            ordinal={i + 1}
-            imported={imported.has(`specialist:${s.id}`)}
-            onChanged={() => void reload()}
-          />
-        ))}
-        {data && !showArchived && (
-          <Link to={SPECIALIST_NEW_PATH} className={pb.newCard}>
-            <Plus size={22} aria-hidden="true" />
-            <span className={pb.newTitle}>New specialist</span>
-            <span className={pb.newHint}>Start from a template, or from scratch.</span>
-          </Link>
-        )}
-      </div>
+      {(data || error) && (
+        <LibraryGrid
+          testId="specialist-grid"
+          newTile={
+            show === "archived"
+              ? undefined
+              : {
+                  to: SPECIALIST_NEW_PATH,
+                  title: "New specialist",
+                  hint: "Start from a template (Intern, Implementer, Reviewer, Bookkeeper, Researcher), or from scratch.",
+                }
+          }
+          onImport={show === "archived" ? undefined : importer.open}
+          importHint="A .battlelab file someone shared with you."
+        >
+          {rows.map((s) => (
+            <SpecialistCard
+              key={s.id}
+              specialist={s}
+              imported={imported.has(`specialist:${s.id}`)}
+              onChanged={() => void reload()}
+            />
+          ))}
+        </LibraryGrid>
+      )}
+      {importer.dialog}
     </>
   );
 }

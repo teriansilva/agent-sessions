@@ -1,8 +1,15 @@
 # Playbooks
 
 A playbook packages a workflow, its evidence checks and optional project materials. Open
-**Library → Playbooks** to browse your installed bundles. Bundled examples are read-only;
-**Duplicate to local** creates an editable copy with fresh identifiers and remapped references.
+**Library → Playbooks** to browse your installed bundles. Tap anywhere on a card to open it.
+Bundled examples are read-only; **Duplicate to local** creates an editable copy with fresh
+identifiers and remapped references.
+
+A playbook's page has one bar: **Edit playbook** (or **Duplicate to local** on a bundled one),
+**Export**, **Import…**, and a **⋯** menu with **Duplicate**, **Set as default** / **Clear
+default** and **Delete playbook…**. Its facts (version, source, requirements, variables and what it
+ships) sit beside the flow. Each card you own has its own **Export**, and **Import from file**
+closes the grid next to **New playbook**; see [Sharing](/guide/sharing).
 
 ## Start from an example
 
@@ -22,7 +29,7 @@ connections or publishing action.
 
 To customize either example:
 
-1. Open its card and choose **Duplicate to local**.
+1. Open its card and choose **Duplicate to local** in the bar.
 2. Open **Edit playbook**, rename your copy and select a step.
 3. Choose who performs it: an agent **role** (the skills it needs and a minimum grade), an external service, or the operator. Then edit its instructions and completion rules.
 4. Set dependencies and a bounded rework target. The target must be an earlier dependency, and the

@@ -9,9 +9,11 @@ already there.
 
 ## Export
 
-1. Open **Library → Specialists**, **Library → Skills**, **Library → Playbooks**, **Prompt
-   templates** or **Library → Variables** and choose **Export…**.
-2. Tick what to share. Anything a chosen item needs comes along and is marked **Included**: a
+1. In **Library → Playbooks**, **Skills**, **Specialists** or **Mission plans**, choose **Export**
+   on the card you want to share, or **Export** in the bar of the one you have open. The export
+   starts with that item chosen. In **Prompt templates** or **Library → Variables**, choose
+   **Export…** on the page.
+2. Tick anything else to share. Anything a chosen item needs comes along and is marked **Included**: a
    playbook's role skills, the skills a specialist pins, or the variables a template's fields
    use. An included item can't be unticked on its own; untick the item that needs it instead.
 3. Choose **Download bundle**.
@@ -43,8 +45,10 @@ access stay here too.
 
 ## Import
 
-1. Choose **Import…** on any of those Library pages, then choose or drop a `.battlelab` file (up to
-   32 MB).
+1. Choose **Import from file**, the last tile in the Playbooks, Skills, Specialists and Mission
+   plans grids, or **Import…** in the bar of any of their items. (In Prompt templates and Variables
+   it is **Import…** on the page.) Then choose or drop a `.battlelab` file (up to 32 MB). Importing
+   from an item's page never changes that item: every import makes new copies.
 2. BattleLab checks the whole file before it shows anything. A file that isn't a valid bundle is
    refused with the reason, and nothing is read into your library. A bundle made by a newer
    BattleLab asks you to update first.

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import { Link, useBlocker } from "react-router-dom";
 import { ChevronRight, ExternalLink, GalleryHorizontal } from "lucide-react";
 import { ApiError, api } from "../../lib/api";
@@ -201,10 +201,20 @@ export function Origin({
     </section>
   );
 }
-export function LeaveGuard({ dirty }: { dirty: boolean }) {
+export function LeaveGuard({
+  dirty,
+  released,
+}: {
+  dirty: boolean;
+  /** Set to `true` just before a navigation the page itself starts on success (a saved copy
+   *  opening): read when the navigation is attempted, so it holds even before `dirty` re-renders
+   *  false (#2144 review). Never set it for a navigation the operator starts. */
+  released?: RefObject<boolean>;
+}) {
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
       dirty &&
+      !released?.current &&
       (currentLocation.pathname !== nextLocation.pathname ||
         currentLocation.search !== nextLocation.search),
   );

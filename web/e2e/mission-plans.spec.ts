@@ -136,21 +136,29 @@ test("the Library lists live plans, Show archived adds the archived one, and eve
   await expect(cards).toHaveCount(2);
   await expect(page.getByTestId("mission-plan-card-plan-5e6f7a8b")).toContainText("Imported from a file");
   await expect(page.getByTestId("mission-plan-card-plan-1a2b3c4d")).toContainText("3 objectives · 3 project slots · 8 steps");
-  const toggle = page.getByTestId("mission-plans-show-archived");
-  await expect(toggle).toHaveText("Show archived (1)");
+  // #2144: the Show archived toggle became the toolbar's Archived chip; it still ADDS.
+  const toggle = page.getByRole("group", { name: "Show" }).getByRole("button", { name: /^Archived/ });
+  await expect(toggle).toHaveText("Archived1");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(cards).toHaveCount(3); // added, never replacing the live ones
   await expect(page.getByTestId("mission-plan-card-plan-9c0d1e2f")).toContainText("Archived");
   for (const b of await page.locator("main [data-testid^='mission-plan-card-'] :is(a, button)").all()) {
     if (!(await b.isVisible())) continue;
-    const box = await b.boundingBox();
-    // A text link in a card's title is not a button; every action is a 44 px box.
-    if ((await b.getAttribute("class"))?.includes("title")) continue;
+    // A card's title link is stretched over its card (#2144): the card is the target.
+    const target = (await b.getAttribute("data-library-card-link")) !== null
+      ? b.locator("xpath=ancestor::article[1]")
+      : b;
+    const box = await target.boundingBox();
     expect(box!.height, await b.innerText()).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
-  // Unarchive sends the revision the card was loaded at: the fence.
-  await page.getByTestId("mission-plan-card-plan-9c0d1e2f").getByRole("button", { name: "Unarchive" }).click();
+  // Unarchive (the detail's ⋯, #2144) sends the revision the plan was loaded at: the fence.
+  await page.route("**/api/mission-plans/plan-9c0d1e2f", (r) =>
+    r.request().method() === "GET" ? r.fulfill({ json: { ...DETAIL, ...PLANS[2] } }) : r.fallback(),
+  );
+  await page.getByTestId("mission-plan-card-plan-9c0d1e2f").getByRole("link").click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Unarchive" }).click();
   await expect.poll(() => writes).toEqual([
     { url: "/api/mission-plans/plan-9c0d1e2f/archive", body: { archived: false, expect_revision: 2 } },
   ]);
@@ -162,7 +170,7 @@ test("the detail shows slots, the never-saved list and the objectives in order w
   await page.goto(missionPlanPath("plan-1a2b3c4d"));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Monthly invoice run");
   await expect(page.getByTestId("mission-plan-inert")).toContainText("This plan runs nothing.");
-  const never = page.getByRole("region", { name: "Never saved in a plan" });
+  const never = page.getByRole("list", { name: "Never saved in a plan" });
   await expect(never.getByRole("listitem")).toHaveCount(4);
   await expect(never).toContainText("playbook defaults");
   const o1 = page.getByTestId("mission-plan-objective-o1");
@@ -181,7 +189,8 @@ test("the detail shows slots, the never-saved list and the objectives in order w
   await expect(dialog.getByRole("region", { name: "Mission plans" })).toBeVisible();
   await expect(dialog.getByTestId("share-export-summary")).toContainText("1 chosen");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Archive" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
   await expect.poll(() => writes).toEqual([
     { url: "/api/mission-plans/plan-1a2b3c4d/archive", body: { archived: true, expect_revision: 1 } },
   ]);
@@ -321,7 +330,8 @@ test("a card's Export sends exactly that plan, and an import shows the plan's co
   await download;
   expect(writes).toEqual([{ url: "/api/share/export", body: { items: [{ kind: "mission-plan", id: "plan-1a2b3c4d" }] } }]);
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Import…" }).click();
+  // #2144: Import from file closes the grid.
+  await page.getByTestId("library-import-tile").click();
   const imp = page.getByTestId("share-import");
   await imp.getByTestId("share-file").setInputFiles({
     name: "invoices.battlelab",
@@ -332,10 +342,10 @@ test("a card's Export sends exactly that plan, and an import shows the plan's co
   await expect(imp).toContainText("Mission plan");
 });
 
-test("a lost archive fence re-reads the list, so the next click carries the current revision", async ({ page }) => {
+test("a lost archive fence re-reads the plan, so the next click carries the current revision", async ({ page }) => {
   const writes: { url: string; body: unknown }[] = [];
   await mockLibrary(page, writes);
-  let lists = 0;
+  let reads = 0;
   let posts = 0;
   await page.route("**/api/mission-plans**", async (r) => {
     const url = new URL(r.request().url());
@@ -343,15 +353,18 @@ test("a lost archive fence re-reads the list, so the next click carries the curr
       posts += 1;
       return r.fulfill({ status: 409, json: { detail: "the mission plan changed since you loaded it" } });
     }
-    if (url.pathname === "/api/mission-plans") lists += 1;
+    if (url.pathname !== "/api/mission-plans") reads += 1;
     return r.fulfill({ json: url.pathname === "/api/mission-plans" ? { plans: PLANS } : DETAIL });
   });
-  await page.goto(MISSION_PLANS_PATH);
-  await expect(page.locator("[data-testid^='mission-plan-card-']")).toHaveCount(2);
-  const before = lists;
-  await page.getByTestId("mission-plan-card-plan-1a2b3c4d").getByRole("button", { name: "Archive" }).click();
+  // #2144: Archive lives in the detail's ⋯, so the fence is the detail's revision.
+  await page.goto(missionPlanPath("plan-1a2b3c4d"));
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Monthly invoice run");
+  const before = reads;
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
   await expect.poll(() => posts).toBe(1);
-  await expect.poll(() => lists).toBeGreaterThan(before);
+  await expect.poll(() => reads).toBeGreaterThan(before);
+  await expect(page.getByRole("alert")).toContainText("changed since you loaded it");
 });
 
 test("with every plan archived, the empty state says so and keeps the toggle", async ({ page }) => {
@@ -362,7 +375,7 @@ test("with every plan archived, the empty state says so and keeps the toggle", a
   );
   await page.goto(MISSION_PLANS_PATH);
   await expect(page.getByTestId("mission-plans-empty")).toContainText("Every mission plan is archived");
-  await page.getByTestId("mission-plans-show-archived").click();
+  await page.getByRole("group", { name: "Show" }).getByRole("button", { name: /^Archived/ }).click();
   await expect(page.locator("[data-testid^='mission-plan-card-']")).toHaveCount(3);
   await expect(page.getByTestId("mission-plans-empty")).toHaveCount(0);
 });

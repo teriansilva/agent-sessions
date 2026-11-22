@@ -27,23 +27,25 @@ The procedures are saved as written, the same way a playbook export carries them
 
 ## In the Library
 
-Each plan shows how many objectives, slots and steps it has, and whether it was **saved from a
-mission** or **imported from a file**. Open a plan to see:
+Each plan's card shows how many objectives, slots and steps it has, and whether it was **saved
+from a mission** or **imported from a file**. Tap anywhere on a card to open the plan and see:
 - its slots;
 - its objectives in order, each with its procedure and the objectives it comes after;
 - every step, with its actor and its role needs.
 
-A saved plan never changes. **Archive** hides a plan; it is never deleted. **Show archived** adds the
-archived plans back to the list, and **Unarchive** brings one back.
+A saved plan never changes. **Archive**, in the ⋯ menu of a plan's page, hides a plan; it is never
+deleted. The **Archived** filter adds the archived plans back to the list, and **Unarchive** (in
+the same ⋯ menu) brings one back.
 
 ## Share one
 
 Mission plans travel in the same `.battlelab` files as specialists and skills (see
 [Sharing](/guide/sharing)):
-- **Export:** choose **Export** on a plan, or **Export…** on the page. A plan whose title, summary or
-  slot labels hold one of your stored secrets can't be exported.
-- **Import:** choose **Import…** on the page. The preview checks every procedure in the file. A plan
-  you import becomes a **new copy** in your Library, and nothing else happens.
+- **Export:** choose **Export** on a plan's card, or the **Export** that leads a plan's page. A plan
+  whose title, summary or slot labels hold one of your stored secrets can't be exported.
+- **Import:** choose the **Import from file** tile at the end of the list, or **Import…** on a
+  plan's page. The preview checks every procedure in the file. A plan you import becomes a **new
+  copy** in your Library, and nothing else happens.
 
 ## What a plan doesn't do (yet)
 

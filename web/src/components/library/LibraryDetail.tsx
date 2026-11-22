@@ -80,7 +80,7 @@ export function LibraryDetail({
       </header>
       {bar}
       {notices}
-      <div className={styles.cols}>
+      <div className={`${styles.cols} ${facts ? "" : styles.solo}`.trim()}>
         <div>
           {lead && <p className={styles.lead}>{lead}</p>}
           {children}
@@ -124,7 +124,7 @@ export function SourceFact({
 }) {
   return (
     <Fact label="Source">
-      {word}
+      <span className={styles.prov}>{word}</span>
       {note && <span className={styles.small}>{note}</span>}
       {origin && (
         <span className={styles.small} data-testid="library-origin">

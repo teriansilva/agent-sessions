@@ -95,7 +95,7 @@ hidden while it is open. It asks, one step at a time:
    **Global default** (Settings → Agents). A model and effort belong to the project's own agent, so
    they are offered once you pick one; an agent that sets its model in its own configuration says
    so. Leaving everything on the global defaults stores nothing.
-5. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
+5. **Playbook**: choose one of your playbooks (**Library → Playbooks → Yours**: the
    bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**.
    Each playbook is a card with its summary, its steps and how many files, inputs and agent steps
    it brings. A usable configured default is preselected; a missing default is explained. Local

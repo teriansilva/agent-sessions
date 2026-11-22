@@ -1,29 +1,35 @@
 # Playbook and skill gallery
 
 The gallery is a public collection of ready-made playbooks and skills. You don't open it from its
-own menu entry. Each kind has a **Browse gallery** view next to your own library:
+own menu entry. Each kind has a **Public gallery** tab next to **Yours**:
 
-- **Library → Playbooks** has **Your playbooks** (the ones new projects can use) and **Browse
+- **Library → Playbooks** has **Yours** (the playbooks new projects can use) and **Public
   gallery** (public playbooks you can add).
-- **Library → Skills** has **Your skills** and **Browse gallery** (public skills).
+- **Library → Skills** has **Yours** and **Public gallery** (public skills).
+
+Both tabs look the same: one search, a row of filters, and the same cards. **Tap anywhere on a
+card to open it.** On the Public gallery tab the filters are **Not in your library** and **In your
+library**, and a card you already hold a copy of says **In your library**.
 
 A playbook describes how a repository works: its workflow, inputs and files. A skill is a set of
 instructions with supporting text files. Agents have their own catalog under Settings.
 
-Opening a Browse gallery view, or a copy that came from the gallery, checks the public gallery once
-per page load, so you never need to press a refresh button. **Refresh** is there if you want to check again. You can also browse the
+Opening the Public gallery tab, or a copy that came from the gallery, checks the public gallery
+once per page load, so you never need to press a refresh button. **Refresh**, in the line under the
+cards, is there if you want to check again. You can also browse the
 [public gallery](https://relay.battlelab.superstatus.io/catalogs/gallery) without signing in.
 
 ## Add a playbook or skill
 
-1. Choose **View** on a card. The page shows, in order:
+1. Open a card. The page shows, in order:
    - what it is and who made it;
    - its **Requirements**;
    - **What's inside** (inputs and workflow steps, for playbooks);
    - its **Files**. The first file is open, and every other file shows its complete content with
      **Show file**, or all at once with **Expand all**. A long file scrolls inside its own viewer.
 2. When you have checked the requirements and files, choose **Add to my playbooks** (or **Add to
-   my skills**). On a phone the button sits after the files; on a wide screen it stays beside them.
+   my skills**). On a wide screen the button is in the bar under the title; on a phone it sits
+   after the files, so you review first.
 3. Confirm with **I've reviewed it — Add**. The confirmation is your statement that you checked
    it. Nothing is added before you confirm.
 4. Choose **Open** to go to your new copy.
