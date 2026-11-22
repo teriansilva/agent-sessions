@@ -213,3 +213,48 @@ describe("ArtifactViewer (#2068)", () => {
     expect(screen.queryByTestId("public-bar-brand")).not.toBeInTheDocument();
   });
 });
+
+describe("ArtifactViewer — the operator's own view (#2270)", () => {
+  const TOKEN = "eyJhIjoiMTIzNC01Njc4LTkwMTItMzQ1NiJ9.Zz-_9.s1g";
+
+  test("always wears the header, frames the artifact under the view token, reads cookie-less", async () => {
+    // Even a meta that says header:false: hiding the header is a share option, not this view's.
+    const calls = serve({
+      title: "Weekly build report",
+      kind: "site",
+      updated_at: Date.now() / 1000 - 3600,
+      header: false,
+    });
+    at(`/artifacts/o/${TOKEN}/?tab=2#top`);
+    render(<ArtifactViewer />);
+    const frame = await screen.findByTestId("artifact-frame");
+    expect(frame).toHaveAttribute("src", `/artifacts/v/${TOKEN}/?tab=2#top`);
+    expect(frame.getAttribute("sandbox")!.split(" ")).not.toContain(
+      "allow-same-origin",
+    );
+    expect(screen.getByTestId("artifact-viewer")).toHaveAttribute(
+      "data-header",
+      "on",
+    );
+    expect(screen.getByTestId("public-bar")).toBeInTheDocument();
+    expect(screen.getByText("Weekly build report")).toBeInTheDocument();
+    expect(screen.getByText("SITE")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.title).toBe("Weekly build report · BattleLab"),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`/artifacts/o/${TOKEN}/~meta`);
+    expect(calls[0].init?.credentials).toBe("omit");
+  });
+
+  test("an expired view says to open the artifact again, and frames nothing", async () => {
+    serve({ detail: "expired" }, 404);
+    at(`/artifacts/o/${TOKEN}/`);
+    render(<ArtifactViewer />);
+    expect(await screen.findByTestId("artifact-unavailable")).toHaveTextContent(
+      "This view has expired",
+    );
+    expect(screen.getByTestId("public-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("artifact-frame")).not.toBeInTheDocument();
+  });
+});

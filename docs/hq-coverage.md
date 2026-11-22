@@ -760,6 +760,9 @@ GET    /artifacts/p/{public_id}/~meta                                           
 POST   /artifacts/p/{public_id}/~unlock                                           n/a  # a visitor's password unlock (#2217)
 GET    /artifacts/p/{public_id}/~u/{token}/{rest:path}                            n/a  # hosted bytes behind a password (#2217)
 GET    /artifacts/p/{public_id}/~u/{token}                                        n/a  # hosted bytes behind a password (#2217)
+GET    /artifacts/o/{token}                                                       n/a  # the operator's own viewer page (#2270)
+GET    /artifacts/o/{token}/{rest:path}                                           n/a  # the operator's own viewer page (#2270)
+GET    /artifacts/o/{token}/~meta                                                 n/a  # the own viewer's title/kind/time (#2270)
 GET    /artifacts/v/{token}/{rest:path}                                           n/a  # hosted bytes
 GET    /artifacts/v/{token}                                                       n/a  # hosted bytes
 GET    /artifacts/{ref}                                                           n/a  # hosted bytes

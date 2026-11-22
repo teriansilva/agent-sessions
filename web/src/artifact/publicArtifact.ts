@@ -18,6 +18,32 @@ export function publicIdFromPath(pathname: string): string | null {
   return PATH_RE.exec(pathname)?.[1] ?? null;
 }
 
+/** The operator's own view (#2270): `/artifacts/o/<view token>/`, where a signed-in Open lands. The
+ *  token is the server's signed view token (URL-safe base64 plus dots), never a cookie. */
+const OWN_RE = /^\/artifacts\/o\/([A-Za-z0-9_.-]+)\/?$/;
+
+/** The view token this page was opened with, or null when it isn't the operator's own view. */
+export function ownTokenFromPath(pathname: string): string | null {
+  return OWN_RE.exec(pathname)?.[1] ?? null;
+}
+
+/** The operator's own view frames the artifact under the same view token. */
+export function ownContentUrl(token: string, search = "", hash = ""): string {
+  return `/artifacts/v/${token}/${search}${hash}`;
+}
+
+/** The operator's own view's one read: the artifact's title, kind and time, authorised by the
+ *  view token in the path (no cookie, like the public read). It always wears the header. */
+export async function fetchOwnMeta(
+  token: string,
+  signal?: AbortSignal,
+): Promise<ArtifactMeta> {
+  const r = await fetch(`/artifacts/o/${token}/~meta`, { ...OPTS, signal });
+  if (r.status === 404) throw new GoneError("expired");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return { ...meta((await r.json()) as Partial<ArtifactMeta>), header: true };
+}
+
 /** Where the artifact's own files live: under `~/`, so its relative links stay beneath it. A
  *  password link's live under `~u/<unlock token>/` instead: the sandboxed frame sends no cookie,
  *  so the token rides in the path. */

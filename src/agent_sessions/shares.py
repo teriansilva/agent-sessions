@@ -984,12 +984,13 @@ class UnlockThrottle:
 
 # `/p/<token>` in any logged text becomes `/p/<redacted>`. The token is the whole credential for
 # a password-less link, and access logs, error reports and proxy logs outlive any revoke.
-# The same rule masks an artifact's view token, `/artifacts/v/<token>` (#1932): a signed bearer
-# element in the path (a public artifact's `/artifacts/p/<id>` is covered by the `/p/` pattern).
+# The same rule masks an artifact's view token, `/artifacts/v/<token>` (#1932), and the operator's
+# viewer page under the same token, `/artifacts/o/<token>` (#2270): a signed bearer element in the
+# path (a public artifact's `/artifacts/p/<id>` is covered by the `/p/` pattern).
 _P_PATH = re.compile(r"/p/[A-Za-z0-9_-]+")
 REDACTED_PATH = "/p/<redacted>"
-_V_PATH = re.compile(r"/artifacts/v/[A-Za-z0-9_.-]+")
-REDACTED_VIEW_PATH = "/artifacts/v/<redacted>"
+_V_PATH = re.compile(r"/artifacts/([vo])/[A-Za-z0-9_.-]+")
+REDACTED_VIEW_PATH = r"/artifacts/\1/<redacted>"
 # A password-protected public artifact's unlock token, `/artifacts/p/<id>/~u/<token>/…`: the `/p/`
 # rule masks the id, this one the token after it.
 _U_PATH = re.compile(r"/~u/[A-Za-z0-9_.-]+")
@@ -1002,9 +1003,9 @@ def redact(text: str) -> str:
 
 
 _P_UNREDACTED = re.compile(
-    r"/p/(?!<redacted>)[A-Za-z0-9_-]+|/artifacts/v/(?!<redacted>)[\w.-]+|/~u/(?!<redacted>)[\w.-]+"
+    r"/p/(?!<redacted>)[A-Za-z0-9_-]+|/artifacts/[vo]/(?!<redacted>)[\w.-]+|/~u/(?!<redacted>)[\w.-]+"
 )
-_MARKERS = ("/p/", "/artifacts/v/", "/~u/")
+_MARKERS = ("/p/", "/artifacts/v/", "/artifacts/o/", "/~u/")
 
 
 class RedactShareTokens(logging.Filter):

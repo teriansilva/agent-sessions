@@ -2034,3 +2034,189 @@ def test_an_unencodable_password_never_matches(password_hash):
 
     assert auth.verify_password("\ud800", password_hash) is False
     assert auth.verify_password("hunter2", password_hash) is True
+
+
+# ---- #2270: the operator's own view wears the header -------------------------------------------
+
+_TAB = {"Sec-Fetch-Dest": "document"}
+
+
+def test_opening_the_stable_link_in_a_tab_is_the_viewer_with_the_header(
+    viewer_client, auth_cfg, origin, proj
+):
+    a = _published(origin, proj)
+    # Signed out it is still the sign-in page that comes back here.
+    r = viewer_client.get(f"/artifacts/{a['id']}/", headers=_TAB, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/login?next=/artifacts/{a['id']}/"
+    _login(viewer_client, auth_cfg)
+    r = viewer_client.get(f"/artifacts/{a['id']}/?x=1", headers=_TAB, follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert loc.startswith("/artifacts/o/") and loc.endswith("/?x=1")
+    assert r.headers["cache-control"] == "no-store" and r.headers["vary"] == "Sec-Fetch-Dest"
+    token = loc.split("/")[3]
+    # The page, its meta and the framed content need NO cookie: the view token is the credential.
+    bare = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    page = bare.get(f"/artifacts/o/{token}/")
+    assert page.status_code == 200 and "<title>viewer</title>" in page.text
+    assert "sandbox" not in page.headers["content-security-policy"]  # the app's own page
+    assert page.headers["cache-control"] == "no-store"
+    assert page.headers["referrer-policy"] == "no-referrer"
+    meta = bare.get(f"/artifacts/o/{token}/~meta")
+    assert meta.status_code == 200
+    assert meta.json() == {
+        "title": "Hi",
+        "kind": "site",
+        "updated_at": meta.json()["updated_at"],
+        "header": True,
+    }
+    assert meta.json()["updated_at"] > 0
+    # What the viewer frames: the artifact under the same token, sandboxed.
+    content = bare.get(f"/artifacts/v/{token}/")
+    assert "<h1>hi</h1>" in content.text
+    assert content.headers["content-security-policy"].startswith("sandbox ")
+    # A deeper path under the viewer is the artifact's own file.
+    r = bare.get(f"/artifacts/o/{token}/docs/?q=2", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/artifacts/v/{token}/docs/?q=2"
+    r = bare.get(f"/artifacts/o/{token}", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == f"/artifacts/o/{token}/"
+
+
+def test_the_own_view_header_shows_even_when_the_public_link_hides_it(
+    viewer_client, auth_cfg, origin, proj
+):
+    a = _published(origin, proj)
+    _login(viewer_client, auth_cfg)
+    shared = viewer_client.post(
+        f"/api/artifacts/{a['id']}/share",
+        json={"header": False},
+        headers=_csrf_headers(viewer_client, auth_cfg),
+    )
+    assert shared.status_code == 200
+    loc = viewer_client.get(f"/artifacts/{a['id']}/", headers=_TAB, follow_redirects=False).headers[
+        "location"
+    ]
+    assert viewer_client.get(loc + "~meta").json()["header"] is True
+
+
+@pytest.mark.parametrize("dest", ["iframe", "image", "empty", None])
+def test_a_frame_an_image_or_a_fetch_of_the_stable_link_still_gets_the_artifact(
+    viewer_client, auth_cfg, origin, proj, dest
+):
+    """The in-app preview frame, a session's Artifacts tab thumbnail (`<img>`) and any client that
+    sends no `Sec-Fetch-Dest` keep getting the artifact itself, never the viewer page."""
+    a = _published(origin, proj)
+    _login(viewer_client, auth_cfg)
+    headers = {"Sec-Fetch-Dest": dest} if dest else {}
+    r = viewer_client.get(f"/artifacts/{a['id']}/", headers=headers, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/artifacts/v/")
+    # A deep path opened in a tab is the file itself, as before.
+    r = viewer_client.get(f"/artifacts/{a['id']}/docs/", headers=_TAB, follow_redirects=False)
+    assert r.headers["location"].startswith("/artifacts/v/")
+
+
+def test_the_own_view_refuses_a_bad_expired_or_deleted_token(
+    viewer_client, auth_cfg, origin, proj, monkeypatch
+):
+    from agent_sessions.routes import artifacts as routes
+
+    a = _published(origin, proj)
+    token = routes.view_token(auth_cfg, a["id"], None)
+    bare = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    for path in ("/artifacts/o/garbage/", "/artifacts/o/garbage/~meta", "/artifacts/o/garbage/x"):
+        assert bare.get(path, follow_redirects=False).status_code == 404, path
+    assert bare.get(f"/artifacts/o/{token}/~meta").status_code == 200
+    with monkeypatch.context() as m:
+        m.setattr(routes, "VIEW_TTL_S", -1)  # every token is past its lifetime
+        assert bare.get(f"/artifacts/o/{token}/").status_code == 404
+        assert bare.get(f"/artifacts/o/{token}/~meta").status_code == 404
+    _login(viewer_client, auth_cfg)
+    viewer_client.delete(
+        f"/api/artifacts/{a['id']}", headers=_csrf_headers(viewer_client, auth_cfg)
+    )
+    assert bare.get(f"/artifacts/o/{token}/~meta").status_code == 404
+
+
+def test_without_a_viewer_build_opening_the_stable_link_is_the_artifact(
+    auth_cfg, origin, proj, monkeypatch, tmp_path
+):
+    from agent_sessions import main
+
+    monkeypatch.setattr(main, "_WEB_DIST", tmp_path / "no-build")
+    client = TestClient(main.create_app(auth_cfg), base_url="https://your-domain.example")
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    r = client.get(f"/artifacts/{a['id']}/", headers=_TAB, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/artifacts/v/")
+
+
+def test_the_own_view_token_is_masked_in_access_logs():
+    from agent_sessions import shares
+
+    line = "GET /artifacts/o/eyJhIjoi.Zz-_9.sig/~meta HTTP/1.1"
+    assert shares.redact(line) == "GET /artifacts/o/<redacted>/~meta HTTP/1.1"
+    assert shares.redact("/artifacts/v/eyJ.Z.s/x") == "/artifacts/v/<redacted>/x"
+
+
+def test_the_own_view_follows_the_latest_revision_and_a_pin_keeps_its_own(
+    viewer_client, auth_cfg, origin, proj, monkeypatch
+):
+    """Hermes on #2270: the stable link's view keeps following new revisions (meta and frame
+    agree); `@<n>` keeps that revision, with its own time, and a pruned pin is gone in both."""
+    monkeypatch.setattr(artifact_store, "GC_GRACE_S", 0.0)
+    (proj / "f.txt").write_text("one")
+    a = artifact_store.publish(origin, {"path": "f.txt", "title": "F", "why": "w"})
+    _login(viewer_client, auth_cfg)
+    latest = viewer_client.get(
+        f"/artifacts/{a['id']}/", headers=_TAB, follow_redirects=False
+    ).headers["location"]
+    pinned = viewer_client.get(
+        f"/artifacts/{a['id']}@1/", headers=_TAB, follow_redirects=False
+    ).headers["location"]
+    token, pin = latest.split("/")[3], pinned.split("/")[3]
+    bare = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    one_at = bare.get(f"/artifacts/o/{pin}/~meta").json()["updated_at"]
+
+    (proj / "f.txt").write_text("two")
+    artifact_store.publish(
+        origin, {"path": "f.txt", "title": "F2", "why": "w", "artifact_id": a["id"]}
+    )
+    # The token minted before the republish now shows revision 2, in the meta and the frame.
+    assert bare.get(f"/artifacts/o/{token}/~meta").json()["title"] == "F2"
+    assert bare.get(f"/artifacts/v/{token}/").text == "two"
+    # The pin keeps revision 1: its own bytes, its own time.
+    assert bare.get(f"/artifacts/v/{pin}/").text == "one"
+    assert bare.get(f"/artifacts/o/{pin}/~meta").json()["updated_at"] == one_at
+
+    # Prune revision 1: the pin is gone for the meta and the frame alike.
+    with monkeypatch.context() as m:
+        m.setattr(artifact_store, "REVISIONS_MAX", 1)
+        (proj / "f.txt").write_text("three")
+        artifact_store.publish(
+            origin, {"path": "f.txt", "title": "F3", "why": "w", "artifact_id": a["id"]}
+        )
+    assert bare.get(f"/artifacts/v/{pin}/").status_code == 404
+    assert bare.get(f"/artifacts/o/{pin}/~meta").status_code == 404
+    assert bare.get(f"/artifacts/o/{token}/~meta").json()["title"] == "F3"
+
+
+def test_a_cold_open_of_an_expired_own_view_is_the_plain_expired_answer(
+    viewer_client, auth_cfg, origin, proj, monkeypatch
+):
+    """Hermes on #2270: a page load of an already-expired `/artifacts/o/<token>/` can't run the
+    viewer, so it is the server's plain-text 404 saying to open the artifact again (the same
+    words as an expired `/artifacts/v/`). The viewer's own "This view has expired" notice is for
+    a page whose `~meta` read expires after it loaded (web/src/artifact, e2e own-artifact-view)."""
+    from agent_sessions.routes import artifacts as routes
+
+    a = _published(origin, proj)
+    token = routes.view_token(auth_cfg, a["id"], None)
+    bare = TestClient(viewer_client.app, base_url="https://your-domain.example")
+    with monkeypatch.context() as m:
+        m.setattr(routes, "VIEW_TTL_S", -1)
+        for path in (f"/artifacts/o/{token}/", f"/artifacts/v/{token}/"):
+            r = bare.get(path, headers=_TAB)
+            assert r.status_code == 404, path
+            assert r.text == "this view link has expired; open the artifact again\n", path
+            assert r.headers["content-type"].startswith("text/plain")
+            assert r.headers["content-security-policy"].startswith("sandbox ")

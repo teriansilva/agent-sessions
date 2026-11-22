@@ -4,13 +4,16 @@ import { Atmosphere } from "../components/hud/Atmosphere";
 import { Loader } from "../components/hud/Loader";
 import { PublicBar } from "../components/public/PublicBar";
 import styles from "../share/ShareViewer.module.css";
-import own from "./ArtifactViewer.module.css";
+import ownCss from "./ArtifactViewer.module.css";
 import {
   GoneError,
   LockedError,
   UnlockError,
   contentUrl,
   fetchMeta,
+  fetchOwnMeta,
+  ownContentUrl,
+  ownTokenFromPath,
   publicIdFromPath,
   unlock,
   type ArtifactMeta,
@@ -41,20 +44,26 @@ export const FRAME_SANDBOX =
  *
  *  A password link (#2217) shows its password card first, nothing of the artifact; the unlock
  *  answers an unlock token the frame's address carries. A link shared without the header is the
- *  artifact edge to edge, under its own title. */
+ *  artifact edge to edge, under its own title.
+ *
+ *  The operator's own view (#2270), `/artifacts/o/<view token>/` where a signed-in Open lands, is
+ *  the same page: its `~meta` is authorised by the view token in the path, it ALWAYS wears the
+ *  header (hiding it is a share option, and this is not a share), and it frames the artifact
+ *  under that token. */
 export function ArtifactViewer() {
   const id = publicIdFromPath(window.location.pathname);
+  const own = id ? null : ownTokenFromPath(window.location.pathname);
   const [phase, setPhase] = useState<Phase>(
-    id ? { kind: "loading" } : { kind: "unavailable" },
+    id || own ? { kind: "loading" } : { kind: "unavailable" },
   );
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const unlocking = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id && !own) return;
     const ctl = new AbortController();
-    fetchMeta(id, ctl.signal).then(
+    (id ? fetchMeta(id, ctl.signal) : fetchOwnMeta(own!, ctl.signal)).then(
       (meta) => setPhase({ kind: "open", meta }),
       (e: unknown) => {
         if (ctl.signal.aborted) return;
@@ -78,7 +87,7 @@ export function ArtifactViewer() {
       ctl.abort();
       unlocking.current?.abort();
     };
-  }, [id]);
+  }, [id, own]);
 
   const submitPassword = async () => {
     if (!id || !password || phase.kind !== "locked" || phase.busy) return;
@@ -107,7 +116,7 @@ export function ArtifactViewer() {
   };
 
   const open = phase.kind === "open" ? phase.meta : null;
-  const title = open?.title || "Shared artifact";
+  const title = open?.title || (own ? "Artifact" : "Shared artifact");
   // Without the header (#2217) the page is the artifact's own: its title alone, no BattleLab bar,
   // no atmosphere. While the first read is in flight nothing is drawn, so a headerless link never
   // flashes a bar; a link that no longer works keeps it (it is BattleLab's own answer).
@@ -149,7 +158,9 @@ export function ArtifactViewer() {
                 </span>
               </>
             ) : (
-              <span className={styles.sub}>Shared artifact</span>
+              <span className={styles.sub}>
+                {own ? "Artifact" : "Shared artifact"}
+              </span>
             )}
           </PublicBar>
         )}
@@ -208,7 +219,12 @@ export function ArtifactViewer() {
         {phase.kind === "loading" && (
           <main className={styles.center}>
             <div className={styles.loading}>
-              <Loader kind="radar" label="Opening the shared artifact…" />
+              <Loader
+                kind="radar"
+                label={
+                  own ? "Opening the artifact…" : "Opening the shared artifact…"
+                }
+              />
             </div>
           </main>
         )}
@@ -216,12 +232,24 @@ export function ArtifactViewer() {
         {phase.kind === "unavailable" && (
           <main className={styles.center}>
             <div className={styles.notice} data-testid="artifact-unavailable">
-              <p className={styles.tag}>Link unavailable</p>
-              <h1 className={styles.h1}>This link no longer works</h1>
-              <p className={styles.muted}>
-                It may have been revoked. Ask the person who shared it for a new
-                link.
-              </p>
+              {own ? (
+                <>
+                  <p className={styles.tag}>View expired</p>
+                  <h1 className={styles.h1}>This view has expired</h1>
+                  <p className={styles.muted}>
+                    Open the artifact again from BattleLab.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className={styles.tag}>Link unavailable</p>
+                  <h1 className={styles.h1}>This link no longer works</h1>
+                  <p className={styles.muted}>
+                    It may have been revoked. Ask the person who shared it for a
+                    new link.
+                  </p>
+                </>
+              )}
             </div>
           </main>
         )}
@@ -236,16 +264,24 @@ export function ArtifactViewer() {
           </main>
         )}
 
-        {open && id && (
-          <main className={own.main}>
+        {open && (id || own) && (
+          <main className={ownCss.main}>
             <iframe
-              className={own.frame}
-              src={contentUrl(
-                id,
-                window.location.search,
-                window.location.hash,
-                phase.kind === "open" ? phase.token : undefined,
-              )}
+              className={ownCss.frame}
+              src={
+                id
+                  ? contentUrl(
+                      id,
+                      window.location.search,
+                      window.location.hash,
+                      phase.kind === "open" ? phase.token : undefined,
+                    )
+                  : ownContentUrl(
+                      own!,
+                      window.location.search,
+                      window.location.hash,
+                    )
+              }
               sandbox={FRAME_SANDBOX}
               referrerPolicy="no-referrer"
               title={title}

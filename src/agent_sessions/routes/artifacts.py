@@ -120,6 +120,13 @@ def _read_token(cfg: AuthConfig, token: str) -> tuple[str, int | None] | None:
     return aid, rev
 
 
+def _opened(request: Request) -> bool:
+    """A top-level page load (a tab, a window), as the browser reports it in ``Sec-Fetch-Dest``.
+    A frame (``iframe``), an image, a fetch, or a client that sends no such header is not: it keeps
+    getting the artifact itself (#2270)."""
+    return request.headers.get("sec-fetch-dest") == "document"
+
+
 def _hosted_error(status: int, text: str) -> Response:
     return Response(
         text + "\n", status_code=status, media_type="text/plain; charset=utf-8",
@@ -757,8 +764,8 @@ def register(
                 status_code=308,
                 headers=SANDBOX_HEADERS,
             )
-        page = (web_dist / "artifact.html") if web_dist is not None else None
-        if page is None or not page.is_file():
+        page = _viewer_page()
+        if page is None:
             # A build without the viewer bundle: the artifact itself, as before the viewer.
             return RedirectResponse(
                 f"/artifacts/p/{quote(public_id)}/{CONTENT_PREFIX}",
@@ -774,6 +781,68 @@ def register(
         return RedirectResponse(
             f"/artifacts/p/{quote(public_id)}/", status_code=308, headers=SANDBOX_HEADERS
         )
+
+    def _viewer_page() -> Path | None:
+        page = (web_dist / "artifact.html") if web_dist is not None else None
+        return page if page is not None and page.is_file() else None
+
+    # ---- the operator's own view (#2270) ---------------------------------------------------
+    # `/artifacts/o/<view token>/` is the viewer page (`artifact.html`) for the signed-in operator:
+    # the BattleLab header, always shown, above the artifact framed from `/artifacts/v/<token>/`.
+    # The token authorises the page's one `~meta` read, so the viewer bundle stays cookie-free
+    # exactly as on a public link; it names one artifact (and revision) and expires with the
+    # view token's `VIEW_TTL_S`.
+
+    @app.get("/artifacts/o/{token}/~meta")
+    async def own_view_meta(token: str) -> Response:
+        read = _read_token(cfg, token)
+        if read is None:
+            return _hosted_error(404, "this view link has expired; open the artifact again")
+        try:
+            art = await asyncio.to_thread(artifact_store.get, read[0])
+        except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable):
+            art = None
+        if art is None:
+            return _hosted_error(404, "not found")
+        updated_at = art.get("updated_at") or 0
+        if read[1] is not None:
+            # A pinned revision (`/artifacts/<id>@<n>/`): its own time, and gone when it was
+            # pruned, exactly as the frame's `/artifacts/v/<token>/` is. A token without one
+            # follows the latest revision on every read, as the stable link always has.
+            pinned = [r for r in art.get("revisions") or [] if r.get("n") == read[1]]
+            if not pinned:
+                return _hosted_error(404, "not found")
+            updated_at = pinned[0].get("created_at") or 0
+        return JSONResponse(
+            {
+                "title": art.get("title") or "",
+                "kind": art.get("kind"),
+                "updated_at": updated_at,
+                # The operator's own view always wears the header: hiding it is a share option.
+                "header": True,
+            },
+            headers=_VIEWER_HEADERS,
+        )
+
+    @app.get("/artifacts/o/{token}/{rest:path}")
+    async def own_view(token: str, rest: str, request: Request) -> Response:
+        """The viewer page for the token's artifact. A deeper path is the artifact's own file,
+        so it goes to the same file under the view token."""
+        if _read_token(cfg, token) is None:
+            return _hosted_error(404, "this view link has expired; open the artifact again")
+        page = _viewer_page()
+        if rest or page is None:
+            query = f"?{request.url.query}" if request.url.query else ""
+            return RedirectResponse(
+                f"/artifacts/v/{quote(token)}/{quote(rest)}{query}",
+                status_code=303,
+                headers={**SANDBOX_HEADERS, "Cache-Control": "no-store"},
+            )
+        return FileResponse(page, headers=_VIEWER_HEADERS)
+
+    @app.get("/artifacts/o/{token}")
+    async def own_view_bare(token: str) -> Response:
+        return RedirectResponse(f"/artifacts/o/{token}/", status_code=308, headers=SANDBOX_HEADERS)
 
     @app.get("/artifacts/v/{token}/{rest:path}")
     async def hosted_view(token: str, rest: str, request: Request) -> Response:
@@ -815,8 +884,16 @@ def register(
         if exists is None:
             return _hosted_error(404, "not found")
         token = view_token(cfg, aid, rev)
+        if rest == "" and _opened(request) and _viewer_page() is not None:
+            # Opened in a tab (#2270): the viewer page, the BattleLab header above the artifact.
+            # A frame, an <img> or a fetch of the same link still gets the artifact's own bytes.
+            return RedirectResponse(
+                f"/artifacts/o/{token}/{query}",
+                status_code=303,
+                headers={**SANDBOX_HEADERS, "Cache-Control": "no-store", "Vary": "Sec-Fetch-Dest"},
+            )
         return RedirectResponse(
             f"/artifacts/v/{token}/{quote(rest)}{query}",
             status_code=303,
-            headers={**SANDBOX_HEADERS, "Cache-Control": "no-store"},
+            headers={**SANDBOX_HEADERS, "Cache-Control": "no-store", "Vary": "Sec-Fetch-Dest"},
         )

@@ -127,7 +127,7 @@ describe("the public artifact viewer bundle (#2068)", () => {
     expect(reached).toContain("components/public/PublicBar.tsx");
   });
 
-  test("talks to no /api route: it reads the link's ~meta and, for a password link, ~unlock", () => {
+  test("talks to no /api route: it reads ~meta (a public link or the own view) and a password link's ~unlock", () => {
     const viewer = reached.filter((f) => /\.tsx?$/.test(f));
     const code = viewer
       .map((f) => readFileSync(join(SRC, f), "utf8"))
@@ -135,13 +135,15 @@ describe("the public artifact viewer bundle (#2068)", () => {
       .replace(/\/\*[\s\S]*?\*\//g, "") // comments may NAME a route; code may not call one
       .replace(/^\s*\/\/.*$/gm, "");
     expect(code).not.toMatch(/["'`]\/api\//);
-    // Exactly two fetches, both of the link's own routes, both cookie-less (#2217): the metadata,
-    // and the password unlock.
-    expect(code.match(/\bfetch\(/g) ?? []).toHaveLength(2);
+    // Exactly three fetches, all of the page's own routes, all cookie-less: a public link's
+    // metadata and its password unlock (#2217), and the operator's own view's metadata (#2270),
+    // authorised by the view token in its path, never by the session cookie.
+    expect(code.match(/\bfetch\(/g) ?? []).toHaveLength(3);
     expect(code).toMatch(/fetch\(`\/artifacts\/p\/\$\{id\}\/~meta`/);
     expect(code).toMatch(/fetch\(`\/artifacts\/p\/\$\{id\}\/~unlock`/);
+    expect(code).toMatch(/fetch\(`\/artifacts\/o\/\$\{token\}\/~meta`/);
     expect(code).toMatch(/const OPTS: RequestInit = \{\s*credentials: "omit"/);
-    expect(code.match(/\.\.\.OPTS/g) ?? []).toHaveLength(2);
+    expect(code.match(/\.\.\.OPTS/g) ?? []).toHaveLength(3);
     // No other way out: no WebSocket, beacon, operator page or socket path.
     expect(code).not.toMatch(
       /new WebSocket|sendBeacon|["'`]\/(ws|login|logout|link)\b/,

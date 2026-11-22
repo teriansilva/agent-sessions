@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
   PY_STACK_AVAILABLE,
@@ -35,7 +35,10 @@ const SESSION = `claude:${SESSION_UUID}`;
 let stack: Stack;
 let id = "";
 let mdId = "";
-const MD_TEXT = readFileSync(join(process.cwd(), "e2e", "fixtures", "artifact-md", "report.md"), "utf8");
+const MD_TEXT = readFileSync(
+  join(process.cwd(), "e2e", "fixtures", "artifact-md", "report.md"),
+  "utf8",
+);
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
@@ -79,7 +82,15 @@ fetch("/api/config", { credentials: "include" })
   writeFileSync(join(stack.repo, "report.md"), MD_TEXT);
   const md = execFileSync(
     "uv",
-    ["run", "python", "tests/appmode/seed_artifacts.py", stack.repo, SESSION, "report.md", "Operating model"],
+    [
+      "run",
+      "python",
+      "tests/appmode/seed_artifacts.py",
+      stack.repo,
+      SESSION,
+      "report.md",
+      "Operating model",
+    ],
     { cwd: resolve(process.cwd(), ".."), env: stack.env, encoding: "utf8" },
   );
   ({ id: mdId } = JSON.parse(md.trim().split("\n").pop()!));
@@ -91,10 +102,27 @@ test.afterAll(async () => {
 
 const base = () => `http://127.0.0.1:${stack.appPort}`;
 
+/** Open the operator's stable link in a tab, as Open does. Since #2270 that lands on the viewer
+ *  page, `/artifacts/o/<view token>/`, with the BattleLab header above the artifact framed from
+ *  `/artifacts/v/<token>/` — the real server choosing it from the real browser's
+ *  `Sec-Fetch-Dest: document`. Then load that framed page itself at the top level, so the checks
+ *  below see the hosted page exactly as the frame does (same URL, same headers). */
+async function openHosted(page: Page, artifactId: string) {
+  await page.goto(`${base()}/artifacts/${artifactId}/`);
+  expect(new URL(page.url()).pathname).toMatch(/^\/artifacts\/o\/[^/]+\/$/);
+  const token = new URL(page.url()).pathname.split("/")[3];
+  await expect(page.getByTestId("public-bar")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("artifact-frame")).toHaveAttribute(
+    "src",
+    `/artifacts/v/${token}/`,
+  );
+  return page.goto(`${base()}/artifacts/v/${token}/`);
+}
+
 test("a hosted site loads its own assets and still cannot reach the cookie or /api", async ({
   page,
 }) => {
-  const resp = await page.goto(`${base()}/artifacts/${id}/`);
+  const resp = await openHosted(page, id);
   expect(resp?.status()).toBe(200);
   // The stable link handed the browser a view token; the page lives under it.
   expect(new URL(page.url()).pathname).toMatch(/^\/artifacts\/v\/[^/]+\/$/);
@@ -133,16 +161,20 @@ test("a Markdown artifact opens as a rendered document, in a tab and in the prev
   page,
 }) => {
   // Opened as a page (top level): the server's document page, the renderer from /assets.
-  const resp = await page.goto(`${base()}/artifacts/${mdId}/`);
+  const resp = await openHosted(page, mdId);
   expect(resp?.status()).toBe(200);
   expect(resp!.headers()["content-type"]).toMatch(/^text\/html/);
   const csp = resp!.headers()["content-security-policy"];
   expect(csp.startsWith("sandbox ")).toBe(true);
   expect(csp).not.toContain("allow-same-origin");
   expect(resp!.headers()["access-control-allow-origin"]).toBeUndefined();
-  await expect(page.locator("body")).toHaveAttribute("data-md", "rendered", { timeout: 30_000 });
+  await expect(page.locator("body")).toHaveAttribute("data-md", "rendered", {
+    timeout: 30_000,
+  });
   const doc = page.locator("#md-doc");
-  await expect(doc.getByRole("heading", { level: 1 })).toHaveText("Operating model — concept map");
+  await expect(doc.getByRole("heading", { level: 1 })).toHaveText(
+    "Operating model — concept map",
+  );
   await expect(doc.locator("table tbody tr")).toHaveCount(3);
   // Still an opaque origin: no cookie, no storage, and the raw HTML in the source never ran.
   expect(await page.evaluate(() => self.origin)).toBe("null");
@@ -158,7 +190,9 @@ test("a Markdown artifact opens as a rendered document, in a tab and in the prev
   ).toBe("blocked");
   await expect(page.locator("body")).not.toHaveAttribute("data-injected", "1");
   // The renderer and the device-theme tokens loaded (a module script would have been refused).
-  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+  expect(
+    await page.evaluate(() => getComputedStyle(document.body).backgroundColor),
+  ).not.toBe("rgba(0, 0, 0, 0)");
 
   // Source is the stored text, exactly.
   await page.getByRole("button", { name: "Source" }).click();
@@ -181,8 +215,10 @@ test("a Markdown artifact opens as a rendered document, in a tab and in the prev
   // The operator's preview frame (sandboxed, never allow-same-origin) shows the document too.
   await page.goto(`${base()}/library/artifacts/${encodeURIComponent(mdId)}`);
   const frame = page.frameLocator("[data-testid=artifact-preview]");
-  await expect(frame.locator("body")).toHaveAttribute("data-md", "rendered", { timeout: 30_000 });
-  await expect(frame.locator("#md-doc").getByRole("heading", { level: 1 })).toHaveText(
-    "Operating model — concept map",
-  );
+  await expect(frame.locator("body")).toHaveAttribute("data-md", "rendered", {
+    timeout: 30_000,
+  });
+  await expect(
+    frame.locator("#md-doc").getByRole("heading", { level: 1 }),
+  ).toHaveText("Operating model — concept map");
 });
