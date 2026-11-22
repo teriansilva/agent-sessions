@@ -41,7 +41,17 @@ export async function answerExtra(path, q, method, req, state) {
   if (pbm && method === "GET") {
     const book = PLAYBOOKS.playbooks.find((b) => b.id === pbm[1]);
     if (!book) return undefined;
-    if (pbm[2]) return json({ playbook_id: book.id, revision: book.revision, projects: [] });
+    if (pbm[2]) {
+      // `projectsAdmin` (a sweep state, #2143): one project waits for an update, one is current.
+      const fleet = { "ship-it": [["p-orbital", true]], "bug-hunt": [["p-harbor", false]] }[book.id] ?? [];
+      return json({
+        playbook_id: book.id,
+        revision: book.revision,
+        projects: state?.projectsAdmin
+          ? fleet.map(([project_id, update_available]) => ({ project_id, deployment_id: `d-${project_id}`, state: "applied", revision: book.revision, update_available }))
+          : [],
+      });
+    }
     return json({ ...book, ...playbookDocuments(book), recovery_total: 0 });
   }
   const nyd = /^\/api\/pulse\/needs-you\/([^/]+)\/details$/.exec(path);

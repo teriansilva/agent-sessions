@@ -296,7 +296,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # is called, and the target comes from a closed catalog — a kind of its own.
         "show": "screen",
         "list_agents": "read",
+        # #1938: an agent's models and effort levels by index, and one specialist in full —
+        # the reads a specialist card's indexes and an edit start from. Read-only.
+        "list_agent_models": "read",
         "list_specialists": "read",
+        "specialist_detail": "read",
         # #1950: a mission's team — two reads and four proposals, each a card the operator
         # confirms. There is NO approve, start, dispatch or launch tool.
         "read_plan": "read",

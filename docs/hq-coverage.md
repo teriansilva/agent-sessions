@@ -248,9 +248,10 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Webhooks (#2221): create, rotate (the secret is shown once) | POST /api/webhooks, POST /api/webhooks/{wid}/rotate | **never** (a credential) |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
-| Specialists (#1693): list | GET /api/specialists | have (`list_specialists`, #1910) |
-| Specialists (#1693): detail, a pinned version | GET /api/specialists/{sid}, …/versions/{n} | P4 R |
-| Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | P4 W (revision-checked; the grade is derived, never chosen) |
+| Specialists (#1693): list | GET /api/specialists | have (`list_specialists`, #1910; archived ones listed and marked, #1938) |
+| Specialists (#1693): detail | GET /api/specialists/{sid} | have (`specialist_detail`, #1938: every field and the current version) |
+| Specialists (#1693): a pinned version | GET /api/specialists/{sid}/versions/{n} | P4 R |
+| Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | have (`propose_library` group `specialist`, #1938: a card each; agent, model, effort and skills by this turn's indexes — `list_agents`, `list_agent_models`, `list_skills`; revision-checked; the grade is derived, never chosen) |
 | Specialists: release a held slot (#1693 S4) | POST /api/specialists/reservations/{rid}/release | P4 W (only a slot reconcile holds) |
 | Mission plans (#1924, #1613 P7a): list, read one with its derived steps | GET /api/mission-plans, GET /api/mission-plans/{pid} | P5 R |
 | Mission plans: archive / unarchive; save a mission's plan revision as a mission plan | POST /api/mission-plans/{pid}/archive, POST /api/missions/{mission_id}/plan/save-as-plan | P5 W (revision-checked; inert: nothing is planned or launched) |
@@ -690,11 +691,11 @@ POST   /api/template-variables                                                  
 DELETE /api/template-variables/{name}                                             P3
 PATCH  /api/template-variables/{name}                                             P3
 GET    /api/specialists                                                           have  # list_specialists (#1910)
-POST   /api/specialists                                                           P4
-GET    /api/specialists/{sid}                                                     P4
-PATCH  /api/specialists/{sid}                                                     P4
-POST   /api/specialists/{sid}/archive                                             P4
-POST   /api/specialists/{sid}/unarchive                                           P4
+POST   /api/specialists                                                           have  # propose_library specialist create (#1938)
+GET    /api/specialists/{sid}                                                     have  # specialist_detail (#1938)
+PATCH  /api/specialists/{sid}                                                     have  # propose_library specialist edit (#1938)
+POST   /api/specialists/{sid}/archive                                             have  # propose_library specialist archive (#1938)
+POST   /api/specialists/{sid}/unarchive                                           have  # propose_library specialist unarchive (#1938)
 POST   /api/specialists/reservations/{rid}/release                                P4
 GET    /api/specialists/{sid}/versions/{n}                                        P4
 GET    /api/templates                                                             P3

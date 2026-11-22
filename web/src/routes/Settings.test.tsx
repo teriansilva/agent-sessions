@@ -102,6 +102,7 @@ function LocationProbe() {
   return (
     <div data-testid="location">
       {location.pathname}
+      {location.search}
       {location.hash}
     </div>
   );
@@ -379,7 +380,7 @@ test("an unknown section falls back to the first section (no 404)", async () => 
 });
 
 test("the sidebar lists every section, grouped, in registry order — one current page", async () => {
-  renderSettings("dark", "#ffb000", "/settings/projects");
+  renderSettings("dark", "#ffb000", "/settings/session-defaults");
   const nav = screen.getByRole("navigation", { name: "Settings" });
   const links = within(nav).getAllByRole("link");
   expect(links.map((l) => sectionLabel(l))).toEqual(
@@ -392,7 +393,7 @@ test("the sidebar lists every section, grouped, in registry order — one curren
     links
       .filter((l) => l.getAttribute("aria-current") === "page")
       .map((l) => sectionLabel(l)),
-  ).toEqual(["Projects"]);
+  ).toEqual(["Session defaults"]);
   await flushFetches();
 });
 
@@ -429,6 +430,18 @@ test.each([
   await flushFetches();
 });
 
+// Settings → Projects moved to HQ → Projects (#2143): old links and bookmarks land on the new page,
+// and the two discovery cards' anchors on its Folders & discovery tab.
+test.each([
+  ["/settings/projects", "/projects"],
+  ["/settings/projects#discovery-h", "/projects?tab=folders"],
+  ["/settings/projects#overview-h", "/projects?tab=folders"],
+])("the moved Projects page %s lands on %s", async (from, to) => {
+  renderSettings("dark", "#ffb000", from);
+  await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(to));
+  await flushFetches();
+});
+
 test.each(["constructor", "__proto__", "toString"])("an unknown section %s is not mistaken for an HQ alias", async (section) => {
   renderSettings("dark", "#ffb000", `/settings/${section}`);
   await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance"));
@@ -450,7 +463,6 @@ test.each([
   ["terminal-appearance", ["Terminal sessions", "Colour scheme", "Terminal font", "Terminal text size"]],
   ["api-appearance", ["API sessions", "Palette", "Background", "Text font", "Code font", "Text size"]],
   ["session-defaults", ["Session defaults"]],
-  ["projects", ["Projects", "Session overview"]],
   ["ai-endpoint", ["Connection", "Model"]],
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
@@ -482,8 +494,8 @@ test("the registry and the pages agree: every section id renders something", () 
   // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397),
   // then HQ connectors (#1825), then HQ itself — whether sessions can report to it (#1882).
   // Profile (#1931): the operator's avatar. Artifacts under System (#1932). Peers (#2052).
-  // Session clusters under AI (#1997).
-  expect(SETTINGS_SECTIONS).toHaveLength(25);
+  // Session clusters under AI (#1997). Projects moved to HQ → Projects (#2143).
+  expect(SETTINGS_SECTIONS).toHaveLength(24);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------
@@ -1691,411 +1703,8 @@ test("Account: Sign out hidden when auth_mode is none (#141)", async () => {
 
 // ---- Projects tab ----
 
-test("Session overview: unticking a project hides it + persists via projects_hidden (#174)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [
-      { cwd: "/home/u/alpha", label: "Alpha" },
-      { cwd: "/home/u/beta", label: "Beta" },
-    ],
-  });
-  renderSettings("dark", "#ffb000", "/settings/projects");
-  // Inverse semantics (#174): the row starts CHECKED (visible). Unticking hides.
-  const alpha = await screen.findByRole("checkbox", { name: /~\/alpha/i });
-  expect(alpha).toBeChecked();
-  await userEvent.click(alpha);
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    projects_hidden: ["/home/u/alpha"],
-  });
-  // Shared state updates → the row immediately reflects the hidden state (now unchecked).
-  expect(
-    await screen.findByRole("checkbox", { name: /~\/alpha/i }),
-  ).not.toBeChecked();
-});
-
-test("Session overview: renaming via the modal persists via setProjectName (#174)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
-  });
-  renderSettings("dark", "#ffb000", "/settings/projects");
-  // Click the project NAME (a button now, not an inline input) → opens the rename modal.
-  const trigger = await screen.findByRole("button", {
-    name: /rename ~\/alpha/i,
-  });
-  await userEvent.click(trigger);
-  const modalInput = await screen.findByRole("textbox", {
-    name: /custom name for \/home\/u\/alpha/i,
-  });
-  await userEvent.type(modalInput, "My Alpha");
-  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    project_names: { "/home/u/alpha": "My Alpha" },
-  });
-});
-
-test("Session overview: a name seeded after /api/config resolves is shown on the row (#161/#174)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
-  });
-  // OverviewPrefs seeds projectNames from ConfigCtx, which is null until /api/config resolves —
-  // and the row can mount first. Start with null config, then deliver it with a saved name and
-  // assert the row's clickable name reflects it (post-#174 the name lives on the button label,
-  // not in an inline input).
-  const seeded: AppConfig = {
-    csrf: "t",
-    new_session_engines: [],
-    terminal_backend: "ws",
-    auth_mode: "single-user",
-    two_factor_enabled: false,
-    project_names: { "/home/u/alpha": "Saved Alpha" },
-  };
-  const tree = (cfg: AppConfig | null) => (
-    <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
-        <ConfigCtx.Provider value={cfg}>
-          <OverviewPrefsProvider>
-            <Routes>
-              <Route path="/settings/:tab" element={<Settings />} />
-            </Routes>
-          </OverviewPrefsProvider>
-        </ConfigCtx.Provider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>
-  );
-  const { rerender } = render(tree(null));
-  // Before the name arrives, the row shows the shortened path as its visible label.
-  await screen.findByRole("button", { name: /rename ~\/alpha/i });
-  expect(screen.queryByText("Saved Alpha")).not.toBeInTheDocument();
-  rerender(tree(seeded));
-  // The name shows on the row's rename button (it ALSO labels the default-project
-  // option since #357 Phase 2, so scope to the button rather than a bare text query).
-  await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: /rename ~\/alpha/i }),
-    ).toHaveTextContent("Saved Alpha"),
-  );
-});
-
-// ---- Session overview: entity-grouped rendering (#465) ----
-
-test("Session overview: folders are grouped under their owning entity + Unassigned (#465)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [
-      { cwd: "/home/u/alpha", label: "Alpha" },
-      { cwd: "/home/u/loose", label: "Loose" },
-    ],
-  });
-  // One entity owning /home/u/alpha; /home/u/loose is owned by nobody → Unassigned.
-  vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [
-      {
-        id: "p-1",
-        name: "Alpha Project",
-        color: "#c02020",
-        folders: ["/home/u/alpha"],
-        default_folder: "/home/u/alpha",
-        archived: false,
-        created_at: 0,
-        session_count: 1,
-      },
-    ],
-  });
-  renderSettings("dark", "#ffb000", "/settings/projects");
-  // The overview renders one per-entity group (its list is uniquely labelled "Folders in
-  // <name>") + an "Unassigned" group — distinct from the ProjectsManager's own entity list above.
-  const alphaList = await screen.findByRole("list", {
-    name: /folders in alpha project/i,
-  });
-  const unassignedList = screen.getByRole("list", {
-    name: /folders in unassigned/i,
-  });
-  // Both folders keep the inverse-checkbox.
-  expect(screen.getByRole("checkbox", { name: /~\/alpha/i })).toBeChecked();
-  expect(screen.getByRole("checkbox", { name: /~\/loose/i })).toBeChecked();
-  // Rename is only for the UNADOPTED folder (#615 Phase 3): ~/loose (under Unassigned) has the
-  // button; ~/alpha (adopted by Alpha Project) does not — its name comes from the project.
-  expect(unassignedList).toContainElement(
-    screen.getByRole("button", { name: /rename ~\/loose/i }),
-  );
-  expect(
-    screen.queryByRole("button", { name: /rename ~\/alpha/i }),
-  ).not.toBeInTheDocument();
-  // The adopted row still shows its path, just as static text.
-  expect(alphaList).toHaveTextContent("~/alpha");
-  await flushFetches();
-});
-
-test("Session overview: an adopted folder has no rename control; an unassigned one does (#615 Phase 3)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [
-      { cwd: "/home/u/alpha", label: "Alpha" },
-      { cwd: "/home/u/loose", label: "Loose" },
-    ],
-  });
-  vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [
-      {
-        id: "p-1",
-        name: "Alpha Project",
-        color: "#c02020",
-        folders: ["/home/u/alpha"],
-        default_folder: "/home/u/alpha",
-        archived: false,
-        created_at: 0,
-        session_count: 1,
-      },
-    ],
-  });
-  renderSettings("dark", "#ffb000", "/settings/projects");
-  // Adopted: no rename button, and the static name carries the "rename the project" hint.
-  await screen.findByRole("checkbox", {
-    name: "Offer ~/alpha as a launch location",
-  });
-  expect(
-    screen.queryByRole("button", { name: /rename ~\/alpha/i }),
-  ).not.toBeInTheDocument();
-  expect(screen.getByTitle(/named by its project/i)).toHaveTextContent(
-    "~/alpha",
-  );
-  // Unadopted: the rename button is still offered.
-  expect(
-    screen.getByRole("button", { name: /rename ~\/loose/i }),
-  ).toBeInTheDocument();
-  await flushFetches();
-});
-
-test("Session overview: the checkbox label states what unticking does, per row kind (#615)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [
-      { cwd: "/home/u/alpha", label: "Alpha" },
-      { cwd: "/home/u/loose", label: "Loose" },
-    ],
-  });
-  vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [
-      {
-        id: "p-1",
-        name: "Alpha Project",
-        color: "#c02020",
-        folders: ["/home/u/alpha"],
-        default_folder: "/home/u/alpha",
-        archived: false,
-        created_at: 0,
-        session_count: 1,
-      },
-    ],
-  });
-  renderSettings("dark", "#ffb000", "/settings/projects");
-  // Adopted: unticking only withholds the folder as a launch location — the project's
-  // sessions are exempt server-side (`sessions.py` `_visible`), so the old "hide it
-  // everywhere" promise never held here.
-  expect(
-    await screen.findByRole("checkbox", {
-      name: "Offer ~/alpha as a launch location",
-    }),
-  ).toBeChecked();
-  // Unadopted: unticking really does drop it from the sidebar/filter/overview too.
-  expect(
-    screen.getByRole("checkbox", {
-      name: "Show ~/loose in the sidebar, filter, and overview",
-    }),
-  ).toBeChecked();
-  // And the card no longer claims a blanket "hide it everywhere".
-  expect(screen.queryByText(/hide it everywhere/i)).not.toBeInTheDocument();
-  await flushFetches();
-});
-
-// ---- Folder discovery card (#465) ----
-
-test("Folder discovery: shows configured roots/exclusions and removing a root persists (#465)", async () => {
-  function renderDiscovery(config: Partial<AppConfig> = {}) {
-    const cfg: AppConfig = {
-      csrf: "t",
-      new_session_engines: [],
-      terminal_backend: "ws",
-      auth_mode: "single-user",
-      two_factor_enabled: false,
-      ...config,
-    };
-    render(
-      <MemoryRouter initialEntries={["/settings/projects"]}>
-        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
-          <ConfigCtx.Provider value={cfg}>
-            <OverviewPrefsProvider>
-              <Routes>
-                <Route path="/settings/:tab" element={<Settings />} />
-              </Routes>
-            </OverviewPrefsProvider>
-          </ConfigCtx.Provider>
-        </ThemeCtx.Provider>
-      </MemoryRouter>,
-    );
-  }
-  renderDiscovery({
-    project_roots: ["/home/u/code"],
-    folder_exclusions: ["/home/u/code/scratch"],
-  });
-  expect(
-    await screen.findByRole("heading", { name: /folder discovery/i }),
-  ).toBeInTheDocument();
-  // The configured root + exclusion render with Remove buttons.
-  const rootList = screen.getByRole("list", { name: /root directories/i });
-  expect(rootList).toBeInTheDocument();
-  expect(
-    screen.getByRole("list", { name: /excluded folders/i }),
-  ).toBeInTheDocument();
-  // Removing the root persists the empty list via setPrefs.
-  await userEvent.click(
-    screen.getByRole("button", { name: /remove root ~\/code/i }),
-  );
-  expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: [] });
-  await flushFetches();
-});
-
-test("Folder discovery: picking a root through the folder picker commits it (#465)", async () => {
-  function renderDiscovery() {
-    const cfg: AppConfig = {
-      csrf: "t",
-      new_session_engines: [],
-      terminal_backend: "ws",
-      auth_mode: "single-user",
-      two_factor_enabled: false,
-    };
-    render(
-      <MemoryRouter initialEntries={["/settings/projects"]}>
-        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
-          <ConfigCtx.Provider value={cfg}>
-            <OverviewPrefsProvider>
-              <Routes>
-                <Route path="/settings/:tab" element={<Settings />} />
-              </Routes>
-            </OverviewPrefsProvider>
-          </ConfigCtx.Provider>
-        </ThemeCtx.Provider>
-      </MemoryRouter>,
-    );
-  }
-  // The server echoes the effective list on commit.
-  vi.mocked(api.setPrefs).mockResolvedValue({ project_roots: ["/home/u"] });
-  renderDiscovery();
-  // Open the root picker, then "Select ~" (home) returns the home path → committed as a root.
-  await userEvent.click(
-    await screen.findByRole("button", { name: /add root…/i }),
-  );
-  const select = await screen.findByRole("button", { name: /^select ~$/i });
-  await userEvent.click(select);
-  expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: ["/home/u"] });
-  await flushFetches();
-});
-
-// ---- Default project (#335 Phase 2, surfaced in #357 Phase 2) ----
-
-/** Mounts the Projects tab with a real ConfigCtx value so the picker can seed from
- *  `config.default_project` (renderSettings has no config provider). */
-function renderProjectsTab(config: Partial<AppConfig> = {}) {
-  const cfg: AppConfig = {
-    csrf: "t",
-    new_session_engines: [],
-    terminal_backend: "ws",
-    auth_mode: "single-user",
-    two_factor_enabled: false,
-    ...config,
-  };
-  render(
-    <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
-        <ConfigCtx.Provider value={cfg}>
-          <OverviewPrefsProvider>
-            <Routes>
-              <Route path="/settings/:tab" element={<Settings />} />
-            </Routes>
-          </OverviewPrefsProvider>
-        </ConfigCtx.Provider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>,
-  );
-}
-
-test("Default project: the card is gone — the star in Projects owns it now (#615 Phase 2)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
-  });
-  renderProjectsTab({ default_project: "/home/u/alpha" });
-  await screen.findByRole("heading", { name: "Projects" });
-  // The cwd-valued picker is retired: `entity.default_folder` (#448) shadowed it, and the
-  // project it pre-selected was `entities[0]` — alphabetical and unsettable.
-  expect(
-    screen.queryByRole("combobox", { name: "Default project" }),
-  ).not.toBeInTheDocument();
-  expect(
-    screen.queryByRole("heading", { name: "Default project" }),
-  ).not.toBeInTheDocument();
-  // Nothing writes the legacy pref from Settings any more.
-  expect(api.setPrefs).not.toHaveBeenCalledWith(
-    expect.objectContaining({ default_project: expect.anything() }),
-  );
-  await flushFetches();
-});
-
-// ---- Discovery-scope live refresh (#470) ----
-
-/** A rerenderable Projects-tab tree so tests can deliver a NEW config value the way a
- *  FolderDiscoveryCard save does (setPrefs → useConfigRefresh → fresh /api/config). */
-function projectsTree(cfg: AppConfig) {
-  return (
-    <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
-        <ConfigCtx.Provider value={cfg}>
-          <OverviewPrefsProvider>
-            <Routes>
-              <Route path="/settings/:tab" element={<Settings />} />
-            </Routes>
-          </OverviewPrefsProvider>
-        </ConfigCtx.Provider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>
-  );
-}
-
-const baseProjectsCfg: AppConfig = {
-  csrf: "t",
-  new_session_engines: [],
-  terminal_backend: "ws",
-  auth_mode: "single-user",
-  two_factor_enabled: false,
-};
-
-test("Session overview refetches /api/folders when the discovery scope changes (#470)", async () => {
-  const { rerender } = render(
-    projectsTree({ ...baseProjectsCfg, project_roots: [] }),
-  );
-  await screen.findByRole("heading", { name: /session overview/i });
-  await flushFetches();
-  // Mount: OverviewCard fetches all folders; the ProjectsManager card (out of scope for #470 —
-  // mount-only) fetches its adoption list. The DefaultProjectCard's visible-set fetch is gone
-  // with the card (#615 Phase 2), so this is 2, not 3.
-  const before = vi.mocked(api.folders).mock.calls.length;
-  expect(before).toBe(2);
-  // A roots change lands in config (FolderDiscoveryCard save → config refresh) → OverviewCard
-  // refetches. Only it keys on the discovery scope now.
-  rerender(
-    projectsTree({ ...baseProjectsCfg, project_roots: ["/home/u/code"] }),
-  );
-  await waitFor(() =>
-    expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 1),
-  );
-  // …and an exclusions change refetches again.
-  rerender(
-    projectsTree({
-      ...baseProjectsCfg,
-      project_roots: ["/home/u/code"],
-      folder_exclusions: ["/home/u/code/scratch"],
-    }),
-  );
-  await waitFor(() =>
-    expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2),
-  );
-  await flushFetches();
-});
+// Folder discovery, Session overview and the default project moved to HQ → Projects (#2143):
+// `routes/projects/FoldersDiscovery.test.tsx` and `routes/projects/Projects.test.tsx` pin them now.
 
 // ---- Back link (#155) ----
 

@@ -200,6 +200,8 @@ OPERATION_STATES = frozenset(
         "interrupted",
         "unconfirmed",
         "unsettled",
+        # The route's store refused it and nothing changed (#1938).
+        "refused",
     }
 )
 OP_VERB_MAX = 40

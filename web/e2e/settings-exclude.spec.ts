@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { settingsPath } from "../src/routes/settingsTabs";
+import { PROJECTS_FOLDERS_PATH } from "../src/lib/routes";
 
-// Real-browser check of the Settings → Session overview hide checklist (#152 + #174 inverse
-// semantics): un-ticking a project persists it as hidden via /api/prefs. The checkbox is
-// "Show in sidebar/filter/overview" — checked = visible, unchecked = hidden. Network is
-// mocked so Settings renders without a backend.
+// Real-browser check of the folder hide list (#152 + #174 inverse semantics), on HQ → Projects →
+// Folders & discovery since #2143: switching a folder off persists it as hidden via /api/prefs.
+// The switch is "Show in sidebar/filter/overview" — on = visible, off = hidden. Network is mocked
+// so the page renders without a backend.
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/config", (r) =>
@@ -48,7 +48,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #174)", async ({
+test("desktop: switching a folder off persists it as hidden (#152 / #174)", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "covered on desktop");
@@ -58,16 +58,15 @@ test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #1
     await r.fulfill({ json: prefsBody });
   });
 
-  // Deep-link straight into the Projects tab (#357 canonical /settings/:tab form).
-  await page.goto(settingsPath("projects"));
-  const alpha = page.getByRole("checkbox", { name: /alpha/i });
+  await page.goto(PROJECTS_FOLDERS_PATH);
+  const alpha = page.getByRole("switch", { name: /alpha/i });
   await expect(alpha).toBeVisible();
-  // New (#174) inverse semantics: nothing hidden → row is shown → checkbox is checked.
-  await expect(alpha).toBeChecked();
+  // Inverse semantics (#174): nothing hidden → the folder is shown → the switch is on.
+  await expect(alpha).toHaveAttribute("aria-checked", "true");
 
-  await alpha.uncheck();
+  await alpha.click();
   await expect
     .poll(() => prefsBody)
     .toEqual({ projects_hidden: ["/home/u/alpha"] });
-  await expect(alpha).not.toBeChecked();
+  await expect(alpha).toHaveAttribute("aria-checked", "false");
 });

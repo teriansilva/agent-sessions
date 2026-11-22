@@ -181,9 +181,11 @@ EXPECTED_DEFAULT_SHA = {
     # report's findings with their sources, never a web fact without one. #1932 P4: artifacts_find
     # (what the agents published, where and the link; titles are agent-written).
     # #2163 P2; #2152; #2137 (needs_you, set-up); #1960 P2; #1950; #2136
+    # #1938: HQ may propose specialists — by this turn's indexes, the grade never its to set,
+    # and a playbook's missing specialists as their own cards.
     # #2249: for how BattleLab works, the installed manual first (docs_search / docs_read).
     # #2251: a request needing more than one card is sorted into steps first (propose_steps).
-    "ask_orchestrator": "1643cf99deb169ec",
+    "ask_orchestrator": "893f2a52cef34cc2",
     # #2028: HQ's question router; #2249 adds the `manual` route.
     "ask_route": "323bd1e25e69c20c",
     "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual
@@ -241,6 +243,13 @@ def test_default_text_is_pinned_by_hash():
     """A digest per prompt: any reword anywhere in the catalog surfaces as a failing id."""
     actual = {p.id: hashlib.sha256(p.default.encode()).hexdigest()[:16] for p in prompts.REGISTRY}
     assert actual == EXPECTED_DEFAULT_SHA
+
+
+@pytest.mark.parametrize("pid", [p.id for p in prompts.REGISTRY])
+def test_every_shipped_default_passes_its_own_validation(pid):
+    """A default longer than its own cap could never be saved back from the editor (#1938 with
+    #2251: two paragraphs each fit alone and together ran 590 characters over)."""
+    assert prompts.validate(pid, prompts.get(pid).default) is None
 
 
 def test_hq_prompt_plans_every_mission_with_a_flow():

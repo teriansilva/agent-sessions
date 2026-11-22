@@ -108,6 +108,15 @@ def test_every_catalog_entry_resolves_to_a_target_the_webs_one_route_table_knows
     assert len(set(ask_screen.SECTIONS)) == len(ask_screen.SECTIONS)
 
 
+def test_projects_is_an_hq_view_not_a_settings_page():
+    """#2143: Projects moved out of Settings into HQ. HQ can still put the page on screen, by its
+    own section name; `settings.projects` is no longer a section, so a stale directive is
+    refused."""
+    assert "projects" in ask_screen.APP_SECTIONS
+    assert "projects" not in ask_screen.SETTINGS_PAGES
+    assert "settings.projects" not in ask_screen.SECTIONS
+
+
 def test_the_server_names_sections_and_never_a_path():
     """No path strings on the server: a section is a name, an id is an id."""
     source = (ROOT / "src" / "agent_sessions" / "ask_screen.py").read_text(encoding="utf-8")

@@ -3,6 +3,34 @@
 Sessions accumulate. A month in, the sidebar is a hundred rows across a dozen unrelated codebases,
 and "which of these was the API refactor" stops being answerable. Projects are the fix.
 
+## Project administration: HQ → Projects
+
+Every project's setup is on one page: **HQ → Projects** (`/projects`), from the HQ menu in the top bar
+(a bottom sheet on a phone). It replaces Settings → Projects; an old `/settings/projects` link opens
+it.
+
+- **Projects** lists every project as one row: its colour and name (a star marks the default
+  project), its folders, what new sessions start as, its playbook (with **Update → v*N*** when a newer
+  revision waits) and whether its memory is on. A row opens the project's page. Archived projects sit
+  under **Archived**, with **Unarchive**. **New project** opens the wizard.
+- **Folders & discovery** holds the project roots, the folder exclusions and the overview
+  visibility (the [table below](#visibility-three-settings-that-are-easy-to-confuse) says what each
+  does). A folder a project has adopted is managed on that project's page; an unassigned folder can be
+  switched off or renamed here.
+
+A project's own page (`/projects/<id>`) has three tabs:
+
+- **General**: name, colour, default project, default folder, the project's folders (add or
+  release one), and archive or delete.
+- **Session defaults**: what new sessions in the project start with (see
+  [Session defaults](#session-defaults)) and its artifacts default, saved together. If one of the two
+  saves fails, the other stays saved, and the page says which one didn't save.
+- **Memory & equipment**: the project's memory switch (the same switch as Library → Memory), the
+  secrets bound to the project and the automations that target it. Secrets and automations are
+  listed read-only, with links to where you edit them.
+
+A list that cannot be read says so where it would be, with **Retry**; it is never shown as empty.
+
 ## Projects are entities, not folder names
 
 A project is a real record — `{id, name, color, folders, archived, session_count}` — managed
@@ -75,7 +103,7 @@ work, not the work itself. If you want a folder gone from the listing entirely, 
 ## Creating a project
 
 **New project** opens a short wizard at `/projects/new`. It is on the dashboard, under the project
-picker in **New session** ("+ New project…"), and in **Settings → Projects**. The session list is
+picker in **New session** ("+ New project…"), and on **HQ → Projects**. The session list is
 hidden while it is open. It asks, one step at a time:
 
 1. **Name**: any name. If an active project already has it, the wizard warns you but lets you
@@ -87,7 +115,7 @@ hidden while it is open. It asks, one step at a time:
    project.
 3. **Colour**: one of the sixteen colours Settings → Interface → Accent offers, or none, with a
    preview of the session-list row and the map cluster. The wizard preselects the first colour no
-   other project uses. Settings → Projects uses the same picker; a project whose colour is not
+   other project uses. A project's General tab uses the same picker; a project whose colour is not
    one of the sixteen (an older palette, or a hex set through the API) keeps it, shown first as
    *Current colour*.
 4. **Agent** (optional), *Start sessions with*: the agent, its model and reasoning effort, and
@@ -121,7 +149,7 @@ asked for it. If the server refuses (for example, the folder already belongs to 
 you stay on Review with its reason and a link to the step that fixes it. A folder that was made
 before the refusal is left where it is and named. A known refusal can be retried. If the creation
 response is lost or the server cannot establish its outcome, the wizard prevents another create:
-check **Settings → Projects** first.
+check **HQ → Projects** first.
 
 With a playbook, the server rechecks the review before creating anything. A reviewed absent folder
 is created exclusively; even an empty folder that appeared in the meantime requires a new review.
@@ -164,14 +192,14 @@ Commit `218cf3a` — `docs/reference.md § Sessions & projects`; `src/agent_sess
 A session starts in its project's default folder. **New session** has no folder control of its
 own: each project row shows its folder, and the line beside **Start session** names the folder the
 session will start in. A project with no default folder falls back to your global default folder,
-and that line says so. With neither, Start stays disabled and the line links to **Settings →
-Projects**, where you set the project's folder.
+and that line says so. With neither, Start stays disabled and the line links to the project's page
+in **HQ → Projects**, where you set its folder.
 
 ## Session defaults
 
 A project can say what its new sessions start with: an agent, that agent's model and reasoning
 effort, and whether permission prompts are skipped. Set them in the New project wizard's **Agent**
-step, or later with **Session defaults** on the project's row in **Settings → Projects**.
+step, or later on the project's **Session defaults** tab in **HQ → Projects**.
 
 On **New session**, choosing the project preselects them, marked *project*, and a line under the
 project list says what the project starts as. What you pick on the form always wins for that

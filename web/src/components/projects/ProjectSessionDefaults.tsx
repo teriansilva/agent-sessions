@@ -7,7 +7,7 @@ import { cleanLaunchDefaults, describeLaunchDefaults } from "../../lib/launchDef
 import type { LaunchDefaults } from "../../types/api";
 import styles from "./ProjectSessionDefaults.module.css";
 
-/** THE project session-defaults editor (#1508), shared by the New project wizard and Settings →
+/** THE project session-defaults editor (#1508), shared by the New project wizard and HQ →
  *  Projects. Agent and permission prompts can each stay on the global default. A model and its
  *  effort belong to ONE agent, so they are only offered once the project names its own agent —
  *  a model never floats free of it when the global default agent changes. An API client's models

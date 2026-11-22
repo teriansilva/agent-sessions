@@ -96,12 +96,12 @@ the same list.
 | `components/playbooks/playbookEditor.module.css` | css | 10 | done | route:playbook-editor route:playbook-step | fields light their edge on hover/focus (colour only); no ambient motion |
 | `components/playbooks/playbookPrompts.module.css` | css | 10 | done | route:playbook-step | fields light their edge on hover/focus (colour only); no ambient motion |
 | `components/playbooks/playbooks.module.css` | css | 10 | done | route:playbook-detail popup:playbook-delete canvas:playbook-flow | none of its own: the flow, fleet and editor pieces are static (the cards are `library.module.css`'s since #2144) |
-| `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/ProjectPlaybook.module.css` | css | 10 | done | new-project:playbook | none: a chosen playbook locks on with the HUD edge and tint (static); state LEDs steady |
 | `components/onboarding/SetupAgents.module.css` | css | 11 | todo | no sweep id yet: the first-run wizard is not reachable by the sweep; `e2e/onboarding-agents.spec.ts` drives it desktop + mobile | none of its own: the inline Add-agent flow opens in place, status LEDs steady, the default client is an accent edge, never motion |
 | `components/onboarding/ConnectHqStep.module.css` | css | 11 | todo | no sweep id yet: the first-run wizard is not reachable by the sweep; `e2e/onboarding-hq-contact.spec.ts` drives the Connect HQ step desktop + mobile (#1880) | none of its own: tiles are dashed boxes, the state LED is Settings' `.hud-led` (`statusLine`), the open card is Settings' own `ConnectorCard`, never motion |
 | `components/plugins/PluginSetup.module.css` | css | 11 | done | route:agent-add | none of its own (the wizard rail is Phase 4's WizardShell) |
-| `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
-| `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |
+| `components/ProjectColorPicker.module.css` | css | 10 | done | new-project:colour route:project-general | none: the chosen swatch is an outline ring and a check, static |
+| `components/projects/ProjectSessionDefaults.module.css` | css | 10 | done | new-project:agent route:project-defaults | none: a chosen tile or segment locks on with the HUD edge and tint (static) |
 | `components/pulse/direction.module.css` | css | 8 | done | mission:decisions mission:objective-evidence popup:objective-direction | the AI-drafted card deploys in (fade + 6 px rise; 120 ms fade in Reduced); fields and fact chips: edge transition on hover / focus |
 | `components/pulse/missionTeam.module.css` | css | 8 | todo |  |  |
 | `components/pulse/missionApproval.module.css` | css | 8 | todo |  |  |
@@ -168,11 +168,11 @@ the same list.
 | `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase route:memory-hq popup:memory-hq-clear | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
 | `web/src/routes/MemorySearchSettings.tsx` | page | 11 | done | route:settings-memory-search | none of its own; existing field edges and button states use their primitives |
 | HQ notebook and source inspector (#2036) | page | 10 | done | route:memory-hq popup:memory-hq-clear | existing switch knob and inspector transitions; Reduced/Off use the shared rules |
-| `routes/NewProject.module.css` | css | 10 | todo |  |  |
+| `routes/NewProject.module.css` | css | 10 | done | route:new-project new-project:colour new-project:agent new-project:playbook map:new-project-error | none of its own: the fields light their edge at `--t-fast`; the wizard frame (WizardShell) owns the step motion |
+| `routes/projects/projects.module.css` | css | 10 | done | route:projects route:projects-folders route:project-general route:project-defaults route:project-memory projects:empty projects:read-failed projects:phone | the Tabs marker slides and the panel cross-fades (the primitive's own); the Seg marker and Switch knob are the primitives'; status LEDs steady; nothing else moves |
 | `routes/NewSessionLanding.module.css` | css | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
 | `routes/Onboarding.module.css` | css | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
 | `routes/Pulse.module.css` | css | 8 | done | route:mission route:mission-overview-error route:mission-health | none of its own: the route heading and its error line are static |
 | `routes/Settings.module.css` | css | 11 | todo |  |  |
 | `routes/Templates.module.css` | css | 10 | done | route:templates route:templates-suggestions route:template-editor popup:template-delete | the tabs' marker slides under the open tab and the panel cross-fades; dossier cards arrive once; chips and fields light their edge |
@@ -329,6 +329,14 @@ untouched: it is one composer with HQ's (#967), pinned by `mission-control-polis
 diffed pixel for pixel against the base build: identical. `missionDrawer.module.css` was dead (#948)
 and is deleted. Captures: the manifest's PR4a rail and console blocks (`route:mission*`, `mission:*`,
 `popup:mission-template-picker`).
+
+**Note: `routes/Settings.module.css` — the Projects selectors moved out (#2143).** Settings → Projects
+moved to HQ → Projects, so its selectors left this sheet rather than being converted in it: the
+folder-discovery rows (`discoverySub`, `discoveryRow`, `discoveryPath`, `discoveryRemove`), the session
+overview (`excludeList`, `excludeRow`, `excludeMeta`, `excludeName`, `nameInput`, `nameButton`,
+`nameStatic`, `excludePath`, `excludeStale`, `overviewGroup*`) and the dead default-project picker
+(`defaultProject`) are deleted here; their replacements are in `routes/projects/projects.module.css`
+(`done`). The row stays `todo` until #1575's other slices (Maintenance, the agent page) land.
 
 **Note: `routes/Settings.module.css` (Phase 11, partial, #1574 — Settings A).** The row stays `todo`:
 the sheet is shared with the Agents, System and About pages (Settings B) and with the fenced Projects

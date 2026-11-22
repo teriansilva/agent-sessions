@@ -83,7 +83,7 @@ With the contact **Off**, the same place holds a placeholder: a silhouette, *No 
 |---|---|
 | **New session** | The new-session page (`/new`). |
 | **New mission** | The new-mission form in [Missions](/guide/missions) (`/mission`). |
-| **New project** | The New project wizard (`/projects/new`), which returns to the Dashboard when it finishes. |
+| **New project** | The New project wizard (`/projects/new`), which returns to the Dashboard when it finishes. Every project's setup is in [HQ → Projects](/guide/projects#project-administration-hq-projects). |
 
 ## On a phone
 

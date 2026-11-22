@@ -1196,6 +1196,8 @@ export interface AskOperationCard {
     | "interrupted"
     | "unconfirmed"
     | "unsettled"
+    // The route's store refused it and nothing changed (#1938).
+    | "refused"
     | "unknown"
     | "gone";
   /** The outcome sentence, once settled. */
@@ -1214,7 +1216,10 @@ export interface AskOperationCard {
   team_revision?: number | null;
   /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
    *  empty id (a new automation, whose id the route chose) opens the list. */
-  library?: { kind: "playbook" | "skill" | "automation" | "secret"; id: string };
+  library?: {
+    kind: "playbook" | "skill" | "automation" | "secret" | "specialist";
+    id: string;
+  };
   /** The mission this card names (#1950): a team card's mission, or the draft a mission card
    *  created. The server's own id; the card's Open mission link is built from it (`missionLink`). */
   mission?: { id: string };
@@ -1223,7 +1228,7 @@ export interface AskOperationCard {
 /** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an
  *  automation's scope lines as the server renders them. Text, rendered as text — never markup. */
 export type AskLibraryContent =
-  | { kind: "files"; files: { path: string; text: string | null }[] }
+  | { kind: "files"; files: { path: string; text: string | null }[]; relies?: AskReliesRow[] }
   | {
       kind: "diff";
       diff: {
@@ -1233,6 +1238,18 @@ export type AskLibraryContent =
         removed: number;
         diff: string;
       }[];
+      relies?: AskReliesRow[];
+    }
+  | {
+      /** A specialist card (#1938): the specialist in full and, for an edit, the version it
+       *  changes. `skills_now` is the Library's revision of each pinned skill at THIS read
+       *  (`null`: gone), so a pin that moved since the card was made is marked. */
+      kind: "specialist";
+      action: "create" | "edit";
+      after: AskSpecialistShown;
+      before: AskSpecialistShown | null;
+      skills_now: Record<string, string | null>;
+      version?: { from: number; to: number };
     }
   | {
       kind: "automation";
@@ -1255,6 +1272,34 @@ export type AskLibraryContent =
       playbook: string | null;
       steps: AskFlowStep[];
     };
+
+/** One version of a specialist as its card shows it (#1938). `grade` is derived from the
+ *  operator's model grades at read: it follows the model and is never chosen on the card. */
+export type AskSpecialistShown = {
+  title: string;
+  summary: string;
+  engine: string;
+  /** The agent's name as HQ calls it; empty when the agent is not present here. */
+  agent: string;
+  model: string;
+  effort: string | null;
+  grade: "fast" | "strong" | "frontier" | null;
+  skills: { id: string; revision: string }[];
+  capacity: number;
+};
+
+/** A specialist a playbook card says it relies on (#1938), with its state at THIS read. */
+export type AskReliesRow =
+  | { title: string; state: "proposed"; where: "below" | "above" }
+  | {
+      title: string;
+      state: "exists";
+      version: number;
+      engine: string;
+      agent: string;
+      model: string;
+    }
+  | { title: string; state: "missing" };
 
 /** One step of a mission card's flow (#2152). */
 export type AskFlowStep = {

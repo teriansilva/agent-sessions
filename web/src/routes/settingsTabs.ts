@@ -7,6 +7,8 @@
  *  one-line change. Lives outside Settings.tsx so non-component exports don't break fast refresh
  *  (and so e2e specs can import it without pulling in React). */
 
+import { PROJECTS_FOLDERS_PATH, PROJECTS_PATH } from "../lib/routes";
+
 export const SETTINGS_PATH = "/settings";
 
 export const SETTINGS_GROUPS = [
@@ -24,7 +26,6 @@ export const SETTINGS_SECTIONS = [
   // The operator's avatar (#1931): shown beside their messages and to API-link visitors.
   { id: "profile", label: "Profile", group: "general" },
   { id: "session-defaults", label: "Session defaults", group: "general" },
-  { id: "projects", label: "Projects", group: "general" },
   // APPEARANCE (#1494): split by WHAT is being styled. Interface keeps the `appearance` id so
   // every existing `/settings/appearance` link (Opening links, bookmarks) still lands on it.
   { id: "appearance", label: "Interface", group: "appearance" },
@@ -134,6 +135,11 @@ export function legacySettingsTarget(
   id: string | undefined,
   hash: string,
 ): string | null {
+  // Settings → Projects moved to HQ → Projects (#2143). Its two discovery cards' anchors land on the
+  // index's Folders & discovery tab; anything else on the index itself.
+  if (id === "projects") {
+    return hash === "#discovery-h" || hash === "#overview-h" ? PROJECTS_FOLDERS_PATH : PROJECTS_PATH;
+  }
   if (id && Object.hasOwn(HQ_LEGACY_ANCHORS, id)) {
     return settingsPath(id as LegacyHqSection, hash);
   }

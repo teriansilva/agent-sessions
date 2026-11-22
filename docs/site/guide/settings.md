@@ -33,16 +33,11 @@ can differ. A device with no choice of its own starts from the last one saved an
 - **Session list order** — **Recent activity** or **Creation date**. Favorites always pin to the
   top.
 
-### Projects · `projects`
+### Projects moved to HQ
 
-- **Projects** — group sessions across folders: a project adopts launch folders and can be assigned
-  per session. Projects are metadata; assigning or archiving never moves session files.
-- **Folder discovery** — root directories and excluded folders. A root is a hard scope: folders
-  outside it are hidden from the sidebar, the filter and the pickers too.
-- **Session overview** — which projects show: **Show all (hide a few)** or **Only included**.
-
-These visibility controls are easy to confuse and do genuinely different things;
-[Projects](/guide/projects) has the table.
+Projects, folder discovery and the session overview are no longer in Settings: they live in
+**HQ → Projects** (`/projects`), with everything else a project's setup needs. An old
+`/settings/projects` link opens it. See [Projects](/guide/projects#project-administration-hq-projects).
 
 ## Appearance
 

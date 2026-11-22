@@ -144,6 +144,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "mission": "m1",
             "memory": "research-protocol",
             "mcp": "0123456789abcdef",
+            "specialist": "code-reviewer",
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

@@ -1,7 +1,8 @@
 """HQ proposes a session FROM a specialist; the tap starts that pinned version (#1910).
 
 * **list_specialists** reads the pool the way the Specialists page does (`GET /api/specialists`,
-  in-process) and answers by index, unarchived only, with `can_start` / `why_not`.
+  in-process) and answers by index with `can_start` / `why_not`; an archived one is listed and
+  marked (#1938: HQ finds it there to unarchive) and can't start.
 * **propose_session(specialist_index=…)** takes the agent from the specialist; an `engine_index`
   naming another agent, a specialist that can't start, or an index from a list this turn never
   fetched is refused and nothing is written. The card's agent line names the specialist and the
@@ -131,7 +132,7 @@ def _ask(a, ai, args, **kw):
 # ---- listing and proposing ----------------------------------------------------------------------
 
 
-def test_list_specialists_answers_by_index_and_leaves_archived_ones_out(app, ai, pool):
+def test_list_specialists_answers_by_index_and_marks_archived_ones(app, ai, pool):
     pool["specialists"].append(_spec("old", 1, archived=True))
     script = ai(calls(("list_specialists", {})), answer("ok"))
     app.ask(app.new(), "who can research?")
@@ -147,9 +148,28 @@ def test_list_specialists_answers_by_index_and_leaves_archived_ones_out(app, ai,
                 "skills": ["research-with-citations"],
                 "version": 3,
                 "can_start": True,
-            }
+            },
+            {
+                "index": 1,
+                "title": "Researcher",
+                "summary": "Researches on the web and cites every fact.",
+                "agent": "Claude Code",
+                "model": "default",
+                "skills": ["research-with-citations"],
+                "version": 1,
+                "can_start": False,
+                "why_not": "it is archived; unarchive it first",
+                "archived": True,
+            },
         ]
     }
+
+
+def test_an_archived_specialist_cannot_start_a_session(app, ai, pool):
+    pool["specialists"] = [_spec("old", 1, archived=True)]
+    cid, turn, script = _ask(app, ai, {"project_index": 0, "specialist_index": 0, "brief": BRIEF})
+    assert turn["proposals"] == []
+    assert "it is archived" in _result(script)["error"]
 
 
 def test_a_specialist_proposal_pins_its_version_and_names_it_on_the_card(app, ai, pool):

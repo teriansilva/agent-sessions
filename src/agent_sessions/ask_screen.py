@@ -58,6 +58,7 @@ APP_SECTIONS = (
     "hq",
     "missions",
     "dispatches",
+    "projects",  # HQ → Projects (#2143), moved out of Settings
     "sessions",
     "map",
     "templates",
@@ -78,7 +79,6 @@ APP_SECTIONS = (
 SETTINGS_PAGES = (
     "profile",
     "session-defaults",
-    "projects",
     "appearance",
     "terminal-appearance",
     "api-appearance",

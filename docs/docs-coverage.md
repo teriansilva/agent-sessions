@@ -33,6 +33,7 @@ section:mission      ->  guide/hq                         # HQ
 sub:hq               ->  guide/hq                         # HQ → Conversations
 sub:missions         ->  guide/missions                   # HQ → Missions
 sub:dispatches       ->  guide/notifications              # HQ → Notifications
+sub:projects         ->  guide/projects                   # HQ → Projects
 section:sessions     ->  guide/sessions                   # Sessions
 sub:sessions         ->  guide/sessions, guide/terminal   # Sessions → Sessions
 sub:map              ->  gap #2250                        # Sessions → Sessions map

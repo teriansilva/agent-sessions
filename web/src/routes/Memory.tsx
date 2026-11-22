@@ -9,6 +9,13 @@ import { useConfig } from "../app/config";
 import type { MemoryNote, MemoryProject, MemorySession, MemoryView, NoteEdit, NoteType } from "../types/memory";
 import { HQ_MEMORY_SCOPE } from "../types/memory";
 import { ASK_CID_RE, hqConversationPath } from "../lib/routes";
+import {
+  beginMemoryRead,
+  publishProjectMemory,
+  readProjectMemory,
+  setProjectMemory,
+  useProjectMemory,
+} from "../lib/projectMemoryStore";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { AgentAccessCard } from "../components/memory/AgentAccessCard";
 import { ImportCard } from "../components/memory/ImportCard";
@@ -80,8 +87,18 @@ export default function Memory() {
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
 
   const pid = params.get("project") ?? projects?.find(p => p.enabled)?.id ?? projects?.[0]?.id ?? null;
-  const view = pid ? views[pid] ?? null : null;
   const hq = pid === HQ_MEMORY_SCOPE;
+  // The project's memory flag is drawn from the shared store (#2143): HQ → Projects draws the same
+  // switch, and whichever page toggled last, both show what the server answered.
+  const sharedEnabled = useProjectMemory(hq ? null : pid);
+  const loadedView = pid ? views[pid] ?? null : null;
+  const view = useMemo(
+    () =>
+      loadedView && !loadedView.specialist && sharedEnabled !== undefined && sharedEnabled !== loadedView.enabled
+        ? { ...loadedView, enabled: sharedEnabled }
+        : loadedView,
+    [loadedView, sharedEnabled],
+  );
   // A message belongs to the project it is about; it is shown only while that project is selected.
   const setStatus = (text: string, about: string | null = pid) => setStatusFor({ pid: about, text });
   const statusText = status.pid === null || status.pid === pid ? status.text : "";
@@ -100,15 +117,20 @@ export default function Memory() {
   }
 
   const loadProjects = useCallback(async () => {
-    const next = await api.memoryProjects();
-    if (live.current) setProjects(next.projects);
+    // Through the shared store: every row's flag is published as the server's answer (#2143).
+    const next = await readProjectMemory();
+    if (live.current) setProjects(next);
   }, []);
   // `given` is a view the caller already has (the ingest pass returns one, #1501): it is applied
   // under the same generation rule as a fetched one, so it never overwrites a newer load.
   const loadView = useCallback(async (id: string, given?: MemoryView) => {
     const generation = (loadGeneration.current.get(id) ?? 0) + 1;
     loadGeneration.current.set(id, generation);
+    const seq = beginMemoryRead();
     const next = given ?? await api.memory(id);
+    // Only a read THIS call started publishes: an ingest pass's view (`given`) began before now,
+    // so its flag could be older than a toggle that settled in between.
+    if (!given && id !== HQ_MEMORY_SCOPE && !next.specialist) publishProjectMemory(id, next.enabled, seq);
     // The newest load of THIS project wins; other projects' slots are never touched.
     if (live.current && loadGeneration.current.get(id) === generation) setViews(v => ({ ...v, [id]: next }));
   }, []);
@@ -179,7 +201,7 @@ export default function Memory() {
   const toggle = () => perform(async () => {
     if (!pid || !view) return;
     const id = pid;
-    await api.setMemoryEnabled(id, !view.enabled);
+    await setProjectMemory(id, !view.enabled);
     await refresh(id);
     setStatus(view.enabled ? "Memory is off. New sessions won't get it; running ones keep their paths." : "Memory is on. Sessions already running join after a restart.", id);
   });
@@ -455,7 +477,7 @@ export default function Memory() {
       {!confirm && errorView}
       {/* The first read is Acquiring, in words (#1574). */}
       {projects === null && !error && <Loader kind="acquire" label="Loading memory…" className={styles.reading} testId="memory-acquiring" />}
-      {projects?.length === 0 && <p className={styles.empty}>No projects yet. Memory belongs to a project — create one from New session or Settings → Projects, then turn its memory on here.</p>}
+      {projects?.length === 0 && <p className={styles.empty}>No projects yet. Memory belongs to a project — create one from New session or HQ → Projects, then turn its memory on here.</p>}
       {projects && projects.length > 0 && (
         <div className={styles.layout} data-mobile={mobile}>
           <nav className={styles.rail} aria-label="Notebooks">

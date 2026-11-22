@@ -1,14 +1,13 @@
 import { expect, type Page, test } from "@playwright/test";
 import { ROSTER } from "./roster";
-import { NEW_PROJECT_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
-import { settingsPath } from "../src/routes/settingsTabs";
+import { NEW_PROJECT_PATH, NEW_SESSION_PATH, PROJECTS_PATH, projectPath } from "../src/lib/routes";
 import { agentPicker, projectPicker } from "./newSessionForm";
 
 // Project session defaults (#1508) in a real browser: a project names the agent, model, effort and
 // permission choice its new sessions start with. The New session form preselects them — the
 // operator's own pick on the form always wins, the global defaults fill the rest — and a project's
-// "skip" never applies before the project list is confirmed. The wizard's Agent step and the
-// Settings → Projects editor write the block. Network fully mocked.
+// "skip" never applies before the project list is confirmed. The wizard's Agent step and a project's
+// Session defaults tab in HQ → Projects (#2143) write the block. Network fully mocked.
 
 const API = "opencode-api";
 const MODELS = {
@@ -215,8 +214,8 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
     // Until that settles, the project's skip does NOT apply (the global "ask" does) and Start waits.
     let release!: () => void;
     state.hold = new Promise<void>((r) => (release = r));
-    await spaGo(page, settingsPath("projects"));
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await spaGo(page, PROJECTS_PATH);
+    await expect(page.getByRole("heading", { level: 1, name: "Projects", exact: true })).toBeVisible();
     await spaGo(page, NEW_SESSION_PATH);
     await expect(agentChecked(page, API)).toBeChecked();
     await expect(skip(page)).not.toBeChecked();
@@ -227,8 +226,8 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
     // A FAILED revalidation is no confirmation either: the cached list stays and Start is allowed,
     // so the project's skip must NOT apply — the global "ask" does, and the create carries no skip.
     state.failNext = true;
-    await spaGo(page, settingsPath("projects"));
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await spaGo(page, PROJECTS_PATH);
+    await expect(page.getByRole("heading", { level: 1, name: "Projects", exact: true })).toBeVisible();
     await spaGo(page, NEW_SESSION_PATH);
     await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
     await expect(agentChecked(page, API)).toBeChecked();
@@ -288,15 +287,43 @@ test.describe("Setting a project's session defaults (#1508)", () => {
     expect(state.created[0].launch_defaults).toEqual({ engine: "codex", model: "gpt-5-codex", bypass: false });
   });
 
-  test("Settings → Projects saves the block for an existing project", async ({ page }) => {
+  test("HQ → Projects saves the block for an existing project (#2143)", async ({ page }) => {
     const state = await mockApp(page, { projects: [PLAIN] });
-    await page.goto(settingsPath("projects"));
-    await page.getByRole("button", { name: "Session defaults for Plain" }).click();
+    await page.route(/\/api\/artifacts\/activation/, (r) => r.fulfill({ json: { mode: null } }));
+    await page.goto(projectPath(PLAIN.id, "defaults"));
     const panel = page.getByRole("region", { name: "Session defaults for Plain" });
     await panel.getByRole("radiogroup", { name: "Agent for new sessions" }).getByRole("radio", { name: /^Codex$/ }).check();
     await panel.getByRole("radio", { name: "Skip prompts" }).check();
-    await panel.getByRole("button", { name: /Save session defaults/ }).click();
+    const bar = page.getByTestId("defaults-savebar");
+    await expect(bar).toContainText("Unsaved changes");
+    await bar.getByRole("button", { name: /Save session defaults/ }).click();
     await expect.poll(() => state.patches).toEqual([{ launch_defaults: { engine: "codex", bypass: true } }]);
+    await expect(page.getByText("Saved.")).toBeVisible();
+    await expect(bar).toHaveCount(0);
+    await page.getByRole("link", { name: "All projects" }).click();
     await expect(page.getByTestId("project-launch-defaults")).toContainText("Codex · skip prompts");
+  });
+
+  test("a partial save keeps the failed half unsaved and says which half landed (#2143)", async ({ page }) => {
+    const state = await mockApp(page, { projects: [PLAIN] });
+    await page.route(/\/api\/artifacts\/activation/, (r) =>
+      r.request().method() === "PUT"
+        ? r.fulfill({ status: 503, json: { detail: "artifacts store unavailable" } })
+        : r.fulfill({ json: { mode: null } }),
+    );
+    await page.goto(projectPath(PLAIN.id, "defaults"));
+    const panel = page.getByRole("region", { name: "Session defaults for Plain" });
+    await panel.getByRole("radio", { name: "Skip prompts" }).check();
+    await page.getByTestId("project-artifacts-default").getByRole("radio", { name: /private/i }).click();
+    const bar = page.getByTestId("defaults-savebar");
+    await bar.getByRole("button", { name: /Save session defaults/ }).click();
+    await expect.poll(() => state.patches).toEqual([{ launch_defaults: { bypass: true } }]);
+    await expect(page.getByTestId("artifacts-save-error")).toHaveText(
+      "Session defaults saved; the artifacts default didn’t: artifacts store unavailable",
+    );
+    await expect(page.getByText("Saved.")).toHaveCount(0);
+    // Only the artifacts half is still unsaved.
+    await expect(bar).toContainText("artifacts default");
+    await expect(bar).not.toContainText("session defaults ·");
   });
 });

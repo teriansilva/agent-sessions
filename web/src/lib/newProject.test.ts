@@ -11,8 +11,7 @@ import {
   returnTarget,
   type NewSessionDraft,
 } from "./newProject";
-import { DASHBOARD_PATH, MAP_PATH, SESSIONS_PATH } from "./routes";
-import { settingsPath } from "../routes/settingsTabs";
+import { DASHBOARD_PATH, MAP_PATH, PROJECTS_PATH, SESSIONS_PATH } from "./routes";
 
 const DRAFT: NewSessionDraft = {
   engineChoice: "codex",
@@ -22,11 +21,13 @@ const DRAFT: NewSessionDraft = {
 };
 
 describe("returnTarget — a closed map", () => {
-  test("the three entry points resolve to their route constants", () => {
+  test("the entry points resolve to their route constants; the pre-#2143 key lands on HQ → Projects", () => {
     expect(returnTarget("new-session")).toBe(SESSIONS_PATH);
-    expect(returnTarget("settings-projects")).toBe(settingsPath("projects"));
+    expect(returnTarget("projects")).toBe(PROJECTS_PATH);
+    // Settings → Projects' key, still accepted (a history entry may hold it).
+    expect(returnTarget("settings-projects")).toBe(PROJECTS_PATH);
     expect(returnTarget("dashboard")).toBe(DASHBOARD_PATH);
-    expect(Object.keys(NEW_PROJECT_RETURN)).toHaveLength(3);
+    expect(Object.keys(NEW_PROJECT_RETURN)).toHaveLength(4);
   });
 
   test.each([

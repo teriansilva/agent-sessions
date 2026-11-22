@@ -62,6 +62,7 @@
  */
 import { ChevronLeft, Info, Maximize2, Plus, Trash2, X } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -100,6 +101,7 @@ import type {
 
 import styles from "../pulse/mission.module.css";
 import { FollowingBlock, MessageCard, NudgeCard, OperationCard, QuestionCard, SessionCard } from "./AskCards";
+import { askAgainText, foldable, foldTally, specialistWatch } from "./specialistRows";
 import { AttachmentList } from "./AskAttachments";
 import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
@@ -143,6 +145,16 @@ import { useHqContact } from "../hq/useHqContact";
 import { RevealText } from "./RevealText";
 import { CallButton } from "../call/CallButton";
 import { ASK_OPEN_CONVERSATION_EVENT, takeAskConversation } from "../call/callContext";
+
+/** The line above a turn's folded specialist cards (#1938): how many wait, how many are decided. */
+function FoldTally({ proposals }: { proposals: AskProposalCard[] }) {
+  const n = foldTally(proposals);
+  return (
+    <p className={a.foldTally} data-testid="ask-specialist-tally">
+      Proposals · Specialist · <b>{n.waiting}</b> waiting · <b>{n.decided}</b> decided
+    </p>
+  );
+}
 
 export interface AskTurn {
   /** The server's `turn_id`. */
@@ -1555,6 +1567,10 @@ export function AskConsole({
     [load],
   );
 
+  // #1938: what a playbook card's list of specialists follows (every specialist card of the
+  // conversation, with its state).
+  const watch = useMemo(() => specialistWatch(turns.flatMap((t) => t.proposals)), [turns]);
+
   // #1755: one row per followed session, its newest update in place — never a row per change.
   const rows = useMemo(
     () => followRows(follows, updates, followSince),
@@ -1607,7 +1623,7 @@ export function AskConsole({
   }, [canStop, visible, stopTurn]);
 
   /** One card as the thread draws it — in its turn, or in a step list's slot (#2251). */
-  const renderCard = (p: AskProposalCard) =>
+  const renderCard = (p: AskProposalCard, siblings: AskProposalCard[]) =>
     p.kind === "session" ? (
       <SessionCard
         // A new starting value (the card asks again) starts the control afresh.
@@ -1658,14 +1674,21 @@ export function AskConsole({
         onDismiss={() => void decideMessage(p.action_id, "dismiss")}
       />
     ) : p.kind === "operation" ? (
-      <OperationCard
-        key={p.action_id}
-        p={p}
-        deciding={deciding.has(p.action_id)}
-        error={cardErrors.get(p.action_id) ?? null}
-        onConfirm={(inputs) => void decideOperation(p.action_id, "confirm", inputs)}
-        onDismiss={() => void decideOperation(p.action_id, "dismiss")}
-      />
+      <Fragment key={p.action_id}>
+        {/* Several specialist cards drawn together (#1938: a turn's, or one step's batch, #2251)
+            fold: a tally above the first, then one row each. */}
+        {foldable(siblings).get(p.action_id) === 1 ? <FoldTally proposals={siblings} /> : null}
+        <OperationCard
+          p={p}
+          deciding={deciding.has(p.action_id)}
+          error={cardErrors.get(p.action_id) ?? null}
+          onConfirm={(inputs) => void decideOperation(p.action_id, "confirm", inputs)}
+          onDismiss={() => void decideOperation(p.action_id, "dismiss")}
+          onAskAgain={configured ? () => void ask(askAgainText(p), []) : undefined}
+          watch={p.op.startsWith("playbook.") ? watch : ""}
+          fold={foldable(siblings).get(p.action_id)}
+        />
+      </Fragment>
     ) : (
       <NudgeCard
         key={p.action_id}
@@ -1708,9 +1731,10 @@ export function AskConsole({
         <StepList
           key={l.id}
           list={l}
-          renderCard={(id) => {
+          renderCard={(id, slot) => {
             const p = cardsById.get(id);
-            return p ? renderCard(p) : null;
+            const siblings = slot.flatMap((x) => cardsById.get(x) ?? []);
+            return p ? renderCard(p, siblings) : null;
           }}
           onDiscuss={(step) => discussStep(step.n)}
           onEnd={() => void endSteps(l.id)}
@@ -2146,7 +2170,10 @@ export function AskConsole({
                       }
                     />
                   ) : null}
-                  {t.proposals.filter((p) => !hiddenCard(p)).map(renderCard)}
+                  {(() => {
+                    const shownCards = t.proposals.filter((p) => !hiddenCard(p));
+                    return shownCards.map((p) => renderCard(p, shownCards));
+                  })()}
                 </article>
                 )}
                 {stepListsAt(t.id)}

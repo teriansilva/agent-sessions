@@ -30,7 +30,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   list_projects: { label: "Listing your projects", noun: ["project", "projects"] },
   list_folders: { label: "Listing your folders", noun: ["folder", "folders"] },
   list_agents: { label: "Listing the agents", noun: ["agent", "agents"] },
+  list_agent_models: { label: "Listing an agent's models", noun: ["model", "models"] },
   list_specialists: { label: "Listing the specialists", noun: ["specialist", "specialists"] },
+  specialist_detail: { label: "Reading a specialist" },
   // #1554: the read-only usage, fleet and settings views.
   agent_usage: { label: "Reading agent usage", noun: ["agent", "agents"] },
   fleet_status: { label: "Counting your sessions and missions" },

@@ -1,5 +1,7 @@
 /* The project session-defaults editor (#1508): agent tiles like New session's (#1436), a model row,
- * and the permission choice as one segmented row of native radios. Tokens only, no radius. */
+ * and the permission choice as one segmented row of native radios. NIGHTJAR (#2143): a chosen tile
+ * or segment locks on with the HUD edge and tint, the select is the `nj-field` plate, focus is the
+ * inset ring; tokens only, no radius. */
 .root {
   display: grid;
   gap: 14px;
@@ -13,7 +15,7 @@
 .groupHead {
   margin-top: 4px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -46,12 +48,12 @@
   cursor: inherit;
 }
 .tile:has(input:checked) {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
 }
 .tile:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .tile:has(input:disabled) {
   cursor: default;
@@ -62,10 +64,10 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-1);
 }
 .tileSub {
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .swatch {
@@ -82,27 +84,27 @@
   display: grid;
   gap: 6px;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .field select {
   min-height: 44px;
   padding: 8px 10px;
   font: inherit;
-  font-size: 13.5px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 0;
 }
 .field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .hint,
 .note {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -117,7 +119,7 @@
   min-height: 44px;
   margin: 0 -1px -1px 0;
   padding: 0 16px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-2);
   background: var(--bg-1);
   border: 1px solid var(--border);
@@ -134,24 +136,24 @@
 }
 .segOpt:has(input:checked) {
   z-index: var(--z-raised);
-  color: var(--text);
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text-1);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
 }
 .segOpt:has(input:focus-visible) {
   z-index: calc(var(--z-raised) + 1);
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .summary {
   margin: 0;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.5;
   color: var(--text-2);
   background: var(--bg-1);
   border: 1px solid var(--line);
 }
 .summary b {
-  color: var(--text);
+  color: var(--text-1);
 }

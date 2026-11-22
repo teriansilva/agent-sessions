@@ -18,6 +18,7 @@ import {
   HQ_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
+  PROJECTS_PATH,
   SESSIONS_PATH,
 } from "../lib/routes";
 import type { ProjectEntity } from "../types/api";
@@ -100,6 +101,7 @@ function renderWizard(
       { path: MISSION_PATH, element: <Probe name="Missions" /> },
       { path: HQ_PATH, element: <Probe name="HQ" /> },
       { path: "/settings/:tab", element: <Probe name="Settings" /> },
+      { path: PROJECTS_PATH, element: <Probe name="Projects index" /> },
     ],
     { initialEntries: [{ pathname: NEW_PROJECT_PATH, state }] },
   );
@@ -387,12 +389,12 @@ test("finish from New session goes back with the project selected and the draft'
 
 test("Done returns to the entry point; Plan a mission carries the project", async () => {
   const user = userEvent.setup();
-  renderWizard({ from: "settings-projects" });
+  renderWizard({ from: "projects" });
   await toReview(user);
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await user.click(await screen.findByRole("button", { name: "Done" }));
   expect(
-    await screen.findByRole("heading", { name: "Settings" }),
+    await screen.findByRole("heading", { name: "Projects index" }),
   ).toBeInTheDocument();
 });
 

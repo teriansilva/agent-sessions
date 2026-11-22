@@ -73,8 +73,9 @@ export function StepList({
   error,
 }: {
   list: AskStepList;
-  /** The card with this id, drawn as the thread draws it (or null when it isn't loaded). */
-  renderCard: (id: string) => ReactNode;
+  /** The card with this id, drawn as the thread draws it (or null when it isn't loaded).
+   *  `slot`: every card id the step shows, so a same-kind batch folds together (#1938). */
+  renderCard: (id: string, slot: string[]) => ReactNode;
   onDiscuss: (step: AskStep) => void;
   onEnd: () => void;
   ending: boolean;
@@ -138,7 +139,7 @@ export function StepList({
             slot ? (
               <li key={`${step.sid}:slot`} className={s.slot} data-testid="ask-step-slot">
                 {slot.map((id) => (
-                  <div key={id}>{renderCard(id)}</div>
+                  <div key={id}>{renderCard(id, slot)}</div>
                 ))}
               </li>
             ) : null,

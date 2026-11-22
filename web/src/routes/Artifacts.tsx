@@ -455,7 +455,7 @@ export default function Artifacts() {
                 <span>
                   <b>Turn the tool on:</b> a session&apos;s ⋯ menu → Artifacts,
                   a mission&apos;s ⋯ menu, or a project&apos;s session defaults
-                  in Settings → Projects.
+                  in HQ → Projects.
                 </span>
               </li>
               <li>

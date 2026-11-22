@@ -1,7 +1,8 @@
 # Missions in HQ
 
 Open **HQ → Missions** from the HQ menu in the top bar (a bottom sheet on a phone).
-Conversations, Missions and [Notifications](/guide/hq#notifications) are views of HQ, each its own
+Conversations, Missions, [Notifications](/guide/hq#notifications) and
+[Projects](/guide/projects#project-administration-hq-projects) are views of HQ, each its own
 page. Existing `/mission?m=<id>` and `/pulse` links still open the same
 console; `/mission/<id>` is also accepted.
 

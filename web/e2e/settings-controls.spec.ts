@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { settingsPath } from "../src/routes/settingsTabs";
+import { PROJECTS_FOLDERS_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
-// #683: native checkbox / radio controls in Settings were rendering at the browser default
-// (unbranded, uncapped) so they looked oversized and drifted out of line with their labels on
-// narrow / streamed viewports. They must now be brand-accented (amber) and size-capped, matching
-// the folder-row checkboxes. Network is mocked so Settings renders without a backend.
+// #683: the folder-visibility controls once rendered at the browser default (unbranded, uncapped).
+// Since #2143 they are NIGHTJAR primitives on HQ → Projects → Folders & discovery. Network is mocked
+// so the page renders without a backend.
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/config", (r) =>
@@ -49,28 +49,24 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-// Default brand accent (--accent = #ffb000). A capped native control is ≤ 18px on both axes.
-const AMBER = "rgb(255, 176, 0)";
-
-async function expectBrandedAndCapped(
-  page,
-  role: "checkbox" | "radio",
-  name: RegExp,
-) {
-  const el = page.getByRole(role, { name });
-  await expect(el).toBeVisible();
-  const accent = await el.evaluate((n) => getComputedStyle(n).accentColor);
-  expect(accent).toBe(AMBER);
-  const box = await el.boundingBox();
-  expect(box).not.toBeNull();
-  expect(box!.width).toBeLessThanOrEqual(18);
-  expect(box!.height).toBeLessThanOrEqual(18);
-}
-
-test("Session-overview mode radios are brand-accented and size-capped (#683)", async ({
-  page,
-}) => {
-  await page.goto(settingsPath("projects"));
-  await expectBrandedAndCapped(page, "radio", /show all/i);
-  await expectBrandedAndCapped(page, "radio", /only included/i);
+// The Session-overview mode radios (#683) became NIGHTJAR's Seg when the card moved to HQ → Projects →
+// Folders & discovery (#2143): one radiogroup, the chosen segment `aria-checked`, the 44 px floor
+// where a finger is the pointer, and the choice persisted as `projects_mode`.
+test("the overview visibility modes are a Seg that persists projects_mode (#683, #2143)", async ({ page }, testInfo) => {
+  let saved: unknown = null;
+  await page.route("**/api/prefs", async (r) => {
+    saved = r.request().postDataJSON();
+    await r.fulfill({ json: saved });
+  });
+  await page.goto(PROJECTS_FOLDERS_PATH);
+  const group = page.getByRole("radiogroup", { name: "Project visibility" });
+  await expect(group).toHaveClass(/nj-seg/);
+  const all = group.getByRole("radio", { name: /show all/i });
+  const included = group.getByRole("radio", { name: /only included/i });
+  await expect(all).toHaveAttribute("aria-checked", "true");
+  if (testInfo.project.name === "mobile")
+    for (const r of [all, included]) expect((await r.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await included.click();
+  await expect.poll(() => saved).toEqual({ projects_mode: "included" });
+  await expect(included).toHaveAttribute("aria-checked", "true");
 });

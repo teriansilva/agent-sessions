@@ -603,16 +603,17 @@ export const SWEEP = [
   },
   { id: "popup:template-picker", path: S1, ...key("Use a template"), expect: "dialog" },
   { id: "popup:session-chooser", path: "/templates", open: [{ role: "button", name: "Use Release checklist" }], expect: "dialog" },
-  { id: "popup:confirm", path: "/settings/projects", open: [{ role: "button", name: "Delete project orbital-api" }], expect: "dialog" },
+  // Settings → Projects moved to HQ → Projects (#2143): its dialogs open from the new pages.
+  { id: "popup:confirm", path: "/projects/p-orbital", open: [{ role: "button", name: "Delete project orbital-api" }], expect: "dialog" },
   {
     id: "popup:rename-project",
-    path: "/settings/projects",
+    path: "/projects?tab=folders",
     mock: { scratchFolder: true },
     open: [{ css: "button[aria-label^='Rename'][aria-label$='scratch']" }],
     expect: "dialog",
   },
-  // New session has no folder picker of its own any more (#1458); Settings → Projects opens it.
-  { id: "popup:folder-picker", path: "/settings/projects", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
+  // New session has no folder picker of its own any more (#1458); a project's General tab opens it.
+  { id: "popup:folder-picker", path: "/projects/p-orbital", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
   { id: "popup:permissions", path: SAPI, mock: { bypassOffer: true }, ...head("Enable Skip permissions for this session"), expect: "dialog" },
   // Share (#2173): the head's Share chip opens a two-item menu, Public… and Peer…; on a phone both
   // are items of the Actions menu, under a Share label.
@@ -813,7 +814,7 @@ export const SWEEP = [
   { id: "route:new-session", path: "/new" },
   // ---- PR6 new session ("Deploy", #1531 Phase 6) ----
   // The form's states: the first read (skeleton rows), a failed read, a folderless project with
-  // no fallback (the summary points at Settings → Projects, #1458), an explicit "No project",
+  // no fallback (the summary points at the project's page in HQ → Projects, #1458, #2143), an explicit "No project",
   // a long list with its filter, and an API agent with its model and effort selects.
   {
     id: "newsession:loading",
@@ -1059,6 +1060,21 @@ export const SWEEP = [
   { id: "route:memory-hq", path: "/library/memory?project=_hq&note=primary-sources", api: HQ_MEMORY_API, present: "[aria-label='Note: Include primary sources']" },
   { id: "popup:memory-hq-clear", path: "/library/memory?project=_hq", api: HQ_MEMORY_API, open: [{ role: "button", name: "Clear…" }], expect: "dialog" },
   { id: "route:settings-memory-search", path: "/settings/ai-hq", api: HQ_MODEL_API, open: [{ css: "#memory-search-h" }], section: "memory-search-settings", fullPage: true },
+  // HQ → Projects (#2143): the index (projects, folders), one project's tabs, and the states a
+  // read can be in. `projectsAdmin` (a sweep state) gives the projects playbooks and memory.
+  { id: "route:projects", path: "/projects", mock: { projectsAdmin: true }, present: "[data-testid='project-row']" },
+  { id: "projects:phone", path: "/projects", widths: ["phone"], mock: { projectsAdmin: true }, present: "[data-testid='project-row']" },
+  { id: "route:projects-folders", path: "/projects?tab=folders", mock: { projectsAdmin: true, scratchFolder: true }, present: "[aria-label='Folders in Unassigned']" },
+  { id: "projects:empty", path: "/projects", api: { "/api/projects": { projects: [] } }, present: "[data-testid='projects-empty']" },
+  {
+    id: "projects:read-failed",
+    path: "/projects",
+    api: { "/api/projects": { status: 503, json: { detail: "Service unavailable" } } },
+    present: "[data-testid='projects-read-failed']",
+  },
+  { id: "route:project-general", path: "/projects/p-orbital", mock: { projectsAdmin: true }, present: "#identity-h" },
+  { id: "route:project-defaults", path: "/projects/p-orbital?tab=defaults", mock: { projectsAdmin: true }, present: "[data-testid='project-session-defaults']" },
+  { id: "route:project-memory", path: "/projects/p-orbital?tab=memory", mock: { projectsAdmin: true, variables: true, automationsShowcase: true }, present: "#memory-h" },
   { id: "route:variables", path: "/library/variables", mock: { variables: true }, present: "article[aria-label='deploy_token']" },
   // ---- PR4b library A ---- (#1574 Phase 10: templates, variables, memory)
   // Suggestions on demand: the analysed result, its dossier cards and the withheld note.
@@ -1234,6 +1250,17 @@ export const SWEEP = [
   { id: "route:gallery-playbooks", path: "/library/gallery/playbooks", api: { "/api/gallery": LIB_LISTING, "/api/gallery/refresh": LIB_LISTING }, present: "[data-testid='gallery-card-old-release']" },
   // ---- /PR4b library B ----
   { id: "route:new-project", path: "/projects/new" },
+  // The wizard's later steps (#2143 restyled their content): colour, agent defaults and playbook.
+  ...(() => {
+    const name = { role: "textbox", name: "Project name", fill: "payments-api" };
+    const next = { role: "button", name: "Next" };
+    const folder = { testId: "np-folder-preview", wait: "visible" };
+    return [
+      { id: "new-project:colour", path: "/projects/new", open: [name, next, folder, next], present: "[role='radiogroup'][aria-label='Project colour']" },
+      { id: "new-project:agent", path: "/projects/new", open: [name, next, folder, next, next], present: "[data-testid='project-session-defaults']" },
+      { id: "new-project:playbook", path: "/projects/new", open: [name, next, folder, next, next, next] },
+    ];
+  })(),
   { id: "route:settings-interface", path: "/settings/appearance" },
   // ---- PR4b settings A ---- (#1574 Phase 11: the shell, Appearance and AI pages)
   // Motion: the Interface page in each mode (Off is the sweep's default above).

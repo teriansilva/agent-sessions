@@ -4,7 +4,7 @@
 
 .lede {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-row);
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
@@ -12,27 +12,30 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
   min-width: 0;
 }
+/* The field plate, as `nj-field` draws it (docs/design.md v2 §6): `--bg-2`, the edge lights on
+ * hover / focus, the inset focus ring. */
 .field input {
   min-height: 44px;
-  background: var(--panel);
-  color: var(--text);
+  background: var(--bg-2);
+  color: var(--text-1);
   border: 1px solid var(--border);
   border-radius: 0;
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-3);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-body);
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 .field input:hover {
-  border-color: var(--accent);
+  border-color: var(--hud-dim);
 }
 .field input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+  border-color: var(--hud);
 }
 .pathRow {
   display: flex;
@@ -47,11 +50,11 @@
   align-items: center;
   min-height: 44px;
   padding: 0 10px;
-  background: var(--panel);
-  color: var(--text);
+  background: var(--bg-1);
+  color: var(--text-1);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -78,15 +81,15 @@
 }
 .modeOn {
   border-color: var(--accent);
-  color: var(--text);
+  color: var(--text-1);
 }
 .mode input {
   accent-color: var(--accent);
   margin-top: 2px;
 }
 .mode input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .mode span {
   display: flex;
@@ -95,11 +98,11 @@
   min-width: 0;
 }
 .mode b {
-  font-size: 13.5px;
+  font-size: var(--fs-row);
 }
 .mode small {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
 }
 
 .preview {
@@ -108,17 +111,17 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   overflow-wrap: anywhere;
 }
 .preview code {
   font-family: var(--font-mono);
-  color: var(--text);
+  color: var(--text-1);
 }
 .tag,
 .tagWarn {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   padding: 2px 6px;
@@ -132,18 +135,18 @@
 }
 .warn {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--warn-text);
   overflow-wrap: anywhere;
 }
 .ok {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--ok-text);
 }
 .error {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--danger-text);
 }
 
@@ -152,13 +155,13 @@
 .picked {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-2);
 }
 .picked b {
-  color: var(--text);
+  color: var(--text-1);
 }
 .picked code {
   text-transform: none;
@@ -185,8 +188,8 @@
 .previewName,
 .previewClusterHead {
   font-weight: 600;
-  font-size: 13px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -196,21 +199,22 @@
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
 }
 .previewMeta {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
   white-space: nowrap;
 }
+/* A project's colour: a square, as everywhere NIGHTJAR draws one (the projects index, the map). */
 .dot {
   display: inline-block;
   width: 10px;
   height: 10px;
-  border-radius: 50%;
+  border-radius: 0;
   flex: none;
   vertical-align: middle;
 }
@@ -235,7 +239,7 @@
 }
 .review dt {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -243,8 +247,8 @@
 .review dd {
   margin: 0;
   min-width: 0;
-  font-size: 13.5px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .review code {
@@ -254,7 +258,7 @@
   min-height: 44px;
   padding: 0 8px;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--accent-text);
   background: none;
   border: none;
@@ -273,8 +277,8 @@
   align-items: center;
   gap: 10px;
   min-height: 44px;
-  font-size: 13.5px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
   cursor: pointer;
 }
 .check input {
@@ -283,8 +287,8 @@
   height: 18px;
 }
 .check input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .failure {
   display: flex;
@@ -292,7 +296,7 @@
   gap: 4px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--danger-text);
   overflow-wrap: anywhere;
 }

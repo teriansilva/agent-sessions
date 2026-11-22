@@ -11,8 +11,7 @@ import { mintNewSessionId } from "../lib/newSession";
 import { projectPickerStore } from "../lib/projectPickerStore";
 import { structuredModelsStore } from "../lib/structuredModelsStore";
 import type { NewSessionDraft } from "../lib/newProject";
-import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
-import { settingsPath } from "./settingsTabs";
+import { MAP_PATH, NEW_PROJECT_PATH, projectPath } from "../lib/routes";
 import type { AppConfig, EngineInfo } from "../types/api";
 import { NewSessionLanding } from "./NewSessionLanding";
 
@@ -1671,20 +1670,20 @@ test("a folderless project with a global default starts there, and the summary s
   expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
-test("a folderless project with no global default points at Settings → Projects, Start disabled (#1458)", async () => {
+test("a folderless project with no global default points at its HQ → Projects page, Start disabled (#1458, #2143)", async () => {
   mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
   renderLanding(["claude"]);
   await findProjects();
   expect(launchFolder()).toBe("");
   const summary = screen.getByTestId("new-session-summary");
   expect(summary).toHaveTextContent(
-    "“Scratch” has no default folder — set one in Settings → Projects.",
+    "“Scratch” has no default folder — set one in HQ → Projects.",
   );
-  // The action is a real link to the projects settings: the folder is configured on the project,
-  // never picked on this form (#1458).
+  // The action is a real link to the project's own page: the folder is configured on the
+  // project, never picked on this form (#1458).
   expect(
-    within(summary).getByRole("link", { name: /settings → projects/i }),
-  ).toHaveAttribute("href", settingsPath("projects"));
+    within(summary).getByRole("link", { name: /hq → projects/i }),
+  ).toHaveAttribute("href", projectPath(FOLDERLESS.id));
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
 });
 

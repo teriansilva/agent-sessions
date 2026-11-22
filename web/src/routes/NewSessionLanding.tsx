@@ -15,7 +15,7 @@ import {
   type NewSessionDraft,
   type WizardEntryState,
 } from "../lib/newProject";
-import { NEW_PROJECT_PATH } from "../lib/routes";
+import { NEW_PROJECT_PATH, PROJECTS_PATH, projectPath } from "../lib/routes";
 import {
   engineInfo,
   engineLabel,
@@ -34,7 +34,7 @@ import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { levelsOf, resolveSessionDefault } from "../lib/sessionDefaults";
 import { describeLaunchDefaults } from "../lib/launchDefaults";
 import type { SessionDefault } from "../types/api";
-import { agentPath, settingsPath } from "./settingsTabs";
+import { agentPath } from "./settingsTabs";
 import { owningProjectId } from "../lib/projectTree";
 import { shortCwd } from "../lib/format";
 import { useProjectPicker } from "../app/useProjectPicker";
@@ -69,7 +69,7 @@ import styles from "./NewSessionLanding.module.css";
 /** Landing at "/" — no session selected. Pick an engine + project and start a new session: a
  *  project owns the launch folder (#448), and the form takes it — there is no folder definition
  *  here (#1458). The start summary names the folder it resolved; a missing one is fixed on the
- *  project (Settings → Projects), never from this form. We mint a client-side id, navigate to
+ *  project (HQ → Projects), never from this form. We mint a client-side id, navigate to
  *  /s/:engine/:id carrying the fresh-launch params (cwd + bypass).
  *
  *  Unless the map sent us (#936): pressing "+ New session" with the workspace up carries
@@ -1114,7 +1114,7 @@ export function NewSessionForm({
                 Reset to defaults
               </button>
             ) : (
-              <Link to={projectModel ? settingsPath("projects") : agentPath(engine)}>
+              <Link to={projectModel ? (selectedProject ? projectPath(selectedProject.id, "defaults") : PROJECTS_PATH) : agentPath(engine)}>
                 Edit defaults
               </Link>
             )}
@@ -1160,7 +1160,7 @@ export function NewSessionForm({
                 bypass: config?.agent_defaults?.bypass ?? true,
               })}
               .{" "}
-              <Link to={settingsPath("projects")}>Edit project defaults</Link>
+              <Link to={projectPath(selectedProject.id, "defaults")}>Edit project defaults</Link>
             </p>
           )}
         </section>
@@ -1247,7 +1247,7 @@ export function NewSessionForm({
             ) : selectedProject ? (
               <>
                 “{selectedProject.name}” has no default folder — set one in{" "}
-                <Link to={settingsPath("projects")}>Settings → Projects</Link>
+                <Link to={projectPath(selectedProject.id)}>HQ → Projects</Link>
                 {inModal && <span className={styles.leavesMap}> ↗ leaves the map</span>}.
               </>
             ) : (

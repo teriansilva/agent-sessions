@@ -6,13 +6,14 @@
  *  is TEXT: a file or an instruction is never rendered as markup. A long file is collapsed after
  *  `PREVIEW_LINES` with a "Show all" control; nothing is ever withheld before the operator taps
  *  Confirm, it is only folded. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "../../lib/api";
 import type { AskLibraryContent, AskOperationCard } from "../../types/api";
 import c from "./AskCards.module.css";
 import { libraryHref } from "./libraryHref";
+import { RELIES_NOTE, ReliesList, SpecialistContent } from "./SpecialistContent";
 
 const PREVIEW_LINES = 12;
 
@@ -65,18 +66,29 @@ const STATUS_LINE: Record<string, string> = {
 
 /** `onShown(true)` once the operator can see exactly what the card saves — and only then may the
  *  card offer Confirm (#1611 review): a digest proves the bytes didn't change, not that they were
- *  shown. A transient failure offers Retry; a 409 (the draft changed) never re-enables Confirm. */
+ *  shown. A transient failure offers Retry; a 409 (the draft changed) never re-enables Confirm.
+ *
+ *  `watch` (#1938): what the content is DERIVED from besides the draft — a playbook card's list
+ *  of specialists reads the store and the conversation's other cards, and a specialist card marks
+ *  a pin that moved — so it is read again when `watch` changes. What is on screen stays until the
+ *  new read lands; a failed re-read keeps it (the draft itself never changes). `stale`: the card
+ *  is out of date, said above the values it was made with. */
 export function LibraryContent({
   id,
   onShown,
+  watch = "",
+  stale = false,
 }: {
   id: string;
   onShown: (shown: boolean) => void;
+  watch?: string;
+  stale?: boolean;
 }) {
   const [content, setContent] = useState<AskLibraryContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryable, setRetryable] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const has = useRef(false);
   useEffect(() => {
     // Confirm starts disabled (the card's own `shown` is false) and an error never enabled it,
     // so a retry has nothing to reset here.
@@ -84,11 +96,12 @@ export function LibraryContent({
     api.askProposalContent(id).then(
       (body) => {
         if (!live) return;
+        has.current = true;
         setContent(body);
         onShown(true);
       },
       (e: unknown) => {
-        if (!live) return;
+        if (!live || has.current) return;
         setRetryable(!(e instanceof ApiError && e.status === 409));
         setError(
           e instanceof ApiError && e.status === 409
@@ -100,7 +113,7 @@ export function LibraryContent({
     return () => {
       live = false;
     };
-  }, [id, attempt, onShown]);
+  }, [id, attempt, onShown, watch]);
   if (error) {
     return (
       <div className={c.note} role="alert" data-testid="ask-library-error">
@@ -128,9 +141,20 @@ export function LibraryContent({
       </div>
     );
   }
+  if (content.kind === "specialist") return <SpecialistContent content={content} stale={stale} />;
+  // The specialists a playbook relies on (#1938) sit above its files; the note under them says
+  // what saving does not do.
+  const relies = content.kind === "files" || content.kind === "diff" ? content.relies : undefined;
+  const reliesList = relies?.length ? <ReliesList rows={relies} /> : null;
+  const reliesNote = relies?.length ? (
+    <div className={c.quiet} role="note" data-testid="ask-relies-note">
+      {RELIES_NOTE}
+    </div>
+  ) : null;
   if (content.kind === "files") {
     return (
       <div data-testid="ask-library-files">
+        {reliesList}
         <div className={c.blockLabel}>Files, verbatim</div>
         {content.files.map((f) => (
           <div key={f.path} className={c.file}>
@@ -143,12 +167,14 @@ export function LibraryContent({
             {f.text !== null ? <Folded text={f.text} testid="ask-library-file" /> : null}
           </div>
         ))}
+        {reliesNote}
       </div>
     );
   }
   if (content.kind === "diff") {
     return (
       <div data-testid="ask-library-changes">
+        {reliesList}
         <div className={c.blockLabel}>Changes, verbatim</div>
         {content.diff.map((d) => (
           <div key={d.path} className={c.file}>
@@ -161,6 +187,7 @@ export function LibraryContent({
             {d.diff ? <DiffBody text={d.diff} /> : null}
           </div>
         ))}
+        {reliesNote}
       </div>
     );
   }

@@ -32,6 +32,7 @@ import type {
 
 import { FolderPickerModal } from "../FolderPickerModal";
 import { LibraryContent, OpenInLibrary } from "./LibraryContent";
+import { FoldRow } from "./SpecialistContent";
 import { Link } from "react-router-dom";
 import { MISSION_ID_RE, missionLink } from "../../lib/missionLink";
 import { Led, type LedTone, Stamp } from "../hud/Meters";
@@ -640,6 +641,8 @@ const OPERATION_OUTCOMES: Record<
   unconfirmed: { word: "Ran, unconfirmed", tone: "warn", detail: (p) => p.summary },
   // A move that committed but did not finish (#1786): Finish runs it again from where it stopped.
   unsettled: { word: "Not finished", tone: "warn", detail: (p) => p.summary },
+  // The store refused it and nothing changed (#1938): a warning, never the red of a failure.
+  refused: { word: "Refused", tone: "warn", detail: (p) => p.summary || "Nothing changed." },
   unknown: {
     word: "Status unavailable",
     tone: "neutral",
@@ -654,6 +657,7 @@ const OPERATION_GROUP: Record<string, string> = {
   playbook: "Playbook",
   skill: "Skill",
   automation: "Automation",
+  specialist: "Specialist",
   secret: "Secret",
   mission: "Mission",
   mcp: "MCP server",
@@ -673,6 +677,15 @@ const THIRD_PARTY = new Set(["mcp.install"]);
 /** Storing a shared file as a secret (#1786) deletes the chat copy once the Library holds it. */
 const MOVES = new Set(["secret.store_attachment"]);
 
+/** What a specialist card adds under its sentence (#1938), while it waits: what the tap does not
+ *  do. Archiving deletes nothing; unarchiving changes nothing about it. */
+const SPECIALIST_NOTE: Record<string, string> = {
+  "specialist.archive": "Nothing is deleted. Unarchive brings it back as it is.",
+  "specialist.unarchive":
+    "Its agent, model and skills are kept as they were. If one of them no longer fits, edit it " +
+    "afterwards.",
+};
+
 const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
   reversible: { label: "Reversible" },
   destructive: { label: "Can't be undone", tone: "down" },
@@ -685,6 +698,9 @@ export function OperationCard({
   error,
   onConfirm,
   onDismiss,
+  onAskAgain,
+  watch = "",
+  fold,
 }: {
   p: AskOperationCard;
   deciding: boolean;
@@ -692,7 +708,19 @@ export function OperationCard({
   error: string | null;
   onConfirm: (inputs?: { folder?: string; value?: string; file?: File }) => void;
   onDismiss: () => void;
+  /** An out-of-date specialist card (#1938) offers "Ask HQ again": an ordinary follow-up message
+   *  in this conversation. Absent where the card has no conversation to send it in. */
+  onAskAgain?: () => void;
+  /** What a Library card's derived content depends on besides its draft (`LibraryContent`). */
+  watch?: string;
+  /** One of several specialist cards of a turn (#1938): it folds to one row, with this ordinal.
+   *  A folded card shows no Confirm; it opens to the whole card. */
+  fold?: number;
 }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const folded = fold !== undefined && !open;
+  const isSpecialist = p.op.startsWith("specialist.");
   const [picked, setFolder] = useState("");
   // A secret's value (#1786): typed here, sent with the confirm and cleared at once. The field is
   // uncontrolled — the value lives in the DOM node only, never in React state or a `value`
@@ -740,16 +768,38 @@ export function OperationCard({
   const off = deciding || !p.can_confirm;
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   return (
-    <div className={`${c.card} ${edge}`} data-testid="ask-operation" data-state={p.state}>
-      <div className={c.head}>
-        <span className={c.k}>Proposal</span>
-        {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
-        <span className={c.st}>
-          {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
-        </span>
-      </div>
+    <div
+      className={`${c.card} ${edge} ${fold !== undefined ? c.fold : ""}`}
+      data-testid="ask-operation"
+      data-state={p.state}
+      data-folded={fold === undefined ? undefined : String(folded)}
+    >
+      {fold !== undefined ? (
+        <FoldRow
+          id={p.action_id}
+          ordinal={fold}
+          title={p.title}
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          outcome={out ? { word: out.word, led: LED[out.tone], tone: out.tone } : null}
+          controls={bodyId}
+        />
+      ) : (
+        <div className={c.head}>
+          <span className={c.k}>Proposal</span>
+          {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
+          <span className={c.st}>
+            {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
+          </span>
+        </div>
+      )}
+      {folded ? null : (
+      <>
       <Changed changes={p.changes} replaces={p.replaces} />
-      <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
+      <div
+        id={bodyId}
+        className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}
+      >
         <dl className={c.kv}>
           <dt>Action</dt>
           <dd>{p.label}</dd>
@@ -772,7 +822,21 @@ export function OperationCard({
         {p.team ? (
           <TeamRows rows={p.team} stale={p.state === "stale"} revision={p.team_revision ?? null} />
         ) : null}
-        {p.content ? <LibraryContent id={p.action_id} onShown={onShown} /> : null}
+        {p.content ? (
+          <LibraryContent
+            id={p.action_id}
+            onShown={onShown}
+            // A specialist card marks a pin that moved once it is out of date; a playbook card's
+            // list of specialists follows the conversation's other cards.
+            watch={isSpecialist ? p.state : watch}
+            stale={p.state === "stale"}
+          />
+        ) : null}
+        {SPECIALIST_NOTE[p.op] && (p.state === "pending" || p.state === "deciding") ? (
+          <div className={c.quiet} role="note" data-testid="ask-specialist-note">
+            {SPECIALIST_NOTE[p.op]}
+          </div>
+        ) : null}
         {needsFile && !out ? (
           <div className={c.secretField}>
             <span>File</span>
@@ -961,6 +1025,16 @@ export function OperationCard({
             <OpenInLibrary saved={p.library} />
           ) : null}
           <OpenMission card={p} />
+          {p.state === "stale" && isSpecialist && onAskAgain ? (
+            <button
+              type="button"
+              className={`${c.ghost} ${c.askAgain}`}
+              onClick={onAskAgain}
+              data-testid="ask-operation-again"
+            >
+              Ask HQ again
+            </button>
+          ) : null}
           {p.state === "unsettled" && p.can_confirm ? (
             <button
               type="button"
@@ -973,6 +1047,8 @@ export function OperationCard({
             </button>
           ) : null}
         </div>
+      )}
+      </>
       )}
       {picking ? (
         <FolderPickerModal

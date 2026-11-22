@@ -521,6 +521,14 @@ class _Turn:
     #: The specialists THIS turn's `list_specialists` returned (#1910): what a `specialist_index`
     #: in `propose_session` means. None until the tool ran in this turn.
     specialists: list[dict] | None = None
+    #: What a specialist card's indexes mean (#1938), all THIS turn's: each agent's model list as
+    #: `list_agent_models` returned it (engine id → rows), the skills `list_skills` returned, and
+    #: the revision `specialist_detail` read of each specialist (an edit is bound to it). Every
+    #: listing here keeps the index a row was first given (`ask_specialists.stable`), so an index
+    #: names the same row whichever of the turn's listings it came from.
+    agent_models: dict[str, list[dict]] = field(default_factory=dict)
+    skill_rows: list[dict] | None = None
+    specialist_seen: dict[str, int] = field(default_factory=dict)
     #: A mission's team as `read_plan` returned it THIS turn (#1950): mission id →
     #: `{"revision", "steps": [step id, …]}`. A step index is a position in that list.
     team_plans: dict[str, dict] = field(default_factory=dict)
@@ -1111,8 +1119,11 @@ def _agent_rows() -> list[dict]:
 
 
 async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
-    rows = await asyncio.to_thread(_agent_rows)
-    turn.agents = rows
+    from . import ask_specialists
+
+    # An index keeps its agent for the whole turn (#1938): a second read never renumbers.
+    turn.agents = ask_specialists.stable(turn.agents, await asyncio.to_thread(_agent_rows))
+    rows = [r for r in turn.agents if not r["gone"]]
     shown = [
         {
             "index": r["index"],
@@ -1126,11 +1137,39 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return {"agents": shown}, {"count": len(rows)}
 
 
+async def _list_agent_models(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """One agent's models, by index, with the effort levels each offers (#1938): what a
+    specialist card's `model_index` and `effort_index` mean. Read-only."""
+    from . import ask_library, ask_specialists
+
+    agent = _index_arg(args, "engine_index", turn.agents, "list_agents")
+    listed = await asyncio.to_thread(ask_specialists.agent_models, agent["id"])
+    turn.agent_models[agent["id"]] = ask_specialists.merge_models(
+        turn.agent_models.get(agent["id"]), listed
+    )
+    try:
+        shown = await asyncio.to_thread(
+            ask_specialists.models_for_model, turn.agent_models[agent["id"]]
+        )
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    return (
+        {
+            "agent": agent["name"],
+            "models": shown,
+            "note": "Index 0 is the agent's own default model. A grade is the operator's, from "
+            "their model grades; it follows the model and is never set on a specialist.",
+        },
+        {"count": len(shown)},
+    )
+
+
 SPECIALIST_TEXT_MAX = 280
 
 
 def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
-    """The pool as the Specialists page reads it (`GET /api/specialists`), unarchived only. Every
+    """The pool as the Specialists page reads it (`GET /api/specialists`), archived ones included
+    and marked (#1938: HQ finds one to unarchive here; an archived one can't start). Every
     operator-written text is guarded whole, then cut; ids and versions are structural. An agent is
     named as `list_agents` names it, never by its id; one not installed here can't start."""
     from . import automation_runner
@@ -1139,7 +1178,7 @@ def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
 
     rows: list[dict] = []
     for s in body.get("specialists") or []:
-        if not isinstance(s, dict) or s.get("archived"):
+        if not isinstance(s, dict) or not isinstance(s.get("id"), str):
             continue
         cur = s.get("current") or {}
         engine = cur.get("engine")
@@ -1148,7 +1187,9 @@ def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
         skills = [k.get("id") for k in cur.get("skills") or [] if isinstance(k, dict)]
         live, capacity = s.get("live") or 0, cur.get("capacity") or 0
         can_start, why = automation_runner.engine_state(engine)
-        if engine not in names:
+        if s.get("archived"):
+            problem = "it is archived; unarchive it first"
+        elif engine not in names:
             problem = "the agent it runs on is not installed here"
         elif s.get("skills_missing"):
             problem = "a skill it carries is missing from the Library"
@@ -1168,6 +1209,7 @@ def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
                 "model": ask_store.guard_text(cur.get("model"), SPECIALIST_TEXT_MAX),
                 "skills": [ask_store.guard_text(k, SPECIALIST_TEXT_MAX) for k in skills if k],
                 "busy": bool(capacity) and live >= capacity,
+                "archived": bool(s.get("archived")),
                 "can_start": not problem,
                 "why_not": problem,
             }
@@ -1184,8 +1226,11 @@ async def _list_specialists(turn: _Turn, args: dict) -> tuple[dict, dict]:
     except ask_library.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
     agents = await asyncio.to_thread(_agent_rows)
-    rows = await asyncio.to_thread(_specialist_rows, body, agents)
-    turn.specialists = rows
+    from . import ask_specialists
+
+    listed = await asyncio.to_thread(_specialist_rows, body, agents)
+    turn.specialists = ask_specialists.stable(turn.specialists, listed)
+    rows = [r for r in turn.specialists if not r["gone"]]
     shown = [
         {
             "index": r["index"],
@@ -1198,10 +1243,28 @@ async def _list_specialists(turn: _Turn, args: dict) -> tuple[dict, dict]:
             "can_start": r["can_start"],
             **({"why_not": r["why_not"]} if r["why_not"] else {}),
             **({"all_busy": True} if r["busy"] else {}),
+            **({"archived": True} if r["archived"] else {}),
         }
         for r in rows
     ]
     return {"specialists": shown}, {"count": len(rows)}
+
+
+async def _specialist_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """One specialist in full (#1938): every field and its current version, by its index in this
+    turn's `list_specialists`. What an edit starts from; read-only."""
+    from . import ask_library, ask_specialists
+
+    operator, app = _operator(turn)
+    row = _index_arg(args, "specialist_index", turn.specialists, "list_specialists")
+    agents = await asyncio.to_thread(_agent_rows)
+    try:
+        shown, seen = await ask_specialists.detail(app, operator, row, agents)
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    if isinstance(seen.get("revision"), int):
+        turn.specialist_seen[row["id"]] = seen["revision"]
+    return shown, {"count": 1}
 
 
 # ---- the team (#1950, #1613 P5): HQ plans with the Commander ------------------------------------
@@ -2194,6 +2257,12 @@ def _index_arg(args: dict, name: str, rows: list[dict] | None, listed_by: str) -
     if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < len(rows):
         raise _ToolRefused(
             f"refused: {name} must be an index {listed_by} returned in this turn", "bad_index"
+        )
+    if rows[v].get("gone"):
+        # Listed earlier this turn, not by the latest read (#1938): its index is never reused.
+        raise _ToolRefused(
+            f"refused: {name} names a row {listed_by} no longer returns; use its latest result",
+            "bad_index",
         )
     return rows[v]
 
@@ -3497,12 +3566,16 @@ async def _playbook_schema(turn: _Turn, args: dict) -> tuple[dict, dict]:
 
 
 async def _list_skills(turn: _Turn, args: dict) -> tuple[dict, dict]:
-    from . import ask_library
+    from . import ask_library, ask_specialists
 
     rows, known = await _library_read(turn, ask_library.list_skills)
     for rid, seen in known.items():
         ask_library.remember(turn.library["skill"], rid, seen)
-    return {"skills": rows}, {"count": len(rows)}
+    # A skill's index (#1938: what a specialist card's `skill_indexes` mean) stays its own for
+    # the whole turn, whatever a later read returns or in which order.
+    turn.skill_rows = ask_specialists.stable(turn.skill_rows, [{"id": r["id"]} for r in rows])
+    at = {r["id"]: r["index"] for r in turn.skill_rows}
+    return {"skills": [{"index": at[r["id"]], **r} for r in rows]}, {"count": len(rows)}
 
 
 async def _skill_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -3618,7 +3691,20 @@ async def _propose_library(turn: _Turn, args: dict) -> tuple[dict, dict]:
     }
     try:
         staged = await ask_library.prepare(
-            group, action, args, known=turn.library, lists=lists, app=app, operator=operator
+            group,
+            action,
+            args,
+            known=turn.library,
+            lists=lists,
+            app=app,
+            operator=operator,
+            specialists={
+                "agents": turn.agents,
+                "models": turn.agent_models,
+                "skills": turn.skill_rows,
+                "specialists": turn.specialists,
+                "seen": turn.specialist_seen,
+            },
         )
     except ask_library.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
@@ -3629,6 +3715,9 @@ async def _propose_library(turn: _Turn, args: dict) -> tuple[dict, dict]:
         staged["title"],
         staged["fields"],
         staged["draft"],
+        # The facts of the read the draft came from (#1938 review: a specialist's edit, archive
+        # and unarchive): staging refuses the card if a save landed in between.
+        expected=staged.get("expected"),
     )
 
 
@@ -3928,6 +4017,19 @@ TOOLS: dict[str, Tool] = {
             _list_agents,
         ),
         Tool(
+            "list_agent_models",
+            "read",
+            _spec(
+                "list_agent_models",
+                "One agent's models by index (engine_index from list_agents in this turn): each "
+                "model's name, the operator's grade for it and the effort levels it offers, by "
+                "index. What model_index and effort_index mean for a specialist.",
+                {"engine_index": {"type": "integer"}},
+                ["engine_index"],
+            ),
+            _list_agent_models,
+        ),
+        Tool(
             "list_specialists",
             "read",
             _spec(
@@ -3935,11 +4037,26 @@ TOOLS: dict[str, Tool] = {
                 "The operator's specialists (Library → Specialists), by index: title, summary, "
                 "the agent and model each runs on, the Library skills it carries, its version, "
                 "and whether one can start now (can_start, why_not; all_busy when every slot is "
-                "taken). A specialist index can be used in propose_session this turn.",
+                "taken; archived ones are listed and marked). A specialist index can be used in "
+                "propose_session, specialist_detail and propose_library this turn.",
                 {},
                 [],
             ),
             _list_specialists,
+        ),
+        Tool(
+            "specialist_detail",
+            "read",
+            _spec(
+                "specialist_detail",
+                "One specialist in full by its index in list_specialists: title, summary, "
+                "agent, model, effort, grade, skills (and whether each pin is current), "
+                "capacity, its current version and whether it is archived. Read it before "
+                "proposing an edit.",
+                {"specialist_index": {"type": "integer"}},
+                ["specialist_index"],
+            ),
+            _specialist_detail,
         ),
         Tool(
             "read_plan",
@@ -4245,7 +4362,7 @@ TOOLS: dict[str, Tool] = {
         Tool(
             "list_skills",
             "read",
-            _spec("list_skills", "The Library's local skills: id and name.", {}, []),
+            _spec("list_skills", "The Library's local skills: index, id and name.", {}, []),
             _list_skills,
         ),
         Tool(
@@ -4303,13 +4420,34 @@ TOOLS: dict[str, Tool] = {
                 "session key — indexes from list_projects / list_agents in this turn), edit "
                 "(id and only what changes), enable (id). A new automation is saved switched "
                 "off; enabling is a separate card. Never ask for permission bypass or for "
-                "answering the agents' menus automatically: those are the operator's alone.",
+                "answering the agents' menus automatically: those are the operator's alone. "
+                "specialist: create (title, summary, engine_index from list_agents, model_index "
+                "and optional effort_index (-1: none) from list_agent_models for that agent, "
+                "skill_indexes from list_skills, capacity: how many may run at once), edit "
+                "(specialist_index, after specialist_detail, and only what changes: it saves "
+                "a new version), archive and unarchive (specialist_index). Only indexes this "
+                "turn's lists returned; never an id. The grade follows the model and is not "
+                "an argument. A playbook whose steps need specialists names their titles in "
+                "specialists; the ones that do not exist are the step before it "
+                "(propose_steps), one specialist card each. Saving a playbook creates no "
+                "specialist.",
                 {
-                    "group": {"type": "string", "enum": ["playbook", "skill", "automation"]},
+                    "group": {
+                        "type": "string",
+                        "enum": ["playbook", "skill", "automation", "specialist"],
+                    },
                     "action": {
                         "type": "string",
-                        "enum": ["create", "edit", "duplicate", "enable"],
+                        "enum": ["create", "edit", "duplicate", "enable", "archive", "unarchive"],
                     },
+                    "title": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "specialist_index": {"type": "integer"},
+                    "model_index": {"type": "integer"},
+                    "effort_index": {"type": "integer"},
+                    "skill_indexes": {"type": "array", "items": {"type": "integer"}},
+                    "capacity": {"type": "integer"},
+                    "specialists": {"type": "array", "items": {"type": "string"}},
                     "id": {"type": "string"},
                     "new_id": {"type": "string"},
                     "name": {"type": "string"},
@@ -4775,7 +4913,8 @@ DRAFT_READ_TOOLS = frozenset(
         "find_sessions", "session_status", "list_sessions", "session_brief", "session_report",
         "artifacts_find",
         "list_missions",
-        "mission_status", "list_projects", "list_agents", "list_folders", "list_playbooks",
+        "mission_status", "list_projects", "list_agents", "list_agent_models", "list_folders",
+        "list_playbooks", "specialist_detail",
         "playbook_detail", "playbook_schema", "list_skills", "skill_detail", "list_automations",
         "automation_detail", "list_secrets", "list_mcp_servers", "agent_usage", "fleet_status",
         "read_settings",

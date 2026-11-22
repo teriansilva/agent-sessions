@@ -47,6 +47,9 @@ UNCONFIRMED = "unconfirmed"
 #: is not yet released). The ONE state confirmed again: an operation with its own idempotent
 #: runner (`Operation.run`) picks up where it stopped.
 UNSETTLED = "unsettled"
+#: The route's own store refused it and NOTHING changed (#1938: archiving built-in staff, a full
+#: pool). Never used where the route may have acted before refusing: that stays ``failed``.
+REFUSED = "refused"
 STATES = frozenset(
     {
         PENDING,
@@ -59,6 +62,7 @@ STATES = frozenset(
         INTERRUPTED,
         UNCONFIRMED,
         UNSETTLED,
+        REFUSED,
     }
 )
 UNCONFIRMED_SAID = (
@@ -345,7 +349,7 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # session, project, playbook, skill, automation, secret, team, mission or mcp
+    group: str  # session, project, playbook, skill, automation, specialist, secret, team, …
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
@@ -380,6 +384,12 @@ class Operation:
     #: bound), not the ones re-read at the tap (#2129: a team card sends the team digest it bound,
     #: and a card staged without one sends none). The re-read still decides ``stale`` first.
     staged_facts: bool = False
+    #: The card's button when it names something of THIS card (#1938: "Save as version 4"):
+    #: ``(fields, facts) → the verb``. ``verb`` is the catalog's own word otherwise.
+    verb_of: Callable[[dict, dict], str] | None = None
+    #: Why a card whose facts moved before the tap is out of date, as the card says it (#1938):
+    #: ``(why, row) → the reason``. The catalog's generic sentence otherwise.
+    stale: Callable[[str, dict], str] | None = None
 
 
 class _Moved(Exception):
@@ -845,11 +855,13 @@ def _all_ops() -> tuple[Operation, ...]:
     from .ask_memory import operations as memory_ops
     from .ask_mission import mission_ops
     from .ask_secrets import secret_ops
+    from .ask_specialists import specialist_ops
     from .ask_team import team_ops
 
     return (
         *_ops(),
         *library_ops(),
+        *specialist_ops(),
         *secret_ops(),
         *team_ops(),
         *mission_ops(),
@@ -910,6 +922,10 @@ async def facts_for(
         from . import ask_library
 
         return await ask_library.facts(op, target, app, operator)
+    if op.group == "specialist":  # a specialist's revision, version and archive state (#1938)
+        from . import ask_specialists
+
+        return await ask_specialists.facts(op, target, app, operator)
     if op.target == "secret":
         from . import ask_secrets
 
@@ -1185,6 +1201,10 @@ def view(row: dict) -> dict:
         and state in (DONE, UNCONFIRMED)
     ):
         out["library"] = {"kind": op.group, "id": _saved_id(op, row)}
+    if op is not None and op.group == "specialist" and state in (DONE, UNCONFIRMED):
+        # The specialist a card changed; a create's new id is the store's, so its link opens the
+        # pool (#1938).
+        out["library"] = {"kind": "specialist", "id": str(row.get("target") or "")}
     if op is not None and op.group == "secret" and state in (DONE, UNCONFIRMED):
         out["library"] = {"kind": "secret", "id": str(row.get("target") or "")}
     mission = _mission_of(op, row)
@@ -1304,6 +1324,15 @@ async def stage(
                 "prepared; read them again with list_procedures. Nothing was written",
                 "stale",
             )
+        if op.group == "specialist":  # saved elsewhere between the read the card came from and
+            # the card itself (#1938 review): binding the newer revision would let the tap write
+            # the older replacement over that save.
+            raise Refused(
+                "refused: the specialist was saved, archived or unarchived elsewhere while the "
+                "card was prepared; read it again with specialist_detail and propose again. "
+                "Nothing was written",
+                "stale",
+            )
         if op.group == "mcp":  # the package HQ reviewed is not the one the card would install
             raise Refused(
                 "refused: the MCP server's source changed while the card was prepared; read it "
@@ -1319,9 +1348,13 @@ async def stage(
             raise Refused("refused: this save needs its draft", "bad_arguments")
         try:
             from .ask_library import TRUSTED_DRAFT_PATHS
+            from .ask_specialists import TRUSTED_DRAFT_PATHS as SPECIALIST_PATHS
 
+            # A specialist's draft has its own server-resolved paths (#1938); no other draft has
+            # a `body` or `before` holding them, so each group keeps exactly its own.
+            trusted = SPECIALIST_PATHS if op.group == "specialist" else TRUSTED_DRAFT_PATHS
             sha = await asyncio.to_thread(
-                lambda: ask_store.write_draft(cid, pid, draft, trusted=TRUSTED_DRAFT_PATHS)
+                lambda: ask_store.write_draft(cid, pid, draft, trusted=trusted)
             )
         except ask_store.Withheld:
             raise Refused(
@@ -1362,7 +1395,7 @@ async def stage(
                 "binding": bind,
                 "title": shown,
                 "label": op.label,
-                "verb": op.verb,
+                "verb": op.verb_of(fields, facts) if op.verb_of else op.verb,
                 "text": summary,
                 "needs": list(op.inputs),
             },
@@ -1445,7 +1478,19 @@ def content(pid: str) -> tuple[int, dict]:
         from . import ask_mission
 
         return 200, ask_mission.content_view(draft)
-    return 200, ask_library.content_view(op_id, draft)
+    if op_id.startswith("specialist."):  # the specialist in full, or an edit's two versions
+        from . import ask_specialists
+
+        return 200, ask_specialists.content_view(draft)
+    shown = ask_library.content_view(op_id, draft)
+    if op_id.startswith("playbook.") and draft.get("relies_on"):
+        # The specialists a playbook card says it relies on (#1938), with their state NOW: read
+        # from the store and this conversation's cards on every read, never from staging.
+        from . import ask_proposals, ask_specialists
+
+        cid = ask_proposals.locate(pid)
+        shown["relies"] = ask_specialists.relies(cid, pid, draft["relies_on"]) if cid else []
+    return 200, shown
 
 
 # ---- the tap ------------------------------------------------------------------------------------
@@ -1623,7 +1668,12 @@ async def _run(
                 # Never confirm a team the card cannot show (#2130).
                 outcome = {"state": STALE, "reason": f"{TEAM_HIDDEN}; nothing ran"}
             elif why:
-                outcome = {"state": STALE, "reason": f"{why} since this was proposed; nothing ran"}
+                said = (
+                    op.stale(why, row)
+                    if op.stale
+                    else f"{why} since this was proposed; nothing ran"
+                )
+                outcome = {"state": STALE, "reason": said}
             else:
                 fields = {**row["fields"], **(extras or {})}
                 if op.run is not None:

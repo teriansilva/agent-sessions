@@ -5,7 +5,7 @@ import { normalizeAccent, onAccentFor } from "../theme/accent";
 import styles from "./ProjectColorPicker.module.css";
 
 
-/** THE project colour picker (#1187), used by Settings → Projects and the New project wizard. It
+/** THE project colour picker (#1187), used by HQ → Projects and the New project wizard. It
  *  draws the accent wheel the way Settings → Interface → Accent does (#1508): 44 px named squares,
  *  a check on the chosen one, one radiogroup that Tab enters once and the arrows move through.
  *  It is the seam #571 extends with a custom hex input — one component, so both surfaces gain it

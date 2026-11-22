@@ -611,7 +611,7 @@ export default function NewProject() {
               <p>{createError.message}</p>
               {createUnknown && (
                 <p>
-                  The creation result is unknown. Open Settings → Projects to
+                  The creation result is unknown. Open HQ → Projects to
                   check the folder before starting another wizard. This wizard
                   will not create a second project.
                 </p>

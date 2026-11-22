@@ -10,14 +10,16 @@
  *  the operator left it. Every field is re-validated on the way in and out: router state is
  *  whatever the history entry holds, and a reload or a hand-edited entry must not crash the form.
  */
-import { MAP_PATH, DASHBOARD_PATH, SESSIONS_PATH } from "./routes";
-import { settingsPath } from "../routes/settingsTabs";
+import { MAP_PATH, DASHBOARD_PATH, PROJECTS_PATH, SESSIONS_PATH } from "./routes";
 
 /** The closed set of entry points. The operator asked for the dashboard's button (2026-09-29) on
- *  top of the two the issue named. */
+ *  top of the two the issue named. `projects` is HQ → Projects (#2143); `settings-projects` is the
+ *  key Settings → Projects used before it moved, still accepted (a history entry may hold it) and
+ *  sent to the same place. */
 export const NEW_PROJECT_RETURN = {
   "new-session": SESSIONS_PATH,
-  "settings-projects": settingsPath("projects"),
+  projects: PROJECTS_PATH,
+  "settings-projects": PROJECTS_PATH,
   dashboard: DASHBOARD_PATH,
 } as const;
 

@@ -782,6 +782,282 @@
   }
 }
 
+/* A specialist card (#1938). "The specialist, in full": one hairline row per field, in a fixed
+ * order, the label in the card's own mono column. */
+.spec {
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.specRow {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 2px var(--sp-3);
+  align-items: baseline;
+  padding: 8px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.specRow:first-child {
+  border-top: 0;
+}
+.specRow dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.specRow dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.specHint {
+  display: block;
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+/* The grade is derived: a chip (the Specialists page's own), never a control. */
+.specGrade {
+  composes: grade from "../specialists/specialists.module.css";
+  margin-right: var(--sp-2);
+}
+.specUngraded {
+  composes: ungraded from "../specialists/specialists.module.css";
+  margin-right: var(--sp-2);
+}
+.specSkills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.specSkills li {
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+.specRev {
+  color: var(--text-2);
+}
+.specCap {
+  font-weight: 600;
+}
+/* An edit: how many fields change, then every changed row first. A changed row keeps its sign
+ * (− before, + after) and the diff's own tones; an unchanged one is quiet, never faded. */
+.specCounts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.specCounts b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.specChg {
+  border-left: 2px solid var(--hud);
+}
+.specChg dt {
+  color: var(--hud-text);
+}
+.specSame dd,
+.specSame .specSkills li {
+  color: var(--text-2);
+}
+.specD {
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.specSign {
+  display: inline-block;
+  width: 2ch;
+}
+.specD.add,
+.specSkills .add {
+  color: var(--ok-text);
+  background: color-mix(in srgb, var(--status-up) 10%, transparent);
+}
+.specD.del,
+.specSkills .del {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+}
+.specSkills .specKeep {
+  color: var(--text-2);
+}
+/* A pin that moved since the card was made: `!` and what the Library holds now. */
+.specSkills .specWarn,
+.specSkills .specWarn .specRev {
+  color: var(--warn-text);
+}
+.specSkills .specWarn {
+  background: color-mix(in srgb, var(--status-degraded) 10%, transparent);
+}
+/* A playbook card's "Specialists it relies on": the team rows, a state word per row. The detail
+ * sits under the name, so the list reads the same in the narrow HQ sidebar as on the HQ page. */
+.relies .teamRow {
+  grid-template-columns: 22px 148px minmax(0, 1fr);
+  grid-template-areas: "n st step" ". . pick";
+  align-items: baseline;
+}
+.relies .teamState {
+  white-space: nowrap;
+}
+.reliesName {
+  font-family: inherit;
+  font-size: var(--fs-row);
+  font-weight: 500;
+}
+/* What a tap does NOT do, said quietly under the content. */
+.quiet {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--hud-dim);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+/* "Ask HQ again" on an out-of-date card: at the row's end, the full width on a phone. */
+.askAgain {
+  margin-left: auto;
+}
+/* Several specialist cards in one turn: each folds to one row (ordinal, title, what it runs on,
+ * capacity). The row is the card's only control until it is open. */
+.fold {
+  margin-top: var(--sp-2);
+}
+.foldRow {
+  display: grid;
+  grid-template-columns: 22px 16px minmax(0, 0.8fr) minmax(0, 1.7fr) auto auto;
+  gap: 2px var(--sp-3);
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px var(--sp-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.foldRow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.foldRow[aria-expanded="true"] {
+  border-bottom: 1px solid var(--line);
+}
+.foldN {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.foldChevron {
+  color: var(--hud-text);
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.foldRow[aria-expanded="true"] .foldChevron {
+  transform: rotate(90deg);
+}
+.foldTitle {
+  min-width: 0;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.foldMeta,
+.foldCap {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.foldCap {
+  white-space: nowrap;
+}
+.foldGo {
+  min-width: 56px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: right;
+  color: var(--accent-text);
+}
+.foldOutcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 800px) {
+  .specRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px 10px;
+  }
+  .relies .teamRow {
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas: "n st" ". step" ". pick";
+  }
+  .askAgain {
+    width: 100%;
+    margin-left: 0;
+    justify-content: center;
+  }
+  .foldRow {
+    grid-template-columns: 20px 14px minmax(0, 1fr) auto;
+    grid-template-areas: "n ch t go" ". . m go" ". . c go";
+    min-height: 64px;
+    padding: 8px 10px;
+  }
+  .foldN {
+    grid-area: n;
+  }
+  .foldChevron {
+    grid-area: ch;
+  }
+  .foldTitle {
+    grid-area: t;
+  }
+  .foldMeta {
+    grid-area: m;
+  }
+  .foldCap {
+    grid-area: c;
+  }
+  .foldGo {
+    grid-area: go;
+  }
+}
 /* #2251: the Changed line on a card that replaced another — that card's trace once it is gone. */
 .changed {
   display: flex;

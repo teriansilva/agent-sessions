@@ -1199,3 +1199,19 @@
     display: none;
   }
 }
+
+/* The line above a turn's folded specialist cards (#1938): how many wait, how many are decided. */
+.foldTally {
+  margin: var(--sp-3) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.foldTally b {
+  font-weight: 600;
+  color: var(--text-1);
+}

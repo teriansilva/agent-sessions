@@ -4,7 +4,8 @@
 
 **HQ** answers questions about your work from the transcripts and missions this install can already
 see. The **HQ** section opens Conversations; its menu (the chevron beside **HQ** in the top bar, a
-bottom sheet on a phone) also opens **Missions**, **Notifications** and the other HQ views. Each
+bottom sheet on a phone) also opens **Missions**, **Notifications** and
+[**Projects**](/guide/projects#project-administration-hq-projects). Each
 view is its own page with its own header; there is no button row inside HQ to switch between them.
 The speech-bubble icon beside the notification bell (labelled **HQ**) opens the conversation sidebar
 from any page. The [Dashboard](/guide/dashboard)'s
@@ -312,6 +313,12 @@ with the sidebar open.
   - The list shows under the newest message that changed it; where it was before, a line says
     *Steps changed · now below*. Several cards of the same kind (archive four sessions) need no
     steps.
+- HQ **proposes specialists**: "set up a specialist that writes our release notes", "let six
+  Code Reviewers run at once", "archive the QA Runner". Each is a card you tap; see
+  [Specialists](/guide/specialists#ask-hq-for-one). When HQ writes a playbook that needs
+  specialists you don't have yet, that is two steps: first the specialists (one card each,
+  folded together), then the playbook. The playbook's card lists the specialists it relies on:
+  **Exists**, **Proposed** or **Missing**. Saving the playbook creates no specialist.
 - HQ **plans every mission**. **New mission** (Missions, the rail, the Dashboard's **New** menu)
   opens HQ on a fresh conversation; HQ asks for the goal and the project. **Plan with HQ** on a
   draft that has no plan opens HQ bound to that draft. HQ answers with a mission card: the project, the

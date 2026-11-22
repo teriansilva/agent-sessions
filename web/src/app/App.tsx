@@ -94,6 +94,7 @@ import {
   MISSION_NEW_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
+  PROJECTS_PATH,
   PLAYBOOKS_PATH,
   GALLERY_PATH,
   GALLERY_PLAYBOOKS_PATH,
@@ -188,6 +189,9 @@ const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks
 const Specialists = lazyWithReload(() => import("../routes/Specialists"), "specialists");
 // LIBRARY → MISSION PLANS (#1924, #1613 P7a): reusable, slot-only, inert plans.
 const MissionPlans = lazyWithReload(() => import("../routes/MissionPlans"), "mission-plans");
+// HQ → PROJECTS (#2143): the index and one project's page. Lazy like the others.
+const ProjectsIndex = lazyWithReload(() => import("../routes/projects/ProjectsIndex"), "projects-index");
+const ProjectPage = lazyWithReload(() => import("../routes/projects/ProjectPage"), "project-page");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
   () => import("../routes/NewProject"),
@@ -410,7 +414,7 @@ function Layout() {
     location.pathname === SETTINGS_PATH ||
     location.pathname.startsWith(`${SETTINGS_PATH}/`);
   /** The New project wizard renders without the session sidebar too (#1187, operator): it is a
-   *  focused flow reached from New session, the dashboard and Settings → Projects, and a session
+   *  focused flow reached from New session, the dashboard and HQ → Projects, and a session
    *  list beside it is noise. So do Dashboard (with Ask's page under it) and Templates (#1233,
    *  operator): neither acts on the list, and the column only took width from the page. Same
    *  mechanism as Settings — hidden, never unmounted, so returning to Sessions is instant. */
@@ -418,7 +422,9 @@ function Layout() {
     settingsRoute ||
     // HQ's page (#1776) carries its own conversation list; the session list only took its width.
     onHqPage ||
-    location.pathname === NEW_PROJECT_PATH ||
+    // HQ → Projects (#2143) and the wizard under it: admin pages, no session list beside them.
+    location.pathname === PROJECTS_PATH ||
+    location.pathname.startsWith(`${PROJECTS_PATH}/`) ||
     location.pathname === DASHBOARD_PATH ||
     location.pathname === PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${PLAYBOOKS_PATH}/`) ||
@@ -947,6 +953,9 @@ function Layout() {
                   <Route path={`${MISSION_PLANS_PATH}/:planId`} element={<MissionPlans />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
+                  {/* The static `/projects/new` above outranks `:pid` (and a pid is always `p-…`). */}
+                  <Route path={PROJECTS_PATH} element={<ProjectsIndex />} />
+                  <Route path={`${PROJECTS_PATH}/:pid`} element={<ProjectPage />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />
                   <Route path={MCP_PATH} element={<McpServers />} />
                   <Route path={MCP_NEW_PATH} element={<McpWizard />} />

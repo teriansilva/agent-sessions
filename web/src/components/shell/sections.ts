@@ -28,6 +28,7 @@ import {
   Braces,
   CalendarClock,
   Crosshair,
+  FolderKanban,
   LayoutDashboard,
   Library,
   Package,
@@ -54,6 +55,7 @@ import {
   MISSION_PATH,
   MISSION_PLANS_PATH,
   PLAYBOOKS_PATH,
+  PROJECTS_PATH,
   GALLERY_PATH,
   GALLERY_SKILLS_PATH,
   HQ_PATH,
@@ -76,6 +78,7 @@ export type SubsectionId =
   | "hq"
   | "missions"
   | "dispatches"
+  | "projects"
   | "sessions"
   | "map"
   | "templates"
@@ -120,6 +123,9 @@ export const HQ_VIEWS: Subsection[] = [
   { id: "hq", label: "Conversations", Icon: Crosshair, to: HQ_PATH },
   { id: "missions", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
   { id: "dispatches", label: "Notifications", Icon: Bell, to: HQ_DISPATCHES_PATH, count: "notifications" },
+  // Project administration (#2143): every project's setup on one page. At `/projects`, not under
+  // `/hq` (see `PROJECTS_PATH`); this entry is what makes it a view of HQ.
+  { id: "projects", label: "Projects", Icon: FolderKanban, to: PROJECTS_PATH },
 ];
 
 export const SECTIONS: Section[] = [
@@ -179,7 +185,8 @@ export const SECTIONS: Section[] = [
 export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
   if (sub === "sessions" || sub === "map") return "sessions";
-  if (sub === "hq" || sub === "missions" || sub === "dispatches") return "mission";
+  if (sub === "hq" || sub === "missions" || sub === "dispatches" || sub === "projects")
+    return "mission";
   if (sub !== null) return "library";
   // `/` redirects to the dashboard since #1525: it lights Dashboard for the render before it lands.
   if (pathname === DASHBOARD_PATH || pathname === "/") return "ask";
@@ -218,6 +225,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "skills";
   if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "playbooks";
   if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
+  // Projects OWNS its subtree: one project's page and the New project wizard live under it.
+  if (pathname === PROJECTS_PATH || pathname.startsWith(`${PROJECTS_PATH}/`)) return "projects";
   if (pathname === HQ_DISPATCHES_PATH || pathname.startsWith(`${HQ_DISPATCHES_PATH}/`)) return "dispatches";
   if (pathname === HQ_PATH || pathname.startsWith(`${HQ_PATH}/`)) return "hq";
   if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH || (pathname.startsWith(`${MISSION_PATH}/`) && MISSION_ID_RE.test(pathname.slice(MISSION_PATH.length + 1)))) return "missions";

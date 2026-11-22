@@ -155,13 +155,13 @@ describe("SectionNav", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  test("HQ exposes Conversations, Missions and Notifications with Missions current (#2146)", async () => {
+  test("HQ exposes Conversations, Missions, Notifications and Projects with Missions current (#2146, #2143)", async () => {
     vi.spyOn(api, "notifications").mockResolvedValue({ notifications: [], unread: 0 });
     render(<MemoryRouter><SectionNav active="mission" activeSub="missions" sessionsPath="/new" onNavigate={() => {}} /></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: "HQ menu" }));
     const menu = await screen.findByRole("menu", { name: "HQ menu" });
-    expect(within(menu).getAllByRole("menuitem").map((a) => a.getAttribute("href"))).toEqual(["/hq", "/mission", "/hq/d"]);
-    expect(within(menu).getAllByRole("menuitem").map((a) => a.textContent)).toEqual(["Conversations", "Missions", "Notifications"]);
+    expect(within(menu).getAllByRole("menuitem").map((a) => a.getAttribute("href"))).toEqual(["/hq", "/mission", "/hq/d", "/projects"]);
+    expect(within(menu).getAllByRole("menuitem").map((a) => a.textContent)).toEqual(["Conversations", "Missions", "Notifications", "Projects"]);
     expect(within(menu).getByRole("menuitem", { name: "Missions" })).toHaveAttribute("aria-current", "page");
     // Nothing unread: no count.
     expect(within(menu).queryByTestId("section-sub-count")).toBeNull();

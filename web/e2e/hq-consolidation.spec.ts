@@ -139,6 +139,8 @@ test("HQ has no in-page view strip; every HQ view is reachable from the top bar'
     ["Conversations", /\/hq$/, "hq-page"],
     ["Missions", /\/mission$/, null],
     ["Notifications", /\/hq\/d$/, "hq-notifications"],
+    // Project administration (#2143): a view of HQ at `/projects`, outside `/hq`.
+    ["Projects", /\/projects$/, "projects-index"],
     ["Conversations", /\/hq$/, "hq-list"],
   ] as const;
   for (const [name, url, testId] of views) {
@@ -149,7 +151,7 @@ test("HQ has no in-page view strip; every HQ view is reachable from the top bar'
     if (isMobile) await expect(panel).toHaveAttribute("data-sheet", "");
     else await expect(panel).not.toHaveAttribute("data-sheet");
     const items = menu.getByRole("menuitem");
-    expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute("href")))).toEqual(["/hq", "/mission", "/hq/d"]);
+    expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute("href")))).toEqual(["/hq", "/mission", "/hq/d", "/projects"]);
     // The unread count rides on Notifications, in words for assistive tech.
     await expect(menu.getByRole("menuitem", { name: /^Notifications\W*3 unread$/ })).toBeVisible();
     if (isMobile)

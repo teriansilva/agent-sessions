@@ -138,10 +138,31 @@ export const WEBHOOK_NEW_PATH = `${WEBHOOKS_PATH}/new`;
 export const WEBHOOK_ROUTE = `${WEBHOOKS_PATH}/:webhookId`;
 export const webhookPath = (id: string) => `${WEBHOOKS_PATH}/${encodeURIComponent(id)}`;
 
-/** The New project wizard (#1187). Under no section of its own: the header nav is measured full at
- *  320 px (#1058), so the wizard is reached from New session, the dashboard and Settings → Projects,
- *  and renders without the session sidebar. */
-export const NEW_PROJECT_PATH = "/projects/new";
+/** HQ → Projects (#2143): every project's setup on one page. The index lists the projects and holds
+ *  folder discovery; `projectPath(pid)` is one project's page. Outside `/hq` on purpose, like
+ *  Missions at `/mission`: `isHqPath` is true for every `/hq/*` path, which closes the Ask sidebar and
+ *  points the corner icon at a composer only HQ's conversation page mounts (hq-page.md). The section
+ *  a page belongs to comes from `sections.ts`, not from its URL prefix. */
+export const PROJECTS_PATH = "/projects";
+
+/** The index's two tabs. `projects` is the index's own URL; `folders` is `?tab=folders`. */
+export type ProjectsIndexTab = "projects" | "folders";
+export const PROJECTS_FOLDERS_PATH = `${PROJECTS_PATH}?tab=folders`;
+
+/** One project's page tabs, in order (the Playbook tab joins in #2143 P2). `general` is the page's own URL. */
+export const PROJECT_TABS = ["general", "defaults", "memory"] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
+
+/** One project's page, optionally on a tab other than General. */
+export function projectPath(pid: string, tab?: ProjectTab): string {
+  const base = `${PROJECTS_PATH}/${encodeURIComponent(pid)}`;
+  return tab && tab !== "general" ? `${base}?tab=${tab}` : base;
+}
+
+/** The New project wizard (#1187), under HQ → Projects since #2143. A static route, so it outranks
+ *  the `:pid` page (and a project id is always `p-…`). Reached from New session, the dashboard and
+ *  the Projects index, and renders without the session sidebar. */
+export const NEW_PROJECT_PATH = `${PROJECTS_PATH}/new`;
 
 /** Settings is NOT here: `routes/settingsTabs.ts` already owns `SETTINGS_PATH` and `settingsPath()`
  *  alongside the section list they index, and a second constant for the same path is the drift this

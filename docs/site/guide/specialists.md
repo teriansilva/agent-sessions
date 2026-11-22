@@ -29,6 +29,28 @@ the skills it pins); **Import from file** closes the grid. See [Sharing](/guide/
 A specialist's page is its editor, under the same bar as every Library item: **Export**,
 **Import…**, and a **⋯** menu with **Archive** / **Unarchive**.
 
+## Ask HQ for one
+
+HQ can propose specialists too: "set up a specialist that writes our release notes", "give the
+Code Reviewer the stronger model", "archive the QA Runner". Each one is a card in the
+conversation, and nothing is created or changed until you tap it.
+
+- A **new specialist** card shows the whole specialist: summary, agent, model, effort, grade,
+  skills with the revision each is pinned at, and capacity. **Create specialist** creates it.
+- An **edit** card shows what changes, field by field (− before, + after), and saves a new
+  version. Missions that pinned the old version keep it.
+- **Archive** and **Unarchive** change no version. Archiving deletes nothing.
+- The grade is never chosen on a card. It follows the model, from your model grades.
+- When HQ proposes several at once, each card folds to one row. Open a row to read the whole
+  specialist; only then can you create it.
+- If something changed before you tapped (someone edited the specialist, a skill changed, the
+  agent no longer offers the model), the card reads **Out of date** with the reason and nothing
+  is saved. **Ask HQ again** asks for a new card. **Refused** means the Library said no and
+  nothing changed.
+
+HQ picks the agent, model and skills only from your own lists, and the same rules apply as on
+this page: capacity 1 to 8, skills only on an agent that can load them.
+
 ## Versions
 
 Saving an existing specialist makes a new version. Older versions never change, so anything that

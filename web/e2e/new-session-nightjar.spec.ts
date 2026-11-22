@@ -105,7 +105,7 @@ test("every control on the form is a 44px target (design §8)", async ({ page })
   }
   // The folderless project's way out is a real link, at the floor too (#1458).
   await projectPicker(page).selectOption("p-2");
-  const link = page.getByTestId("new-session-summary").getByRole("link", { name: "Settings → Projects" });
+  const link = page.getByTestId("new-session-summary").getByRole("link", { name: "HQ → Projects" });
   expect(await height(link)).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 });
 

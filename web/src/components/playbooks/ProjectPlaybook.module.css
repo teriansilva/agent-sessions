@@ -10,10 +10,10 @@
   margin: 0;
 }
 .root h2 {
-  font-size: 1.15rem;
+  font-size: var(--fs-h2);
 }
 .root h3 {
-  font-size: 1rem;
+  font-size: var(--fs-input);
 }
 .card {
   min-width: 0;
@@ -37,7 +37,7 @@
   min-height: 44px;
   padding: 10px;
   background: var(--bg-2);
-  color: var(--text);
+  color: var(--text-1);
   border: 1px solid var(--border);
   border-radius: 0;
   font: inherit;
@@ -65,15 +65,15 @@
   box-sizing: border-box;
 }
 .root :is(input, select, textarea, summary):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .root pre {
   max-width: 100%;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 0.85rem;
+  font-size: var(--fs-row);
 }
 .root dl {
   display: grid;
@@ -88,24 +88,24 @@
 }
 .digest {
   word-break: break-all;
-  font-size: 0.8rem;
+  font-size: var(--fs-row);
 }
 /* Where gallery playbooks come from (#1440): a quiet line, no navigation away mid-wizard. */
 .hint {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-2);
 }
 
 /* ---- The playbook steps laid out to use the page (#1508) ---------------------------------- */
 .lede {
   max-width: 640px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.5;
   color: var(--text-2);
 }
 .optionHint {
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -148,12 +148,12 @@
   cursor: inherit;
 }
 .option:has(input:checked) {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
 }
 .option:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .option:has(input:disabled) {
   cursor: default;
@@ -167,15 +167,15 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 14.5px;
+  font-size: var(--fs-body);
 }
 .none .optionHead {
-  font-size: 14px;
+  font-size: var(--fs-body);
 }
 .sourceTag {
   padding: 1px 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -191,7 +191,7 @@
 }
 .chips span {
   padding: 3px 8px;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-2);
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -200,7 +200,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 
@@ -221,7 +221,7 @@
 }
 .sectionMeta {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -263,14 +263,14 @@
 }
 .varHead code {
   font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--text);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .varType {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -279,11 +279,11 @@
   color: var(--danger-text);
 }
 .varLabel {
-  font-size: 13px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
 }
 .err {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--danger-text);
 }
 /* The source picker: three native radios drawn as one segmented row, each naming its value. */
@@ -299,7 +299,7 @@
   min-height: 44px;
   margin-right: -1px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   text-align: center;
   color: var(--text-2);
   border: 1px solid var(--border);
@@ -319,13 +319,13 @@
 }
 .segOpt:has(input:checked) {
   z-index: var(--z-raised);
-  color: var(--text);
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text-1);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
 }
 .segOpt:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
   z-index: calc(var(--z-raised) + 1);
 }
 
@@ -340,7 +340,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .root .everyStep select {
@@ -361,7 +361,7 @@
 .stepsHead {
   min-height: 34px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -370,7 +370,7 @@
 }
 .flowRow {
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
   color: var(--text-2);
   background: var(--bg-1);
@@ -394,13 +394,13 @@
 }
 .stepNo {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 /* An unresolved assignment's note spans the row, under its controls. */
 .root .rowNote {
   grid-column: 1 / -1;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
 }
 /* The agent's own colour as a rule on its select, like the agent tiles. */
 .root .engineSelect {
@@ -410,7 +410,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 /* State LEDs: static (no blink) — they report a fact, not activity. */
@@ -447,7 +447,7 @@
   min-height: 32px;
   padding: 0 10px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: 1px solid var(--border);
 }
 
@@ -504,7 +504,7 @@
 /* Format 5 roles (#1654): what each step needs; nothing to assign at deployment. */
 .rolesNote {
   margin: 0 0 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .roleSkills {
@@ -515,7 +515,7 @@
 }
 .roleSkills code {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   overflow-wrap: anywhere;
 }
 @media (max-width: 800px) {

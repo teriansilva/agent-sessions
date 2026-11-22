@@ -1,4 +1,4 @@
-"""HQ writes the Library: playbooks, skills and automations (#1611, #1558 P4).
+"""HQ writes the Library: playbooks, skills, automations and specialists (#1611, #1558 P4, #1938).
 
 HQ reads the Library the way the Library pages read it (the GET routes, in-process, as the
 operator), and proposes a save from the closed catalog in :mod:`ask_operations` — the operator
@@ -54,7 +54,8 @@ PREVIEW_LINES = 12
 #: The most files one draft may hold (the skill store's own cap is 64).
 DRAFT_FILES_MAX = 64
 
-GROUPS = ("playbook", "skill", "automation")
+#: `specialist` (#1938) is staged by `ask_specialists`, through this module's `prepare`.
+GROUPS = ("playbook", "skill", "automation", "specialist")
 #: Draft PATHS whose values the SERVER issued — read from a store or route, or generated here —
 #: never model text: a revision, a scope digest, an origin pointer, the idempotency id, the routes'
 #: rendered scope lines, and the ids in an automation's action (built from this turn's lists). The
@@ -476,6 +477,12 @@ def build_action(args: dict, *, projects, agents, keys, folder_of) -> dict:
         v = args.get(name)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < len(rows):
             raise Refused(f"refused: {name} must be an index {listed_by} returned in this turn")
+        if rows[v].get("gone"):
+            # Listed earlier this turn, not by its latest read (#1938, `ask_specialists.stable`).
+            raise Refused(
+                f"refused: {name} names a row {listed_by} no longer returns; use its latest result",
+                "bad_index",
+            )
         return rows[v]
 
     if kind == "start_mission":
@@ -905,17 +912,38 @@ def _edit_counts(diff: list[dict]) -> dict:
 
 
 async def prepare(
-    group: str, action: str, args: dict, *, known: dict, lists: dict, app, operator
+    group: str,
+    action: str,
+    args: dict,
+    *,
+    known: dict,
+    lists: dict,
+    app,
+    operator,
+    specialists: dict | None = None,
 ) -> dict:
     """What `propose_library` stages: ``{"op", "target", "title", "fields", "draft"}``. Every
     draft is validated by its store WITHOUT writing; every target is one this turn returned.
-    ``lists`` holds this turn's ``projects`` / ``agents`` / ``keys``. Raises :class:`Refused`."""
+    ``lists`` holds this turn's ``projects`` / ``agents`` / ``keys``; ``specialists`` the listings
+    a specialist card's indexes are resolved against (#1938). Raises :class:`Refused`."""
     import uuid
 
+    from . import ask_specialists
     from .ask_operations import CATALOG
 
     if group not in GROUPS:
-        raise Refused("group must be playbook, skill or automation")
+        raise Refused("group must be playbook, skill, automation or specialist")
+    if group == "specialist":
+        return await ask_specialists.prepare(
+            action, args, lists=specialists or {}, app=app, operator=operator
+        )
+    # The specialists a playbook's steps rely on (#1938), by title: shown on its card with their
+    # state at each read. Nothing here creates or binds one.
+    relies = (
+        {"relies_on": names}
+        if group == "playbook" and (names := ask_specialists.relies_arg(args.get("specialists")))
+        else {}
+    )
     op = CATALOG.get(f"{group}.{action}")
     if op is None or op.id == "automation.widen":
         names = sorted(
@@ -926,7 +954,7 @@ async def prepare(
     if op.id == "playbook.create":
         files = _text_files(args.get("files"), "files")
         ident = await asyncio.to_thread(_validate_playbook, files)
-        draft = {"files": files, "before": {}}
+        draft = {"files": files, "before": {}, **relies}
         return _staged(
             op,
             "",
@@ -974,6 +1002,7 @@ async def prepare(
             "files": merged,
             "before": {d["path"]: current.get(d["path"]) for d in diff},
             "revision": str(body.get("revision") or ""),
+            **relies,
         }
         return _staged(op, pid, str(body.get("name") or pid), _edit_counts(diff), draft)
 

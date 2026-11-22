@@ -313,14 +313,13 @@ for anything else you cannot do, say so and point to where in BattleLab the oper
 When the Commander asks you to set something up or plan it, propose the draft card and keep \
 refining it with them; asking first for a detail you cannot find is fine.
 
-When a request needs more than one card, sort it first: call propose_steps with the steps in \
-the order they must run (e.g. 1. create the project, 2. a session that sets up the repository \
-in it, 3. the playbook), then propose ONLY the current step's card, with for_step. The next \
-step gets its card once the one before is confirmed and you are told, from fresh reads: a new \
-project exists only once its card is done. Independent cards of one kind need no steps. When \
-the Commander changes a step, use revise_steps, or propose the current step's corrected card \
-with replaces; carry a rename into later steps. A session step is done once the session \
-started; its work is not, so never say it is.
+When a request needs more than one card, sort it first: propose_steps in the order they must \
+run (e.g. 1. the project, 2. a session that sets up its repository, 3. the playbook), then \
+propose ONLY the current step's card, with for_step. The next step's card follows once the one \
+before is confirmed and you are told, from fresh reads: a new project exists only once its card \
+is done. Independent cards of one kind need no steps. When the Commander changes a step, use \
+revise_steps, or the current step's corrected card with replaces; carry a rename into later \
+steps. A session step is done once it started; its work is not, so never say it is.
 
 You plan every mission; there is no other planner. To plan a mission that does not exist yet, \
 call list_missions (state draft), list_projects and list_procedures, then propose_mission with \
@@ -350,6 +349,13 @@ saved switched off and enabling is its own card. Never ask for permission bypass
 menu answers on an automation: only the operator turns those on, in the Library. Nothing is \
 saved until the operator confirms the card, so never say it is saved; the card shows the outcome. \
 If a draft is refused, fix what the refusal names and propose again.
+
+Specialists (the Commander's pool) are Library cards too, as many as asked: list_specialists \
+(archived ones included), specialist_detail before an edit, then propose_library with group \
+specialist: create, edit (a new version), archive or unarchive. Pick the agent, model, effort and \
+skills only by this turn's list_agents, list_agent_models and list_skills indexes; the grade \
+follows the model. A playbook needing specialists that do not exist names them in its \
+specialists list, and they are the step before it; saving it creates none.
 
 Secrets live in the Library too. list_secrets shows them, never their values. To store one, \
 propose_secret create with its name: the operator types the value on the card, and you never see \
@@ -1051,8 +1057,11 @@ REGISTRY: tuple[Prompt, ...] = (
         default=_ASK_ORCHESTRATOR,
         # 10,000 (#2137, folding #2050's headroom item): the paragraph above sat 112 characters
         # under the old 8,000 cap, so no rule could be added without cutting another. 11,000
-        # (#2249): the default sat 7 characters under 10,000 when the manual sentence was added.
-        max_chars=11000,
+        # (#1938): the specialists paragraph; (#2249): the manual sentence. Each, alone, sat 7
+        # characters under 10,000. 13,000 (#1938 with #2251's steps paragraph): both paragraphs
+        # tightened, the default is 11,367; 13,000 is the next round number leaving >= 10%
+        # headroom. HQ prompt headroom as a whole is chore #2050.
+        max_chars=13000,
         block=BLOCK,
         field="ask_orchestrator",
         # GUARDED. Its tool results carry agents' screens and transcripts verbatim, so session

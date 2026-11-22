@@ -280,7 +280,7 @@ for (const theme of ["dark", "light"] as const) {
     await expect(move).toBeHidden();
 
     await mockRoster(page, { only: ["claude", "claude-api", "codex"] }); // the manifest-generated roster (#853 P4)
-    await page.goto("/settings/projects");
+    await page.goto("/projects?tab=folders");
     await page.getByRole("button", { name: "Rename ~/proj" }).click();
     const rename = page.getByRole("dialog", { name: "Rename project" });
     expectSameDesign("Rename project", await look(rename), ref, mobile);

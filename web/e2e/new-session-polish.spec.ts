@@ -225,7 +225,7 @@ test("an API agent starts at the stored skip-permissions default (#1473)", async
   await expect(page.getByTestId("new-session-summary")).toContainText("skips permission prompts");
 });
 
-test("a project with no folder and no global default points at Settings → Projects, and Start waits (#1458)", async ({ page }) => {
+test("a project with no folder and no global default points at its HQ → Projects page, and Start waits (#1458, #2143)", async ({ page }) => {
   await mockBackend(page, {
     projects: [{ ...PROJECTS[0], folders: [], default_folder: "" }],
   });
@@ -233,17 +233,17 @@ test("a project with no folder and no global default points at Settings → Proj
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
   const summary = page.getByTestId("new-session-summary");
   await expect(summary).toContainText(
-    "“agent-sessions” has no default folder — set one in Settings → Projects.",
+    "“agent-sessions” has no default folder — set one in HQ → Projects.",
   );
   await expect(summary).toHaveAttribute("data-cwd", "");
   await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
   // A real link, a 44px target (design §8), reachable from the keyboard — and it goes there.
-  const link = summary.getByRole("link", { name: "Settings → Projects" });
+  const link = summary.getByRole("link", { name: "HQ → Projects" });
   expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await link.focus();
   await expect(link).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/settings\/projects$/);
+  await expect(page).toHaveURL(/\/projects\/p-1$/);
 });
 
 test("a folderless project with a global default starts there, and the summary says so (#1458)", async ({ page }) => {

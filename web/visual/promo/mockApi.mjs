@@ -197,6 +197,11 @@ async function answer(path, q, method, req, state) {
       if (method === "GET") return json({ available: true, reason: null, shares: [] });
       break;
     case "/api/memory":
+      // `projectsAdmin` (a sweep state, #2143): HQ → Projects shows each project's memory state.
+      if (method === "GET" && state.projectsAdmin)
+        return json({
+          projects: F.PROJECTS.map((p, i) => ({ id: p.id, name: p.name, color: p.color, enabled: i < 2, notes: [42, 17, 0][i] ?? 0, pending: i ? 0 : 3, quarantined: 0, last_write: F.NOW - 600 })),
+        });
       if (method === "GET") return json({ projects: [] });
       break;
     case "/api/variables":
