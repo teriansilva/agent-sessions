@@ -153,6 +153,67 @@ def test_login_totp_invalid_code_keeps_unauthenticated(twofa_env):
     assert c.get("/api/config", follow_redirects=False).status_code == 401
 
 
+def test_login_totp_non_ascii_digits_is_invalid_and_counts_toward_lockout(twofa_env):
+    """#1677: Arabic-Indic digits pass ``isdigit()`` but crash ``hmac.compare_digest``.
+
+    Each attempt must be the normal invalid response (401) — never a 500 — and must be
+    counted: ten of them lock the step (429), exactly like an ordinary wrong code.
+    """
+    setup = _client(twofa_env)
+    _enable_2fa(setup, twofa_env)
+    c = _client(twofa_env)
+    _login(c, twofa_env)
+    post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
+
+    # The other digit forms and shapes are refused the same way (each on a fresh app so
+    # the shared brute-force counter starts clean).
+    for bad in ("١٢٣٤٥٦", "１２３４５６", "123٤٥٦", "1234567", "12345"):
+        bad_client = _client(twofa_env)
+        _login(bad_client, twofa_env)
+        r = bad_client.post("/login/totp", data={"code": bad, "next": "/"}, **post)
+        assert r.status_code == 401, bad
+        assert "invalid code" in r.text, bad
+        assert "agent_sessions" not in bad_client.cookies, bad
+        assert bad_client.get("/api/config", follow_redirects=False).status_code == 401, bad
+
+    for _ in range(10):  # _TOTP_MAX_FAILS
+        r = c.post("/login/totp", data={"code": "١٢٣٤٥٦", "next": "/"}, **post)
+        assert r.status_code == 401
+    assert c.post("/login/totp", data={"code": "١٢٣٤٥٦", "next": "/"}, **post).status_code == 429
+
+
+def test_non_ascii_refusal_still_allows_a_valid_recovery_code(twofa_env):
+    """Control: a refused TOTP shape must not poison the recovery-code fallback."""
+    setup = _client(twofa_env)
+    info, _ = _enable_2fa(setup, twofa_env)
+    c = _client(twofa_env)
+    _login(c, twofa_env)
+    post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
+    assert c.post("/login/totp", data={"code": "١٢٣٤٥٦", "next": "/"}, **post).status_code == 401
+    r = c.post("/login/totp", data={"code": info["recovery_codes"][0], "next": "/"}, **post)
+    assert r.status_code == 303
+
+
+def test_confirm_non_ascii_digits_returns_400_not_500(twofa_env):
+    c = _client(twofa_env)
+    _login(c, twofa_env)
+    hdr = {"X-CSRF-Token": _csrf(c), "Origin": twofa_env.origin}
+    c.post("/api/2fa/enroll", headers=hdr)
+    r = c.post("/api/2fa/confirm", json={"code": "١٢٣٤٥٦"}, headers=hdr)
+    assert r.status_code == 400
+    assert c.get("/api/config").json()["two_factor_enabled"] is False
+
+
+def test_disable_and_regenerate_refuse_non_ascii_digits_not_500(twofa_env):
+    c = _client(twofa_env)
+    _info, hdr = _enable_2fa(c, twofa_env)
+    for path in ("/api/2fa/disable", "/api/2fa/recovery-codes"):
+        r = c.post(path, json={"code": "١٢٣٤٥٦"}, headers=hdr)
+        assert r.status_code == 403, path
+    # Refused proofs changed nothing — 2FA stays on.
+    assert c.get("/api/config").json()["two_factor_enabled"] is True
+
+
 def test_recovery_code_one_time_at_login(twofa_env):
     setup = _client(twofa_env)
     info, _ = _enable_2fa(setup, twofa_env)

@@ -78,6 +78,40 @@ def test_match_step_window(store):
     assert twofactor._match_step(secret, "not-a-code", now=now) is None
 
 
+def test_non_ascii_digits_are_invalid_not_an_exception(store):
+    """#1677: ``str.isdigit()`` accepts Arabic-Indic/full-width digits, and
+    ``hmac.compare_digest`` raises ``TypeError`` on them — a login 500 that skipped the
+    attempt counter. Anything that isn't exactly six ASCII digits is an invalid code."""
+    info = _enroll_and_confirm(store, now=T0)
+    secret = info["secret"]
+    totp = pyotp.TOTP(secret)
+    now = T0 + twofactor.STEP_SECONDS  # next step — a valid ASCII control below
+    valid = totp.generate_otp(int(now) // twofactor.STEP_SECONDS)
+
+    # Arabic-Indic, full-width, mixed ASCII/non-ASCII, and wrong-length ASCII.
+    for bad in ("١٢٣٤٥٦", "１２３４５６", "123٤٥٦", "1234567", "12345", "12345a", "１２٣٤56"):
+        assert twofactor._match_step(secret, bad, now=now) is None, bad
+        assert twofactor.check_totp(bad, store, now=now) is False, bad
+        assert twofactor.login_totp_outcome(bad, store, now=now) == twofactor.TOTP_INVALID, bad
+
+    # Ordinary six ASCII digits still verify (the guard doesn't reject the real shape).
+    assert twofactor._match_step(secret, valid, now=now) == now // twofactor.STEP_SECONDS
+
+
+def test_six_digit_contract_applies_after_trimming(store):
+    """#1677 Hermes adjustment: state *when* "exactly six" applies. The module (and every
+    route) strips surrounding whitespace first, so a pasted code keeps working; the digit
+    shape and the six-character length are then judged on the trimmed value."""
+    info = _enroll_and_confirm(store, now=T0)
+    secret = info["secret"]
+    now = T0 + twofactor.STEP_SECONDS
+    code = pyotp.TOTP(secret).generate_otp(int(now) // twofactor.STEP_SECONDS)
+
+    assert twofactor._match_step(secret, f"  {code}\n", now=now) == now // twofactor.STEP_SECONDS
+    assert twofactor._match_step(secret, " ١٢٣٤٥٦ ", now=now) is None
+    assert twofactor._match_step(secret, " 12345 ", now=now) is None
+
+
 def test_login_verify_then_replay_rejected(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS  # next step (the confirm code can't be reused)

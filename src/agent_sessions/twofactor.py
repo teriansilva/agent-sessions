@@ -197,11 +197,17 @@ def _gen_recovery_codes() -> tuple[list[str], list[str]]:
 def _match_step(secret: str, code: str, now: int | None = None) -> int | None:
     """Return the TOTP step a ``code`` matches within ±WINDOW, else None.
 
+    Only exactly six ASCII digits can match: ``str.isdigit()`` alone also accepts
+    Arabic-Indic/full-width digits, which makes ``hmac.compare_digest`` raise ``TypeError``
+    (a 500 on the login/confirm/disable routes that also skipped the lockout counter —
+    #1677). The shape is judged *after* ``strip()``, so surrounding whitespace from a paste
+    is still tolerated; the trimmed value must be six ASCII digits (RFC 6238).
+
     Constant-time compare; iterates the whole window without an early return so the timing
     doesn't reveal which step matched.
     """
     code = (code or "").strip()
-    if not (secret and code.isdigit()):
+    if not (secret and len(code) == 6 and code.isascii() and code.isdigit()):
         return None
     now = int(time.time()) if now is None else now
     totp = pyotp.TOTP(secret)
