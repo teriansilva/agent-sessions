@@ -9,7 +9,9 @@ Bindings return to their exact prior records.
 
 `plan` is the dry run: its keyed digest covers the record facts, the proven ownership and the
 live pre-state. `remove` accepts only that digest, journals the frozen pre-state before the first
-effect, and a same-id retry reconciles. Settlement drops every operation journal, so a removed
+effect, and a same-id retry reconciles. A retry with NO digest (#2263) resumes only the pending
+journal its id names, from the journal's own recorded digest, or returns a completed one's result;
+it never starts a removal. Settlement drops every operation journal, so a removed
 record stops holding its project and source playbook. No probe, agent or shell runs here.
 """
 
@@ -36,6 +38,10 @@ from . import (
 from . import deployment_state as state
 
 _HISTORY_MAX = 10000
+# A resume by operation id alone (#2263) only ever settles an operation that already exists.
+_NO_PENDING = (
+    "no %s operation is pending or recorded under this id; " "review the change to start one"
+)
 _JOURNAL = {
     "id",
     "request_digest",
@@ -230,11 +236,18 @@ def _shape(journal: dict) -> dict:
     }
 
 
-def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
-    """Remove only what the confirmed dry run showed; a same-id retry settles one operation."""
+def remove(pid: str, op: str, digest: str | None, *, key: str) -> dict:
+    """Remove only what the confirmed dry run showed; a same-id retry settles one operation.
+
+    `digest=None` is a resume by operation id alone (#2263): it settles the pending journal that
+    id names, or returns the recorded result of one that completed, and otherwise refuses. A digest
+    that IS given must match the operation's request, exactly as before.
+    """
     pid, op = template_vars.project_id(pid), lifecycle.operation_id(op)
-    store.revision(digest)
-    request_digest = review._digest({"project": pid, "remove": digest}, key)
+    request_digest = None
+    if digest is not None:
+        store.revision(digest)
+        request_digest = review._digest({"project": pid, "remove": digest}, key)
     with projects.locked_index():
         with state.locked(pid) as locked:
             record = locked.read() if locked is not None else None
@@ -246,15 +259,21 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                 raise store.Conflict("the removal operation history is damaged")
             old = history.get(op)
             if old is not None:
-                if not hmac.compare_digest(str(old.get("request_digest")), request_digest):
+                if request_digest is not None and not hmac.compare_digest(
+                    str(old.get("request_digest")), request_digest
+                ):
                     raise store.Conflict("the removal operation id already names another request")
                 return copy.deepcopy(old["result"])
             journal = _journal(record)
             if journal is not None:
                 if journal["id"] != op:
                     raise store.Conflict("retry the pending removal operation before another")
-                if not hmac.compare_digest(journal["request_digest"], request_digest):
+                if request_digest is not None and not hmac.compare_digest(
+                    journal["request_digest"], request_digest
+                ):
                     raise store.Conflict("the removal operation id already names another request")
+            elif request_digest is None:
+                raise store.Conflict(_NO_PENDING % "removal")
             else:
                 _removable(record)
                 files, directories = _owned(record, key)
@@ -365,7 +384,8 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
             for name in _OPERATIONS:
                 record.pop(name, None)  # a settled removal holds nothing (deployment_state)
             record.setdefault("removal_history", {})[op] = {
-                "request_digest": request_digest,
+                # The journal's own: a resume by id alone (#2263) sent none.
+                "request_digest": journal["request_digest"],
                 "result": result,
             }
             write()

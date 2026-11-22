@@ -3,7 +3,9 @@
 The projects fence is outermost, then authoring/project locks, then the existing variable-store
 mutation fence. A private intent records encrypted before/after binding records before the one
 variable store changes. Retrying that exact operation reconciles those records without inventing
-a second variable store or keeping plaintext secret inputs in the journal. No probe runs here.
+a second variable store or keeping plaintext secret inputs in the journal. A retry by operation id
+ALONE (#2263) reconciles the same journal, so a page that never held the inputs can settle it; it
+stops at `bound`, and it never starts a bind. No probe runs here.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ def _basis(record: dict) -> dict:
     return {**record, "state": "bound"}
 
 
-def _replay(record: dict | None, pid: str, op: str, digest: str, key: str) -> dict | None:
+def _replay(record: dict | None, pid: str, op: str, digest: str | None, key: str) -> dict | None:
     history = (record or {}).get("binding_history", {})
     if not isinstance(history, dict) or len(history) > _HISTORY_MAX:
         raise store.Conflict("the binding operation history is damaged")
@@ -50,7 +52,7 @@ def _replay(record: dict | None, pid: str, op: str, digest: str, key: str) -> di
         if set(old) != {"request_digest", "result"}:
             raise ValueError
         store.revision(old["request_digest"])
-        if not hmac.compare_digest(old["request_digest"], digest):
+        if digest is not None and not hmac.compare_digest(old["request_digest"], digest):
             raise store.Conflict("the binding operation id already names another request")
         result = old["result"]
         if set(result) != {
@@ -240,15 +242,34 @@ def _check_plan(record: dict, records: list[dict], key: str) -> None:
         raise store.Conflict("the pending binding's review changed; retain it for inspection")
 
 
-def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key: str) -> dict:
-    """Bind only what a signed review showed. An exact retry settles one durable operation."""
+def bind(
+    pid: str,
+    playbook_id: str | None,
+    inputs: dict | None,
+    receipt: str | None,
+    op: str,
+    *,
+    key: str,
+) -> dict:
+    """Bind only what a signed review showed. An exact retry settles one durable operation.
+
+    With no request at all (`playbook_id`, `inputs` and `receipt` all None, #2263) this is a resume
+    by operation id: it reconciles the pending journal that id names from its recorded encrypted
+    before/after records, or returns a completed one's result, and otherwise refuses. It never
+    reads or needs the inputs, which may hold secrets; it stops at `bound` and applies nothing.
+    """
     pid, op = template_vars.project_id(pid), operation_id(op)
-    store.playbook_id(playbook_id)
-    if not isinstance(inputs, dict) or inputs.get("project_id") not in (None, pid):
-        raise store.StoreError("bindings must name their destination project")
-    request_digest = review._digest(
-        {"project": pid, "playbook": playbook_id, "inputs": inputs, "receipt": receipt}, key
-    )
+    resume = playbook_id is None and inputs is None and receipt is None
+    request_digest = None
+    if not resume:
+        if playbook_id is None or inputs is None or receipt is None:
+            raise store.StoreError("a bind sends its whole request, or only its operation_id")
+        store.playbook_id(playbook_id)
+        if not isinstance(inputs, dict) or inputs.get("project_id") not in (None, pid):
+            raise store.StoreError("bindings must name their destination project")
+        request_digest = review._digest(
+            {"project": pid, "playbook": playbook_id, "inputs": inputs, "receipt": receipt}, key
+        )
     # This is the existing project update/archive/delete fence, not a separate owner index.
     with projects.locked_index() as index:
         project = index.get(pid)
@@ -266,10 +287,17 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
                 return previous
             journal = _journal(record, pid, key)
             if journal and journal["id"] == op:
-                if not hmac.compare_digest(request_digest, journal["request_digest"]):
+                if request_digest is not None and not hmac.compare_digest(
+                    request_digest, journal["request_digest"]
+                ):
                     raise store.Conflict("the binding operation id already names another request")
                 if journal["state"] == "complete":
                     return copy.deepcopy(journal["result"])
+            elif resume:
+                raise store.Conflict(
+                    "no binding operation is pending or recorded under this id; "
+                    "review the change to start one"
+                )
             elif record and record["state"] == "binding_intent":
                 raise store.Conflict("retry the pending binding operation before starting another")
             elif apply.pending(record):
@@ -397,7 +425,8 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
             journal["state"] = "complete"
             record["state"] = "bound"
             record.setdefault("binding_history", {})[op] = {
-                "request_digest": request_digest,
+                # The journal's own: a resume by id alone (#2263) sent none.
+                "request_digest": journal["request_digest"],
                 "result": copy.deepcopy(journal["result"]),
             }
             locked.write(record)

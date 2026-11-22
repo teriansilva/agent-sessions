@@ -5,7 +5,9 @@ is frozen into the record (`replay_plan`) with one intent per effect BEFORE any 
 write. Every effect goes through `material_write` (create/remove) or `fileedit.save_bytes`
 (replace), each of which retains displaced bytes and never overwrites a claimant.
 
-Recovery is a retry with the same operation id. Each path is reconciled against its accepted
+Recovery is a retry with the same operation id. A retry with NO receipt (#2263) resumes only the
+pending journal its id names, from its frozen plan, or returns a completed one's result; it never
+starts an apply. Each path is reconciled against its accepted
 before/after content: already at `after` is done, still at `before` is performed, anything else
 refuses and is reported as `unknown`. Ownership is recorded only once every effect settled, so a
 half-applied plan never becomes the basis of a later review. No probe, agent or shell runs here.
@@ -89,7 +91,7 @@ def _effect_entry(name: str) -> Iterator[int]:
             os.close(fd)
 
 
-def _replay(record: dict, pid: str, op: str, digest: str) -> dict | None:
+def _replay(record: dict, pid: str, op: str, digest: str | None) -> dict | None:
     history = record.get("apply_history", {})
     if not isinstance(history, dict) or len(history) > _HISTORY_MAX:
         raise store.Conflict("the apply operation history is damaged")
@@ -107,7 +109,7 @@ def _replay(record: dict, pid: str, op: str, digest: str) -> dict | None:
         or old["result"]["operation_id"] != op
     ):
         raise store.Conflict("the apply operation history is damaged")
-    if not hmac.compare_digest(str(old["request_digest"]), digest):
+    if digest is not None and not hmac.compare_digest(str(old["request_digest"]), digest):
         raise store.Conflict("the apply operation id already names another request")
     return copy.deepcopy(old["result"])
 
@@ -465,10 +467,18 @@ def _settle(
                 raise store.Conflict(f"{change.path}: replaced before the apply record settled")
 
 
-def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
-    """Apply only what a signed review of the BOUND inputs showed; a retry settles one operation."""
+def apply(pid: str, op: str, receipt: str | None, *, key: str) -> dict:
+    """Apply only what a signed review of the BOUND inputs showed; a retry settles one operation.
+
+    `receipt=None` is a resume by operation id alone (#2263). The receipt authorized the operation
+    when its intent was journaled; resuming replays that journal's frozen plan, which still refuses
+    a changed source, binding, project or policy. Without a pending or completed operation under
+    this id it refuses, so it can never start one. A receipt that IS given must match, as before.
+    """
     pid, op = lifecycle.template_vars.project_id(pid), lifecycle.operation_id(op)
-    request_digest = review._digest({"project": pid, "apply": receipt}, key)
+    request_digest = (
+        None if receipt is None else review._digest({"project": pid, "apply": receipt}, key)
+    )
     with projects.locked_index() as index:
         project = index.get(pid)
         if project is None or project.archived:
@@ -487,8 +497,15 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             if journal is not None and journal["state"] != "complete":
                 if journal["id"] != op:
                     raise store.Conflict("retry the pending apply operation before another")
-                if not hmac.compare_digest(journal["request_digest"], request_digest):
+                if request_digest is not None and not hmac.compare_digest(
+                    journal["request_digest"], request_digest
+                ):
                     raise store.Conflict("the apply operation id already names another request")
+            elif receipt is None:
+                raise store.Conflict(
+                    "no apply operation is pending or recorded under this id; "
+                    "review the change to start one"
+                )
             else:
                 secret_files.check_root(record)
                 live = review.build(
@@ -604,7 +621,8 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                 "digest": plan.public["digest"],
             }
             record.setdefault("apply_history", {})[op] = {
-                "request_digest": request_digest,
+                # The journal's own: a resume by id alone (#2263) sent none.
+                "request_digest": journal["request_digest"],
                 "result": result,
             }
             write()

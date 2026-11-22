@@ -373,7 +373,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         out = await _run(_review, pid, body, True)
         return out if isinstance(out, JSONResponse) else _json(out)
 
+    # A body of exactly {"operation_id"} resumes the operation that id names (#2263). Only the
+    # fields' ABSENCE means that: null, empty, malformed or partial requests refuse as before.
+    def _resume(body: dict) -> bool:
+        return set(body) == {"operation_id"}
+
     def _bind(project: str, body: dict) -> dict:
+        if _resume(body):
+            return lifecycle.bind(project, None, None, None, body["operation_id"], key=signing_key)
         fields = {"playbook_id", "inputs", "receipt", "operation_id"}
         _only(body, fields, fields, "a bind")
         return lifecycle.bind(
@@ -386,6 +393,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         )
 
     def _apply(project: str, body: dict) -> dict:
+        if _resume(body):
+            return apply.apply(project, body["operation_id"], None, key=signing_key)
         _only(body, {"receipt", "operation_id"}, {"receipt", "operation_id"}, "an apply")
         return apply.apply(project, body["operation_id"], _receipt(body), key=signing_key)
 
@@ -394,6 +403,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         return remove.plan(project, key=signing_key)
 
     def _remove(project: str, body: dict) -> dict:
+        if _resume(body):
+            return remove.remove(project, body["operation_id"], None, key=signing_key)
         _only(body, {"digest", "operation_id"}, {"digest", "operation_id"}, "a removal")
         return remove.remove(project, body["operation_id"], _digest(body), key=signing_key)
 
