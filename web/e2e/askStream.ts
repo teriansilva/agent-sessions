@@ -50,6 +50,8 @@ export interface FakeConversation {
   /** The update budget is spent (#1517). */
   followsExhausted?: boolean;
   unread?: boolean;
+  /** #2251: HQ's step lists, as the server derives them. */
+  step_lists?: Record<string, unknown>[];
 }
 
 export interface FakeAsk {
@@ -98,6 +100,7 @@ function body(c: FakeConversation) {
         "",
     })),
     unread: Boolean(c.unread),
+    step_lists: c.step_lists ?? [],
   };
 }
 

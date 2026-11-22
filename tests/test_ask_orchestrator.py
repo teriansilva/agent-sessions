@@ -262,6 +262,10 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
     project operations. Every proposal only stages a card — nothing here launches, dispatches,
     sends or changes anything; a new tool or kind has to say so here."""
     assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
+        # #2251: HQ's own step list for a multi-part request — it runs nothing and stages no
+        # card; each step's card is still a proposal the operator confirms.
+        "propose_steps": "steps",
+        "revise_steps": "steps",
         "list_memory_notebooks": "read",
         "search_memory": "read",
         "read_memory": "read",

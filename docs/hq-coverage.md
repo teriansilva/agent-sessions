@@ -148,6 +148,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Connectors: a messenger's notify route, and its recent deliveries (#1841) | POST …/notify, GET …/deliveries | **never** to set it (where notifications go is the Commander's consent); P2 to read the deliveries |
 | Send a message through a messenger connector (#1833) | the proposal decide route, `{decision: "send"}` | have (`propose_message` stages a card; only the Commander's tap sends) |
 | Change or withdraw a card HQ proposed in this conversation (#2120) | the proposal decide route, `{decision: "dismiss"}` | have (`replaces` on a propose tool closes the card it corrects; `withdraw_card` dismisses one as the turn's operator; nothing of either card runs) |
+| Sort a multi-part request into ordered steps; change, add, move, skip or end them (#2251) | the conversation's step list (`ask_steps`); End steps: POST /api/ask/conversations/{cid}/steps/end | have (`propose_steps` and `revise_steps` change HQ's own step list and run nothing; a waiting card of a moved, skipped or ended step is withdrawn through the decide route; every effect is still its card's tap) |
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
@@ -343,6 +344,7 @@ DELETE /api/ask/conversations/{cid}/attachments/{aid}                     n/a  #
 DELETE /api/ask/conversations/{cid}                                               n/a  # HQ itself (delete a conversation, #1564)
 DELETE /api/ask/conversations/{cid}/follow/{key:path}                             n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/message                                       n/a  # HQ itself
+POST   /api/ask/conversations/{cid}/steps/end                                     n/a  # HQ itself (End steps on a step list, #2251)
 POST   /api/ask/conversations/{cid}/message/stream                                n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/seen                                          n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/turns/{turn_id}/stop                         n/a  # HQ itself (stop one running turn, #2076)

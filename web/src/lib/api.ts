@@ -173,6 +173,7 @@ import type {
   AskLibraryContent,
   AskOperationDecision,
   AskMessageDecision,
+  AskStepList,
   AskConversationSummary,
   AskConversationTurn,
   AskAttachment,
@@ -2609,6 +2610,14 @@ export const api = {
       "POST",
       `/api/ask/proposals/${enc(id)}/decide`,
       { decision },
+    ),
+  /** End steps (#2251): dismisses the open list's waiting card and ends the list. 409 when a card
+   *  of it is running, or the list changed. */
+  askEndSteps: (cid: string, listId: string) =>
+    mutateJson<{ steps: AskStepList }>(
+      "POST",
+      `/api/ask/conversations/${enc(cid)}/steps/end`,
+      { list_id: listId },
     ),
   decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>
     mutateJson<{ proposal: AskSessionDecision }>(

@@ -294,6 +294,24 @@ with the sidebar open.
   - Some things HQ never does, even if you ask: passwords, two-factor and keys; editing prompts;
     switching on more autonomy or permission bypass (switching them off is fine); approving
     another pending decision for you; installing plugins.
+- HQ **sorts a request with several parts into steps** and walks you through them one card
+  at a time. "Create the project Rentals, a Forgejo repo in it, then a playbook" becomes a
+  **Steps** card: 1. the project, 2. a session that sets up the repo in the new project, 3. the
+  playbook. Only the current step has a card; the next step gets its card once you confirmed the
+  one before, so a step that needs an earlier one's result (the new project's folder) is staged
+  only once that result exists.
+  - **Discuss this step** puts "Step 2: " in front of what you are typing; tell HQ to change,
+    reorder, add or skip a step, or to end the steps. When HQ changes a card, the old card goes
+    and the new one says what changed (*Name ~~Housing~~ → Rentals*). Nothing of the old
+    card ran.
+  - If you dismiss a step's card or it fails, the steps stop there and HQ asks once whether to
+    change the step, skip it or end. **End steps** dismisses the waiting card; nothing that
+    already ran is undone, and a card that is running can't be ended mid-way.
+  - A session step counts as done once the session started and got its brief. Its work is not
+    tracked by the step list.
+  - The list shows under the newest message that changed it; where it was before, a line says
+    *Steps changed · now below*. Several cards of the same kind (archive four sessions) need no
+    steps.
 - HQ **plans every mission**. **New mission** (Missions, the rail, the Dashboard's **New** menu)
   opens HQ on a fresh conversation; HQ asks for the goal and the project. **Plan with HQ** on a
   draft that has no plan opens HQ bound to that draft. HQ answers with a mission card: the project, the

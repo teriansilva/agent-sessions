@@ -346,7 +346,63 @@ def views(cid: str) -> tuple[str, dict[str, dict]]:
         rows = ask_store.read_proposals(cid)
     except (ask_store.SidecarUnreadable, ask_store.ConversationNotFound):
         return "unknown", {}
-    return "ok", {r["id"]: _any_view(r) for r in rows if isinstance(r.get("id"), str)}
+    by_id = {r["id"]: r for r in rows if isinstance(r.get("id"), str)}
+    out = {pid: _any_view(r) for pid, r in by_id.items()}
+    for pid, r in by_id.items():
+        old = by_id.get(r.get("replaces") or "")
+        if old is not None:
+            # What changed against the card it replaced (#2251 G5), read from the two stored
+            # entries: the trace the old card leaves once it is no longer drawn.
+            out[pid]["changes"] = changes(old, r)
+    return "ok", out
+
+
+#: The most changes a card lists, and the longest value it quotes.
+CHANGES_MAX = 6
+CHANGE_VALUE_MAX = 80
+
+
+def _short(value: object) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= CHANGE_VALUE_MAX else text[: CHANGE_VALUE_MAX - 1] + "…"
+
+
+def changes(old: dict, new: dict) -> list[dict]:
+    """``[{field, from, to}]`` between a replaced card and its replacement: display fields only,
+    as stored (each already through the store boundary), each value cut short. A long text
+    (a brief, a message) is named, not quoted. Pure."""
+    out: list[dict] = []
+
+    def add(name: str, a: object, b: object, quote: bool = True) -> None:
+        if a == b or len(out) >= CHANGES_MAX:
+            return
+        if quote:
+            out.append({"field": name, "from": _short(a or ""), "to": _short(b or "")})
+        else:
+            out.append({"field": name, "from": "", "to": ""})
+
+    kind = new.get("kind")
+    if kind == "session":
+        add("project", old.get("project"), new.get("project"))
+        add("folder", old.get("cwd"), new.get("cwd"))
+        add("agent", old.get("agent"), new.get("agent"))
+        add("brief", old.get("brief"), new.get("brief"), quote=False)
+    elif kind == "message":
+        add("recipient", (old.get("recipient") or {}).get("label"),
+            (new.get("recipient") or {}).get("label"))  # fmt: skip
+        add("text", old.get("text"), new.get("text"), quote=False)
+    else:
+        add("action", old.get("op"), new.get("op"))
+        add("target", old.get("title"), new.get("title"))
+        a, b = old.get("fields") or {}, new.get("fields") or {}
+        for k in sorted(set(a) | set(b)):
+            va, vb = a.get(k), b.get(k)
+            if isinstance(va, str | int | bool | None) and isinstance(vb, str | int | bool | None):
+                add(k, "" if va is None else va, "" if vb is None else vb)
+        if not out and old.get("binding") != new.get("binding"):
+            # Only what the card binds changed (a Library draft's files, say): named, not quoted.
+            add("content", "x", "y", quote=False)
+    return out
 
 
 def _any_view(row: dict) -> dict:

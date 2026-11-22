@@ -1,0 +1,206 @@
+/* HQ's step list (#2251): the card plate and head of `AskCards.module.css`, with numbered rows.
+ * Tokens only. State is a word beside a square mark, never colour alone. */
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: var(--fs-row);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--text-2);
+}
+.prog {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--hud-text);
+}
+.pips {
+  display: inline-flex;
+  gap: 3px;
+}
+.pips i {
+  width: 14px;
+  height: 4px;
+  background: var(--line-strong);
+}
+.pips i.pip_now {
+  background: var(--hud);
+}
+.pips i.pip_done {
+  background: var(--ok-text);
+}
+.pips i.pip_held {
+  background: var(--warn-text);
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  display: grid;
+  grid-template-columns: 28px 14px minmax(0, 1fr) auto;
+  gap: 2px var(--sp-2);
+  align-items: start;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.n {
+  font: 600 var(--fs-micro) / 1.9 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+.mk {
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border: 1px solid var(--line-strong);
+}
+.row_now .mk {
+  background: var(--hud);
+  border-color: var(--hud);
+}
+.row_done .mk {
+  background: var(--ok-text);
+  border-color: var(--ok-text);
+}
+.row_held .mk {
+  background: var(--warn-text);
+  border-color: var(--warn-text);
+}
+.row_skipped .mk,
+.row_ended .mk {
+  border-style: dashed;
+}
+.body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.t {
+  font-size: var(--fs-row);
+  line-height: 1.4;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.row_next .t,
+.row_skipped .t,
+.row_ended .t {
+  color: var(--text-2);
+}
+.row_skipped .t,
+.row_ended .t {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-3);
+}
+.d {
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.dep {
+  font: 500 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.w {
+  font: 600 var(--fs-micro) / 1.9 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.row_now .w {
+  color: var(--hud-text);
+}
+.row_done .w {
+  color: var(--ok-text);
+}
+.row_held .w {
+  color: var(--warn-text);
+}
+.disc {
+  grid-column: 3 / span 2;
+  justify-self: start;
+  margin-top: 2px;
+}
+
+/* The current step's card, in its slot under the step. */
+.slot {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3) calc(var(--sp-3) + 28px + 14px + 2 * var(--sp-2));
+  border-bottom: 1px solid var(--line);
+  background: var(--hud-tint);
+}
+.slot > div > :first-child {
+  margin-top: 0;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-3);
+}
+.foot p {
+  margin: 0;
+  flex: 1 1 260px;
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.foot p.err {
+  flex-basis: 100%;
+  color: var(--danger-text);
+}
+
+.moved {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.moved::before,
+.moved::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+@media (max-width: 800px) {
+  .slot {
+    padding-left: var(--sp-2);
+    padding-right: var(--sp-2);
+  }
+  .row {
+    grid-template-columns: 24px 12px minmax(0, 1fr) auto;
+  }
+  .disc,
+  .foot button {
+    min-height: 44px;
+  }
+}

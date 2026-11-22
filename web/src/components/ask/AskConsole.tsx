@@ -91,6 +91,7 @@ import type {
   AskProposalCard,
   AskQuestionCard,
   AskSessionDecision,
+  AskStepList,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
@@ -116,6 +117,7 @@ import {
 } from "./askConversationsStore";
 import { AskProcess } from "./AskProcess";
 import { AskShown } from "./AskShown";
+import { StepList, StepsMoved } from "./StepList";
 import { surfaceOver } from "./escOwner";
 import {
   applyProcessEvent,
@@ -196,6 +198,9 @@ const POLL_MS = 2000;
 /** How many times a settled turn holding a done draft-mission card is read again, POLL_MS apart,
  *  for HQ's continuation to appear (#1950). */
 const CONTINUE_RECHECKS = 4;
+/** How often one step-list state that owes HQ's continuation is read again (#2251), POLL_MS apart,
+ *  for that turn to appear: bounded, as a continuation may not come (a Stop, a newer message). */
+const STEPS_RECHECKS = 15;
 /** How often a conversation with an undecided or in-flight card is read again, so a decision
  *  taken elsewhere (Needs you, another tab) or a proposal's expiry reaches the card. */
 export const CARD_POLL_MS = 15_000;
@@ -438,6 +443,12 @@ export function AskConsole({
   // #1443 Phase 4: followed sessions' updates, which sessions are followed, and unseen updates.
   const [updates, setUpdates] = useState<AskUpdate[]>([]);
   const [following, setFollowing] = useState<string[]>([]);
+  // #2251: HQ's step lists, each drawn once under the newest turn that changed it.
+  const [stepLists, setStepLists] = useState<AskStepList[]>([]);
+  const [stepsEnding, setStepsEnding] = useState(false);
+  const [stepsError, setStepsError] = useState<string | null>(null);
+  // "Discuss this step": the composer's prefix, applied once per key.
+  const [prefill, setPrefill] = useState<{ key: number; text: string } | null>(null);
   const [follows, setFollows] = useState<AskFollow[]>([]);
   const [followSince, setFollowSince] = useState<Record<string, number>>({});
   const [followsUnknown, setFollowsUnknown] = useState(false);
@@ -616,6 +627,8 @@ export function AskConsole({
       ensureCid.current = Promise.resolve(id); // uploads go to the conversation on screen
       setTitle(c.title ?? "");
       setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
+      // Unreadable this time (null): keep the lists last read.
+      if (Array.isArray(c.step_lists)) setStepLists(c.step_lists);
       setUpdates(c.updates ?? []);
       // An unreadable follow state is not "following nothing" (Hermes on #1500): keep what was
       // last verified, and keep reading (below) until a read succeeds.
@@ -699,6 +712,7 @@ export function AskConsole({
       setTitle("");
       setTurns((prev) => (initial ? prev.filter((t) => t.pending && !t.error) : []));
       setUpdates([]);
+      setStepLists([]);
       setFollowing([]);
       setFollows([]);
       setFollowSince({});
@@ -745,6 +759,8 @@ export function AskConsole({
     setTitle("");
     setTurns([]);
     setUpdates([]);
+    setStepLists([]);
+    setStepsError(null);
     setFollowing([]);
     setFollows([]);
     setFollowSince({});
@@ -852,6 +868,24 @@ export function AskConsole({
     const timer = window.setTimeout(() => void load(cid), POLL_MS);
     return () => window.clearTimeout(timer);
   }, [waiting, cid, turns, load]);
+
+  // #2251: a step settled and HQ is about to continue: read again until its turn appears, at
+  // most STEPS_RECHECKS times for one state of the steps.
+  const stepsSeen = useRef(new Map<string, number>());
+  const stepsOwed = stepLists
+    .filter((l) => l.owed)
+    .map((l) => `${l.id}:${l.revision}:${l.steps.map((x) => `${x.state}${x.cards.length}`).join(",")}`)
+    .join("|");
+  useEffect(() => {
+    if (!stepsOwed || streaming || waiting || !cid) return;
+    const n = stepsSeen.current.get(stepsOwed) ?? 0;
+    if (n >= STEPS_RECHECKS) return;
+    const timer = window.setTimeout(() => {
+      stepsSeen.current.set(stepsOwed, n + 1);
+      void load(cid);
+    }, POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [stepsOwed, streaming, waiting, cid, turns, load]);
 
   // Not read yet: a turn the server already holds is unknown, so Send waits (#1776). A read that
   // failed is retried until one lands.
@@ -1056,7 +1090,13 @@ export function AskConsole({
           // HQ continued by itself after a card tapped during this turn (#1950): its new turn
           // already exists, and nothing else here is pending to make the page read again.
           // …or a question waits behind it (#2103): the server has just started that one.
-          if (loadedFor.current !== id || settled.continued || queuedRef.current) void load(id);
+          if (
+            loadedFor.current !== id ||
+            settled.continued ||
+            settled.steps_changed ||
+            queuedRef.current
+          )
+            void load(id);
         }
         void refreshList();
         return sent();
@@ -1566,6 +1606,122 @@ export function AskConsole({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [canStop, visible, stopTurn]);
 
+  /** One card as the thread draws it — in its turn, or in a step list's slot (#2251). */
+  const renderCard = (p: AskProposalCard) =>
+    p.kind === "session" ? (
+      <SessionCard
+        // A new starting value (the card asks again) starts the control afresh.
+        key={`${p.action_id}:${p.bypass_default}`}
+        p={p}
+        deciding={deciding.has(p.action_id)}
+        error={cardErrors.get(p.action_id) ?? null}
+        onStart={(bypass) => void decideSession(p.action_id, "start", bypass)}
+        onDismiss={() => void decideSession(p.action_id, "dismiss", false)}
+        ways={
+          p.session_key ? (
+            <>
+              <Link
+                className={styles.openSession}
+                to={matchRoute(p.session_key)}
+                aria-label={`Open the session started in ${p.title}`}
+                data-testid="ask-session-open"
+              >
+                Open
+              </Link>
+              {canMap ? (
+                <button
+                  type="button"
+                  className={styles.openSession}
+                  aria-label={`Open the session started in ${p.title} in map`}
+                  disabled={
+                    !map?.openKeys.has(p.session_key) && (map?.room ?? 0) < 1
+                  }
+                  onClick={() =>
+                    openInMap([{ id: p.session_key, title: p.title, why: "" }])
+                  }
+                  data-testid="ask-session-map"
+                >
+                  Open in map
+                </button>
+              ) : null}
+            </>
+          ) : null
+        }
+      />
+    ) : p.kind === "message" ? (
+      <MessageCard
+        key={p.action_id}
+        p={p}
+        deciding={deciding.has(p.action_id)}
+        error={cardErrors.get(p.action_id) ?? null}
+        onSend={() => void decideMessage(p.action_id, "send")}
+        onDismiss={() => void decideMessage(p.action_id, "dismiss")}
+      />
+    ) : p.kind === "operation" ? (
+      <OperationCard
+        key={p.action_id}
+        p={p}
+        deciding={deciding.has(p.action_id)}
+        error={cardErrors.get(p.action_id) ?? null}
+        onConfirm={(inputs) => void decideOperation(p.action_id, "confirm", inputs)}
+        onDismiss={() => void decideOperation(p.action_id, "dismiss")}
+      />
+    ) : (
+      <NudgeCard
+        key={p.action_id}
+        p={p}
+        deciding={deciding.has(p.action_id)}
+        onApprove={() => void decide(p.action_id, true)}
+        onDismiss={() => void decide(p.action_id, false)}
+      />
+    );
+  // #2251: the cards a step list draws (its current step's, in its slot) and the cards HQ
+  // replaced (the card that took a replaced one's place carries its Changed line) are not drawn
+  // in their turn.
+  const stepCards = new Set(stepLists.flatMap((l) => l.steps.flatMap((x) => x.cards)));
+  const hiddenCard = (p: AskProposalCard) =>
+    stepCards.has(p.action_id) ||
+    ((p.kind === "session" || p.kind === "operation" || p.kind === "message") &&
+      p.state === "dismissed" &&
+      Boolean(p.replaced_by));
+  const cardsById = new Map(turns.flatMap((t) => t.proposals.map((p) => [p.action_id, p] as const)));
+  const discussStep = (n: number) => {
+    setPrefill((cur) => ({ key: (cur?.key ?? 0) + 1, text: `Step ${n}: ` }));
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  };
+  const endSteps = async (listId: string) => {
+    if (!cid || stepsEnding) return;
+    setStepsEnding(true);
+    setStepsError(null);
+    try {
+      await api.askEndSteps(cid, listId);
+    } catch (e) {
+      setStepsError(e instanceof Error ? e.message : "The steps could not be ended.");
+    } finally {
+      setStepsEnding(false);
+      void load(cid);
+    }
+  };
+  const stepListsAt = (turnId: string) =>
+    stepLists.map((l) =>
+      l.drawn_at_turn === turnId ? (
+        <StepList
+          key={l.id}
+          list={l}
+          renderCard={(id) => {
+            const p = cardsById.get(id);
+            return p ? renderCard(p) : null;
+          }}
+          onDiscuss={(step) => discussStep(step.n)}
+          onEnd={() => void endSteps(l.id)}
+          ending={stepsEnding}
+          error={stepsError}
+        />
+      ) : l.created_turn === turnId ? (
+        <StepsMoved key={`${l.id}:moved`} />
+      ) : null,
+    );
+
   return (
     <div
       className={`${styles.threadCol} ${a.col} ${chrome === "page" ? a.colWide : ""}`}
@@ -1990,77 +2146,10 @@ export function AskConsole({
                       }
                     />
                   ) : null}
-                  {t.proposals.map((p) =>
-                    p.kind === "session" ? (
-                      <SessionCard
-                        // A new starting value (the card asks again) starts the control afresh.
-                        key={`${p.action_id}:${p.bypass_default}`}
-                        p={p}
-                        deciding={deciding.has(p.action_id)}
-                        error={cardErrors.get(p.action_id) ?? null}
-                        onStart={(bypass) => void decideSession(p.action_id, "start", bypass)}
-                        onDismiss={() => void decideSession(p.action_id, "dismiss", false)}
-                        ways={
-                          p.session_key ? (
-                            <>
-                              <Link
-                                className={styles.openSession}
-                                to={matchRoute(p.session_key)}
-                                aria-label={`Open the session started in ${p.title}`}
-                                data-testid="ask-session-open"
-                              >
-                                Open
-                              </Link>
-                              {canMap ? (
-                                <button
-                                  type="button"
-                                  className={styles.openSession}
-                                  aria-label={`Open the session started in ${p.title} in map`}
-                                  disabled={
-                                    !map?.openKeys.has(p.session_key) && (map?.room ?? 0) < 1
-                                  }
-                                  onClick={() =>
-                                    openInMap([{ id: p.session_key, title: p.title, why: "" }])
-                                  }
-                                  data-testid="ask-session-map"
-                                >
-                                  Open in map
-                                </button>
-                              ) : null}
-                            </>
-                          ) : null
-                        }
-                      />
-                    ) : p.kind === "message" ? (
-                      <MessageCard
-                        key={p.action_id}
-                        p={p}
-                        deciding={deciding.has(p.action_id)}
-                        error={cardErrors.get(p.action_id) ?? null}
-                        onSend={() => void decideMessage(p.action_id, "send")}
-                        onDismiss={() => void decideMessage(p.action_id, "dismiss")}
-                      />
-                    ) : p.kind === "operation" ? (
-                      <OperationCard
-                        key={p.action_id}
-                        p={p}
-                        deciding={deciding.has(p.action_id)}
-                        error={cardErrors.get(p.action_id) ?? null}
-                        onConfirm={(inputs) => void decideOperation(p.action_id, "confirm", inputs)}
-                        onDismiss={() => void decideOperation(p.action_id, "dismiss")}
-                      />
-                    ) : (
-                      <NudgeCard
-                        key={p.action_id}
-                        p={p}
-                        deciding={deciding.has(p.action_id)}
-                        onApprove={() => void decide(p.action_id, true)}
-                        onDismiss={() => void decide(p.action_id, false)}
-                      />
-                    ),
-                  )}
+                  {t.proposals.filter((p) => !hiddenCard(p)).map(renderCard)}
                 </article>
                 )}
+                {stepListsAt(t.id)}
               </div>
             ))}
             <FollowingBlock
@@ -2100,6 +2189,7 @@ export function AskConsole({
             onStop={canStop ? () => void stopTurn() : undefined}
             stopping={runningTurn?.stopping === true}
             onAsk={sendFromBox} // the outcome drives the composer's draft restore
+            prefill={prefill}
         convKey={cid}
         uploadFile={async (file, secret) => {
           // The conversation is created by what the operator does in it — the first question or

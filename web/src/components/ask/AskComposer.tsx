@@ -69,6 +69,7 @@ export function AskComposer({
   stopping = false,
   queueFull = false,
   queueLine = null,
+  prefill = null,
 }: {
   /** False when no AI endpoint is configured: the field is disabled and says why. */
   configured: boolean;
@@ -111,6 +112,9 @@ export function AskComposer({
   queueLine?: { text: string; warn: boolean } | null;
   /** The Stop is in; the turn has not settled yet. */
   stopping?: boolean;
+  /** Text to put at the START of the box (#2251's "Discuss this step"): each new `key` applies
+   *  it once. A draft already in the box is kept after it, never replaced. */
+  prefill?: { key: number; text: string } | null;
   /** Moves on every SWITCH of the thread on screen (a pick, New, Back/Forward, a delete) — never
    *  on the first send creating a conversation (#1776, Hermes review 7393). */
   threadKey?: number;
@@ -129,6 +133,12 @@ export function AskComposer({
     setThread({ key: threadKey, conv: convKey });
   } else if (thread.conv !== convKey) {
     setThread({ key: threadKey, conv: convKey }); // created by its first send: the same thread
+  }
+  // "Discuss this step" (#2251): the prefix goes in front of whatever is typed, once per key.
+  const [prefilled, setPrefilled] = useState(prefill?.key ?? 0);
+  if (prefill && prefill.key !== prefilled) {
+    setPrefilled(prefill.key);
+    setText((cur) => (cur.startsWith(prefill.text) ? cur : `${prefill.text}${cur.trimStart()}`));
   }
   const [staged, setStaged] = useState<StagedFile[]>([]);
   const attachRef = useRef<HTMLInputElement>(null);
@@ -166,6 +176,10 @@ export function AskComposer({
   /** Bumped by every operator edit (#1720 round 6). A refusal may only restore a draft that is
    *  still the one that was sent — never one the operator has already moved past. */
   const draftRev = useRef(0);
+  // A prefill is an edit: a refused send's restore must not overwrite it (as for typing).
+  useEffect(() => {
+    if (prefilled) draftRev.current += 1;
+  }, [prefilled]);
   /** Sent drafts the server refused while the operator was already on a newer one (#1720
    *  rounds 7–8): NEVER dropped — a QUEUE of them, each visible with Restore and Discard, so
    *  every question and its files survive and the quota they hold can be released deliberately.

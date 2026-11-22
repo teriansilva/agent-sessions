@@ -418,7 +418,9 @@ def test_a_continuation_reads_and_proposes_but_never_sends_or_remembers(hq, monk
     # Every kind with an effect no card confirms is refused; `call` (end_call) is a call's own,
     # never offered off a call and refused there anyway.
     kinds = {t.kind for t in ask_orchestrator.TOOLS.values()}
-    allowed = {"read", "proposal", "ends_turn", "call"}
+    # `steps` (#2251): a continuation may revise HQ's own step list, which runs nothing; it never
+    # withdraws a card through it (`_revise_steps` refuses that on a continuation).
+    allowed = {"read", "proposal", "ends_turn", "call", "steps"}
     # A continuation never dismisses a card either (#2120): that is the Commander's own call.
     assert ask_orchestrator.CONTINUATION_REFUSED_TOOLS == {
         "propose_hq_memory_change",

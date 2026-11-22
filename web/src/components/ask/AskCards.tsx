@@ -20,7 +20,7 @@ import { Eye, FolderOpen, Play, Send } from "lucide-react";
 import { openSessionLimit } from "../../lib/sessionLimit";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
-import type { AskMessageCard } from "../../types/api";
+import type { AskCardChange, AskMessageCard } from "../../types/api";
 import type {
   AskTeamRow,
   AskNudgeCard,
@@ -274,6 +274,50 @@ export function NudgeCard({
   );
 }
 
+/** The names the Changed line uses for a card's fields (#2251); anything else as the server says. */
+const CHANGE_FIELD: Record<string, string> = {
+  name: "Name",
+  project: "Project",
+  folder: "Folder",
+  agent: "Agent",
+  brief: "Brief",
+  recipient: "Recipient",
+  text: "Text",
+  action: "Action",
+  target: "Target",
+  content: "Content",
+};
+
+/** What changed against the card HQ replaced (#2251 G5): that card is no longer drawn, so this line
+ *  is its trace on the one that took its place. The values are the server's stored text, drawn as
+ *  text. A long text (a brief, a message) is named, not quoted. */
+export function Changed({ changes, replaces }: { changes?: AskCardChange[]; replaces?: string }) {
+  if (!replaces) return null;
+  const rows = changes ?? [];
+  return (
+    <div className={c.changed} data-testid="ask-card-changed">
+      <b>Changed</b>
+      <span>
+        {rows.length === 0
+          ? "HQ corrected the card it showed before. Nothing of that one ran."
+          : rows.map((x, i) => (
+              <span key={x.field}>
+                {i ? ", " : ""}
+                {CHANGE_FIELD[x.field] ?? x.field}{" "}
+                {x.from || x.to ? (
+                  <>
+                    <s>{x.from || "none"}</s> → {x.to || "none"}
+                  </>
+                ) : (
+                  "changed"
+                )}
+              </span>
+            ))}
+      </span>
+    </div>
+  );
+}
+
 /** The outcome words for a session proposal — from the server's own state. */
 /** A card HQ replaced with a corrected one (#2120): dismissed when the new card was staged, and
  *  said so — never on a card something else decided first. */
@@ -360,6 +404,7 @@ export function SessionCard({
         Session
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
       <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
         <dl className={c.kv}>
           <dt>Project</dt>
@@ -703,6 +748,7 @@ export function OperationCard({
           {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
         </span>
       </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
       <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
         <dl className={c.kv}>
           <dt>Action</dt>
@@ -1011,6 +1057,7 @@ export function MessageCard({
         {mail ? "Email" : "Message"}
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
       <div className={`${c.body} ${out ? c.muted : ""}`}>
         <dl className={c.kv}>
           <dt>Through</dt>

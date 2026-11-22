@@ -65,6 +65,7 @@ from .. import (
     ask_operations,
     ask_orchestrator,
     ask_proposals,
+    ask_steps,
     ask_store,
     hq_contacts,
     hq_tasks,
@@ -249,6 +250,9 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
             ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid, cards), cid
         ),
         "running": ask_orchestrator.running(cid),
+        # #2251: the step lists, each drawn ONCE under the newest turn that changed it
+        # (`drawn_at_turn`); `owed` = HQ is about to continue, keep reading.
+        "step_lists": _step_lists(cid, records),
         # #2137 P2: the context meter: the latest answer request's size, and compaction running.
         "context": ask_orchestrator.context_view(records, cid),
         # #1443 Phase 4: what the follower wrote, in order; the client shows each session's newest
@@ -271,6 +275,15 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
         # The update budget is spent: this conversation no longer follows sessions (#1517).
         "follows_exhausted": follows["exhausted"],
     }
+
+
+def _step_lists(cid: str, records: list[dict]) -> list[dict] | None:
+    """Every step list's public view, oldest first; None when the steps can't be read now."""
+    try:
+        _lists, views = ask_steps.read(cid)
+    except (ask_store.SidecarUnreadable, ask_store.ConversationNotFound):
+        return None
+    return [ask_steps.public(v, records) for v in views]
 
 
 def _cards_first(cid: str) -> tuple[str, dict[str, dict]]:
@@ -715,7 +728,88 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 {"detail": "the proposal could not be read just now; nothing was started"},
                 status_code=503,
             )
+        # #2251: once this card's run settles, its step list may owe HQ's next step (or a hold).
+        # In the background, after this answer; a card in no step list owes nothing.
+        ask_orchestrator.schedule_steps_after_decide(
+            pid, operator=asgi_call.Operator.from_scope(request.scope), app=request.app
+        )
         return JSONResponse({"proposal": view}, status_code=status)
+
+    @app.post("/api/ask/conversations/{cid}/steps/end")
+    async def end_steps(
+        cid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """End steps (#2251): the open list's waiting cards are dismissed through their own
+        decide path (nothing of them ran), and no later step gets a card. A card that is running
+        refuses it: what already began is never cancelled. Body: ``{"list_id": …}``."""
+        if not ask_store.valid_cid(cid):
+            return _missing(cid)
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"list_id"}:
+            return JSONResponse({"detail": 'body must be {"list_id": …}'}, status_code=422)
+        list_id = body["list_id"]
+        if not (isinstance(list_id, str) and ask_store.STEP_LIST_ID_RE.match(list_id)):
+            return JSONResponse({"detail": "malformed list id"}, status_code=422)
+        # The whole transition under the steps fence (Hermes on #2251): a card HQ stages and
+        # attaches meanwhile can't be written out of the list by this plan.
+        try:
+            fence = ask_steps.fence(cid)
+            await fence.__aenter__()
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_steps.StepsRefused as e:
+            return JSONResponse({"detail": e.text}, status_code=409)
+        try:
+            try:
+                new, withdraw = await asyncio.to_thread(ask_steps.end_plan, cid, list_id)
+            except ask_store.ConversationNotFound:
+                return _missing(cid)
+            except ask_store.SidecarUnreadable:
+                return JSONResponse(
+                    {"detail": "the steps could not be read just now; nothing changed"},
+                    status_code=503,
+                )
+            except ask_steps.StepsRefused as e:
+                status = 409 if e.code in ("busy", "stale", "closed") else 422
+                return JSONResponse(
+                    {"detail": e.text, "steps": ask_steps.public(e.lst)}, status_code=status
+                )
+            for wpid in withdraw:
+                try:
+                    _st, view = await ask_proposals.decide(
+                        wpid,
+                        "dismiss",
+                        bypass=False,
+                        registry=registry,
+                        operator=asgi_call.Operator.from_scope(request.scope),
+                        app=request.app,
+                    )
+                except ask_proposals.ProposalError as e:
+                    return JSONResponse(
+                        {"detail": f"a card could not be dismissed ({e.detail}); nothing changed"},
+                        status_code=409,
+                    )
+                if (view or {}).get("state") != "dismissed":
+                    return JSONResponse(
+                        {"detail": "a card started meanwhile; nothing in the steps changed"},
+                        status_code=409,
+                    )
+            try:
+                view = await asyncio.to_thread(ask_steps.apply_revision, cid, new, new["revision"])
+            except ask_steps.StepsRefused as e:
+                return JSONResponse(
+                    {"detail": e.text, "steps": ask_steps.public(e.lst)}, status_code=409
+                )
+            except ask_store.StoreRefused as e:
+                return _refused(e)
+        finally:
+            await fence.__aexit__(None, None, None)
+        return JSONResponse({"steps": ask_steps.public(view)})
 
     @app.get("/api/ask/unread")
     async def ask_unread(_: str = Depends(logged_in)) -> JSONResponse:

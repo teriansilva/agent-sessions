@@ -182,7 +182,8 @@ EXPECTED_DEFAULT_SHA = {
     # (what the agents published, where and the link; titles are agent-written).
     # #2163 P2; #2152; #2137 (needs_you, set-up); #1960 P2; #1950; #2136
     # #2249: for how BattleLab works, the installed manual first (docs_search / docs_read).
-    "ask_orchestrator": "437ac64ec292ecf7",
+    # #2251: a request needing more than one card is sorted into steps first (propose_steps).
+    "ask_orchestrator": "1643cf99deb169ec",
     # #2028: HQ's question router; #2249 adds the `manual` route.
     "ask_route": "323bd1e25e69c20c",
     "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual

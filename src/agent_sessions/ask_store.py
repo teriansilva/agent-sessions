@@ -123,6 +123,9 @@ STEPS_MORE_NAMES_MAX = 128
 #: at all: the server's continuation after a confirmed draft-mission card (#1950,
 #: `ask_orchestrator.continue_after_card`), its text server-written.
 VIAS = frozenset({"call", "card"})
+#: A user record's step-list key (#2251, `ask_steps.owed`): what settled, and where.
+STEPS_KEY_RE = re.compile(r"^(next|hold|done):[0-9a-f]{16}:s[0-9a-f]{8}:[0-9a-f]{16}$")
+STEPS_SEEN_MAX = 8
 
 RECORD_TYPES = frozenset(
     {
@@ -272,12 +275,20 @@ def _follows_path(cid: str) -> Path:
     return root() / "follows" / f"{cid}.json"
 
 
+def _steps_path(cid: str) -> Path:
+    return root() / "steps" / f"{cid}.json"
+
+
 def _lock_path(cid: str) -> Path:
     return root() / ".locks" / f"{cid}.lock"
 
 
 def _proposals_lock_path(cid: str) -> Path:
     return root() / ".locks" / f"{cid}.proposals.lock"
+
+
+def _steps_lock_path(cid: str) -> Path:
+    return root() / ".locks" / f"{cid}.steps.lock"
 
 
 def _follows_lock_path(cid: str) -> Path:
@@ -401,6 +412,13 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if via not in VIAS:
                 raise ValueError("unknown channel")
             out["via"] = via
+        # The step-list settlement this turn takes up (#2251): the server's own key, written in
+        # the same append as the turn, so an advance or hold is begun exactly once.
+        steps_key = rec.get("steps_key")
+        if steps_key is not None:
+            if not (isinstance(steps_key, str) and STEPS_KEY_RE.match(steps_key)):
+                raise ValueError("malformed steps key")
+            out["steps_key"] = steps_key
         # The draft a Plan with HQ bound this turn to (#2152): a mission id, validated by the
         # route. Anything else is refused, never repaired.
         mission = rec.get("mission")
@@ -550,6 +568,18 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             out["code"] = code
         if "ctx" in rec:
             out["ctx"] = _admit_ctx(rec["ctx"])
+        # Step-list states this turn caused ITSELF (#2251: its own withdrawal or skip), taken up
+        # by it: no continuation asks the Commander about what HQ just did and said.
+        seen = rec.get("steps_seen")
+        if seen is not None:
+            if (
+                not isinstance(seen, list)
+                or len(seen) > STEPS_SEEN_MAX
+                or not all(isinstance(k, str) and STEPS_KEY_RE.match(k) for k in seen)
+            ):
+                raise ValueError("malformed steps_seen")
+            if seen:
+                out["steps_seen"] = list(seen)
     elif kind == "summary":
         # A background summary of the exchanges up to and including turn `upto` (#2137 P2): HQ's
         # own words about the conversation, through the store boundary like any text, bound to
@@ -1019,6 +1049,26 @@ def try_decide_lock(cid: str) -> int | None:
     if not valid_cid(cid):
         raise ConversationNotFound(cid)
     fd = _open_lock(_decide_lock_path(cid))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def try_steps_lock(cid: str) -> int | None:
+    """The step-list fence (#2251), non-blocking: an fd to hold and close, or None while another
+    holder — in this process or another — has it. Held across a whole step-list transition: the
+    fence check, the staging and the membership of a card; a revision's plan, its withdrawals and
+    its write; End steps. Lock order: the turn lock, this one, the decide lock, the proposals
+    lock — so a withdrawal through the decide route inside it never inverts the order."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    fd = _open_lock(_steps_lock_path(cid))
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -1597,6 +1647,162 @@ def write_proposals(cid: str, rows: list[dict], *, fresh: str | None = None) -> 
     return admitted
 
 
+# ---- the step-list sidecar (#2251) ---------------------------------------------------------------
+#
+# HQ's ordered steps for a multi-part request: ``steps/<cid>.json``, written under the proposal
+# sidecar's lock (`proposals_lock`), so a tap, a revision and End steps never interleave. It
+# holds STRUCTURE only: titles, order, needs, which cards belong to which step, skipped and ended.
+# Every step's state is derived from its cards' states in the proposal sidecar (`ask_steps`), so
+# there is no second copy of an outcome to drift and no write that spans two files.
+
+STEP_LISTS_MAX = 20
+STEPS_PER_LIST_MAX = 12
+STEP_CARDS_MAX = 24
+STEP_TITLE_MAX = 120
+STEP_DETAIL_MAX = 300
+STEP_LIST_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+STEP_ID_RE = re.compile(r"^s[0-9a-f]{8}$")
+#: A step's card kind (`ask_orchestrator._card_kind`): a tool name, `library:<group>`, `team`.
+STEP_KIND_RE = re.compile(r"^[a-z_]{1,30}(:[a-z_]{1,20})?$")
+
+
+def read_steps(cid: str) -> list[dict]:
+    """The conversation's step lists, oldest first; ``[]`` when there is none. SidecarUnreadable
+    otherwise — never a partial list."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    try:
+        fd = os.open(_steps_path(cid), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise SidecarUnreadable(type(e).__name__) from None
+    try:
+        raw = b""
+        while chunk := os.read(fd, 1 << 16):
+            raw += chunk
+            if len(raw) > READ_MAX_BYTES:
+                raise SidecarUnreadable("too large")
+    finally:
+        os.close(fd)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise SidecarUnreadable("not JSON") from None
+    lists = data.get("lists") if isinstance(data, dict) else None
+    if not isinstance(lists, list) or not all(isinstance(x, dict) for x in lists):
+        raise SidecarUnreadable("malformed")
+    return lists
+
+
+def _admit_step_list(raw: dict, secrets: list[str]) -> dict:
+    """One step list as it may be written; ValueError for a shape no caller should produce."""
+    lid = raw.get("id")
+    if not (isinstance(lid, str) and STEP_LIST_ID_RE.match(lid)):
+        raise ValueError("malformed step list id")
+    rev = raw.get("revision")
+    if not (isinstance(rev, int) and not isinstance(rev, bool) and 1 <= rev < 10**9):
+        raise ValueError("malformed step list revision")
+    steps = raw.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= STEPS_PER_LIST_MAX:
+        raise ValueError("malformed steps")
+    seen: list[str] = []
+    cards_seen: set[str] = set()
+    out_steps: list[dict] = []
+    for st in steps:
+        if not isinstance(st, dict):
+            raise ValueError("malformed step")
+        sid = st.get("sid")
+        if not (isinstance(sid, str) and STEP_ID_RE.match(sid)) or sid in seen:
+            raise ValueError("malformed step id")
+        needs = st.get("needs") or []
+        # A step needs only steps BEFORE it: no forward dependency, no cycle, by construction.
+        if not isinstance(needs, list) or any(n not in seen for n in needs):
+            raise ValueError("a step may only need steps before it")
+        cards = st.get("cards") or []
+        retired = st.get("retired") or []
+        for group in (cards, retired):
+            if not isinstance(group, list) or len(group) > STEP_CARDS_MAX:
+                raise ValueError("malformed step cards")
+            for c in group:
+                if not (isinstance(c, str) and _ACTION_ID_RE.match(c)) or c in cards_seen:
+                    raise ValueError("malformed step card")
+                cards_seen.add(c)
+        row = {
+            "sid": sid,
+            "title": guard_text(st.get("title"), STEP_TITLE_MAX, secrets=secrets),
+            "detail": guard_text(st.get("detail") or "", STEP_DETAIL_MAX, secrets=secrets),
+            "needs": list(dict.fromkeys(needs)),
+            "cards": list(cards),
+            "retired": list(retired),
+            "skipped": st.get("skipped") is True,
+        }
+        kind = st.get("kind")
+        if kind is not None:
+            if not (isinstance(kind, str) and STEP_KIND_RE.match(kind)):
+                raise ValueError("malformed step kind")
+            row["kind"] = kind
+        if not row["title"]:
+            raise ValueError("a step needs a title")
+        for k in ("skipped_at",):
+            v = st.get(k)
+            if isinstance(v, int | float) and not isinstance(v, bool):
+                row[k] = float(v)
+        seen.append(sid)
+        out_steps.append(row)
+    out: dict = {
+        "id": lid,
+        "revision": rev,
+        "title": guard_text(raw.get("title"), STEP_TITLE_MAX, secrets=secrets),
+        "ended": raw.get("ended") is True,
+        "steps": out_steps,
+    }
+    for k in ("drawn_at_turn", "created_turn"):
+        v = raw.get(k)
+        if not valid_turn_id(v):
+            raise ValueError(f"malformed {k}")
+        out[k] = v
+    for k in ("ts", "ended_at"):
+        v = raw.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
+    return out
+
+
+def write_steps(cid: str, lists: list[dict]) -> list[dict]:
+    """Replace the step-list sidecar, atomically and durably, through the store boundary. The
+    CALLER holds :func:`proposals_lock`. Returns the lists as written."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    if len(lists) > STEP_LISTS_MAX:
+        raise StoreRefused("this conversation holds as many step lists as it can")
+    _ensure_root()
+    d = root() / "steps"
+    _ensure_dir(d)
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        admitted = [_admit_step_list(x, secrets) for x in lists]
+        data = json.dumps({"lists": admitted}, ensure_ascii=False).encode("utf-8", "replace")
+        tmp = d / f".{cid}.{uuid.uuid4().hex}.tmp"
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            os.replace(tmp, _steps_path(cid))
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    _sync_dir(d)
+    return admitted
+
+
 # ---- library drafts (#1611) ---------------------------------------------------------------------
 #
 # What HQ drafted for a library card (a playbook's files, a skill's files, an automation's
@@ -1871,7 +2077,7 @@ def delete(cid: str) -> None:
     """Remove a conversation and everything keyed by its id. The sidecars go first and the JSONL
     last, so a crash part-way leaves the conversation listed and the next sweep finishes it."""
     _delete_drafts(cid)
-    for p in (_proposals_path(cid), _follows_path(cid)):
+    for p in (_proposals_path(cid), _follows_path(cid), _steps_path(cid)):
         p.unlink(missing_ok=True)
     _path(cid).unlink(missing_ok=True)
     from . import memory_capture
@@ -1882,6 +2088,7 @@ def delete(cid: str) -> None:
         _decide_lock_path(cid),
         _proposals_lock_path(cid),
         _follows_lock_path(cid),
+        _steps_lock_path(cid),
     ):
         p.unlink(missing_ok=True)
     # Shared files (#1707) go with the conversation, under their own fence — the same one an
@@ -1951,10 +2158,12 @@ def delete_conversation(cid: str) -> None:
             for p in (
                 _proposals_path(cid),
                 _follows_path(cid),
+                _steps_path(cid),
                 _lock_path(cid),
                 _decide_lock_path(cid),
                 _proposals_lock_path(cid),
                 _follows_lock_path(cid),
+                _steps_lock_path(cid),
             ):
                 with contextlib.suppress(OSError):
                     p.unlink(missing_ok=True)
@@ -2008,7 +2217,7 @@ def sweep(now: float | None = None) -> list[str]:
     # checked again there, and the store directory is synced before anything goes. A sync that
     # fails leaves the orphans for a later sweep: a crash could still bring the conversation
     # back, and it must come back whole (Hermes on #1564).
-    for sub in ("proposals", "follows"):
+    for sub in ("proposals", "follows", "steps"):
         with contextlib.suppress(FileNotFoundError):
             for name in os.listdir(root() / sub):
                 cid = name[: -len(".json")] if name.endswith(".json") else ""
@@ -2024,7 +2233,7 @@ def sweep(now: float | None = None) -> list[str]:
                         (root() / sub / name).unlink(missing_ok=True)
                         if sub == "follows":
                             _follows_lock_path(cid).unlink(missing_ok=True)
-                        else:
+                        elif sub == "proposals":
                             _proposals_lock_path(cid).unlink(missing_ok=True)
                 except OSError as e:
                     log.warning("ask orphan sidecar not removed yet (%s)", type(e).__name__)

@@ -43,6 +43,9 @@ GATED = {
     "withdraw_card",
     # #2102: the screen moves only once the Commander has finished speaking.
     "show",
+    # #2251: HQ's step list is shown to the Commander, and a revision may withdraw a card.
+    "propose_steps",
+    "revise_steps",
 }
 
 _VOLATILE = (

@@ -74,6 +74,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   list_recipients: { label: "Listing the recipients", noun: ["recipient", "recipients"] },
   propose_message: { label: "Preparing the message for you to send" },
   withdraw_card: { label: "Withdrawing a card" },
+  // #2251: HQ's step list for a multi-part request.
+  propose_steps: { label: "Sorting it into steps", noun: ["step", "steps"] },
+  revise_steps: { label: "Changing the steps" },
   note: { label: "Keeping a note", noun: ["note", "notes"] },
   list_cards: { label: "Looking at the cards", noun: ["card", "cards"] },
   // #2137: what waits on the Commander, and the bell.

@@ -1098,6 +1098,8 @@ export interface AskSessionCard {
   replaced_by?: string;
   /** The card this one replaced (#2120). */
   replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
   action_id: string;
   kind: "session";
   title: string;
@@ -1167,6 +1169,8 @@ export interface AskOperationCard {
   replaced_by?: string;
   /** The card this one replaced (#2120). */
   replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
   action_id: string;
   kind: "operation";
   /** The catalog id, e.g. `session.archive`. */
@@ -1296,6 +1300,8 @@ export type AskMessageCard = {
   replaced_by?: string;
   /** The card this one replaced (#2120). */
   replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
   action_id: string;
   kind: "message";
   connector: string;
@@ -1404,6 +1410,8 @@ export interface AskConversationTurn {
    *  was still answering, and the server has just started HQ's continuation, so the client reads
    *  the conversation again at once instead of waiting for nothing. */
   continued?: boolean;
+  /** #2251: this turn laid out, revised or filled a step list; read the conversation again. */
+  steps_changed?: boolean;
 }
 
 /** One HQ task (#2103): a turn that runs, waits, is parked on a question, or settled lately.
@@ -1455,11 +1463,53 @@ export interface AskAttachment {
   secret?: boolean;
 }
 
+/** One change against a replaced card (#2251): a field and its old and new value. A long text (a
+ *  brief, a message) is named with empty values. */
+export interface AskCardChange {
+  field: string;
+  from: string;
+  to: string;
+}
+
+/** One step of an HQ step list (#2251). Its state is the server's, derived from its cards. */
+export interface AskStep {
+  sid: string;
+  n: number;
+  title: string;
+  detail: string;
+  needs: string[];
+  state: "now" | "next" | "done" | "held" | "skipped" | "ended";
+  /** Why a step is held: its card did not complete, or it needs a skipped step. */
+  reason: "" | "card" | "needs_skipped";
+  outcome: string;
+  /** The step's cards (action ids), drawn in its slot while it is the current step. */
+  cards: string[];
+  settled_at: number | null;
+  /** A done step whose cards are all session starts: started, its work not tracked. */
+  started?: boolean;
+}
+
+/** HQ's ordered steps for a multi-part request (#2251): drawn ONCE, under `drawn_at_turn`. */
+export interface AskStepList {
+  id: string;
+  revision: number;
+  title: string;
+  status: "active" | "held" | "finished" | "ended";
+  current: string | null;
+  drawn_at_turn: string;
+  created_turn?: string;
+  steps: AskStep[];
+  /** HQ is about to continue (a step settled): keep reading. */
+  owed: boolean;
+}
+
 export interface AskConversation {
   id: string;
   title: string;
   turns: AskConversationTurn[];
   running: boolean;
+  /** #2251: the step lists, oldest first; null when they could not be read this time. */
+  step_lists?: AskStepList[] | null;
   /** #1443 Phase 4: the follower's updates, in order; the sessions followed; unseen updates. */
   updates?: AskUpdate[];
   following?: string[];

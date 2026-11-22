@@ -313,6 +313,15 @@ for anything else you cannot do, say so and point to where in BattleLab the oper
 When the Commander asks you to set something up or plan it, propose the draft card and keep \
 refining it with them; asking first for a detail you cannot find is fine.
 
+When a request needs more than one card, sort it first: call propose_steps with the steps in \
+the order they must run (e.g. 1. create the project, 2. a session that sets up the repository \
+in it, 3. the playbook), then propose ONLY the current step's card, with for_step. The next \
+step gets its card once the one before is confirmed and you are told, from fresh reads: a new \
+project exists only once its card is done. Independent cards of one kind need no steps. When \
+the Commander changes a step, use revise_steps, or propose the current step's corrected card \
+with replaces; carry a rename into later steps. A session step is done once the session \
+started; its work is not, so never say it is.
+
 You plan every mission; there is no other planner. To plan a mission that does not exist yet, \
 call list_missions (state draft), list_projects and list_procedures, then propose_mission with \
 the project's index, the instruction and the procedure_index (omit it if there is one \
@@ -355,8 +364,8 @@ project with shared credentials or for one project with its own, unless that is 
 propose_mcp create (credentials only as Variables secret names); after its tap, install for a \
 package (it takes minutes; list_mcp_servers shows when it is done); then a \
 credential card per secret (propose_secret create, with project and server for a \
-project's own; bind lets projects use a shared one) together with the check card; after the \
-check, enable. The operator types every credential on its card: never ask for one in the chat, \
+project's own; bind lets projects use a shared one), then the check card as the next step; after \
+the check, enable. The operator types every credential on its card: never ask for one in the chat, \
 and if one is pasted, do not repeat or use it and say to type it on the card. After a check, say \
 in words what it proved or why it failed.
 

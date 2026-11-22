@@ -781,3 +781,26 @@
     text-align: left;
   }
 }
+
+/* #2251: the Changed line on a card that replaced another — that card's trace once it is gone. */
+.changed {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--hud-tint);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.changed b {
+  flex: none;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.changed s {
+  color: var(--text-3);
+}
