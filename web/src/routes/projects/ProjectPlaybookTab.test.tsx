@@ -1,5 +1,5 @@
 /** Project → Playbook (#2143 P2, #1949): what the tab reads and when, which actions each state
- *  offers, and that retry and refusals follow the server (#1191). The hook's own deploy/retry
+ *  offers, and that resume (#2263), retry and refusals follow the server (#1191). The hook's own deploy/retry
  *  semantics are pinned in useProjectPlaybook.test.tsx; real-browser runs are
  *  e2e/projects-playbook.spec.ts and e2e/appmode-project-playbook-tab.spec.ts. */
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -31,6 +31,7 @@ vi.mock("../../lib/api", async (orig) => {
         "applyPlaybook",
         "reviewPlaybookRemoval",
         "removePlaybookDeployment",
+        "resumePlaybookOperation",
       ].map((n) => [n, vi.fn()]),
     ),
   };
@@ -203,32 +204,49 @@ test("an archived project's playbook can be verified and removed, never updated 
   expect(screen.getByRole("button", { name: /Verify again/ })).toBeTruthy();
 });
 
-test("an interrupted apply this page did not start offers no Retry, and says why", async () => {
-  vi.mocked(api.playbookDeployment).mockResolvedValue({
-    project_id: "p-1",
-    deployment_id: "d-1",
-    playbook_id: "ship-it",
-    state: "interrupted",
-    operation: "apply",
-    operation_id: "op-recorded",
-    files: [
-      { path: "RULES.md", state: "written" },
-      { path: "docs/playbook.md", state: "not written" },
-    ],
-  });
-  show();
-  const box = await screen.findByTestId("playbook-interrupted");
-  expect(within(box).getByText("op-recorded")).toBeTruthy();
-  expect(within(box).getByText("not written")).toBeTruthy();
-  expect(within(box).getByText(/doesn’t hold the signed review/)).toBeTruthy();
-  expect(screen.queryByTestId("playbook-retry")).toBeNull();
-  // An interrupted deployment is never verified (the server refuses it).
-  expect(api.verifyPlaybook).not.toHaveBeenCalled();
-  // Removal settles an interrupted apply, so it stays offered.
-  expect(screen.getByTestId("playbook-remove")).toBeTruthy();
+const interrupted = (operation: "bind" | "apply" | "remove", files?: DeploymentStatus["files"]): DeploymentStatus => ({
+  project_id: "p-1",
+  deployment_id: "d-1",
+  playbook_id: "ship-it",
+  state: "interrupted",
+  operation,
+  operation_id: "op-recorded",
+  files,
 });
 
-test("Retry resends the operation the server recorded, which this page holds", async () => {
+test("an interrupted apply this page did not start resumes by its recorded id alone", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue(
+    interrupted("apply", [
+      { path: "RULES.md", state: "written" },
+      { path: "docs/playbook.md", state: "not written" },
+    ]),
+  );
+  show();
+  const box = await screen.findByTestId("playbook-interrupted");
+  // Amber: it needs you, nothing has failed.
+  expect(box.dataset.tone).toBe("att");
+  expect(within(box).getByText("op-recorded")).toBeTruthy();
+  expect(within(box).getByText("not written")).toBeTruthy();
+  // An interrupted deployment is never verified (the server refuses it).
+  expect(api.verifyPlaybook).not.toHaveBeenCalled();
+  // Removal settles an interrupted apply too, so it stays offered.
+  expect(screen.getByTestId("playbook-remove")).toBeTruthy();
+  expect(screen.queryByTestId("playbook-retry")).toBeNull();
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ project_id: "p-1", state: "applied" });
+  const resume = screen.getByTestId("playbook-resume");
+  expect(resume.textContent).toMatch(/Resume apply/);
+  vi.mocked(api.playbookDeployment).mockResolvedValue(applied);
+  await userEvent.click(resume);
+  await waitFor(() => expect(api.resumePlaybookOperation).toHaveBeenCalledWith("p-1", "apply", "op-recorded"));
+  expect(await screen.findByTestId("playbook-done")).toHaveTextContent("Applied.");
+  await screen.findByTestId("playbook-verify");
+  // Only the id was sent: no review, bind or apply request.
+  expect(api.reviewPlaybook).not.toHaveBeenCalled();
+  expect(api.bindPlaybook).not.toHaveBeenCalled();
+  expect(api.applyPlaybook).not.toHaveBeenCalled();
+});
+
+test("the page that started an apply resumes it by id too, and never resends its held request", async () => {
   vi.mocked(api.playbookDeployment).mockResolvedValue({ project_id: "p-1", state: "none" });
   vi.mocked(api.applyPlaybook).mockRejectedValueOnce(new ApiError(503, "Service unavailable"));
   show();
@@ -237,21 +255,111 @@ test("Retry resends the operation the server recorded, which this page holds", a
   await waitFor(() => expect(api.reviewPlaybook).toHaveBeenCalled());
   // The failed apply left an interrupted journal under the id this page sent.
   vi.mocked(api.playbookDeployment).mockImplementation(async () => ({
-    project_id: "p-1",
-    deployment_id: "d-1",
-    playbook_id: "ship-it",
-    state: "interrupted",
-    operation: "apply",
+    ...interrupted("apply"),
     operation_id: vi.mocked(api.applyPlaybook).mock.calls[0][2],
   }));
   await userEvent.click(screen.getByRole("button", { name: "Apply reviewed changes to this project" }));
-  const retry = await screen.findByTestId("playbook-retry");
-  expect(retry.textContent).toMatch(/Retry apply/);
+  const resume = await screen.findByTestId("playbook-resume");
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ project_id: "p-1", state: "applied" });
   vi.mocked(api.playbookDeployment).mockResolvedValue(applied);
-  await userEvent.click(retry);
-  await waitFor(() => expect(api.applyPlaybook).toHaveBeenCalledTimes(2));
-  expect(vi.mocked(api.applyPlaybook).mock.calls[1]).toEqual(vi.mocked(api.applyPlaybook).mock.calls[0]);
+  await userEvent.click(resume);
+  await waitFor(() =>
+    expect(api.resumePlaybookOperation).toHaveBeenCalledWith("p-1", "apply", vi.mocked(api.applyPlaybook).mock.calls[0][2]),
+  );
+  await screen.findByTestId("playbook-verify");
+  expect(api.applyPlaybook).toHaveBeenCalledTimes(1);
   expect(api.bindPlaybook).toHaveBeenCalledTimes(1);
+  // The original failure is settled: its alert goes, and the completion shows.
+  expect(await screen.findByTestId("playbook-done")).toHaveTextContent("Applied.");
+  expect(screen.queryByTestId("playbook-error")).toBeNull();
+});
+
+test("Resume binding stops at bound; applying is its own step with the resumed bind's review", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue(interrupted("bind"));
+  show();
+  const resume = await screen.findByTestId("playbook-resume");
+  expect(resume.textContent).toMatch(/Resume binding/);
+  // A pending bind can't be removed (the server refuses it).
+  expect(screen.queryByTestId("playbook-remove")).toBeNull();
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ receipt: "resumed-receipt", digest: "d".repeat(64) });
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ ...applied, state: "bound" });
+  await userEvent.click(resume);
+  await waitFor(() => expect(api.resumePlaybookOperation).toHaveBeenCalledWith("p-1", "bind", "op-recorded"));
+  expect(await screen.findByTestId("playbook-done")).toHaveTextContent("Nothing is written until you apply.");
+  expect(api.applyPlaybook).not.toHaveBeenCalled();
+  const go = await screen.findByTestId("playbook-apply-bound");
+  vi.mocked(api.playbookDeployment).mockResolvedValue(applied);
+  await userEvent.click(go);
+  await waitFor(() => expect(api.applyPlaybook).toHaveBeenCalledTimes(1));
+  const [project, receipt, op] = vi.mocked(api.applyPlaybook).mock.calls[0];
+  expect([project, receipt]).toEqual(["p-1", "resumed-receipt"]);
+  expect(op).toMatch(/^[a-z0-9][a-z0-9-]{7,63}$/);
+  await screen.findByTestId("playbook-verify");
+});
+
+test("an expired review after a resumed bind is refused verbatim, then reviewed afresh", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue(interrupted("bind"));
+  show();
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ receipt: "old-receipt", digest: "d".repeat(64) });
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ ...applied, state: "bound" });
+  await userEvent.click(await screen.findByTestId("playbook-resume"));
+  vi.mocked(api.applyPlaybook).mockRejectedValueOnce(new ApiError(422, "the review expired; review it again"));
+  await userEvent.click(await screen.findByTestId("playbook-apply-bound"));
+  const refused = await screen.findByTestId("playbook-resume-refused");
+  expect(refused).toHaveTextContent("the review expired; review it again");
+  expect(refused).toHaveTextContent("Review the changes again to apply them.");
+  expect(refused.dataset.tone).toBe("att");
+  // The expired receipt is never sent again: the way on is a fresh review of the same playbook.
+  expect(screen.queryByTestId("playbook-apply-bound")).toBeNull();
+  await userEvent.click(screen.getByTestId("playbook-review-again"));
+  await userEvent.click(await screen.findByRole("button", { name: "Review playbook changes" }));
+  await waitFor(() => expect(api.reviewPlaybook).toHaveBeenCalled());
+  expect(vi.mocked(api.reviewPlaybook).mock.calls[0][0]).toBe("ship-it");
+});
+
+test("a bound deployment with nothing held offers a fresh review, never an apply it can't authorize", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ ...applied, state: "bound" });
+  show();
+  expect(await screen.findByTestId("playbook-bound")).toHaveTextContent("Review the changes to apply them");
+  expect(screen.getByTestId("playbook-review-again")).toBeTruthy();
+  expect(screen.queryByTestId("playbook-apply-bound")).toBeNull();
+  expect(screen.queryByTestId("playbook-retry")).toBeNull();
+});
+
+test("Resume removal finishes the recorded removal and the library returns", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue(
+    interrupted("remove", [
+      { path: "RULES.md", state: "removed" },
+      { path: "docs/playbook.md", state: "not removed" },
+    ]),
+  );
+  show();
+  const resume = await screen.findByTestId("playbook-resume");
+  expect(resume.textContent).toMatch(/Resume removal/);
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ project_id: "p-1", state: "removed" });
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ project_id: "p-1", state: "removed" });
+  await userEvent.click(resume);
+  await waitFor(() => expect(api.resumePlaybookOperation).toHaveBeenCalledWith("p-1", "remove", "op-recorded"));
+  expect(await screen.findByTestId("playbook-done")).toHaveTextContent("Removed. The project and its folders stay.");
+  expect(await screen.findByRole("radiogroup", { name: "Playbook" })).toBeTruthy();
+  expect(api.reviewPlaybookRemoval).not.toHaveBeenCalled();
+  expect(api.removePlaybookDeployment).not.toHaveBeenCalled();
+});
+
+test("a refused resume shows the server's words, in amber, with the way on", async () => {
+  vi.mocked(api.playbookDeployment).mockResolvedValue(interrupted("apply"));
+  vi.mocked(api.resumePlaybookOperation).mockRejectedValue(
+    new ApiError(409, "the accepted apply plan no longer reproduces"),
+  );
+  show();
+  await userEvent.click(await screen.findByTestId("playbook-resume"));
+  const refused = await screen.findByTestId("playbook-resume-refused");
+  expect(refused).toHaveTextContent("the accepted apply plan no longer reproduces");
+  expect(refused).toHaveTextContent("Remove playbook… settles this apply");
+  expect(refused.dataset.tone).toBe("att");
+  // Still interrupted, so Resume and Remove both stay.
+  expect(screen.getByTestId("playbook-resume")).toBeTruthy();
+  expect(screen.getByTestId("playbook-remove")).toBeTruthy();
 });
 
 test("a failed status read is a red state with Retry, never an empty playbook", async () => {
@@ -316,7 +424,7 @@ function interruptNextApply() {
   );
 }
 
-test("an interrupted UPDATE keeps its Retry: no review or choice is offered until it settles", async () => {
+test("an interrupted UPDATE offers Resume: no review or choice is offered until it settles", async () => {
   show();
   await screen.findByTestId("playbook-verify");
   await userEvent.click(screen.getByRole("button", { name: /Review update/ }));
@@ -324,18 +432,21 @@ test("an interrupted UPDATE keeps its Retry: no review or choice is offered unti
   await waitFor(() => expect(api.reviewPlaybook).toHaveBeenCalled());
   interruptNextApply();
   await userEvent.click(screen.getByRole("button", { name: "Apply reviewed changes to this project" }));
-  const retry = await screen.findByTestId("playbook-retry");
-  // Nothing that would replace the held request is on screen.
+  const resume = await screen.findByTestId("playbook-resume");
+  // Nothing that would start a second operation is on screen.
   expect(screen.queryByRole("button", { name: /Refresh review|Review playbook changes/ })).toBeNull();
   expect(screen.queryByRole("radiogroup", { name: "Playbook" })).toBeNull();
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ project_id: "p-1", state: "applied" });
   vi.mocked(api.playbookDeployment).mockResolvedValue(applied);
-  await userEvent.click(retry);
-  await waitFor(() => expect(api.applyPlaybook).toHaveBeenCalledTimes(2));
-  expect(vi.mocked(api.applyPlaybook).mock.calls[1]).toEqual(vi.mocked(api.applyPlaybook).mock.calls[0]);
+  await userEvent.click(resume);
+  await waitFor(() =>
+    expect(api.resumePlaybookOperation).toHaveBeenCalledWith("p-1", "apply", vi.mocked(api.applyPlaybook).mock.calls[0][2]),
+  );
+  expect(api.applyPlaybook).toHaveBeenCalledTimes(1);
   expect(api.reviewPlaybook).toHaveBeenCalledTimes(1);
 });
 
-test("Change → a replacement whose apply is interrupted shows the recorded operation and Retry, not the library", async () => {
+test("Change → a replacement whose apply is interrupted shows the recorded operation and Resume, not the library", async () => {
   vi.mocked(api.reviewPlaybookRemoval).mockResolvedValue({
     digest: "e".repeat(64),
     changes: [{ path: "RULES.md", action: "remove" }],
@@ -356,6 +467,48 @@ test("Change → a replacement whose apply is interrupted shows the recorded ope
   interruptNextApply();
   await userEvent.click(screen.getByRole("button", { name: "Apply reviewed changes to this project" }));
   expect(await screen.findByTestId("playbook-interrupted")).toBeTruthy();
-  expect(screen.getByTestId("playbook-retry")).toBeTruthy();
   expect(screen.queryByRole("radiogroup", { name: "Playbook" })).toBeNull();
+  // Resuming lands on the replacement as applied, never back in the library.
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ project_id: "p-1", state: "applied" });
+  vi.mocked(api.playbookDeployment).mockResolvedValue(applied);
+  await userEvent.click(screen.getByTestId("playbook-resume"));
+  await screen.findByTestId("playbook-verify");
+  expect(screen.queryByRole("radiogroup", { name: "Playbook" })).toBeNull();
+  expect(screen.getByTestId("playbook-remove")).toBeTruthy();
+  expect(await screen.findByTestId("playbook-done")).toHaveTextContent("Applied.");
+  expect(screen.queryByTestId("playbook-error")).toBeNull();
+});
+
+test("Change → a replacement whose bind is interrupted resumes to bound, with its separate Apply", async () => {
+  vi.mocked(api.reviewPlaybookRemoval).mockResolvedValue({
+    digest: "e".repeat(64),
+    changes: [{ path: "RULES.md", action: "remove" }],
+    conflicts: [],
+    bindings: { remove: [], restore: [], refusal: null },
+    directories: [],
+    secret_files: [],
+  });
+  vi.mocked(api.removePlaybookDeployment).mockResolvedValue({ project_id: "p-1", state: "removed" });
+  show();
+  await screen.findByTestId("playbook-verify");
+  await userEvent.click(screen.getByTestId("playbook-change"));
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ project_id: "p-1", state: "removed" });
+  await userEvent.click(await screen.findByRole("button", { name: "Remove reviewed playbook" }));
+  await userEvent.click(await screen.findByRole("radio", { name: /Ship it/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Review playbook changes" }));
+  await waitFor(() => expect(api.reviewPlaybook).toHaveBeenCalled());
+  vi.mocked(api.bindPlaybook).mockRejectedValueOnce(new ApiError(503, "Service unavailable"));
+  vi.mocked(api.playbookDeployment).mockImplementation(async () => ({
+    ...interrupted("bind"),
+    operation_id: vi.mocked(api.bindPlaybook).mock.calls[0]?.[4] ?? "op-recorded",
+  }));
+  await userEvent.click(screen.getByRole("button", { name: "Apply reviewed changes to this project" }));
+  const resume = await screen.findByTestId("playbook-resume");
+  vi.mocked(api.resumePlaybookOperation).mockResolvedValue({ receipt: "resumed-receipt", digest: "d".repeat(64) });
+  vi.mocked(api.playbookDeployment).mockResolvedValue({ ...applied, state: "bound" });
+  await userEvent.click(resume);
+  expect(await screen.findByTestId("playbook-apply-bound")).toBeTruthy();
+  expect(screen.queryByRole("radiogroup", { name: "Playbook" })).toBeNull();
+  expect(screen.queryByTestId("playbook-error")).toBeNull();
+  expect(api.applyPlaybook).not.toHaveBeenCalled();
 });

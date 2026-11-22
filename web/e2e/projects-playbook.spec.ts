@@ -62,10 +62,15 @@ type Fake = {
   /** Refuse the next apply: a 503 leaves an interrupted journal under its id; a 409 refuses it. */
   applyFails: null | 503 | 409;
   op: string | null;
+  /** Which operation `op` names while the state is interrupted (#2263). */
+  kind: "bind" | "apply" | "remove";
 };
+/** A request-free body: exactly `{operation_id}`, the resume by id (#2263). */
+const resumeBody = (body: Record<string, unknown> | null) =>
+  !!body && Object.keys(body).length === 1 && typeof body.operation_id === "string";
 
 async function mock(page: Page, entity = ENTITY, start: Fake["state"] = "none") {
-  const fake: Fake = { state: start, calls: [], verifies: 0, applyFails: null, op: null };
+  const fake: Fake = { state: start, calls: [], verifies: 0, applyFails: null, op: null, kind: "apply" };
   const json = (r: Parameters<Parameters<Page["route"]>[1]>[0], body: unknown, status = 200) =>
     r.fulfill({ status, json: body });
   await page.route("**/api/config", (r) =>
@@ -110,13 +115,31 @@ async function mock(page: Page, entity = ENTITY, start: Fake["state"] = "none") 
             playbook_id: "ship-it",
             state: fake.state,
             ...(fake.state === "interrupted"
-              ? { operation: "apply", operation_id: fake.op, files: [{ path: "RULES.md", state: "not written" }] }
+              ? {
+                  operation: fake.kind,
+                  operation_id: fake.op,
+                  files:
+                    fake.kind === "bind"
+                      ? undefined
+                      : [{ path: "RULES.md", state: fake.kind === "remove" ? "not removed" : "not written" }],
+                }
               : {}),
           };
     if (tail === "") return json(r, status());
     if (tail === "/verify") {
       fake.verifies++;
       return fake.state === "applied" ? json(r, VERIFIED) : json(r, { detail: "there is no applied deployment to verify" }, 409);
+    }
+    // A resume settles only the interrupted operation its id names; anything else is refused.
+    if (resumeBody(body) && (tail === "/bind" || tail === "/apply" || tail === "/remove")) {
+      if (fake.state !== "interrupted" || fake.op !== body!.operation_id || `/${fake.kind}` !== tail)
+        return json(r, { detail: "no operation is pending or recorded under this id" }, 409);
+      if (fake.kind === "bind") {
+        fake.state = "bound";
+        return json(r, { receipt: "resumed-receipt", digest: "c".repeat(64) });
+      }
+      fake.state = fake.kind === "apply" ? "applied" : "removed";
+      return json(r, { project_id: PID, deployment_id: "d-1", state: fake.state });
     }
     if (tail === "/bind") {
       fake.state = "bound";
@@ -195,22 +218,60 @@ test("deploy onto an existing project → verify → verify again → remove, ea
   expect(writes(fake).slice(-2)).toEqual(["…/remove/plan", "…/remove"]);
 });
 
-test("an interrupted apply: Retry resends the recorded operation id and never starts another", async ({ page }) => {
+test("an interrupted apply resumes after a reload by its id alone, and never starts another", async ({ page }) => {
   const fake = await mock(page);
   fake.applyFails = 503;
   await page.goto(projectPath(PID, "playbook"));
   await chooseAndReview(page);
   await page.getByRole("button", { name: "Apply reviewed changes to this project" }).click();
-  const box = page.getByTestId("playbook-interrupted");
-  await expect(box).toBeVisible();
+  await expect(page.getByTestId("playbook-interrupted")).toBeVisible();
   expect(fake.op).toMatch(/\S/);
+  // A fresh page: nothing of the original request survives the reload.
+  await page.reload();
+  const box = page.getByTestId("playbook-interrupted");
   await expect(box).toContainText(fake.op!);
-  await expect(page.getByTestId("playbook-error")).toHaveText("Service unavailable");
-  await page.getByTestId("playbook-retry").click();
+  await page.getByTestId("playbook-resume").click();
   await expect(page.getByTestId("playbook-verify")).toContainText("Verified");
-  const applies = fake.calls.filter((c) => c.path.endsWith("/apply")).map((c) => c.body!.operation_id);
-  expect(applies).toEqual([fake.op, fake.op]);
+  const applies = fake.calls.filter((c) => c.path.endsWith("/apply")).map((c) => c.body);
+  expect(applies.at(-1)).toEqual({ operation_id: fake.op });
+  expect(applies).toHaveLength(2);
   expect(fake.calls.filter((c) => c.path.endsWith("/bind"))).toHaveLength(1);
+});
+
+test("an interrupted bind resumes on a page that never held its inputs, stops at bound, then applies as its own step", async ({ page }, info) => {
+  const fake = await mock(page, ENTITY, "interrupted");
+  fake.kind = "bind";
+  fake.op = "bind-op-recorded";
+  await page.goto(projectPath(PID, "playbook"));
+  const resume = page.getByTestId("playbook-resume");
+  await expect(resume).toHaveText(/Resume binding/);
+  if (info.project.name === "mobile") {
+    const box = (await resume.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
+  await resume.click();
+  await expect(page.getByTestId("playbook-done")).toHaveText("Binding finished. Nothing is written until you apply.");
+  expect(fake.calls.filter((c) => c.path.endsWith("/bind")).map((c) => c.body)).toEqual([{ operation_id: "bind-op-recorded" }]);
+  // It stopped at bound: no apply until the operator asks for one.
+  expect(fake.calls.filter((c) => c.path.endsWith("/apply"))).toHaveLength(0);
+  await page.getByTestId("playbook-apply-bound").click();
+  await expect(page.getByTestId("playbook-verify")).toContainText("Verified");
+  const apply = fake.calls.find((c) => c.path.endsWith("/apply"))!.body!;
+  expect(apply.receipt).toBe("resumed-receipt");
+  expect(apply.operation_id).not.toBe("bind-op-recorded");
+});
+
+test("an interrupted removal resumes on a fresh page by its id alone", async ({ page }) => {
+  const fake = await mock(page, ENTITY, "interrupted");
+  fake.kind = "remove";
+  fake.op = "remove-op-recorded";
+  await page.goto(projectPath(PID, "playbook"));
+  await expect(page.getByTestId("playbook-interrupted")).toContainText("not removed");
+  await page.getByTestId("playbook-resume").click();
+  await expect(page.getByTestId("playbook-done")).toHaveText("Removed. The project and its folders stay.");
+  await expect(page.getByRole("radiogroup", { name: "Playbook" })).toBeVisible();
+  expect(writes(fake)).toEqual(["…/remove"]);
+  expect(fake.calls.filter((c) => c.body).map((c) => c.body)).toEqual([{ operation_id: "remove-op-recorded" }]);
 });
 
 test("a refused apply shows the server's words; an archived project gets no deploy action", async ({ page }) => {

@@ -32,9 +32,10 @@ A project's own page (`/projects/<id>`) has four tabs:
   check is green, amber when it needs you (an input with no value), red when it found a real failure
   (a missing binary, a file that drifted). **Review update** appears when the playbook has a newer
   revision; **Change playbook…** removes the current one through its reviewed removal, then offers the
-  library; **Remove playbook…** shows the removal plan first. If an apply or removal is interrupted,
-  the tab shows what each file reached; **Retry** resumes that same operation from the page that
-  started it, and never starts a second one. An archived project can't take a playbook: verify and
+  library; **Remove playbook…** shows the removal plan first. If a bind, apply or removal is
+  interrupted, the tab shows what each file reached and **Resume** finishes that same operation,
+  from any page or browser, and never starts a second one. A resumed bind stops before anything is
+  written; **Apply reviewed changes to this project** is then its own step. An archived project can't take a playbook: verify and
   remove still work. A refusal from the server is shown in its own words.
 - **Memory & equipment**: the project's memory switch (the same switch as Library → Memory), the
   secrets bound to the project and the automations that target it. Secrets and automations are

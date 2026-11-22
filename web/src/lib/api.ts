@@ -3429,6 +3429,18 @@ export const api = {
   playbookDeployment: (project: string) => getJsonWithDetail<DeploymentStatus>(`/api/projects/${encodeURIComponent(project)}/playbook`),
   reviewPlaybookRemoval: (project: string) => mutateJson<DeploymentRemoval>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove/plan`, {}),
   removePlaybookDeployment: (project: string, digest: string, operationId: string) => mutateJson<DeploymentStatus>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove`, { digest, operation_id: operationId }),
+  /** Resume an interrupted bind, apply or removal by its recorded id alone (#2263): the server finishes
+   *  that one operation from its own journal (or answers a finished one's result), never starts one.
+   *  A resumed bind stops at bound and answers its receipt; applying is a separate request. */
+  resumePlaybookOperation: <T extends "bind" | "apply" | "remove">(project: string, operation: T, operationId: string) => {
+    const p = encodeURIComponent(project);
+    const path = {
+      bind: `/api/projects/${p}/playbook/bind`,
+      apply: `/api/projects/${p}/playbook/apply`,
+      remove: `/api/projects/${p}/playbook/remove`,
+    }[operation];
+    return mutateJson<T extends "bind" ? DeploymentReceipt : DeploymentStatus>("POST", path, { operation_id: operationId });
+  },
   reviewPlaybookFleet: (id: string) => mutateJson<PlaybookFleetReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/review`, {}),
   updatePlaybookFleet: (id: string, digest: string, operationId: string) =>
     mutateJson<PlaybookFleetResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/update`, { digest, operation_id: operationId }),

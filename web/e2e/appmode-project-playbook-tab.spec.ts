@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PY_STACK_AVAILABLE, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
@@ -8,7 +8,8 @@ import { HOOK_TIMEOUT_MS } from "./harness";
  *  EXISTING project (made with no playbook) gets one from its Playbook tab through the real
  *  review → confirm → bind → apply → verify, verifies again, and has it removed through the real
  *  removal plan — the files appear and go on disk, the project and its folder stay. An archived
- *  project offers no deploy action. No workflow is started. */
+ *  project offers no deploy action. No workflow is started. An apply and a removal interrupted on
+ *  the real server are resumed after a reload by their recorded id alone (#2263). */
 test.describe.configure({ mode: "serial" });
 test.setTimeout(90_000);
 test.skip(!PY_STACK_AVAILABLE, "needs the Python stack (uv)");
@@ -142,4 +143,59 @@ test("an archived project offers no deploy action", async ({ page }) => {
   await expect(page.getByTestId("playbook-archived")).toBeVisible();
   await expect(page.getByRole("radiogroup", { name: "Playbook" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Apply reviewed/ })).toHaveCount(0);
+});
+
+/** A read-only `docs/` makes the real server fail mid-operation: RULES.md is done, docs/playbook.md
+ *  is not, and the journal records the operation as interrupted. Root ignores the mode, so skip. */
+test("an apply and a removal interrupted on the real server resume after a reload, by id alone", async ({ page }) => {
+  test.skip(process.getuid?.() === 0, "a read-only folder doesn't stop root");
+  const id = "tab-resume";
+  seed(id);
+  const { id: pid, folder } = await project(page, "tab-resume-project");
+  const docs = join(folder, "docs");
+  mkdirSync(docs);
+  const resumes: unknown[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && /\/playbook\/(apply|remove)$/.test(new URL(r.url()).pathname)) {
+      const body = r.postDataJSON() as Record<string, unknown>;
+      if (Object.keys(body).length === 1) resumes.push(body);
+    }
+  });
+  try {
+    chmodSync(docs, 0o555);
+    await page.goto(`${base()}/projects/${pid}?tab=playbook`);
+    await page.getByLabel("Search playbooks").fill(id);
+    await page.getByTestId(`playbook-card-${id}`).getByRole("radio").check();
+    await page.getByRole("checkbox", { name: /unsigned local playbook/ }).check();
+    await page.getByRole("button", { name: "Review playbook changes" }).click();
+    await page.getByRole("button", { name: "Apply reviewed changes to this project" }).click();
+    // The failed create was journaled before it failed, so the server reports it `unknown`.
+    await expect(page.getByTestId("playbook-interrupted")).toContainText("The apply was interrupted");
+    await expect(page.getByTestId("playbook-interrupted")).toContainText("docs/playbook.md");
+    expect(existsSync(join(folder, "RULES.md"))).toBe(true);
+    expect(existsSync(join(docs, "playbook.md"))).toBe(false);
+    chmodSync(docs, 0o755);
+
+    // A fresh page holds none of the original request.
+    await page.reload();
+    await page.getByTestId("playbook-resume").click();
+    await expect(page.getByTestId("playbook-verify")).toContainText("Verified");
+    expect(existsSync(join(docs, "playbook.md"))).toBe(true);
+    expect(resumes).toHaveLength(1);
+
+    chmodSync(docs, 0o555);
+    await page.getByTestId("playbook-remove").click();
+    await page.getByRole("button", { name: "Remove reviewed playbook", exact: true }).click();
+    await expect(page.getByTestId("playbook-interrupted")).toContainText("The removal was interrupted");
+    chmodSync(docs, 0o755);
+    await page.reload();
+    await page.getByTestId("playbook-resume").click();
+    await expect(page.getByTestId("playbook-done")).toHaveText("Removed. The project and its folders stay.");
+    expect(existsSync(join(folder, "RULES.md"))).toBe(false);
+    expect(existsSync(join(docs, "playbook.md"))).toBe(false);
+    expect(resumes).toHaveLength(2);
+    expect(resumes.every((b) => Object.keys(b as object).join() === "operation_id")).toBe(true);
+  } finally {
+    chmodSync(docs, 0o755);
+  }
 });

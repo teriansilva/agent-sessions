@@ -563,6 +563,13 @@ export function useProjectPlaybook(
       setRecovering(false);
       setStage("done");
     },
+    /** The held attempt was settled by a resume by its id (#2263): drop it, so nothing re-sends it,
+     *  and settle what its failure left (the error, a pending review recovery). */
+    release: () => {
+      hold(null);
+      setError("");
+      setRecovering(false);
+    },
     error,
     held,
     stage,

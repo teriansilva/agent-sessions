@@ -7,9 +7,10 @@
  *  - **Applied:** what is deployed, a verification (run when the tab opens and on Verify again; it
  *    has no stored time), the inputs it reads, and Review update · Verify again · Change playbook… ·
  *    Remove playbook…. Changing is a reviewed REMOVE, then the library — never an in-place swap.
- *  - **Interrupted:** the recorded operation and what each path reached. Retry is offered only
- *    when this page holds that exact operation (its id and its signed review): the server settles
- *    an operation only with the request it began with, and refuses any other while it is pending.
+ *  - **Interrupted:** the recorded operation and what each path reached, and Resume (#2263): it
+ *    sends the recorded id alone, so any page can finish it, and the server finishes only that one
+ *    operation from its own journal. Resume binding stops at bound; applying is its own step, with
+ *    the resumed bind's review, or a fresh review once that has expired.
  *  - **Archived:** no deploy action (the server refuses one with 409); verify and remove still work.
  *  A refused write shows the server's words as they came. */
 import { ArrowRight, RefreshCw, ShieldCheck } from "lucide-react";
@@ -25,9 +26,11 @@ import {
 } from "../../components/playbooks/ProjectPlaybook";
 import { ProjectPlaybookRemove } from "../../components/playbooks/ProjectPlaybookRemove";
 import type { Manifest } from "../../components/playbooks/playbookDraft";
+import { errorText } from "../../components/playbooks/usePlaybooks";
 import { usePlaybookGlobals } from "../../components/playbooks/usePlaybookGlobals";
 import { useProjectPlaybook } from "../../components/playbooks/useProjectPlaybook";
 import action from "../../components/ui/actionButton.module.css";
+import { api } from "../../lib/api";
 import { VARIABLES_PATH } from "../../lib/routes";
 import type { ProjectEntity } from "../../types/api";
 import type { DeploymentStatus } from "../../types/playbookDeployment";
@@ -99,6 +102,11 @@ export function ProjectPlaybookTab({ entity }: { entity: ProjectEntity }) {
   const [applying, setApplying] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  // A resume (#2263): `bound` holds the receipt a resumed bind answered, for the separate apply;
+  // `refused` is the server's refusal, verbatim.
+  const [resuming, setResuming] = useState(false);
+  const [bound, setBound] = useState<string | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
   const status = data.status;
 
   const finish = async (verified: Verification | null, what: string) => {
@@ -130,6 +138,7 @@ export function ProjectPlaybookTab({ entity }: { entity: ProjectEntity }) {
   const startUpdate = () => {
     if (!status?.playbook_id) return;
     setDone(null);
+    setRefused(null);
     setFlow("update");
     book.select(status.playbook_id);
   };
@@ -138,6 +147,63 @@ export function ProjectPlaybookTab({ entity }: { entity: ProjectEntity }) {
     setFlow(null);
     setDone("Removed. The project and its folders stay.");
     void data.reload();
+  };
+  /** Finish the interrupted operation the status names, by its id alone. A finished id answers its
+   *  recorded result, so a second page or a lost answer lands in the same place. */
+  const resume = async () => {
+    const op = status?.operation;
+    const id = status?.operation_id;
+    if (!op || !id || resuming) return;
+    setResuming(true);
+    setDone(null);
+    setRefused(null);
+    try {
+      // A resumed operation finishes the flow that started it (a Change's replacement, an update):
+      // the tab then follows the server's state, never a stale local flow.
+      if (op === "bind") {
+        const result = await api.resumePlaybookOperation(entity.id, "bind", id);
+        book.release();
+        setFlow(null);
+        setBound(result.receipt);
+        setDone("Binding finished. Nothing is written until you apply.");
+        await data.reload();
+      } else if (op === "apply") {
+        await api.resumePlaybookOperation(entity.id, "apply", id);
+        book.release();
+        setFlow(null);
+        await data.reload();
+        setDone("Applied.");
+      } else {
+        const result = await api.resumePlaybookOperation(entity.id, "remove", id);
+        book.release();
+        removed(result);
+      }
+    } catch (e) {
+      setRefused(errorText(e));
+      void data.reload();
+    } finally {
+      setResuming(false);
+    }
+  };
+  /** Apply after a resumed bind: its own request, with the review that bind was confirmed with. */
+  const applyBound = async () => {
+    if (!bound || resuming) return;
+    setResuming(true);
+    setDone(null);
+    setRefused(null);
+    try {
+      await api.applyPlaybook(entity.id, bound, crypto.randomUUID());
+      setBound(null);
+      await data.reload();
+      setDone("Applied.");
+    } catch (e) {
+      // An expired review can't be sent again; a fresh review is the way on.
+      setBound(null);
+      setRefused(errorText(e));
+      void data.reload();
+    } finally {
+      setResuming(false);
+    }
   };
 
   if (!status) {
@@ -154,14 +220,14 @@ export function ProjectPlaybookTab({ entity }: { entity: ProjectEntity }) {
   }
 
   const none = status.state === "none" || status.state === "removed";
-  const busy = applying || removing || book.busy;
+  const busy = applying || removing || resuming || book.busy;
   // The server's state outranks the local flow. While an operation is unsettled (interrupted, or
   // bound with this page's request still held) no library and no review is offered: a fresh review
   // or another choice would drop the only request that can resume it, and the server refuses any
   // other operation until that one settles.
   const unresolved = status.state === "interrupted" || (status.state === "bound" && !!book.held);
   const choosing = !unresolved && (none || flow === "choose");
-  const updating = !unresolved && flow === "update" && status.state === "applied";
+  const updating = !unresolved && flow === "update" && (status.state === "applied" || status.state === "bound");
   return (
     <div className={styles.body} data-testid="project-playbook-tab">
       {data.statusError && (
@@ -201,6 +267,11 @@ export function ProjectPlaybookTab({ entity }: { entity: ProjectEntity }) {
               updating={updating}
               onUpdate={startUpdate}
               onRetry={() => void retry()}
+              onResume={() => void resume()}
+              resuming={resuming}
+              refused={refused}
+              boundReceipt={bound}
+              onApplyBound={() => void applyBound()}
               onRemoving={setRemoving}
               onRemoved={removed}
               onChanged={(result) => {
@@ -364,6 +435,11 @@ function DeploymentPanel({
   updating,
   onUpdate,
   onRetry,
+  onResume,
+  resuming,
+  refused,
+  boundReceipt,
+  onApplyBound,
   onRemoving,
   onRemoved,
   onChanged,
@@ -384,6 +460,11 @@ function DeploymentPanel({
   updating: boolean;
   onUpdate: () => void;
   onRetry: () => void;
+  onResume: () => void;
+  resuming: boolean;
+  refused: string | null;
+  boundReceipt: string | null;
+  onApplyBound: () => void;
   onRemoving: (busy: boolean) => void;
   onRemoved: (status: DeploymentStatus) => void;
   onChanged: (status: DeploymentStatus) => void;
@@ -392,11 +473,12 @@ function DeploymentPanel({
   const applied = status.state === "applied";
   const interrupted = status.state === "interrupted";
   const op = interrupted ? status.operation : undefined;
-  // Retry only with the operation the server recorded AND this page holds (its signed review).
-  const heldOp = op === "apply" ? book.held?.apply : op === "bind" ? book.held?.bind : undefined;
-  const canRetry =
-    (interrupted && !!status.operation_id && heldOp === status.operation_id) ||
-    (status.state === "bound" && !!book.held);
+  // An interrupted operation resumes by its recorded id (#2263), from any page. Retry is left only
+  // for a bind this page finished whose apply never started: it sends this page's own request.
+  const canResume = interrupted && !!op && !!status.operation_id;
+  const canRetry = status.state === "bound" && !!book.held;
+  // Bound with nothing held: apply with the resumed bind's review, or review again.
+  const boundIdle = status.state === "bound" && !book.held && !entity.archived && !updating;
   const update = !!fleet?.updateAvailable && !entity.archived && applied;
   const name = detail?.name || status.playbook_id || "Playbook";
   const removable = op !== "bind";
@@ -439,7 +521,15 @@ function DeploymentPanel({
           )}
         </dl>
       )}
-      {interrupted && <Interrupted status={status} canRetry={canRetry} />}
+      {interrupted && <Interrupted status={status} />}
+      {refused && <Refused operation={op} bound={status.state === "bound"} text={refused} />}
+      {boundIdle && (
+        <p className={styles.quietLine} data-testid="playbook-bound">
+          {boundReceipt
+            ? "Inputs are bound. Nothing is written until you apply."
+            : "Inputs are bound, but nothing is applied. Review the changes to apply them."}
+        </p>
+      )}
       {applied && (
         <VerifyBlock verification={verification} verifiedAt={verifiedAt} error={verifyError} verifying={verifying} />
       )}
@@ -449,11 +539,27 @@ function DeploymentPanel({
         </p>
       )}
       <div className={styles.pbActions}>
-        {canRetry && (
-          <button type="button" className={action.primary} disabled={busy} onClick={onRetry} data-testid="playbook-retry">
-            <RefreshCw size={14} aria-hidden="true" /> Retry {op === "bind" ? "binding" : "apply"}
+        {canResume && (
+          <button type="button" className={action.primary} disabled={busy} onClick={onResume} data-testid="playbook-resume">
+            <RefreshCw size={14} aria-hidden="true" />{" "}
+            {resuming ? "Resuming…" : `Resume ${op === "bind" ? "binding" : op === "remove" ? "removal" : "apply"}`}
           </button>
         )}
+        {canRetry && (
+          <button type="button" className={action.primary} disabled={busy} onClick={onRetry} data-testid="playbook-retry">
+            <RefreshCw size={14} aria-hidden="true" /> Retry apply
+          </button>
+        )}
+        {boundIdle &&
+          (boundReceipt ? (
+            <button type="button" className={action.primary} disabled={busy} onClick={onApplyBound} data-testid="playbook-apply-bound">
+              Apply reviewed changes to this project
+            </button>
+          ) : (
+            <button type="button" className={action.primary} disabled={busy} onClick={onUpdate} data-testid="playbook-review-again">
+              Review playbook changes
+            </button>
+          ))}
         {update && !updating && (
           <button type="button" className={action.primary} disabled={busy} onClick={onUpdate}>
             <RefreshCw size={14} aria-hidden="true" /> Review update
@@ -508,12 +614,13 @@ function DeploymentPanel({
   );
 }
 
-function Interrupted({ status, canRetry }: { status: DeploymentStatus; canRetry: boolean }) {
+/** Amber: the operation needs you, and nothing has failed. */
+function Interrupted({ status }: { status: DeploymentStatus }) {
   const what = status.operation === "remove" ? "removal" : status.operation === "bind" ? "binding" : "apply";
   return (
-    <div className={styles.verify} data-tone="down" data-testid="playbook-interrupted">
+    <div className={styles.verify} data-tone="att" data-testid="playbook-interrupted">
       <p className={styles.verifyHead}>
-        <Led tone="down" />
+        <Led tone="att" />
         <b>The {what} was interrupted</b>
         <span>
           Operation <code>{status.operation_id ?? "unrecorded"}</code>
@@ -530,13 +637,43 @@ function Interrupted({ status, canRetry }: { status: DeploymentStatus; canRetry:
         </ul>
       )}
       <p className={styles.quietLine}>
-        {canRetry
-          ? "Retry resumes this same operation with the review it started from; it never starts a second one."
+        {status.operation === "bind"
+          ? "Resume finishes this same binding from what the server recorded; it never starts a second one. No files are written until you apply."
           : status.operation === "remove"
-            ? "Only the removal dialog that started it can resume it: the server settles an operation only with the reviewed plan it began with, and refuses any other while this one is pending."
-            : status.operation === "apply"
-              ? "This page doesn’t hold the signed review this apply started from (it is never stored), so it can’t resume it. Remove playbook… settles it: removal takes back only the files this apply proves it wrote."
-              : "This page doesn’t hold the inputs this binding started from (they are never stored), so it can’t resume it."}
+            ? "Resume finishes the reviewed removal the server recorded; it never starts a second one."
+            : "Resume finishes the files that aren’t written yet, from the plan that was reviewed; it never starts a second one. Remove playbook… settles it instead, taking back only the files this apply proves it wrote."}
+      </p>
+    </div>
+  );
+}
+
+/** A refused resume or apply: the server's words, and the way on. Amber, as the boards draw it. */
+function Refused({
+  operation,
+  bound,
+  text,
+}: {
+  operation?: DeploymentStatus["operation"];
+  bound: boolean;
+  text: string;
+}) {
+  return (
+    <div className={styles.verify} data-tone="att" role="alert" data-testid="playbook-resume-refused">
+      <p className={styles.verifyHead}>
+        <Led tone="att" />
+        <b>Refused</b>
+      </p>
+      <p className={styles.quietLine}>
+        <code>{text}</code>
+      </p>
+      <p className={styles.quietLine}>
+        {operation === "apply"
+          ? "Remove playbook… settles this apply: removal takes back only the files it proves it wrote."
+          : operation === "bind"
+            ? "A binding it would set changed meanwhile, and nothing was overwritten. Check this project’s inputs in Library → Variables, then resume again."
+            : bound
+              ? "Inputs are bound, but nothing is applied. Review the changes again to apply them."
+              : "Read the playbook again to see where it stands."}
       </p>
     </div>
   );
