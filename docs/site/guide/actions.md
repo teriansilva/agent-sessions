@@ -35,9 +35,9 @@ are a class, never a state, so they never turn green, amber or red.
 | Effect | Pips | What it may change |
 |---|---|---|
 | **Read** | 1 | Nothing: it only reads. |
-| **Notify** | 2 | Your notifications (the bell). *Tell HQ* is one. |
-| **Write · BattleLab** | 3 | Things inside BattleLab: it starts or messages a session, or creates a mission draft. |
-| **Write · external** | 4 | Something outside BattleLab, such as another service. |
+| **Notify** | 2 | Your notifications (the bell), or a message to a chat or inbox you set up. *Tell HQ* and *Send a message* are. |
+| **Write · BattleLab** | 3 | Things inside BattleLab: it starts or messages a session, creates a mission draft, publishes an artifact or writes a memory note. |
+| **Write · external** | 4 | Something outside BattleLab, such as another service. *Call a webhook* is one. |
 | **Run · local** | 5 | It runs a program on this machine. |
 
 The other classes are listed so you know what a later action means when it arrives.
@@ -54,6 +54,7 @@ The other classes are listed so you know what a later action means when it arriv
 | Send a message | Messaging | Notify | any trigger |
 | Call a webhook | Web | Write · external | any trigger |
 | Publish an artifact | Files | Write · BattleLab | any trigger |
+| Write a memory note | BattleLab | Write · BattleLab | any trigger |
 
 What each one asks for, and how its approval works, is in [Automations](/guide/automations), step 3 (*What*).
 
@@ -156,6 +157,25 @@ build's coverage page) at a stable artifact link (Library → Artifacts) you can
   another folder, the automation pauses until you approve it again. Before every run the path is
   checked again, and artifacts must still be on for the project.
 - The run records the artifact's link.
+
+## Write a memory note
+
+**What it is for.** Leaving a short fact in a project's [memory](/guide/projects) for the agents
+that work there later: "the nightly build needs 12 GB of RAM", "release 2.4 shipped on Friday".
+
+**What you pick.** The **project**, the note's **title**, and its **text**: plain text, or a
+template whose fields can take typed values from a webhook delivery. A delivery never chooses the
+project.
+
+**What keeps it safe.**
+
+- The note goes through the same door as an agent's note: BattleLab **reviews it before other
+  sessions see it**. One that looks like a credential or holds one of your stored secrets is held
+  back in the project's memory quarantine for you, and the run says so.
+- The project's memory must be on, when you save and when it runs.
+- A template with a secret is refused: other sessions read the project's memory.
+- Agents read notes as hints, never as instructions.
+- A run files its note at most once, even if it is retried after a crash.
 
 ## More actions later
 

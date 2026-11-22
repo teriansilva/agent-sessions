@@ -57,15 +57,15 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 def _modules() -> dict[str, ModuleType]:
     # At call time: each module imports the stores and transports it needs.
-    from . import call_webhook, publish_artifact, send_message
+    from . import call_webhook, publish_artifact, send_message, write_memory
 
-    return {m.ID: m for m in (send_message, call_webhook, publish_artifact)}
+    return {m.ID: m for m in (send_message, call_webhook, publish_artifact, write_memory)}
 
 
 #: The closed table of plugin ids, in the gallery's order. A manifest whose executor is not one of
 #: these is refused by the registry; a stored action naming another id is refused at save and runs
 #: nothing.
-PLUGINS = ("send_message", "call_webhook", "publish_artifact")
+PLUGINS = ("send_message", "call_webhook", "publish_artifact", "write_memory")
 
 
 def module(plugin_id: object) -> ModuleType:

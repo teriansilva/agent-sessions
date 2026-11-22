@@ -315,7 +315,16 @@ def _plugin_scopes() -> dict[str, dict]:
         "checklist": None,
         "plugin": {"of": "publish_artifact", "cwd": {"path": "/w/shop", "real": "/srv/shop"}},
     }
+    note = model.validate_config(
+        _config(
+            _plugin(
+                "write_memory",
+                {"project_id": "p1", "title": "Nightly", "message": {"text": "builds are green"}},
+            )
+        )
+    )
     return {
+        "write_memory": model.scope_of(_scheduled(note), {"template": None, "checklist": None}),
         "publish_artifact": model.scope_of(_scheduled(art), art_pins),
         "send_message": model.scope_of(_scheduled(send), pins_),
         "call_webhook": model.scope_of(_scheduled(hook), {"template": None, "checklist": None}),
@@ -1178,3 +1187,162 @@ def test_a_repointed_project_folder_needs_approval_again(shop, tmp_path):
     res = _execute(_manual_run(aid))
     assert res["run"]["outcome"] == "refused" and "approval again" in res["run"]["reason"]
     assert store.get(aid)["needs_reapproval"]
+
+
+# ---- Write a memory note ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def notebook(tmp_path, monkeypatch):
+    from agent_sessions import memory, projects
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    pid = projects.create("demo", folders=[str(ws)]).id
+    memory.set_enabled(pid, True)
+    return pid
+
+
+def _note(pid: str, text: str = "The nightly build needs 12 GB of RAM", **kw) -> dict:
+    return _plugin(
+        "write_memory",
+        {
+            "project_id": pid,
+            "title": kw.pop("title", "Nightly build memory"),
+            "message": {"text": text},
+        },
+        kw.pop("mapped", None),
+    )
+
+
+def _notes(pid: str) -> list[dict]:
+    from agent_sessions import memory
+
+    return memory.notes(pid)
+
+
+def test_write_memory_validates_strictly():
+    with pytest.raises(model.AutomationError, match="needs a title"):
+        model.validate_action(_note("p1", title=" "))
+    with pytest.raises(model.AutomationError, match="does not take slug"):
+        model.validate_action(
+            _plugin(
+                "write_memory",
+                {"project_id": "p1", "title": "t", "message": {"text": "x"}, "slug": "s"},
+            )
+        )
+
+
+def test_a_note_is_saved_only_where_memory_is_on(notebook, tmp_path):
+    from agent_sessions import memory, projects
+
+    (tmp_path / "off").mkdir()
+    other = projects.create("off", folders=[str(tmp_path / "off")]).id
+    with pytest.raises(model.AutomationError, match="memory is off"):
+        routes._create(_config(_note(other)))
+    with pytest.raises(model.AutomationError, match="doesn't exist"):
+        routes._create(_config(_note("nope")))
+    assert routes._create(_config(_note(notebook)))["action"]["plugin"] == "write_memory"
+    memory.set_enabled(notebook, False)
+
+
+def test_a_run_files_the_note_through_the_memory_service_once(notebook):
+    aid = _made(_config(_note(notebook)))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert "filed in project memory" in res["run"]["reason"]
+    (n,) = _notes(notebook)
+    assert n["name"] == "Nightly build memory" and "12 GB" in json.dumps(n)
+
+
+def test_a_note_with_a_credential_is_held_back_by_the_review(notebook):
+    aid = _made(_config(_note(notebook, "deploy key ghp_0123456789abcdefABCDEF0123456789abcd")))
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused", res["run"]
+    assert "held back by BattleLab's review" in res["run"]["reason"]
+    assert _notes(notebook) == []
+
+
+def test_memory_switched_off_after_save_refuses_the_run(notebook):
+    from agent_sessions import memory
+
+    aid = _made(_config(_note(notebook)))
+    memory.set_enabled(notebook, False)
+    res = _execute(_manual_run(aid))
+    assert res["run"]["outcome"] == "refused" and "nothing was filed" in res["run"]["reason"]
+
+
+def test_a_disable_before_the_note_files_nothing(notebook, monkeypatch):
+    aid = _made(_config(_note(notebook)))
+    real = store.set_inputs
+
+    def then_disabled(rid, inputs):
+        real(rid, inputs)
+        routes._simple(aid, "disable")
+
+    monkeypatch.setattr(store, "set_inputs", then_disabled)
+    assert _execute(_manual_run(aid))["run"]["outcome"] == "stopped"
+    assert _notes(notebook) == []
+
+
+def test_a_cancel_during_the_write_then_a_disable_reports_in_flight_and_one_note(
+    notebook, monkeypatch
+):
+    from agent_sessions import memory_service
+
+    aid = _made(_config(_note(notebook)))
+    entered, release = threading.Event(), threading.Event()
+    real = memory_service.submit
+
+    def slow(*a, **kw):
+        entered.set()
+        assert release.wait(10)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(memory_service, "submit", slow)
+    run_ = _manual_run(aid)
+
+    async def go():
+        task = asyncio.ensure_future(automation_runner.execute(run_, registry=None))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        disabled = await asyncio.to_thread(routes._simple, aid, "disable")
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return disabled
+
+    disabled = asyncio.run(go())
+    assert disabled["in_flight"] is True
+    assert len(_notes(notebook)) == 1
+    assert _runs(aid)[0]["outcome"] == "ok"
+
+
+def test_a_delivery_fills_the_notes_template_and_never_the_project(notebook, spawned, tmp_path):
+    from agent_sessions import memory, projects
+
+    (tmp_path / "other").mkdir()
+    other = projects.create("other", folders=[str(tmp_path / "other")]).id
+    memory.set_enabled(other, True)
+    t = tstore.create_template(
+        {"name": "pr note", "body": "PR {{title}} was opened", "fields": [{"name": "title"}]}
+    )
+    pub, _ = webhooks.create("ci")
+    action = _plugin(
+        "write_memory",
+        {
+            "project_id": notebook,
+            "title": "PR opened",
+            "message": {"template_id": t["id"], "values": {}},
+        },
+        {"title": {"path": "pull_request.title", "type": "text"}},
+    )
+    aid = _made(_config(action, trigger={"kind": "webhook", "webhook_id": pub["id"]}))
+    _deliver(aid, pub["id"], {**PR, "project_id": other})
+    res = _execute(spawned[0])
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert "Fix totals" in json.dumps(_notes(notebook)) and _notes(other) == []

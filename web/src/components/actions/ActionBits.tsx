@@ -6,6 +6,7 @@ import {
   Crosshair,
   MessageSquare,
   FileUp,
+  NotebookPen,
   Send,
   Webhook,
   RadioTower,
@@ -42,6 +43,7 @@ const ICON: Record<string, LucideIcon> = {
   send_message: Send,
   call_webhook: Webhook,
   publish_artifact: FileUp,
+  write_memory: NotebookPen,
 };
 
 export function ActionIcon({ id }: { id: string }) {

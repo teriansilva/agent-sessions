@@ -106,6 +106,10 @@ export function scopeLines(config: Json): string[] {
       lines.push(`To ${String(inputs.recipient)}, a recipient you allowed for it`);
       lines.push(messageLine("Message", inputs.message as Json));
     }
+    if (action.plugin === "write_memory") {
+      lines.push(`Writes a note titled “${String(inputs.title)}” into project ${String(inputs.project_id)}'s memory`);
+      lines.push(messageLine("Message", inputs.message as Json));
+    }
     if (action.plugin === "publish_artifact") {
       lines.push(`Publishes ${String(inputs.path)} from project ${String(inputs.project_id)}, in /repo`);
       lines.push("As a PRIVATE artifact: only you can open it until you share it yourself");

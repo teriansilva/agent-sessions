@@ -283,6 +283,7 @@ export function actionLabel(
   if (kind === "send_message") return "Send a message";
   if (kind === "call_webhook") return "Call a webhook";
   if (kind === "publish_artifact") return "Publish an artifact";
+  if (kind === "write_memory") return "Write a memory note";
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
@@ -324,6 +325,7 @@ function pluginTargetWords(action: PluginAction): string {
   if (action.plugin === "send_message") return `a message to ${String(i.recipient ?? "")}`;
   if (action.plugin === "call_webhook") return hostOf(String(i.destination ?? ""));
   if (action.plugin === "publish_artifact") return String(i.path ?? "");
+  if (action.plugin === "write_memory") return "project memory";
   return action.plugin;
 }
 
@@ -662,6 +664,9 @@ export interface EditorForm {
   artifactTitle: string;
   artifactWhy: string;
   lineMaps: { title: MappingDraft | null; why: MappingDraft | null };
+  // "Write a memory note" (#2248 P2): the note's title; its project is `projectId`, its text the
+  // message (text or template, as for the five).
+  noteTitle: string;
 }
 
 /** A condition as the wizard edits it. Each value is its own element with its OWN type, kept as
@@ -744,6 +749,7 @@ export function blankForm(tz: string): EditorForm {
     artifactTitle: "",
     artifactWhy: "",
     lineMaps: { title: null, why: null },
+    noteTitle: "",
   };
 }
 
@@ -879,6 +885,10 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
           map: { path: m.path, type: m.type, choices: [...(m.choices ?? [])] },
         })),
       ].sort((x, y) => x.name.localeCompare(y.name));
+    }
+    if (act.plugin === "write_memory") {
+      f.projectId = String(i.project_id ?? "");
+      f.noteTitle = String(i.title ?? "");
     }
     if (act.plugin === "publish_artifact") {
       f.projectId = String(i.project_id ?? "");
@@ -1028,11 +1038,10 @@ function formPlugin(f: EditorForm, plugin: PluginId): PluginAction {
   const { from_delivery: mapped, ...message } = formMessage(f) as AutomationMessage & {
     from_delivery?: Record<string, DeliveryMapping>;
   };
-  const inputs: Record<string, unknown> = {
-    connector: f.connector,
-    recipient: f.recipient,
-    message,
-  };
+  const inputs: Record<string, unknown> =
+    plugin === "write_memory"
+      ? { project_id: f.projectId, title: f.noteTitle.trim(), message }
+      : { connector: f.connector, recipient: f.recipient, message };
   const out: PluginAction = { kind: "plugin", plugin, version: 1, inputs };
   return mapped && Object.keys(mapped).length ? { ...out, from_delivery: mapped } : out;
 }
@@ -1190,6 +1199,10 @@ function whatProblems(f: EditorForm): string[] {
   if (f.actionKind === "send_message") {
     if (!f.connector) out.push("Choose what to send with");
     else if (!f.recipient) out.push("Choose who receives it");
+  }
+  if (f.actionKind === "write_memory") {
+    if (!f.projectId) out.push("Choose a project");
+    if (!f.noteTitle.trim()) out.push("Give the note a title");
   }
   if (f.actionKind === "publish_artifact") {
     if (!f.projectId) out.push("Choose a project");

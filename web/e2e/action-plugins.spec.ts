@@ -219,6 +219,23 @@ for (const theme of ["dark", "light"] as const) {
     await save(page, "Tell the shop");
     await expect(page.getByTestId("destination-secret")).toBeVisible();
     await shot("webhook-secret-once");
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await setup(page);
+    await page.goto(AUTOMATION_NEW_PATH);
+    await toStep(page, "What does it do?");
+    await page.getByTestId("action-kind-publish_artifact").click();
+    await page.getByTestId("artifact-project").selectOption(PROJECT.id);
+    await page.getByTestId("artifact-path").fill("reports/nightly.md");
+    await page.getByTestId("artifact-title-value").fill("Nightly report");
+    await shot("publish-artifact");
+    await page.getByTestId("action-kind-write_memory").click();
+    await page.getByTestId("note-project").selectOption(PROJECT.id);
+    await page.getByTestId("note-title").fill("Nightly build memory");
+    await page.getByTestId("message-text").fill("The nightly build needs 12 GB of RAM");
+    await shot("write-memory");
+    await page.goto(ACTIONS_PATH);
+    await expect(page.getByTestId("action-card")).toHaveCount(ACTION_GALLERY.actions.length);
+    await shot("gallery");
   });
 }
 
@@ -303,5 +320,31 @@ test("Publish an artifact: a project, a path inside it, a title from the deliver
     version: 1,
     inputs: { project_id: PROJECT.id, path: "reports/nightly.md", title: "", why: "the nightly run" },
     from_delivery: { title: { path: "pull_request.title", type: "text" } },
+  });
+});
+
+// ---- Write a memory note ------------------------------------------------------------------------
+
+test("Write a memory note: a project, a title and the note's text", async ({ page }) => {
+  const fake = await setup(page);
+  await page.goto(AUTOMATION_NEW_PATH);
+  await toStep(page, "What does it do?");
+  await page.getByTestId("action-kind-write_memory").click();
+  await page.getByTestId("note-project").selectOption(PROJECT.id);
+  await page.getByTestId("note-title").fill("Nightly build memory");
+  await page.getByTestId("message-text").fill("The nightly build needs 12 GB of RAM");
+  await expect(page.getByTestId("write-memory-what")).toContainText("reviews the note");
+  await animationsSettled(page);
+  await targetsAndOverflow(page, "main");
+  await save(page, "Remember the build");
+  expect(created(fake).action).toEqual({
+    kind: "plugin",
+    plugin: "write_memory",
+    version: 1,
+    inputs: {
+      project_id: PROJECT.id,
+      title: "Nightly build memory",
+      message: { text: "The nightly build needs 12 GB of RAM" },
+    },
   });
 });

@@ -178,3 +178,25 @@ describe("publish_artifact", () => {
     expect(what({})).toEqual([]);
   });
 });
+
+describe("write_memory", () => {
+  it("sends the project, the title and the message, and reads back the same", () => {
+    const f = form({ actionKind: "write_memory", projectId: "p1", noteTitle: " Build ", text: "12 GB" });
+    const action = formAction(f);
+    expect(action).toEqual({
+      kind: "plugin",
+      plugin: "write_memory",
+      version: 1,
+      inputs: { project_id: "p1", title: "Build", message: { text: "12 GB" } },
+    });
+    const back = formFromAutomation(
+      { name: "n", trigger: { kind: "manual" }, action, policy: null } as unknown as Automation,
+      "UTC",
+    );
+    expect(formAction(back)).toEqual(action);
+    expect(stepProblems(form({ actionKind: "write_memory", text: "x" })).what).toEqual([
+      "Choose a project",
+      "Give the note a title",
+    ]);
+  });
+});

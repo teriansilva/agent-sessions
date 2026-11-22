@@ -164,6 +164,8 @@ function whatWords(form: EditorForm, projectName: (id: string) => string): strin
       return `${label} · a message in your notifications`;
     case "send_message":
       return form.recipient ? `${label} · to ${form.recipient}` : label;
+    case "write_memory":
+      return form.projectId ? `${label} in ${projectName(form.projectId)}` : label;
     case "publish_artifact":
       return form.artifactPath.trim() ? `${label} · ${form.artifactPath.trim()}` : label;
     case "call_webhook":

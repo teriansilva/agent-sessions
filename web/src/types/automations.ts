@@ -110,8 +110,13 @@ export type AutomationAction =
 
 /** The registry's plugin actions (#2248 P2), stored as ONE kind. `inputs` is the plugin's own,
  *  validated strictly by the server; `from_delivery` maps a webhook delivery's typed values. */
-export type PluginId = "send_message" | "call_webhook" | "publish_artifact";
-export const PLUGIN_IDS: readonly PluginId[] = ["send_message", "call_webhook", "publish_artifact"];
+export type PluginId = "send_message" | "call_webhook" | "publish_artifact" | "write_memory";
+export const PLUGIN_IDS: readonly PluginId[] = [
+  "send_message",
+  "call_webhook",
+  "publish_artifact",
+  "write_memory",
+];
 
 /** "Call a webhook" (#2248 P2): its destination and whether its signing secret exists. Never the
  *  secret: that is in the ONE answer that made it (`destination_secret`). */

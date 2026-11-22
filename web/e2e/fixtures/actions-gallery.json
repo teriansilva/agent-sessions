@@ -432,6 +432,63 @@
       ],
       "available": true,
       "used_by": 0
+    },
+    {
+      "id": "write_memory",
+      "label": "Write a memory note",
+      "category": "battlelab",
+      "description": "Leaves a short note in a project's memory; BattleLab reviews it before other sessions see it.",
+      "effect": "write-battlelab",
+      "executor": "write_memory",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "label": "Title",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Note",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "note",
+          "type": "note",
+          "label": "The note"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "memory",
+          "words": "project memory switched on for the project",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 0
     }
   ],
   "categories": [

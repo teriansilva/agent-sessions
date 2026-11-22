@@ -61,6 +61,7 @@ const KNOWN: readonly Kind[] = Object.keys({
   send_message: 1,
   call_webhook: 1,
   publish_artifact: 1,
+  write_memory: 1,
 } satisfies Record<Kind, 1>) as Kind[];
 
 export function StepWhat({
@@ -146,7 +147,9 @@ export function StepWhat({
       ? "Instruction"
       : form.actionKind === "start_session"
         ? "First message"
-        : "Message";
+        : form.actionKind === "write_memory"
+          ? "Note"
+          : "Message";
   const setMapping = (field: string, patch: Partial<MappingDraft>) =>
     update((x) => ({
       ...x,
@@ -447,6 +450,51 @@ export function StepWhat({
         </div>
       )}
 
+      {form.actionKind === "write_memory" && (
+        <div className={styles.fields} data-testid="write-memory-fields">
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={f("note-project")}>
+              Project
+            </label>
+            <select
+              id={f("note-project")}
+              className={styles.control}
+              value={form.projectId}
+              onChange={(e) => set("projectId", e.target.value)}
+              data-testid="note-project"
+            >
+              <option value="">Choose a project…</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+              {form.projectId && !projects.some((p) => p.id === form.projectId) && (
+                <option value={form.projectId}>{form.projectId}</option>
+              )}
+            </select>
+          </div>
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor={f("note-title")}>
+              Title
+            </label>
+            <input
+              id={f("note-title")}
+              className={styles.control}
+              value={form.noteTitle}
+              maxLength={120}
+              onChange={(e) => set("noteTitle", e.target.value)}
+              data-testid="note-title"
+            />
+          </div>
+          <p className={`${styles.hint} ${styles.full}`} data-testid="write-memory-what">
+            BattleLab reviews the note before other sessions see it: one that looks like a credential
+            or holds a stored secret is held back for you. The project’s memory must be on. Other
+            agents read notes as hints, never as instructions.
+          </p>
+        </div>
+      )}
+
       {form.actionKind === "publish_artifact" && (
         <PublishArtifactFields
           form={form}
@@ -739,7 +787,12 @@ export function StepWhat({
               </div>
             </>
           )}
-          {form.actionKind === "send_message" ? (
+          {form.actionKind === "write_memory" ? (
+            <p className={styles.hint}>
+              A note never carries a secret: other sessions read the project’s memory, so a template
+              with a secret is refused.
+            </p>
+          ) : form.actionKind === "send_message" ? (
             <p className={styles.hint}>
               A message never carries a secret: it leaves BattleLab in clear text, so a template
               with a secret is refused. Mail takes its first line as the subject.
