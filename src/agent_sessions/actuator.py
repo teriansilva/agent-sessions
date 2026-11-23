@@ -1388,7 +1388,10 @@ async def deliver(
     # before anything else runs, and nothing is typed. `_final_guard` asks again before byte one.
     rep_check, rep_state = _report_authority(rec)
     if rep_check is not None:
-        ok, why = await asyncio.to_thread(rep_check)
+        try:
+            ok, why = await asyncio.to_thread(rep_check)
+        except Exception as e:  # noqa: BLE001 — as `_final_guard` below maps a raising guard
+            ok, why = False, f"authority could not be verified ({type(e).__name__})"
         if not ok:
             return (
                 ledger.compare_and_set(

@@ -1195,6 +1195,30 @@ def test_a_delivered_answer_whose_end_failed_refuses_a_second_tap_and_heals_at_t
     assert agent_reports.history(A)[0]["ended_by"] == "answered"
 
 
+def test_a_raising_report_authority_settles_the_answer_stale_not_claimed(
+    hq, world, app, writer, monkeypatch
+):
+    """(#1975) An authority that RAISES is a refusal, not a stranded claim. The check runs after
+    `ledger.claim`, so an unwrapped exception would leave the action `claimed` forever and the
+    tap a 500. It settles `stale`/`refused` with the exception TYPE only (never its message)."""
+
+    def boom(*a, **k):
+        raise RuntimeError("report store exploded")
+
+    monkeypatch.setattr(agent_reports, "authority", boom)
+    _env, token = _launch(A)
+    assert _file(token)["ok"]
+    rep = agent_reports.current(A)
+    r = app.answer(rep["id"], 1)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "authority could not be verified (RuntimeError)"
+    (act,) = _actions()
+    assert act["state"] == "stale" and act["outcome"] == "refused"
+    assert act["detail"] == "authority could not be verified (RuntimeError)"
+    assert "report store exploded" not in act["detail"]
+    assert writer["sent"] == []
+
+
 def test_a_clean_pre_byte_refusal_leaves_the_report_answerable(hq, world, app, writer, monkeypatch):
     """(d) the report check refused right after the claim (`stale`, nothing typed): the report is
     still current, so a fresh tap is allowed and delivers."""

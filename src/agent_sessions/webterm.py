@@ -39,6 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from . import (
+    agent_env,
     launchtiming,
     opencode_admission,
     perfstats,
@@ -696,7 +697,9 @@ async def run(
         from .engine_errors import EngineError
         from .plugins.provider import forced_env
 
-        thread_env = await asyncio.to_thread(resource_limits.thread_environment, dict(os.environ))
+        thread_env = await asyncio.to_thread(
+            resource_limits.thread_environment, agent_env.scrubbed()
+        )
         # The environment the agent MUST run with (#1986: opencode 2.x's own XDG tree), resolved
         # before the pty exists so a refusal leaks nothing, and applied LAST below.
         try:
@@ -709,7 +712,9 @@ async def run(
     _set_winsize(slave, rows, cols)
     # A real color terminal: without TERM, Ink-based agents (claude) disable color.
     # The web frontend is xterm.js, which is a 256-color / truecolor terminal.
-    env = dict(os.environ)
+    # #1078: the agent never inherits the app's own secrets (cookie-signing key, password hash,
+    # push key). TERM/COLORTERM and every engine variable survive.
+    env = agent_env.scrubbed()
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     if launch_provider is not None:

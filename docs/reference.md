@@ -222,6 +222,11 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 | `AGENT_SESSIONS_2FA_FILE` *(`…_2FA_FILE`)* | `<env-dir>/2fa.json` | TOTP secret + recovery-code hashes (`0600`). |
 | `AGENT_SESSIONS_FORCE_PASSWORD_CHANGE` | `0` | First-run forced change (set once by a fresh install). |
 
+> Agents launched by BattleLab never receive an `AGENT_SESSIONS_*` name containing `SECRET`,
+> `PASSWORD`, `KEY` or `TOKEN` in their environment (#1078). Existing `dtach` masters keep their
+> old environment until they restart. Agents still run as the same user and can read the 0600 env
+> file, so this is defence-in-depth against an `env` dump, not a sandbox.
+
 ### Network
 | Var | Default | Notes |
 |---|---|---|

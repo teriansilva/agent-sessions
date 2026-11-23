@@ -2986,3 +2986,40 @@ def test_ws_below_the_session_limit_a_launch_holds_a_slot_until_it_settles(
     _close_code(c, f"/ws/term/{_GOOD}", headers)
     assert during == [1]
     assert list(session_capacity._slots_dir().iterdir()) == []
+
+
+def test_webterm_child_never_inherits_the_apps_own_secrets(tmp_path, monkeypatch):
+    """#1078: the interactive launch's `env=` is built through `agent_env.scrubbed()`."""
+    import asyncio
+
+    from agent_sessions import webterm
+
+    monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "cookie-signing-key")
+    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", "pbkdf2_sha256$...")
+    monkeypatch.setenv("AGENT_SESSIONS_VAPID_KEYS", "/secret/vapid.json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "vendor-key-not-ours")
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["env"] = kwargs.get("env")
+        raise OSError("stop before pumping")  # → webterm closes + ws.close(4502), returns
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    class FakeWS:
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path)))
+    assert captured["argv"] == ["dtach"]
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    for name in (
+        "AGENT_SESSIONS_SECRET_KEY",
+        "AGENT_SESSIONS_PASSWORD_HASH",
+        "AGENT_SESSIONS_VAPID_KEYS",
+    ):
+        assert name not in child_env, f"{name} reached the interactive agent"
+    assert child_env["ANTHROPIC_API_KEY"] == "vendor-key-not-ours"
+    assert "TERM" in child_env  # the terminal variables are not ours to scrub

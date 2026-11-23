@@ -747,3 +747,35 @@ def test_a_later_viewer_attach_or_resize_supersedes_the_readers_geometry(monkeyp
     scrollback._buffer_append(key, b"repainted")
     export = scrollback.screen_export(key)
     assert (export.rows, export.cols) == (43, 132) and export.grid[0].rstrip() == "repainted"
+
+
+def test_stream_child_never_inherits_the_apps_own_secrets(monkeypatch):
+    """#1078: the server-owned `dtach -a` reader is a child of the app too."""
+    monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "cookie-signing-key")
+    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", "pbkdf2_sha256$...")
+    monkeypatch.setenv("AGENT_SESSIONS_VAPID_KEYS", "/secret/vapid.json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "vendor-key-not-ours")
+    _set_argv(monkeypatch, lambda engine, sid: ["/bin/sh", "-c", "true"])
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        raise OSError("stop before draining")
+
+    monkeypatch.setattr(session_stream.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def run() -> None:
+        s = session_stream.SessionStream(engine="claude", session_id="env")
+        await s.start()
+        assert s.ended.is_set(), "a failed spawn ends the stream"
+
+    asyncio.run(run())
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    for name in (
+        "AGENT_SESSIONS_SECRET_KEY",
+        "AGENT_SESSIONS_PASSWORD_HASH",
+        "AGENT_SESSIONS_VAPID_KEYS",
+    ):
+        assert name not in child_env, f"{name} reached the stream's child"
+    assert child_env["ANTHROPIC_API_KEY"] == "vendor-key-not-ours"

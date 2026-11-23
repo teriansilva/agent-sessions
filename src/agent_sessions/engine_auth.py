@@ -46,7 +46,7 @@ import re
 import subprocess
 import threading
 
-from . import procgroup
+from . import agent_env, procgroup
 
 log = logging.getLogger("agent_sessions.engine_auth")
 
@@ -282,7 +282,7 @@ def run_probe(
     Callers must keep this module's other rule too: ``detail`` never carries probe output
     verbatim — only which branch was taken — so a diagnostic cannot leak a token.
     """
-    return _run(argv, cwd, dict(env if env is not None else os.environ), probe or Probe(), gate)
+    return _run(argv, cwd, agent_env.scrubbed(env), probe or Probe(), gate)
 
 
 def check(
@@ -308,7 +308,7 @@ def check(
     exists to stop. A refusal raises `Refused` rather than returning a state — the caller aborts
     the dispatch, it does not report a verdict about the agent.
     """
-    use_env = dict(env if env is not None else os.environ)
+    use_env = agent_env.scrubbed(env)
 
     # 1. THE FREE PROBE. A recognised positive is the only thing that ends this early.
     probe = probe if probe is not None else Probe()

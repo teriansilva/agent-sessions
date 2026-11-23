@@ -82,6 +82,7 @@ from functools import partial
 
 from . import (
     agent_account_store,
+    agent_env,
     agent_tools,
     engine_auth,
     engines,
@@ -798,7 +799,7 @@ async def dispatch(
             model_kw = {"model": model_sel} if model_sel.flag else {}
             if unattended_launch is not None:
                 launch, launch_env = unattended_launch(
-                    native, cwd=cwd, bypass=bypass, env=dict(os.environ)
+                    native, cwd=cwd, bypass=bypass, env=agent_env.scrubbed()
                 )
             else:
                 launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass, **model_kw)
@@ -839,7 +840,9 @@ async def dispatch(
         # Where the engine's own argv starts inside the wrapped one: the memory tool (#1506) is
         # added to THAT, inside the launch fence, once memory has bound this launch's paths.
         agent_at = len(argv) - len(launch)
-        env = dict(os.environ)
+        # #1078: the child never inherits the app's own secrets (cookie-signing key, password
+        # hash, push key). TERM/COLORTERM and every engine variable survive.
+        env = agent_env.scrubbed()
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
         env.update(launch_env)

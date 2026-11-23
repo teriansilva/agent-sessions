@@ -34,7 +34,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from . import engines, ptybridge, session_input, webterm
+from . import agent_env, engines, ptybridge, session_input, webterm
 
 log = logging.getLogger("agent_sessions.session_stream")
 
@@ -127,6 +127,9 @@ class SessionStream:
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
+                    # #1078: this is a child of the app too (a `dtach -a` reader), so it gets
+                    # the same scrubbed environment as every launch.
+                    env=agent_env.scrubbed(),
                     start_new_session=True,
                     close_fds=True,
                 ),

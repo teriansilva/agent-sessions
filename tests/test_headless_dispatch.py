@@ -1988,3 +1988,49 @@ async def test_a_missions_dispatch_carries_the_shelf_tool_and_nothing_else_does(
     assert set(server["env"]) >= shelf_broker.ENV_KEYS
     assert server["env"][shelf_broker.ENV_TOKEN_FILE].startswith(str(runtime))
     assert not shelf_broker.ENV_KEYS & set(observed[1])  # the agent's own env: never the paths
+
+
+@pytest.mark.anyio
+async def test_a_headless_child_never_inherits_the_apps_own_secrets(env, prov, reg, monkeypatch):
+    """#1078: the spawned agent's environment is built through `agent_env.scrubbed()`.
+
+    The secret names are set in the APP's environment (as `EnvironmentFile=` does) and the fake
+    spawn records the `env=` keyword. This is the real launch builder — the wrapper argv from
+    `scopedspawn.wrap` included — so the assertion is on what the child would receive.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "cookie-signing-key")
+    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", "pbkdf2_sha256$...")
+    monkeypatch.setenv("AGENT_SESSIONS_VAPID_KEYS", "/secret/vapid.json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "vendor-key-not-ours")
+    _stub_started(monkeypatch)
+    seen: dict[str, object] = {}
+
+    class P:
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    def fake(argv, **kw):
+        seen["argv"] = list(argv)
+        seen["env"] = kw.get("env")
+        # dtach creates the socket; the dispatcher waits for it.
+        i = list(argv).index("-n") + 1
+        open(argv[i], "w").close()
+        return P()
+
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
+    out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    assert out.ok is True
+    assert seen["argv"], "the wrapped argv reached the spawn"
+    child_env = seen["env"]
+    assert isinstance(child_env, dict)
+    for name in (
+        "AGENT_SESSIONS_SECRET_KEY",
+        "AGENT_SESSIONS_PASSWORD_HASH",
+        "AGENT_SESSIONS_VAPID_KEYS",
+    ):
+        assert name not in child_env, f"{name} reached the headless agent"
+    # The agent's own credential and the terminal variables are NOT ours to scrub.
+    assert child_env["ANTHROPIC_API_KEY"] == "vendor-key-not-ours"
+    assert "TERM" in child_env  # the terminal variables are not ours to scrub
