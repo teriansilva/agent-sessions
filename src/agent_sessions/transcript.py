@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .tool_text import result_text as _result_text
+
 # --- common conversation model -------------------------------------------------------------
 
 # How many bytes of a tool-call argument / tool-result to show before eliding.
@@ -115,36 +117,6 @@ def _short(value: object, limit: int = _ARG_MAX) -> str:
         s = guard(s)  # BEFORE the collapse and the cut: the whole value, as written
     s = " ".join(s.split())  # collapse whitespace/newlines to one line
     return s if len(s) <= limit else s[: limit - 1] + "…"
-
-
-def _result_text(content: object) -> str:
-    """Pull the readable text out of a tool_result ``content`` instead of dumping its JSON wrapper
-    (#260). Claude stores results as a bare string, or a list of ``{"type":"text","text":…}`` blocks
-    — the latter was being ``json.dumps``'d, so the scroll-up showed ``[{"type":"text",…}]`` noise.
-    str → itself; list/dict of text blocks → their joined text; anything else → compact JSON so a
-    result never renders empty."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for p in content:
-            if isinstance(p, str):
-                parts.append(p)
-            elif isinstance(p, dict):
-                t = p.get("text") or p.get("content")
-                if isinstance(t, str):
-                    parts.append(t)
-                elif p.get("type"):  # image / tool_reference / … → tag, never dump the blob
-                    parts.append(f"[{p['type']}]")
-        if parts:
-            return "\n".join(parts)
-    if isinstance(content, dict):
-        t = content.get("text") or content.get("content")
-        if isinstance(t, str):
-            return t
-        if content.get("type"):
-            return f"[{content['type']}]"
-    return json.dumps(content, default=str) if content else ""
 
 
 # Render the common Markdown to ANSI (#301) so the scroll-up reads like the real console: bold,
@@ -1598,7 +1570,11 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
                 arg = _short(_tool_arg(call.get("summary")))
                 out.append(Turn("assistant", f"{call['name']}({arg})", "tool"))
             if "output" in call:
-                out.append(Turn("tool", _short(call["output"], _RESULT_MAX), "result"))
+                # Stored as the producer recorded it (#1982): list content is unwrapped when the
+                # result is first recorded, and a stored string is never re-parsed, because text
+                # that is itself block-shaped JSON can't be told from an older wrapper.
+                text = _result_text(call["output"])
+                out.append(Turn("tool", _short(text, _RESULT_MAX), "result"))
         reply = "\n\n".join(t for t in replies.get(op.operation_id, ()) if t.strip()) or final.get(
             op.operation_id
         )

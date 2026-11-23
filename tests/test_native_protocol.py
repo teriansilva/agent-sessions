@@ -1922,6 +1922,23 @@ def test_claude_an_own_turns_tool_calls_are_recorded_under_its_target_never_an_o
     assert tools[0].data["tool"] == "Bash" and "gh pr checks 1436" in tools[0].data["summary"]
 
 
+def test_a_list_content_tool_result_is_stored_as_its_text():
+    codec = claude_running()
+    codec.feed(_use("toolu_a", "Bash", {"command": "echo hi"}))
+    (done,) = codec.feed(
+        _tool_result(
+            "toolu_a",
+            [
+                {"type": "text", "text": "hi"},
+                {"type": "image", "source": {"data": "QUJD"}},
+                {"type": "text", "text": "done"},
+            ],
+        )
+    )
+    assert (done.kind, done.data["state"]) == ("tool", "completed")
+    assert done.data["output"] == "hi\n[image]\ndone"  # no JSON wrapper, no image bytes
+
+
 @pytest.mark.parametrize(
     ("result", "state"),
     [

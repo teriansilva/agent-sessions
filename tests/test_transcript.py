@@ -120,6 +120,9 @@ def test_result_text_extracts_blocks_not_json():
     assert T._result_text([{"type": "image", "source": {"data": "AAAABBBB" * 999}}]) == "[image]"
     assert "[tool_reference]" == T._result_text([{"type": "tool_reference", "tool_name": "x"}])
     assert "{" not in T._result_text([{"type": "image", "source": {"data": "z" * 5000}}])
+    # a shapeless or untyped block still folds to a placeholder, never to nothing
+    assert T._result_text([{"type": "text", "text": "x"}, 42]) == "x\n[int]"
+    assert T._result_text([{"type": "text", "text": "x"}, {}]) == "x\n[block]"
 
 
 def test_claude_parser_tool_result_list_content(tmp_path):

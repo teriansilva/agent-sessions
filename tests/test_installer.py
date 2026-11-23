@@ -333,6 +333,7 @@ def test_installer_origin_falls_back_to_first_addr_without_default_route(tmp_pat
     assert "RESULT URL=http://0.0.0.0" not in out
 
 
+@pytest.mark.timeout(660)  # one install.sh run, bounded below by its own 600 s
 @pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_no_tty_keeps_localhost(tmp_path):
@@ -369,6 +370,7 @@ def test_installer_no_tty_keeps_localhost(tmp_path):
     assert "AGENT_SESSIONS_ORIGIN=http://127.0.0.1:8796" in text
 
 
+@pytest.mark.timeout(1260)  # two install.sh runs, each bounded below by its own 600 s
 @pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_explicit_host_persists_and_is_adopted_on_rerun(tmp_path):
@@ -567,6 +569,7 @@ def _installer_owned(env_text: str, doctor_keys: set[str]) -> list[str]:
     return [ln for ln in env_text.splitlines() if ln.split("=", 1)[0] not in doctor_keys]
 
 
+@pytest.mark.timeout(1260)  # two install.sh runs, each bounded below by its own 600 s
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_end_to_end(tmp_path):
     home = tmp_path / "prefix"
@@ -672,6 +675,7 @@ def test_installer_end_to_end(tmp_path):
     assert json.loads(prefs_file.read_text()).get("onboarded") is False
 
 
+@pytest.mark.timeout(660)  # one install.sh run, bounded below by its own 600 s
 @pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
@@ -755,6 +759,7 @@ def test_installer_without_the_progress_env_writes_no_record(tmp_path):
     assert not [p for p in tmp_path.rglob("*") if "progress" in p.name]
 
 
+@pytest.mark.timeout(960)  # real npm ci + Vite build, bounded below by its own 900 s
 @pytest.mark.e2e_install
 @pytest.mark.skipif(
     os.environ.get("AGENT_SESSIONS_TEST_UI_BUILD") != "1" or not shutil.which("npm"),
@@ -790,6 +795,7 @@ def test_installer_builds_the_react_ui(tmp_path):
     assert (home / "pty").is_dir()  # ws-PTY runtime dir created
 
 
+@pytest.mark.timeout(660)  # one install.sh run, bounded below by its own 600 s
 @pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_migrates_existing_env_to_react(tmp_path):

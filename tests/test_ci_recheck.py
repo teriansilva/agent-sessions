@@ -3,8 +3,9 @@
 A few failed tests run again alone before a check goes red. The rules, judged from structured
 reports and never from exit codes alone:
 
-- only ordinary test failures are rechecked: never a crashed xdist worker, a collection or internal
-  error, a run-level Playwright error or a dead Playwright worker, and never more than five;
+- only ordinary test failures are rechecked: never a crashed xdist worker, a timed-out test (#2178),
+  a collection or internal error, a run-level Playwright error or a dead Playwright worker, and
+  never more than five;
 - the recheck passes only if every one of those tests RAN and PASSED under the same identity: a
   test that skips, is missing or fails again keeps the suite's status;
 - each recovered test is named in a one-line warning.
@@ -32,7 +33,13 @@ _spec.loader.exec_module(recheck)
 
 
 def _pytest_report(results=None, **extra):
-    base = {"results": results or {}, "crashed": [], "collect_errors": 0, "internal_error": False}
+    base = {
+        "results": results or {},
+        "crashed": [],
+        "timed_out": [],
+        "collect_errors": 0,
+        "internal_error": False,
+    }
     return {**base, **extra}
 
 
@@ -47,6 +54,7 @@ def _pytest_report(results=None, **extra):
         (2, _pytest_report({"t::a": "failed"}), False),  # interrupted
         (1, None, False),  # no report written
         (1, _pytest_report({"t::a": "failed"}, crashed=["t::a"]), False),
+        (1, _pytest_report({"t::a": "failed"}, timed_out=["t::a"]), False),
         (1, _pytest_report({"t::a": "failed"}, collect_errors=1), False),
         (1, _pytest_report({"t::a": "failed"}, internal_error=True), False),
         (1, _pytest_report({"t::a": "passed"}), False),  # red with nothing failed
@@ -139,7 +147,7 @@ def _env() -> dict[str, str]:
     return env
 
 
-def _first_run(tmp_path: Path, body: str) -> tuple[int, Path]:
+def _first_run(tmp_path: Path, body: str, workers: str = "2") -> tuple[int, Path]:
     (tmp_path / "test_probe.py").write_text(body)
     report = tmp_path / "first.json"
     argv = [
@@ -148,7 +156,7 @@ def _first_run(tmp_path: Path, body: str) -> tuple[int, Path]:
         "recheck_report",
         f"--recheck-report={report}",
         "-n",
-        "2",
+        workers,
         "test_probe.py",
     ]
     rc = subprocess.run(argv, cwd=tmp_path, env=_env(), capture_output=True, timeout=120).returncode
@@ -223,3 +231,133 @@ def test_a_crashed_xdist_worker_is_never_rechecked(tmp_path):
 def test_a_collection_error_is_never_rechecked(tmp_path):
     rc, out = _loop(tmp_path, "import no_such_module_xyz\ndef test_x(): pass\n")
     assert rc != 0 and "rechecking" not in out, out
+
+
+TIMEOUT_IN_CALL = """
+import time
+import pytest
+
+@pytest.mark.timeout(2)
+def test_hangs():
+    time.sleep(30)
+"""
+
+TIMEOUT_IN_TEARDOWN = """
+import time
+import pytest
+
+@pytest.fixture
+def slow_teardown():
+    yield
+    time.sleep(30)
+
+@pytest.mark.timeout(2)
+def test_passes_then_hangs_in_teardown(slow_teardown):
+    pass
+"""
+
+
+def _assert_a_timeout_stays_red(tmp_path, body: str, nodeid: str, workers: str = "2"):
+    """The hung test fails by timeout, is named in the report, and is never re-run (#2178)."""
+    rc, report = _first_run(tmp_path, body, workers)
+    assert rc == 1  # a timeout is a test failure, never a clean exit
+    data = json.loads(report.read_text())
+    assert data["timed_out"] == [nodeid]
+    assert data["results"][nodeid] == "failed"
+    rc, out = _loop(tmp_path, body)
+    assert rc == 1, out
+    assert "timed out" in out and "rechecking" not in out, out
+
+
+@pytest.mark.parametrize("workers", ["2", "0"])  # xdist, and the serial recheck shape
+def test_a_test_that_times_out_in_its_call_is_never_rechecked(tmp_path, workers):
+    _assert_a_timeout_stays_red(tmp_path, TIMEOUT_IN_CALL, "test_probe.py::test_hangs", workers)
+
+
+def test_a_test_that_times_out_in_teardown_is_never_rechecked(tmp_path):
+    _assert_a_timeout_stays_red(
+        tmp_path, TIMEOUT_IN_TEARDOWN, "test_probe.py::test_passes_then_hangs_in_teardown"
+    )
+
+
+# A call timeout fires first; the fixture finalizer then blocks. pytest-timeout's one-shot
+# signal has no timer left, so without the independent hard stop this run never ends (#2178 P1).
+BLOCKED_CLEANUP = """
+import os
+import time
+import pytest
+
+@pytest.fixture
+def slow_teardown():
+    yield
+    open(os.environ["CLEANUP_MARK"], "w").write("1")
+    time.sleep(30)
+
+@pytest.mark.timeout(1)
+def test_call_times_out_then_cleanup_hangs(slow_teardown):
+    time.sleep(30)
+"""
+
+BLOCKED_NODEID = "test_probe.py::test_call_times_out_then_cleanup_hangs"
+
+
+def _blocked_cleanup_run(tmp_path: Path, workers: str):
+    """The probe under a tiny hard margin, with an external deadline as the regression's proof."""
+    (tmp_path / "test_probe.py").write_text(BLOCKED_CLEANUP)
+    report = tmp_path / "first.json"
+    argv = [
+        *_pytest_argv(tmp_path),
+        "-p",
+        "recheck_report",
+        "-o",
+        "timeout_hard_margin=2",
+        f"--recheck-report={report}",
+        "-n",
+        workers,
+        "test_probe.py",
+    ]
+    env = {**_env(), "CLEANUP_MARK": str(tmp_path / "cleanup_entered")}
+    try:
+        proc = subprocess.run(
+            argv, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=15
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("a blocked cleanup held the run past the hard backstop")
+    assert (tmp_path / "cleanup_entered").is_file(), "the fixture finalizer was never reached"
+    return proc, report
+
+
+def _recheck(tmp_path: Path, rc: int, report: Path) -> tuple[int, str]:
+    argv = [
+        sys.executable,
+        str(SCRIPTS / "recheck.py"),
+        "pytest",
+        "--rc",
+        str(rc),
+        "--report",
+        str(report),
+        "--",
+        *_pytest_argv(tmp_path),
+        "-n",
+        "0",
+    ]
+    out = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    return out.returncode, out.stdout
+
+
+def test_a_blocked_cleanup_after_a_timeout_is_hard_stopped_serially(tmp_path):
+    proc, report = _blocked_cleanup_run(tmp_path, "0")
+    assert proc.returncode != 0
+    assert not report.exists(), "a hard-killed serial process must not write a passing report"
+    rc, out = _recheck(tmp_path, proc.returncode, report)
+    assert rc != 0 and "no pytest report was written" in out and "rechecking" not in out, out
+
+
+def test_a_blocked_cleanup_after_a_timeout_is_hard_stopped_under_xdist(tmp_path):
+    proc, report = _blocked_cleanup_run(tmp_path, "2")
+    assert proc.returncode != 0
+    data = json.loads(report.read_text())
+    assert data["crashed"] == [BLOCKED_NODEID]  # the hard stop killed the worker
+    assert data["timed_out"] == [BLOCKED_NODEID]  # the soft timeout fired first
+    rc, out = _recheck(tmp_path, proc.returncode, report)
+    assert rc != 0 and "worker crashed" in out and "rechecking" not in out, out

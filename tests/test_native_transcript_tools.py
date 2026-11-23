@@ -10,7 +10,10 @@ import pytest
 import test_native_journal as journal_tests
 from agent_sessions import native_journal as journal
 from agent_sessions import transcript
+from agent_sessions.native_protocol import ClaudeCodec
 from test_native_journal import event, request
+from test_native_protocol import SESSION as CODEC_SESSION
+from test_native_protocol import _tool_result
 from test_native_response_timestamps import completed
 
 conversation = journal_tests.conversation
@@ -141,6 +144,88 @@ def test_the_fold_is_capped_and_says_so(conversation, monkeypatch):
     turns = transcript._native_turns(root, sid)
     assert [t.text for t in turns] == ["reply 1", "Message 2", "reply 2"]
     assert transcript.was_truncated(turns)
+
+
+def _fold_through_the_codec(conversation, tool_id, content):
+    """A Claude tool result fed through the real codec, journaled and folded (#1982)."""
+    root, sid, binding = conversation
+    op = _turn(root, binding)
+    codec = ClaudeCodec(CODEC_SESSION)
+    codec.submit("Inspect the project", op)
+    (produced,) = codec.feed(_tool_result(tool_id, content))
+    journal.append_events(root, binding, [{"kind": produced.kind, "data": produced.data}])
+    return transcript._native_turns(root, sid)[-1]
+
+
+def test_a_list_content_tool_result_folds_to_its_text_not_json(conversation):
+    blocks = [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+    turn = _fold_through_the_codec(conversation, "toolu_list", blocks)
+    assert (turn.role, turn.kind, turn.text) == ("tool", "result", "hello world")
+    assert '"type":"text"' not in turn.text
+
+
+def test_a_mixed_list_content_tool_result_keeps_a_placeholder_for_non_text(conversation):
+    blocks = [
+        {"type": "text", "text": "saved the file"},
+        {"type": "image", "source": {"data": "QUJD" * 100}},
+    ]
+    turn = _fold_through_the_codec(conversation, "toolu_mixed", blocks)
+    assert turn.text == "saved the file [image]"
+    assert "QUJD" not in turn.text
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        '[{"type":"invoice","id":42,"amount":99}]',  # a domain object that has a `type`
+        '[{"type":"text","text":"hi","meta":{}}]',  # content-shaped, with an extra key
+        '[{"type":"text","value":"hi"}]',  # content-shaped, wrong shape
+        '[{"type":"image","data":"QUJD"}]',  # image block without its `source`
+        '[{"type":"unknown","text":"hi"}]',  # a type no content block carries
+        '[{"type":"text","text":"hi"},42]',  # not every element is a block
+        # Exactly block-shaped JSON is still TEXT (#1982 review 8770): a stored string is never
+        # re-parsed, so a result that prints a content-block fixture keeps every field.
+        '[{"type":"text","text":"hi"}]',
+        '[{"type":"image","source":{"url":"https://example.invalid/report.png"}}]',
+    ],
+)
+def test_a_stored_string_is_never_reparsed_as_content_blocks(conversation, stored):
+    root, sid, binding = conversation
+    op = _turn(root, binding)
+    journal.append_events(root, binding, [_tool(op, "t", state="completed", output=stored)])
+    assert transcript._native_turns(root, sid)[-1].text == stored
+
+
+def test_a_deeply_nested_tool_output_survives_codec_journal_and_fold(conversation):
+    """P1 (#1982 review): a plain result of 9,999 `[` … 9,999 `]` is 19,999 characters (inside
+    ``MAX_TEXT``), journaled intact, but decoding it must not raise ``RecursionError`` and break
+    the whole fold."""
+    root, sid, binding = conversation
+    op = _turn(root, binding)
+    nested = "[" * 9999 + "0" + "]" * 9999
+    codec = ClaudeCodec(CODEC_SESSION)
+    codec.submit("Inspect the project", op)
+    (produced,) = codec.feed(_tool_result("toolu_deep", nested))
+    assert produced.kind == "tool" and produced.data["output"] == nested
+    journal.append_events(root, binding, [{"kind": produced.kind, "data": produced.data}])
+    turn = transcript._native_turns(root, sid)[-1]
+    assert turn.kind == "result"
+    assert turn.text == nested[: transcript._RESULT_MAX - 1] + "…"
+
+
+def test_a_truncated_stored_result_shows_as_stored(conversation):
+    root, sid, binding = conversation
+    op = _turn(root, binding)
+    stored = '[{"type":"text","text":"hello world"'  # cut at MAX_TEXT before the list closed
+    journal.append_events(root, binding, [_tool(op, "t", state="completed", output=stored)])
+    assert transcript._native_turns(root, sid)[-1].text == stored
+
+
+def test_a_text_result_that_looks_like_json_is_shown_as_stored(conversation):
+    root, sid, binding = conversation
+    op = _turn(root, binding)
+    journal.append_events(root, binding, [_tool(op, "t", state="completed", output="[1, 2, 3]")])
+    assert transcript._native_turns(root, sid)[-1].text == "[1, 2, 3]"
 
 
 @pytest.mark.parametrize("summary", ['{"file_path": "/w/a', "[1, 2"])

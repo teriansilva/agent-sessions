@@ -28,6 +28,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from . import native_questions
+from .tool_text import result_text
 
 CODEX_MIN_VERSION = (0, 159, 3)
 CLAUDE_MIN_VERSION = (2, 1, 287)
@@ -3635,7 +3636,9 @@ class ClaudeCodec(_Codec):
                         **common,
                         item_id=_identity(block.get("tool_use_id")),
                         state="failed" if block.get("is_error") else "completed",
-                        output=_summary(block.get("content")),
+                        # The result's text, never the JSON wrapper `_summary` would make of a
+                        # block list — an image folds to `[image]`, not its bytes (#1982).
+                        output=_text(result_text(block.get("content"))),
                     )
                     for block in results
                 ]

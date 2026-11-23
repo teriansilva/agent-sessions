@@ -57,6 +57,7 @@ voice = [
 dev = [
     "pytest==8.3.4",
     "pytest-xdist==3.8.0",  # pr-validate runs `pytest -n 8 --dist loadfile` (#1098)
+    "pytest-timeout==2.4.0",  # a hung test fails in minutes, naming it (#2178)
     "httpx==0.28.1",  # for FastAPI TestClient
     "ruff==0.8.4",
     # scripts/build-landing renders the landing page + blog (#2280); build/test time only, never served.
@@ -100,6 +101,27 @@ agent_sessions = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+# #2178: a hung test must fail in minutes, naming the test, instead of holding a pr-validate
+# worker forever. `timeout` is pytest-timeout's SOFT limit. The independent HARD stop lives in
+# `.forgejo/pytest_plugins/recheck_report.py` (loaded with `-p recheck_report` by every CI pytest
+# step): it arms a plain timer at `timeout + timeout_hard_margin` (60 s) and, if setup, call or
+# teardown is still blocked, dumps every thread's stack and `os._exit(1)`s the process. So 180 s
+# bounds the test itself; 240 s bounds a blocked cleanup, and xdist's crashed-worker report keeps
+# `recheck.py` fail-closed. The default is sized from measured runs: the slowest legitimate tests
+# outside test_installer.py are ~19 s locally (tests/test_handoff.py), and the native-runtime /
+# session-latency files peak at ~8 s; CI runs `-n 8`, whose contention inflates those, so 180 s
+# keeps a wide (>9x) margin. The full install.sh end-to-end tests are much longer and carry an
+# explicit `@pytest.mark.timeout(...)` beside their own subprocess timeouts.
+#
+# `signal` (SIGALRM on the POSIX main thread, which is what every xdist worker has) raises the
+# timeout INSIDE the test, so setup, call and teardown still run normally. The `thread` method
+# hard-exits the pytest process and skips fixture teardown, so it must not be the default.
+# The timeout covers the whole test (setup + call + teardown), not only the call.
+timeout_func_only = false
+timeout = 180
+timeout_method = "signal"
+# Dump every thread's stack 30 s before the SOFT timeout, so a hang leaves evidence in the log.
+faulthandler_timeout = 150
 markers = [
     # Full install.sh end-to-end runs (venv build + real pip install; the multi-minute tests).
     # CI runs everything; deselect locally while iterating: pytest -m "not e2e_install"
