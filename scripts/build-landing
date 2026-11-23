@@ -59,6 +59,10 @@ ENGINES = {  # badge text + name, the app's engine colours (web/src/lib/format.t
     "kimi": ("KI", "Kimi Code"),
 }
 KINDS = {"how-to": "How-to", "field-report": "Field report", "release": "Release"}
+# An agent-written post is bylined as an AI agent; it never names the engine or model (operator,
+# 2026-11-23). The build refuses `engine`/`model` on a post's author so a post cannot reintroduce it.
+AGENT_BYLINE = "AI agent"
+AGENT_BADGE = '<span class="eng" aria-hidden="true">AI</span>'
 TAG_LABELS = {"hq": "HQ"}
 REQUIRED = ("title", "date", "kind", "summary", "tags", "author")
 
@@ -288,6 +292,10 @@ def load_posts() -> list[dict]:
         for req in REQUIRED:
             if req not in meta:
                 raise BuildError(f"{d.name}: front matter is missing '{req}'")
+        if {"engine", "model"} & set(meta["author"]):
+            raise BuildError(
+                f"{d.name}: a post's author names no engine or model; an agent is bylined '{AGENT_BYLINE}'"
+            )
         if meta["kind"] not in KINDS:
             raise BuildError(f"{d.name}: kind must be one of {list(KINDS)}")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", d.name):
@@ -403,9 +411,7 @@ def engine_badge(eng: str) -> str:
 def byline(p: dict, short: bool = False) -> str:
     a = p["author"]
     if a.get("kind") == "agent":
-        name = ENGINES.get(a.get("engine", ""), ("", a.get("engine", "Agent")))[1]
-        model = f" · {esc(a['model'])}" if a.get("model") and not short else ""
-        return f'<span class="by">{engine_badge(a.get("engine", ""))}<span>{esc(name)}{model}</span></span>'
+        return f'<span class="by">{AGENT_BADGE}<span>{AGENT_BYLINE}</span></span>'
     return f'<span class="by"><span class="eng eng-human" aria-hidden="true">CO</span><span>{esc(a.get("name", "Commander"))}</span></span>'
 
 
@@ -537,7 +543,7 @@ def blog_index(posts: list[dict], tag: str | None = None) -> str:
       </div></div>
       <div class="cf side-box"><div class="face">
         <div class="cs"><span class="notch"></span><h2>Chain of custody</h2></div>
-        <p class="side-p">Every post names its author (a human, or an agent with its engine and model) and its sign-offs: an AI review on the pull request and a human editor before it ships. Nothing is published that the released product doesn't do.</p>
+        <p class="side-p">Every post names its author (a human, or an AI agent) and its sign-offs: an AI review on the pull request and a human editor before it ships. Nothing is published that the released product doesn't do.</p>
         <a class="side-link" href="{rel_blog}how-this-blog-is-written/">How posts are written ▸</a>
       </div></div>
     </aside>
@@ -569,12 +575,10 @@ def custody(p: dict) -> str:
     a = p["author"]
     rows = []
     if a.get("kind") == "agent":
-        eng = ENGINES.get(a.get("engine", ""), ("AI", a.get("engine", "")))[1]
         rows.append(
             (
                 "Author",
-                f'{engine_badge(a.get("engine", ""))}<span><b>{esc(eng)}</b>'
-                f'<small>{esc(a["model"]) + " · " if a.get("model") else ""}agent session</small></span>',
+                f"{AGENT_BADGE}<span><b>{AGENT_BYLINE}</b><small>agent session</small></span>",
             )
         )
         if a.get("operator"):
@@ -707,8 +711,7 @@ def post_page(p: dict, posts: list[dict]) -> str:
 def author_name(p: dict) -> str:
     a = p["author"]
     if a.get("kind") == "agent":
-        name = ENGINES.get(a.get("engine", ""), ("", a.get("engine", "Agent")))[1]
-        return f"{name} ({a['model']})" if a.get("model") else name
+        return AGENT_BYLINE
     return a.get("name", "Commander")
 
 

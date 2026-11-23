@@ -332,3 +332,30 @@ def test_a_link_into_a_removed_post_is_broken_even_if_the_old_page_is_on_disk(tm
         b.check_links(page, root=tmp_path)
     # A static asset this build does not own may come from disk.
     b.check_links({"blog/a/index.html": b'<img src="../../shot.webp" alt="x">'}, root=tmp_path)
+
+
+def test_an_agent_written_post_never_names_its_engine_or_model():
+    # Operator, 2026-11-23: an agent's byline is "AI agent", never the engine or the model.
+    for page in [p for p in SITE_PAGES if p.startswith("blog/")]:
+        html = (LANDING / page).read_text()
+        for block in re.findall(r'<span class="by">.*?</span></span>', html) + re.findall(
+            r'<ol class="chain">.*?</ol>', html, flags=re.S
+        ):
+            assert (
+                "Opus" not in block and "Claude Code" not in block and "eng-claude" not in block
+            ), page
+    feed = (LANDING / "blog" / "feed.xml").read_text()
+    assert "<author><name>AI agent</name></author>" in feed
+
+
+def test_a_post_that_names_an_engine_or_model_fails_the_build(tmp_path, monkeypatch):
+    b = _builder()
+    post = tmp_path / "posts" / "a-post"
+    post.mkdir(parents=True)
+    (post / "index.md").write_text(
+        "---\ntitle: t\ndate: 2026-11-23\nkind: how-to\nsummary: s\ntags: [x]\n"
+        "author: {kind: agent, engine: claude, model: some-model}\n---\nBody.\n"
+    )
+    monkeypatch.setattr(b, "SRC", tmp_path)
+    with pytest.raises(b.BuildError, match="names no engine or model"):
+        b.load_posts()

@@ -60,6 +60,56 @@ async function answer(path, q, method, req, state) {
   if (/^\/api\/sessions\/[^/]+\/draft$/.test(path))
     return json({ id: decodeURIComponent(path.split("/")[3]), text: "", attachments: [], updated_at: null });
 
+  // Surfaces newer than the promo set (#2280 recapture). Valid, empty answers in each type's
+  // shape (web/src/lib/federation.ts, types/api.ts HqTaskList, types/voice.ts, types/mission*.ts):
+  // no peers share anything, no artifacts are published, HQ runs no task, calls are set up locally, and the mission's plan has no
+  // approval card, team or steps of its own beyond what the shared fixtures show.
+  if (method === "GET") {
+    if (path === "/api/federation/remote") return json({ remote: [] });
+    if (path === "/api/artifacts") return json({ items: [], total: 0, next_cursor: null });
+    if (path === "/api/federation/suggestions") return json({ suggestions: [] });
+    if (path === "/api/federation/grants")
+      return json({ grants: [], generation: 0, levels: [], default_expires_in: {}, max_expires_in: 0 });
+    if (path === "/api/hq/tasks")
+      return json({ tasks: [], recent: [], counts: { running: 0, queued: 0, question: 0 }, queue_max: 3 });
+    if (path === "/api/voice/capabilities")
+      return json({
+        // Calls set up on this machine (a headline feature of the promo shots): the speech server
+        // and the AI endpoint are local, so the card offers Call rather than Set up calls.
+        configured: true,
+        runtime: true,
+        available: true,
+        reason: "",
+        destinations: {
+          stt: "loopback",
+          tts: "loopback",
+          ai: "loopback",
+          stt_host: "127.0.0.1",
+          tts_host: "127.0.0.1",
+          ai_host: "127.0.0.1",
+        },
+        captions: false,
+        mic: "open",
+        active_call: null,
+      });
+    const mp = /^\/api\/missions\/([^/]+)\/(plan\/approval|plan\/team|steps)$/.exec(path);
+    if (mp) {
+      const id = decodeURIComponent(mp[1]);
+      if (mp[2] === "plan/approval")
+        return json({
+          mission_id: id,
+          revision: null,
+          card: null,
+          approval: null,
+          consent: null,
+          consent_offer: null,
+          consent_days: { default: 7, max: 30 },
+        });
+      if (mp[2] === "plan/team") return json({ revision: null, team: null });
+      return json({ mission_id: id, revision: null, concurrency: null, steps: [] });
+    }
+  }
+
   // PR4b library A (#1574): a project's memory, its import preview and its pass.
   if (state.memory && path.startsWith("/api/memory")) {
     const body = X.memoryAnswer(path, method, state);
