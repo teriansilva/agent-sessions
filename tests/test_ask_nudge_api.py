@@ -400,7 +400,8 @@ def test_a_session_that_asks_first_says_nothing_about_skipping(app, ai, api_sess
 
 def test_only_hq_s_send_and_the_operator_s_tap_are_attended():
     """Every other caller of `actuator.deliver` leaves `attended` unset: found by reading the
-    source, so a new caller that sets it shows up here."""
+    source, so a new caller that sets it shows up here. `mission_structured.hq_start` (#2014) is
+    the operator's own tap on an HQ session card: its first turn is attended."""
     import pathlib
     import re
 
@@ -410,7 +411,7 @@ def test_only_hq_s_send_and_the_operator_s_tap_are_attended():
         for p in src.rglob("*.py")
         if re.search(r"attended\s*=\s*True", p.read_text(encoding="utf-8"))
     )
-    assert setters == ["ask_orchestrator.py"]
+    assert setters == ["ask_orchestrator.py", "mission_structured.py"]
 
 
 def test_a_turn_replaced_before_the_stop_is_not_stopped_and_gets_no_text(

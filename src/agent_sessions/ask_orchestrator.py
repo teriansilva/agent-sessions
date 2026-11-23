@@ -1103,7 +1103,8 @@ def _why_not(why: str) -> str:
     table = {
         engines.REMOVED_REASON: "it has been removed, so it can't start new sessions",
         handoff._REASON_NOT_INSTALLED: "it is not installed",
-        handoff._REASON_NO_SEED: "it can't take a first message yet",
+        handoff._REASON_NO_SEED: "it can't be given a first message in a terminal; use its API "
+        "client if it has one",
         handoff._REASON_NOT_AGENT: "it is not an agent",
     }
     if why in table:
@@ -1117,25 +1118,61 @@ def _why_not(why: str) -> str:
     return WHY_NOT_GENERIC
 
 
+def _preferred_clients() -> tuple[set[str], str | None]:
+    """``(preferred, default)`` (#2014): each family's base default client for new interactive
+    work (`family.default_client`: its first READY API client, else its console client), and the
+    one the operator's default agent (`agent_defaults.default_engine`) resolves to. The default
+    agent names a FAMILY: a terminal default whose family has a ready API client resolves to that
+    API client. Best effort: anything unreadable marks nothing."""
+    from . import prefs
+    from .engines import family, registry
+
+    preferred: set[str] = set()
+    fams: dict[str, str | None] = {}
+    for prov in registry.present_providers():
+        fam = family.family_of(prov)
+        if not fam or fam in fams:
+            continue
+        try:
+            fams[fam], _reason = family.default_client(fam, "interactive")
+        except Exception:  # noqa: BLE001 — an unreadable roster prefers nothing
+            fams[fam] = None
+        if fams[fam]:
+            preferred.add(fams[fam])
+    default = None
+    try:
+        named = prefs.get_agent_defaults().get("default_engine")
+        fam = family.family_of(named) if isinstance(named, str) else None
+        default = fams.get(fam) if fam else None
+    except Exception:  # noqa: BLE001 — no readable default is no default
+        default = None
+    return preferred, default
+
+
 def _agent_rows() -> list[dict]:
-    from . import ask_settings, automation_runner, engines
+    from . import ask_proposals, ask_settings, engines
     from .engines import registry
 
     labels = ask_settings.agent_labels()
+    preferred, default = _preferred_clients()
     rows = []
     for prov in registry.present_providers():
         if not registry.is_agent(prov):
             continue
         name = labels.get(prov.engine_id) or f"agent {len(rows) + 1}"
-        can_start, why = automation_runner.engine_state(prov.engine_id)
+        # The card's own question (#2014): an API client takes its brief as a first turn.
+        can_start, why = ask_proposals.start_state(prov.engine_id)
         rows.append(
             {
                 "index": len(rows),
                 "id": prov.engine_id,
                 "name": str(name),
+                "kind": "api" if ask_proposals.is_api(prov.engine_id) else "terminal",
                 "can_start": can_start,
                 "why_not": "" if can_start else _why_not(why),
                 "retiring": bool(engines.is_retiring(prov)),
+                "preferred": can_start and prov.engine_id in preferred,
+                "default": can_start and prov.engine_id == default,
             }
         )
     return rows
@@ -1151,13 +1188,21 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
         {
             "index": r["index"],
             "name": r["name"],
+            "kind": r.get("kind") or "terminal",
             "can_start": r["can_start"],
             **({"why_not": r["why_not"]} if r.get("why_not") else {}),
             **({"retiring": True} if r.get("retiring") else {}),
+            **({"preferred": True} if r.get("preferred") else {}),
+            **({"default": True} if r.get("default") else {}),
         }
         for r in rows
     ]
-    return {"agents": shown}, {"count": len(rows)}
+    return {
+        "agents": shown,
+        "note": "kind says whether a session starts as an API session or in a terminal. "
+        "preferred marks each agent's client for new sessions (its API client when that is "
+        "ready); default marks the operator's default agent.",
+    }, {"count": len(rows)}
 
 
 async def _list_agent_models(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -1195,7 +1240,7 @@ def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
     and marked (#1938: HQ finds one to unarchive here; an archived one can't start). Every
     operator-written text is guarded whole, then cut; ids and versions are structural. An agent is
     named as `list_agents` names it, never by its id; one not installed here can't start."""
-    from . import automation_runner
+    from . import ask_proposals
 
     names = {a["id"]: a["name"] for a in agents}
 
@@ -1209,7 +1254,7 @@ def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
             continue
         skills = [k.get("id") for k in cur.get("skills") or [] if isinstance(k, dict)]
         live, capacity = s.get("live") or 0, cur.get("capacity") or 0
-        can_start, why = automation_runner.engine_state(engine)
+        can_start, why = ask_proposals.start_state(engine)  # an API agent too (#2014)
         if s.get("archived"):
             problem = "it is archived; unarchive it first"
         elif engine not in names:
@@ -2351,9 +2396,13 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
             "(Suggest) under Settings → AI → HQ → Autonomy",
             "scope_disabled",
         )
-    ok, why = await asyncio.to_thread(automation_runner.engine_state, agent["id"])
+    ok, why = await asyncio.to_thread(ask_proposals.start_state, agent["id"])
     if not ok:
-        raise _ToolRefused(f"refused: {agent['name']} cannot be started from HQ — {why}", "agent")
+        raise _ToolRefused(
+            f"refused: {agent['name']} cannot be started from HQ — {_why_not(why)}", "agent"
+        )
+    # The kind of session is pinned NOW (#2014), and the tap starts exactly that kind.
+    api = await asyncio.to_thread(ask_proposals.is_api, agent["id"])
     ok, why = await asyncio.to_thread(automation_runner.folder_ok, project["cwd"])
     if not ok:
         raise _ToolRefused(f"refused: {why}", "folder")
@@ -2374,6 +2423,7 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "brief": brief,
         "bypass_default": await asyncio.to_thread(ask_proposals.bypass_default),
         "bypass": None,
+        **({"runtime": "api"} if api else {}),
     }
     shown_agent = agent["name"]
     if specialist is not None:
@@ -2414,8 +2464,14 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return (
         {
             "proposed": True,
-            "note": "The operator now sees a card with this project, agent and brief, chooses "
-            "the permission setting and starts it or not. Nothing has started; never say it has.",
+            "kind": "api" if api else "terminal",
+            "note": "The operator now sees a card with this project, agent and brief"
+            + (
+                " (an API session, which asks before it acts)"
+                if api
+                else ", chooses the permission setting"
+            )
+            + " and starts it or not. Nothing has started; never say it has.",
         },
         {"count": 1},
     )
@@ -2492,7 +2548,8 @@ async def _list_cards(turn: _Turn, args: dict) -> tuple[dict, dict]:
         if kind == "operation":
             what = f"{r.get('label') or 'Change'}, for {r.get('title') or 'its target'}: {text}"
         elif kind == "session":
-            what = f"A new session in {r.get('title') or 'a project'}: {text}"
+            noun = ask_proposals.KIND_WORDS.get(view.get("runtime"), "session")
+            what = f"A new {noun} in {r.get('title') or 'a project'}: {text}"
         else:
             what = f"A message to {r.get('recipient') or 'a recipient'}: {text}"
         state = view.get("state") or "unknown"

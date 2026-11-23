@@ -2951,6 +2951,8 @@ def confirmable_cards(
     """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
     operations that need no on-screen input. What will be SENT is read back in full, word for
     word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631)."""
+    from . import ask_proposals
+
     out: list[dict] = []
     for p in view.get("proposals") or []:
         pid = p.get("action_id")
@@ -2977,8 +2979,11 @@ def confirmable_cards(
                         "line": _sentence(f"A message to {to} on {via}: {text}")})  # fmt: skip
         elif kind == "session":
             brief = verbatim(p.get("text") or "")
+            # The kind the tap starts (#2014), from the card's live entry: what is heard is what
+            # launches. An entry not read yet says neither.
+            noun = ask_proposals.KIND_WORDS.get(p.get("runtime"), "session")
             if brief is not None:
-                line = f"A new session in {title}: {brief}"
+                line = f"A new {noun} in {title}: {brief}"
             elif not (p.get("text") or "").strip():
                 continue  # nothing would start it
             else:
@@ -2991,7 +2996,10 @@ def confirmable_cards(
                 # this way; a message and an operation's effect are still read in full or stay
                 # on screen (`verbatim` is unchanged).
                 agent = " ".join(str(p.get("agent") or "").split())[:40]
-                what = f"A new {agent} session" if agent else "A new session"
+                if noun == "session":  # no kind known: the words before #2014
+                    what = f"A new {agent} session" if agent else "A new session"
+                else:
+                    what = f"A new {noun}" + (f" with {agent}" if agent else "")
                 line = f"{what} in {title}. Its brief is too long to read out; it is on your screen"
             out.append({"id": pid, "kind": "session", "verb": "start it",
                         "line": _sentence(line), "announced": brief is None})  # fmt: skip

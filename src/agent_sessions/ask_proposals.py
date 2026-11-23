@@ -26,8 +26,13 @@ SHOWN; the entry is what a tap launches, so the client can never supply what sta
   briefed (``Dispatch.ok``). A launch that may be running but was not proved is ``unconfirmed``
   — never reported as started, never retried. ``failed`` says nothing is running.
 
-The launch is ``headless_dispatch.dispatch``, the one launcher every unattended start uses. The
-decision runs as a server task so a launch's evidence wait (up to minutes) does not hold a request.
+The launch is ``headless_dispatch.dispatch``, the one launcher every unattended start uses, for a
+terminal agent. An API client (#2014: ``runtime: "api"``, pinned when the card was shown) starts
+through ``mission_structured.hq_start`` instead: a structured create and the brief as its first
+turn, both under an ATTENDED guard whose fenced check re-reads scope, project, folder and brief,
+with ids derived from the proposal so a replayed tap never makes a second session. It never skips
+permission prompts. The decision runs as a server task so a launch's evidence wait (up to minutes)
+does not hold a request.
 """
 
 from __future__ import annotations
@@ -56,6 +61,12 @@ INTERRUPTED_REASON = (
     "It is not retried."
 )
 DEFAULT_CHANGED = "your default for permission bypass changed since this was proposed"
+#: A tap asking an API card to skip permission prompts (#2014): never offered on one.
+API_NO_BYPASS = (
+    "an API session HQ starts always asks before it acts; it can't skip permission prompts"
+)
+#: What a card's kind is called where it is said (#2014): the read-back and HQ's card list.
+KIND_WORDS = {"api": "API session", "pty": "terminal session"}
 PROJECT_BUSY = "the project was being changed just then, so nothing was started — try again"
 #: How long the spawn may wait for the project store's flock — tried, never waited on, because it
 #: is ordered OUTSIDE the launch fence this is held under (`projects.try_locked_index`).
@@ -92,6 +103,37 @@ def scope_refusal() -> str:
     if not cfg.get("enabled") or cfg.get("autonomy") not in ("suggest", "yolo"):
         return "session assistance is off or observe-only"
     return ""
+
+
+def is_api(engine: str) -> bool:
+    """Whether ``engine`` is a native API client (asked of its manifest, never named)."""
+    from . import engines, handoff
+
+    prov = engines.get(engine)
+    return prov is not None and handoff.is_api_target(prov)
+
+
+def start_state(engine: str) -> tuple[bool, str]:
+    """Whether a card may start ``engine`` right now (#2014). Blocking: it may probe readiness.
+
+    An API client takes its brief as its first structured turn, so it answers the handoff-target
+    question: its kind is ready for a first turn (`kinds.API_HANDOFF_READY`) and it can start here
+    (`registry.can_start`, the New session form's answer). A terminal agent answers the console
+    launcher's question (`automation_runner.engine_state`) as before. Missions and automations
+    keep their own, narrower answers."""
+    from . import automation_runner, engines, handoff
+
+    prov = engines.get(engine)
+    if prov is None or not handoff.is_api_target(prov):
+        return automation_runner.engine_state(engine)
+    if engines.is_retiring(prov):
+        return False, engines.REMOVED_REASON
+    try:
+        present = handoff.target_present(prov)
+        ok, why = handoff.handoff_target_state(prov, present=present)
+    except Exception:  # noqa: BLE001 — a client that can't answer is not startable
+        ok, why = False, ""
+    return (True, "") if ok else (False, why or f"{engine} cannot be started right now")
 
 
 def bypass_default() -> bool:
@@ -206,14 +248,15 @@ def specialist_launch_args(row: dict) -> dict:
 def precheck(row: dict) -> str:
     """Everything a start depends on, before ``deciding`` is written. Returns the stale reason, or
     "". Blocking."""
-    from . import automation_runner
-
     why = scope_refusal()
     if why:
         return why
-    ok, why = automation_runner.engine_state(row["engine"])
+    ok, why = start_state(row["engine"])
     if not ok:
         return why
+    if (row.get("runtime") == "api") != is_api(row["engine"]):
+        # The kind the card showed is the kind that starts, never a silent switch (#2014).
+        return "this agent's kind of session changed since this was proposed"
     return (
         _project_refusal(row)
         or _folder_refusal(row)
@@ -328,6 +371,8 @@ def view(row: dict) -> dict:
     return {
         "state": state,
         "engine": row.get("engine") or "",
+        # The kind of session a tap starts (#2014): pinned when the card was shown.
+        "runtime": "api" if row.get("runtime") == "api" else "pty",
         "bypass_default": bool(row.get("bypass_default")),
         "bypass": row.get("bypass"),
         "session_key": row.get("session_key") if state in (STARTED, UNCONFIRMED) else "",
@@ -509,6 +554,9 @@ async def decide(
             return 200, view(row)
         if decision == "confirm":
             raise ProposalError(422, "a session proposal is started or dismissed")
+        api = row.get("runtime") == "api"
+        if api and bypass and decision == "start":
+            raise ProposalError(422, API_NO_BYPASS)
         if decision == "dismiss":
             row = await asyncio.to_thread(
                 _update, cid, pid, state=DISMISSED, notice="", settled_at=time.time()
@@ -521,7 +569,7 @@ async def decide(
             )
             return 200, view(row or {})
         current = await asyncio.to_thread(bypass_default)
-        if current != row["bypass_default"]:
+        if not api and current != row["bypass_default"]:
             # Re-confirm: the card shows the new starting value and the operator taps again.
             row = await asyncio.to_thread(
                 _update, cid, pid, bypass_default=current, notice="default_changed"
@@ -533,6 +581,8 @@ async def decide(
             k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
         }
         approved["bypass_default"] = row["bypass_default"]
+        if api:
+            approved["runtime"] = "api"
         if row.get("specialist"):
             # The specialist version the card showed (#1910): part of what was approved.
             approved["specialist"] = dict(row["specialist"])
@@ -550,7 +600,8 @@ async def decide(
         )
         if row is None:
             raise ProposalError(404, "no such proposal")
-        task = asyncio.create_task(_launch(cid, dict(approved, bypass=bool(bypass)), fd, registry))
+        launch = _launch_api if api else _launch
+        task = asyncio.create_task(launch(cid, dict(approved, bypass=bool(bypass)), fd, registry))
         _TASKS[pid] = task
         handed = True
         return 202, view(row)
@@ -690,6 +741,92 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
                 await asyncio.to_thread(_follow_started, cid, outcome["session_key"], row)
     except Exception as e:  # noqa: BLE001 — the entry stays `deciding` → `interrupted`
         log.warning("ask launch outcome not recorded (%s)", type(e).__name__)
+    finally:
+        os.close(fd)
+        _TASKS.pop(pid, None)
+
+
+async def _launch_api(cid: str, row: dict, fd: int, registry) -> None:
+    """An API card's launch (#2014): `mission_structured.hq_start`, settled from the same facts as
+    a terminal launch. Owns ``fd`` (the decide lock)."""
+    from . import headless_dispatch, mission_structured
+
+    pid = row["id"]
+    recorded = {"key": ""}
+    fenced = {"why": ""}
+
+    def on_key(key: str) -> None:
+        if _update(cid, pid, session_key=key) is None:
+            raise RuntimeError("the proposal is gone")
+        recorded["key"] = key
+
+    def check() -> tuple[bool, str]:
+        # INSIDE the write fence (`session_input.admit_native`), at the create AND at the first
+        # turn: a withdrawal commits entirely before this read (refused) or after the worker's
+        # tokens were issued (refused at its claim). The brief is read under the registration
+        # fence (`_brief_refusal`), as at the tap.
+        why = (
+            scope_refusal()
+            or _project_refusal(row)
+            or _folder_refusal(row)
+            or _brief_refusal(row["brief"])
+        )
+        fenced["why"] = why
+        return (not why), why
+
+    outcome: dict
+    try:
+        try:
+            try:
+                extra = (
+                    await asyncio.to_thread(specialist_launch_args, row)
+                    if row.get("specialist")
+                    else {}
+                )
+            except Exception:  # noqa: BLE001 — the version was checked at precheck; gone since
+                raise headless_dispatch.DispatchError(
+                    "the specialist could not be read just now"
+                ) from None
+            out = await mission_structured.hq_start(
+                proposal_id=pid,
+                engine=row["engine"],
+                cwd=row["real"],
+                brief=row["brief"],
+                on_key=on_key,
+                check=check,
+                **extra,
+            )
+        except headless_dispatch.DispatchError as e:
+            outcome = {"state": FAILED, "reason": f"{e} — nothing was started"}
+        else:
+            if not out.launched and fenced["why"]:
+                # Refused inside the fence before anything ran: the card is out of date.
+                outcome = {"state": STALE, "reason": fenced["why"], "session_key": ""}
+            else:
+                outcome = _outcome(out, "")
+    except asyncio.CancelledError:
+        os.close(fd)
+        _TASKS.pop(pid, None)
+        raise
+    except Exception as e:  # noqa: BLE001 — a decision must always settle
+        log.warning("ask api launch failed (%s)", type(e).__name__)
+        outcome = (
+            {
+                "state": UNCONFIRMED,
+                "reason": "the launch stopped unexpectedly — it may be running; check your "
+                "sessions. It is not retried.",
+            }
+            if recorded["key"]
+            else {"state": FAILED, "reason": "the launch failed before anything was started"}
+        )
+    try:
+        outcome.pop("retry", None)
+        outcome.pop("notice", None)
+        await asyncio.to_thread(_update, cid, pid, settled_at=time.time(), **outcome)
+        if outcome.get("state") == STARTED and outcome.get("session_key"):
+            await asyncio.to_thread(_follow_started, cid, outcome["session_key"], row)
+    except Exception as e:  # noqa: BLE001 — the entry stays `deciding` → `interrupted`
+        log.warning("ask api launch outcome not recorded (%s)", type(e).__name__)
     finally:
         os.close(fd)
         _TASKS.pop(pid, None)

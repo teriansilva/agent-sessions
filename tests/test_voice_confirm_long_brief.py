@@ -98,3 +98,40 @@ def test_the_agent_name_cannot_smuggle_lines_into_the_announcement():
                            "agent": "Claude\nCode  " + "x" * 200, "text": LONG}]}  # fmt: skip
     (card,) = voice_calls.confirmable_cards(view)
     assert "\n" not in card["line"] and len(card["line"]) < 160
+
+
+# ---- #2014: the read-back names the kind of session that starts -------------------------------
+
+
+def test_the_read_back_says_api_or_terminal_session_as_the_card_will_start_it():
+    short = {"kind": "session", "action_id": "p1", "title": "docs", "agent": "Claude — API"}
+    api = {"proposals": [{**short, "runtime": "api", "text": "Refresh the install docs."}]}
+    pty = {"proposals": [{**short, "runtime": "pty", "text": "Refresh the install docs."}]}
+    assert voice_calls.confirmable_cards(api)[0]["line"] == (
+        "A new API session in docs: Refresh the install docs."
+    )
+    assert voice_calls.confirmable_cards(pty)[0]["line"] == (
+        "A new terminal session in docs: Refresh the install docs."
+    )
+    long_api = {"proposals": [{**SESSION["proposals"][0], "agent": "Claude — API",
+                               "runtime": "api"}]}  # fmt: skip
+    assert voice_calls.confirmable_cards(long_api)[0]["line"] == (
+        "A new API session with Claude — API in Gameplay. Its brief is too long to read out; "
+        "it is on your screen."
+    )
+
+
+def test_a_spoken_confirm_starts_an_api_card_without_bypass(monkeypatch):
+    card = {**SESSION["proposals"][0], "agent": "Claude — API", "runtime": "api"}
+    r = Rig(monkeypatch, {"proposals": [card]})
+
+    async def go():
+        await r.ask("Start a session for the team-building mode")
+        assert r.said_text()[-1].startswith("A new API session with Claude — API in Gameplay.")
+        await r.readback_played()
+        await r.ask("confirm")
+
+    run(go())
+    decide = [x for x in r.routes if x[1] == "/api/ask/proposals/prop-9/decide"]
+    assert decide == [("POST", "/api/ask/proposals/prop-9/decide",
+                       {"decision": "start", "bypass": False})]  # fmt: skip

@@ -321,6 +321,63 @@ test("a session card starts with the bypass value it shows, by keyboard, and fol
   await noSidewaysScroll(page);
 });
 
+// --- #2014: the card names the kind of session a tap starts ---------------------------------------
+
+test("an API session card names its kind, has no bypass switch, and starts without bypass", async ({
+  page,
+}) => {
+  const api = { agent: "Claude — API", engine: "claude-api", runtime: "api" };
+  const fake = await mockShell(page, [proposedSession()]);
+  fake.conversations[0].turns[0].proposals = [sessionProposal(api)];
+  const decided: unknown[] = [];
+  await page.route(/\/api\/ask\/proposals\/[0-9a-f]{32}\/decide$/, async (r) => {
+    decided.push(r.request().postDataJSON());
+    const t = fake.conversations[0].turns[0];
+    t.proposals = [
+      sessionProposal({
+        ...api,
+        state: "started",
+        bypass: false,
+        session_key: "claude-api:11111111-2222-4333-8444-555555555555",
+      }),
+    ];
+    await r.fulfill({ status: 202, json: { proposal: t.proposals[0] } });
+  });
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  const card = panel.getByTestId("ask-session");
+  const kind = card.getByTestId("ask-session-kind");
+  await expect(kind).toHaveText("API session · asks before each request");
+  await expect(kind).toHaveAttribute("data-runtime", "api");
+  await expect(card.getByTestId("ask-session-bypass")).toHaveCount(0);
+  await expect(card.getByRole("switch")).toHaveCount(0);
+  await expect(card.getByTestId("ask-session-asks")).toContainText("always asks before");
+  const start = card.getByRole("button", { name: "Start API session in agent-sessions" });
+  expect((await start.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await start.click();
+  expect(decided).toEqual([{ decision: "start", bypass: false }]);
+  await expect(card.getByTestId("ask-session-outcome")).toContainText("Started", {
+    timeout: 10_000,
+  });
+  await noSidewaysScroll(page);
+});
+
+test("a terminal session card says so and keeps its bypass switch", async ({ page }) => {
+  const fake = await mockShell(page, [proposedSession()]);
+  fake.conversations[0].turns[0].proposals = [sessionProposal({ runtime: "pty" })];
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  const card = panel.getByTestId("ask-session");
+  await expect(card.getByTestId("ask-session-kind")).toHaveText("Terminal session");
+  await expect(card.getByRole("switch")).not.toBeChecked();
+  await expect(
+    card.getByRole("button", { name: "Start terminal session in agent-sessions" }),
+  ).toBeVisible();
+  await noSidewaysScroll(page);
+});
+
 test("a changed bypass default asks again: the card shows the new starting value and starts nothing", async ({
   page,
 }) => {

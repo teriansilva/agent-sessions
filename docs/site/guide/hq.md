@@ -255,11 +255,17 @@ with the sidebar open.
   assistance on (Suggest or YOLO) in Settings; Off stops it. A mission's sessions are messaged
   from that mission's own console.
 - HQ can **propose a new session** ("start a Claude session on api to rebase onto main"). The
-  card shows the project, the agent and the brief, the agent's first message, exactly as it will
-  be typed. Nothing starts until you tap **Start session in …**.
-  - **Permission bypass** is a switch on the card. It starts at the default from your new-session
-    form; *On* means the agent runs commands and edits files without asking you first. What the card
-    shows when you tap is what the session gets.
+  card shows the project, the agent, the kind of session and the brief, the agent's first message,
+  exactly as it will be sent. Nothing starts until you tap **Start API session in …** or
+  **Start terminal session in …**.
+  - **API sessions by default.** HQ starts an agent's API client when it is ready on this machine,
+    and a terminal session only when you ask for one ("start it in a terminal"). If you name no
+    agent, HQ uses your default agent from the new-session form without asking.
+  - **An API session HQ starts always asks before it acts**: its card has no permission-bypass
+    switch.
+  - **Permission bypass** is a switch on a terminal session's card. It starts at the default from
+    your new-session form; *On* means the agent runs commands and edits files without asking you
+    first. What the card shows when you tap is what the session gets.
   - If that default changed after the card appeared, the card asks you to check the switch and
     tap again, and nothing starts.
   - The card then shows *Starting*, and *Started* with **Open** once the agent has the session and

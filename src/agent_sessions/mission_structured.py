@@ -22,6 +22,8 @@ itself.
   turn, sharing `_create_and_brief` with `dispatch`), `automation_target` (the native record's
   cwd and state, read before a send) and `automation_send` (one guarded turn). Their ids come
   from the automation's RUN (`automation_ids`) and their binding is `automation:<id>:<run>`.
+* HQ's session cards (#2014) use it too: `hq_start` (a create and one ATTENDED guarded first turn,
+  ids from the proposal, `hq_ids`, binding `ask:<proposal id>`).
 
 No permission bypass, ever, on this path (#1613 D8): creates pass `bypass=False`, and #1897 also
 refuses guarded work in a session that skips permissions.
@@ -412,6 +414,93 @@ async def automation_start(
             out.teardown = "stopped"
         except Exception as exc:  # noqa: BLE001 — recorded, never raised over the refusal
             log.warning("automation %s: containing %s failed", binding, key, exc_info=True)
+            out.teardown = "error"
+            out.reason = f"{out.reason}; stopping its worker failed: {exc}"
+    return out
+
+
+# --- HQ's session cards (#2014) ----------------------------------------------------------------
+#
+# A session card HQ proposed and the operator tapped (or confirmed on a call) starts an API session
+# through the same create-and-brief core. Its ids come from the PROPOSAL id (`hq_ids`), so a
+# replayed tap replays the same create and the same first turn. The guard is ATTENDED (#2008): the
+# operator's own tap is behind it; set here, by server code, never read from a request.
+
+
+def hq_ids(proposal_id: str) -> tuple[str, str]:
+    """``(session_id, brief_turn_id)`` for one HQ session card."""
+    if not isinstance(proposal_id, str) or not proposal_id:
+        raise ValueError("an HQ start needs its proposal id")
+    return (
+        str(uuid.uuid5(MISSION_NAMESPACE, f"ask-proposal:{proposal_id}:session")),
+        str(uuid.uuid5(MISSION_NAMESPACE, f"ask-proposal:{proposal_id}:brief")),
+    )
+
+
+async def hq_start(
+    *,
+    proposal_id: str,
+    engine: str,
+    cwd: str,
+    brief: str,
+    on_key: Callable[[str], None],
+    check: Callable[[], tuple[bool, str]],
+    model: str | None = None,
+    specialist: tuple[str, int] | None = None,
+) -> headless_dispatch.Dispatch:
+    """The API session an HQ card starts (#2014): one structured create and one guarded first turn,
+    the same facts `headless_dispatch.dispatch` returns, so `ask_proposals` settles both alike.
+
+    ``check`` is the card's own fenced re-check (scope, project, folder, brief), run INSIDE the
+    write fence at the create AND at the first turn (`session_input.admit_native`). Never
+    permission-bypassed: a skip-permissions create waits for the pane's own Start (#1339).
+
+    Raises `DispatchError` only when nothing was attempted. A worker left without its first turn
+    (a create that never became ready, a first turn refused before any claim) is CONTAINED, as an
+    automation's is; a first turn whose delivery could not be confirmed keeps its worker and is
+    never re-sent."""
+    prov = engines.get(engine)
+    if prov is None or not is_api(prov):
+        raise headless_dispatch.DispatchError(f"{engine!r} is not an available API client")
+    if not await asyncio.to_thread(registry.can_start, prov):  # it may probe readiness
+        raise headless_dispatch.DispatchError(
+            registry.api_unavailable_reason(prov) or "this agent's API client is not ready"
+        )
+    try:
+        text = handoff.sanitize_seed(brief)
+    except handoff.HandoffError as exc:
+        raise headless_dispatch.DispatchError(str(exc.detail)) from None
+    try:
+        session_id, brief_id = hq_ids(proposal_id)
+        key = f"{engine}:{session_id}"
+        fenced = _fenced(check)
+        admission = ExecutionGuard(
+            f"ask:{proposal_id}",
+            _in_process_only,
+            admit=lambda: session_input.admit_native(key, fenced),
+            attended=True,
+        )
+    except ValueError as exc:
+        raise headless_dispatch.DispatchError(f"nothing was started: {exc}") from None
+    out = headless_dispatch.Dispatch(key=key, engine=engine, native=session_id, cwd=cwd)
+    on_key(key)  # the record is ahead of the session, never behind it
+    out = await _create_and_brief(
+        out,
+        text=text,
+        brief_id=brief_id,
+        admission=admission,
+        context={"reservation_id": proposal_id},
+        model=model,
+        specialist=specialist,
+    )
+    if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
+        from . import runtime_cleanup  # at call time, like `automation_start`
+
+        try:
+            await runtime_cleanup.contain_native(engine, session_id)
+            out.teardown = "stopped"
+        except Exception as exc:  # noqa: BLE001 — recorded, never raised over the refusal
+            log.warning("hq card %s: containing %s failed", proposal_id, key, exc_info=True)
             out.teardown = "error"
             out.reason = f"{out.reason}; stopping its worker failed: {exc}"
     return out

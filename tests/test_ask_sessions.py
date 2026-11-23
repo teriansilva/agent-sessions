@@ -276,7 +276,10 @@ def test_a_session_proposal_is_a_card_and_a_pending_entry_and_nothing_starts(app
     assert listed[0] == {
         "projects": [{"index": 0, "name": "api", "archived": False, "can_start_session": True}]
     }
-    assert listed[1] == {"agents": [{"index": 0, "name": "Claude Code", "can_start": True}]}
+    assert listed[1]["agents"] == [
+        {"index": 0, "name": "Claude Code", "kind": "terminal", "can_start": True}
+    ]
+    assert set(listed[1]) == {"agents", "note"}
 
 
 def test_the_starting_bypass_value_is_the_new_session_default_not_the_unattended_grant(

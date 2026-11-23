@@ -336,7 +336,16 @@ def test_list_agents_keeps_its_indexes_and_adds_why_not_and_retiring():
     out = _run(ask_orchestrator._list_agents)["agents"]
     assert [a["index"] for a in out] == list(range(len(out)))
     for a in out:
-        assert set(a) <= {"index", "name", "can_start", "why_not", "retiring"}
+        assert set(a) <= {
+            "index",
+            "name",
+            "kind",
+            "can_start",
+            "why_not",
+            "retiring",
+            "preferred",
+            "default",
+        }
         if not a["can_start"]:
             assert a["why_not"]
 

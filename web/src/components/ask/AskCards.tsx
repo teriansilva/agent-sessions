@@ -398,6 +398,9 @@ export function SessionCard({
   const out = isReplaced(p) ? REPLACED : sessionOutcome(p);
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   const name = p.title || "this project";
+  // #2014: an API session HQ starts always asks before it acts, so its card has no switch.
+  const api = p.runtime === "api";
+  const kind = api ? "API session" : p.runtime === "pty" ? "terminal session" : "session";
   return (
     <div className={`${c.card} ${edge}`} data-testid="ask-session" data-state={p.state}>
       <div className={c.head}>
@@ -412,6 +415,14 @@ export function SessionCard({
           <dd>{p.title}</dd>
           <dt>Agent</dt>
           <dd>{p.agent}</dd>
+          {p.runtime ? (
+            <>
+              <dt>Session</dt>
+              <dd data-testid="ask-session-kind" data-runtime={p.runtime}>
+                {api ? "API session · asks before each request" : "Terminal session"}
+              </dd>
+            </>
+          ) : null}
           {out && p.bypass !== null ? (
             <>
               <dt>Bypass</dt>
@@ -427,24 +438,32 @@ export function SessionCard({
         </div>
         {!out ? (
           <>
-            <label className={c.switchRow} data-testid="ask-session-bypass">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={bypass}
-                disabled={deciding || !p.can_start}
-                onChange={(e) => setBypass(e.target.checked)}
-                aria-describedby={`bypass-${p.action_id}`}
-              />
-              <span className={c.switchText}>
-                <span className={c.switchName}>Permission bypass · {bypass ? "On" : "Off"}</span>
-                <span id={`bypass-${p.action_id}`} className={c.switchRisk}>
-                  {bypass
-                    ? "The agent runs commands and edits files without asking you first."
-                    : "The agent asks you before it runs commands or edits files."}
+            {api ? (
+              <div className={c.note} data-testid="ask-session-asks">
+                <span>
+                  An API session HQ starts always asks before it runs commands or edits files.
                 </span>
-              </span>
-            </label>
+              </div>
+            ) : (
+              <label className={c.switchRow} data-testid="ask-session-bypass">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={bypass}
+                  disabled={deciding || !p.can_start}
+                  onChange={(e) => setBypass(e.target.checked)}
+                  aria-describedby={`bypass-${p.action_id}`}
+                />
+                <span className={c.switchText}>
+                  <span className={c.switchName}>Permission bypass · {bypass ? "On" : "Off"}</span>
+                  <span id={`bypass-${p.action_id}`} className={c.switchRisk}>
+                    {bypass
+                      ? "The agent runs commands and edits files without asking you first."
+                      : "The agent asks you before it runs commands or edits files."}
+                  </span>
+                </span>
+              </label>
+            )}
             {p.notice === "busy" ? (
               <div className={c.note} role="status" data-testid="ask-session-notice">
                 <span>
@@ -484,11 +503,11 @@ export function SessionCard({
             type="button"
             className={c.cta}
             disabled={deciding || !p.can_start}
-            onClick={() => onStart(bypass)}
+            onClick={() => onStart(api ? false : bypass)}
             data-testid="ask-session-start"
           >
             <Play size={15} aria-hidden="true" />
-            Start session in {name}
+            Start {kind} in {name}
           </button>
           <button
             type="button"

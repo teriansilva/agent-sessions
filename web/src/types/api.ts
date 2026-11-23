@@ -1120,6 +1120,10 @@ export interface AskSessionCard {
     | "unknown"
     | "gone";
   engine: string;
+  /** The kind of session a tap starts (#2014), pinned when the card was shown: an API session
+   *  (which always asks before it acts — no bypass switch) or a terminal one. Absent from an older
+   *  server: the card then names neither and keeps its switch. */
+  runtime?: "api" | "pty";
   /** The new-session form's starting value for permission bypass — the card's toggle starts here. */
   bypass_default: boolean;
   /** What the tap carried, once decided. */

@@ -1339,6 +1339,13 @@ def _admit_kind(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         ):
             raise ValueError("malformed specialist")
         out["specialist"] = {"id": sid, "version": n}
+    # Optional (#2014): the kind of session the card starts, pinned when it was shown. Only an API
+    # entry carries it ("api"); absent is a terminal entry, so an older sidecar reads unchanged.
+    runtime = e.get("runtime")
+    if runtime is not None:
+        if runtime != "api":
+            raise ValueError("unknown session runtime")
+        out["runtime"] = "api"
     for k in ("ts", "decided_at", "settled_at"):
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):

@@ -132,19 +132,67 @@ def test_a_mission_ready_api_client_is_admitted_and_one_that_is_not_is_refused(p
     assert automation_runner.target_state(CLAUDE)[0] is False
 
 
-def test_ask_hq_still_never_offers_an_api_client_it_cannot_launch(project, monkeypatch):
-    """`engine_state` stays the CONSOLE launcher's answer (Ask HQ starts sessions only through
-    `headless_dispatch`): admitting an API client for automations must not make Ask offer it."""
-    from agent_sessions import ask_orchestrator, engines
+def test_ask_hq_offers_an_api_client_that_can_start_and_engine_state_stays_console_only(
+    project, monkeypatch
+):
+    """#2014: HQ's cards start an API client through the structured runtime, so `list_agents`
+    offers one that can start here (the handoff-target answer), marked as an API session and
+    preferred for its family. `engine_state` stays the CONSOLE launcher's answer: missions and
+    automations never read HQ's answer."""
+    from agent_sessions import ask_orchestrator, ask_proposals, engines
     from agent_sessions.engines import registry
 
     # As on an install where the Claude API client is present (the fixture's client is not).
     monkeypatch.setattr(registry, "present_providers", lambda: [engines.get(CLAUDE)])
-    assert automation_runner.target_state(CLAUDE) == (True, "")
     ok, why = automation_runner.engine_state(CLAUDE)
+    assert not ok and why
+    assert ask_proposals.start_state(CLAUDE) == (True, "")
+    rows = {r["id"]: r for r in ask_orchestrator._agent_rows()}
+    assert rows[CLAUDE]["can_start"] is True
+    assert rows[CLAUDE]["kind"] == "api"
+
+
+def test_ask_hq_never_offers_an_api_client_that_cannot_start(project, monkeypatch):
+    """Not ready here (`registry.can_start` false) → not offered, with its reason; never a silent
+    switch to a terminal client."""
+    from agent_sessions import ask_orchestrator, ask_proposals, engines
+    from agent_sessions.engines import registry
+
+    monkeypatch.setattr(registry, "present_providers", lambda: [engines.get(CLAUDE)])
+    monkeypatch.setattr(registry, "can_start", lambda _p: False)
+    ok, why = ask_proposals.start_state(CLAUDE)
     assert not ok and why
     rows = {r["id"]: r for r in ask_orchestrator._agent_rows()}
     assert rows[CLAUDE]["can_start"] is False
+    assert rows[CLAUDE]["why_not"]
+    assert not rows[CLAUDE]["preferred"] and not rows[CLAUDE]["default"]
+
+
+def test_list_agents_prefers_a_ready_api_client_and_resolves_a_terminal_default_to_it(
+    project, monkeypatch
+):
+    """#2014: each family's base default (`family.default_client(.., "interactive")`) is marked
+    preferred, and the operator's default agent names a FAMILY: a terminal default whose family
+    has a ready API client resolves to that client."""
+    from agent_sessions import ask_orchestrator, engines
+    from agent_sessions.engines import family, registry
+
+    api = engines.get(CLAUDE)
+    fam = family.family_of(api)
+    console = next(
+        p
+        for p in registry.all_providers()
+        if family.family_of(p) == fam and p.manifest.runtime == "pty"
+    )
+    monkeypatch.setattr(registry, "present_providers", lambda: [console, api])
+    monkeypatch.setattr(
+        prefs, "get_agent_defaults", lambda: {"default_engine": console.engine_id, "bypass": False}
+    )
+    rows = {r["id"]: r for r in ask_orchestrator._agent_rows()}
+    assert rows[CLAUDE]["kind"] == "api" and rows[CLAUDE]["preferred"] is True
+    assert rows[CLAUDE]["default"] is True
+    assert rows[console.engine_id]["kind"] == "terminal"
+    assert not rows[console.engine_id]["preferred"] and not rows[console.engine_id]["default"]
 
 
 def test_save_refuses_a_non_admitted_api_client_for_both_session_actions(project):

@@ -300,9 +300,10 @@ cannot answer an agent's permission dialog or menu; never put a secret in the te
 
 When the operator asks you to start a session, call list_projects and list_agents, then \
 propose_session with the project's index, the agent's index and the brief: the first message the \
-agent gets, complete and in the operator's words where they gave them. If the project or agent is \
-unclear, ask_operator first. Nothing starts: the operator sees a card, chooses whether the agent \
-may skip permission prompts, and starts it or not, so never say a session was started.
+agent gets, complete and in the operator's words where they gave them. No agent named: the \
+default one. Use the preferred (API) client; a terminal only if asked. If the project or agent \
+is unclear, ask_operator first. Nothing starts: the operator sees a card and starts it or not, \
+so never say a session was started.
 
 To change a session or a project — archive, unarchive, close, rename, tag, colour, favourite, move \
 to a project, review now, exclude from AI review or mission control, archive everything older than \
