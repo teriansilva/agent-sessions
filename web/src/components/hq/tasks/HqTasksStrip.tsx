@@ -9,6 +9,10 @@
  *  recent ones are links with a visible **Open**; one the server never started offers
  *  **Re-send**. **Stop all** shows only when more than one task could be stopped.
  *
+ *  The sidebar passes its open conversation (`exceptCid`): that conversation shows its own
+ *  running turn, queue and question inline, so the strip lists only the others' (one task, one
+ *  place). Stop all is withheld there while it would also stop a task the strip hides.
+ *
  *  Everything shown is the server's stored first lines, titles, counts and times (`hqTasks.ts`).
  */
 import { ArrowRight, X } from "lucide-react";
@@ -18,7 +22,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../../lib/api";
 import { HQ_PATH, hqConversationPath } from "../../../lib/routes";
 import type { HqTask } from "../../../types/api";
-import { canStopAll, countsLine, runningElapsed, taskRow } from "./hqTasks";
+import { canStopAll, countsLine, otherConversations, runningElapsed, taskRow } from "./hqTasks";
 import { announceHqTasks, stopAllHqTasks, useHqTasks } from "./hqTasksStore";
 import s from "./HqTasks.module.css";
 
@@ -57,8 +61,11 @@ export function HqTasksStrip({
   onNavigate,
   onClose,
   closeRef,
+  exceptCid,
 }: {
   host: HqTasksHost;
+  /** The conversation open beside the strip: its tasks are shown there, not here. */
+  exceptCid?: string | null;
   /** A row's link was followed (the shell closes its popover or sheet). */
   onNavigate?: () => void;
   /** The shell's sheet: a Close in the head, always in reach. */
@@ -66,7 +73,8 @@ export function HqTasksStrip({
   closeRef?: Ref<HTMLButtonElement>;
 }) {
   const { list, readAt, loaded } = useHqTasks();
-  const running = list.tasks.some((t) => t.state === "running");
+  const shown = otherConversations(list, exceptCid);
+  const running = shown.tasks.some((t) => t.state === "running");
   const now = useNow(running);
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [stoppingAll, setStoppingAll] = useState(false);
@@ -108,8 +116,8 @@ export function HqTasksStrip({
     .slice(0, RECENT_SHOWN[host]);
   // The sidebar shows the strip only while there is something to act on: its room is the
   // conversation's.
-  if (host === "sidebar" && list.tasks.length === 0) return null;
-  const counts = countsLine(list.counts);
+  if (host === "sidebar" && shown.tasks.length === 0) return null;
+  const counts = countsLine(shown.counts);
 
   return (
     <section
@@ -123,7 +131,7 @@ export function HqTasksStrip({
         <span className={s.counts} data-testid="hq-tasks-counts">
           {counts}
         </span>
-        {canStopAll(list.counts) ? (
+        {canStopAll(shown.counts) && !shown.hidesStoppable ? (
           <button
             type="button"
             className={s.stopAll}
@@ -153,14 +161,14 @@ export function HqTasksStrip({
           {failed}
         </p>
       ) : null}
-      {list.tasks.length === 0 ? (
+      {shown.tasks.length === 0 ? (
         <p className={s.empty} data-testid="hq-tasks-empty">
           <span className="hud-led idle" aria-hidden="true" />
           {loaded ? "Nothing running" : "Reading…"}
         </p>
       ) : (
         <ul className={s.rows} data-testid="hq-tasks-rows">
-          {list.tasks.map((t) => {
+          {shown.tasks.map((t) => {
             const row = taskRow(t, now, runningElapsed(t, readAt, now));
             const waiting = busy.has(row.key);
             return (

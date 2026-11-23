@@ -1884,9 +1884,10 @@ export function AskConsole({
         </div>
         </div>
       </header>
-      {/* HQ's tasks (#2103), directly under the sidebar's head: only while there is something to
-          act on. On HQ's page the strip heads the conversation list instead. */}
-      {chrome === "sidebar" && visible ? <HqTasksStrip host="sidebar" /> : null}
+      {/* HQ's tasks (#2103), directly under the sidebar's head: only while ANOTHER conversation
+          has something to act on — this one's running turn, queue and question are already in
+          the thread below. On HQ's page the strip heads the conversation list instead. */}
+      {chrome === "sidebar" && visible ? <HqTasksStrip host="sidebar" exceptCid={cid} /> : null}
       {confirmDelete ? (
         <ConfirmDialog
           tag="DELETE CONVERSATION"

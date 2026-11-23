@@ -4,6 +4,7 @@ import type { HqTask } from "../../../types/api";
 import {
   canStopAll,
   countsLine,
+  otherConversations,
   runningElapsed,
   taskAge,
   taskQuestion,
@@ -53,6 +54,46 @@ describe("the tasks strip's counts (#2103)", () => {
     expect(tasksPollMs({ running: 1, queued: 0, question: 0 })).toBe(TASKS_POLL_ACTIVE_MS);
     expect(tasksPollMs({ running: 0, queued: 1, question: 0 })).toBe(TASKS_POLL_ACTIVE_MS);
     expect(tasksPollMs({ running: 0, queued: 0, question: 1 })).toBe(TASKS_POLL_IDLE_MS);
+  });
+});
+
+describe("the sidebar's strip leaves out its own conversation", () => {
+  const A = "ask_" + "a".repeat(32);
+  const B = "ask_" + "b".repeat(32);
+  const list = {
+    tasks: [
+      task({ cid: A, turn_id: "a1", state: "running" }),
+      task({ cid: A, turn_id: "a2", state: "queued" }),
+      task({ cid: B, turn_id: "b1", state: "running" }),
+      task({ cid: B, turn_id: "b2", state: "question" }),
+    ],
+    counts: { running: 2, queued: 1, question: 1 },
+  };
+
+  it("lists and counts only the other conversations' tasks", () => {
+    const o = otherConversations(list, A);
+    expect(o.tasks.map((t) => t.turn_id)).toEqual(["b1", "b2"]);
+    expect(o.counts).toEqual({ running: 1, queued: 0, question: 1 });
+    expect(o.hidesStoppable).toBe(true);
+  });
+
+  it("is empty when the open conversation is the only one working", () => {
+    const o = otherConversations({ tasks: list.tasks.slice(0, 2), counts: list.counts }, A);
+    expect(o.tasks).toEqual([]);
+    expect(countsLine(o.counts)).toBe("");
+  });
+
+  it("hides nothing stoppable when the open conversation only has a question", () => {
+    const o = otherConversations(list, B);
+    expect(o.tasks.map((t) => t.turn_id)).toEqual(["a1", "a2"]);
+    expect(otherConversations({ tasks: [list.tasks[3]], counts: list.counts }, B).hidesStoppable).toBe(false);
+  });
+
+  it("keeps the server's list and counts with no conversation open", () => {
+    const o = otherConversations(list, null);
+    expect(o.tasks).toBe(list.tasks);
+    expect(o.counts).toBe(list.counts);
+    expect(o.hidesStoppable).toBe(false);
   });
 });
 

@@ -41,6 +41,27 @@ export function workingMark(c: TaskCounts): { count: number; question: boolean; 
   return { count, question: c.question > 0, label: `HQ tasks: ${words.join(", ")}` };
 }
 
+/** The open tasks minus one conversation's (the HQ sidebar's own, #2103 follow-up): that
+ *  conversation already shows its running turn, its queue and its question inline, with Stop
+ *  and Withdraw, so the strip above it lists only the OTHER conversations'. `counts` are
+ *  recounted over what is left; `hidesStoppable` says Stop all would also reach a task this
+ *  view does not list. */
+export function otherConversations(
+  list: Pick<HqTaskList, "tasks" | "counts">,
+  cid: string | null | undefined,
+): { tasks: HqTask[]; counts: TaskCounts; hidesStoppable: boolean } {
+  if (!cid) return { tasks: list.tasks, counts: list.counts, hidesStoppable: false };
+  const tasks = list.tasks.filter((t) => t.cid !== cid);
+  const counts: TaskCounts = { running: 0, queued: 0, question: 0 };
+  for (const t of tasks)
+    if (t.state === "running" || t.state === "queued" || t.state === "question")
+      counts[t.state] += 1;
+  const hidesStoppable = list.tasks.some(
+    (t) => t.cid === cid && (t.state === "running" || t.state === "queued"),
+  );
+  return { tasks, counts, hidesStoppable };
+}
+
 /** Stop all is offered only when more than one task could be stopped or withdrawn. */
 export function canStopAll(c: TaskCounts): boolean {
   return c.running + c.queued > 1;

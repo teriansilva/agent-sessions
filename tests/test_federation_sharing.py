@@ -1539,9 +1539,17 @@ async def test_a_list_whose_grants_never_hold_still_is_unavailable_not_stale(
         _rows_for(monkeypatch, {made.session_key: "a title"})
         rows = sharing._session_rows
 
+        import threading
+
+        # Overlapping `share.list` scans each run this read-then-change; unserialised, one loses
+        # the revision race and raises "changed since it was read" (an `internal` answer, not the
+        # `unavailable` under test). The lock keeps every scan's change a clean revision bump.
+        changing = threading.Lock()
+
         def scanning(engine):
-            now = p.a.store.get_grant(made.grant_id)
-            grants.change(p.a.store, made.grant_id, expires_in=3600, revision=now.revision)
+            with changing:
+                now = p.a.store.get_grant(made.grant_id)
+                grants.change(p.a.store, made.grant_id, expires_in=3600, revision=now.revision)
             return rows(engine)
 
         monkeypatch.setattr(sharing, "_session_rows", scanning)

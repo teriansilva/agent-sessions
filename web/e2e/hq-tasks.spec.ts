@@ -287,9 +287,11 @@ test("a question asked while one runs is queued, with Stop beside Send, and runs
   await expect(panel.getByTestId("ask-working")).toHaveCount(1);
   await expect(panel.getByTestId("composer-input")).toHaveValue("");
   await expect(panel.getByTestId("composer-input")).toBeEnabled();
-  // The strip heads the sidebar while there is something to act on.
-  const strip = panel.getByTestId("hq-tasks");
-  await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 running · 1 queued");
+  // Both are in this conversation's thread, so the sidebar's strip (other conversations' tasks
+  // only) stays away: one question, one place. The shell's working mark still counts them.
+  await expect(panel.getByTestId("hq-tasks")).toHaveCount(0);
+  const mark = page.locator('.hud-topbar [data-testid="hq-tasks-mark"]');
+  await expect(mark).toHaveAccessibleName("HQ tasks: 1 running, 1 queued");
 
   // The running question settles: the queued one runs next, by itself.
   await hq.settle(hq.fake.conversations[0].id, "It is nine commits in of eleven.");
@@ -299,11 +301,12 @@ test("a question asked while one runs is queued, with Stop beside Send, and runs
   await expect(turns.nth(1).getByTestId("ask-working")).toBeVisible();
   await expect(turns.nth(1).getByTestId("ask-queue-line")).toHaveCount(0);
   await expect(panel.getByTestId("composer-queue-line")).toHaveCount(0);
-  await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 running");
+  await expect(mark).toHaveAccessibleName("HQ tasks: 1 running");
   await hq.settle(hq.fake.conversations[0].id, "Two are blocked on review.");
   await expect(turns.nth(1).getByTestId("ask-answer")).toHaveText("Two are blocked on review.");
   await expect(panel.getByTestId("composer-stop")).toHaveCount(0);
-  await expect(panel.getByTestId("hq-tasks")).toHaveCount(0); // nothing left to act on
+  await expect(panel.getByTestId("hq-tasks")).toHaveCount(0);
+  await expect(mark).toHaveCount(0); // nothing left to act on
 });
 
 test("Withdraw takes a queued question back; a full queue closes Send and says why", async ({
@@ -333,8 +336,8 @@ test("Withdraw takes a queued question back; a full queue closes Send and says w
   // Withdraw the second: it names that turn, and a slot is free again.
   const cid = hq.fake.conversations[0].id;
   const second = turnsOf(hq.fake, cid)[1];
-  // (The strip above the thread offers the same Withdraw for it: one question, two places.)
-  await expect(panel.getByRole("button", { name: "Withdraw: Second" })).toHaveCount(2);
+  // Only the thread offers its Withdraw: the sidebar's strip leaves this conversation out.
+  await expect(panel.getByRole("button", { name: "Withdraw: Second" })).toHaveCount(1);
   const withdraw = panel.getByTestId("ask-turn").nth(1).getByTestId("ask-withdraw");
   await expect(withdraw).toHaveAccessibleName("Withdraw: Second");
   expect((await box(withdraw)).height).toBeGreaterThanOrEqual(
@@ -362,18 +365,29 @@ test("Stop all stops the running question and withdraws the queue, from the stri
 }) => {
   const hq = await mockHq(page);
   await page.goto("/");
-  const panel = await openAsk(page);
+  let panel = await openAsk(page);
   await ask(panel, "First question");
   await expect(panel.getByTestId("composer-stop")).toBeVisible();
   await ask(panel, "Second");
   await ask(panel, "Third");
-  const strip = panel.getByTestId("hq-tasks");
+  await expect(panel.getByTestId("ask-queue-line")).toHaveCount(2);
+  // All three are this conversation's: the sidebar lists none of them. The working mark's strip
+  // lists every conversation's, with Stop all.
+  await expect(panel.getByTestId("hq-tasks")).toHaveCount(0);
+  await panel.getByTestId("ask-close").click();
+  const mark = page.locator('.hud-topbar [data-testid="hq-tasks-mark"]');
+  await mark.click();
+  const strip = page.getByTestId("hq-tasks");
   await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 running · 2 queued");
   await expect(strip.getByTestId("hq-task")).toHaveCount(3);
   const stopAll = strip.getByTestId("hq-tasks-stop-all");
   await expect(stopAll).toHaveText("Stop all");
   await stopAll.click();
   expect(hq.posts).toContain(HQ_TASKS_STOP_ALL_API);
+  await expect(strip.getByTestId("hq-tasks-empty")).toHaveText("Nothing running");
+  await page.keyboard.press("Escape");
+  await expect(strip).toHaveCount(0);
+  panel = await openAsk(page);
   // Everything ended: the first stopped, the others withdrawn; nothing runs, Send is back alone.
   await expect(panel.getByTestId("ask-process-tally")).toHaveText(/Stopped after/);
   const lines = panel.getByTestId("ask-queue-line");
@@ -384,6 +398,41 @@ test("Stop all stops the running question and withdraws the queue, from the stri
   await expect(panel.getByTestId("composer-queue-line")).toHaveCount(0);
   await expect(panel.getByTestId("hq-tasks")).toHaveCount(0);
   await expect(page.getByTestId("hq-tasks-mark")).toHaveCount(0);
+});
+
+test("the sidebar's strip lists only the other conversations' tasks, never the open one's", async ({
+  page,
+}) => {
+  await mockHq(page, busySeed());
+  await page.goto("/");
+  const panel = await openAsk(page);
+  const strip = panel.getByTestId("hq-tasks");
+  // A new conversation is open: every conversation's tasks are someone else's.
+  await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 running · 2 queued · 1 question");
+  await expect(strip.getByTestId("hq-task")).toHaveCount(4);
+
+  // Open A: its running turn and its queue are in the thread, with Stop and Withdraw; the strip
+  // above keeps only B's question, and no Stop all (it would reach A's hidden turns too).
+  await panel.getByTestId("ask-switcher").click();
+  await panel.getByTestId("ask-switcher-item").filter({ hasText: "What changed in the map" }).click();
+  await expect(panel.getByTestId("ask-working")).toHaveCount(1);
+  await expect(panel.getByTestId("ask-withdraw")).toHaveCount(2);
+  await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 question");
+  await expect(strip.getByTestId("hq-task")).toHaveCount(1);
+  await expect(strip.getByTestId("hq-task")).toHaveAttribute("data-state", "question");
+  await expect(strip.getByTestId("hq-task-stop")).toHaveCount(0);
+  await expect(strip.getByTestId("hq-tasks-stop-all")).toHaveCount(0);
+  // Each Withdraw exists once, in the thread.
+  await expect(
+    panel.getByRole("button", { name: /^Withdraw: And which sessions are blocked/ }),
+  ).toHaveCount(1);
+
+  // Open B: A's three are elsewhere again, and Stop all reaches exactly them.
+  await panel.getByTestId("ask-switcher").click();
+  await panel.getByTestId("ask-switcher-item").filter({ hasText: "Archive old docs" }).click();
+  await expect(strip.getByTestId("hq-tasks-counts")).toHaveText("1 running · 2 queued");
+  await expect(strip.getByTestId("hq-task")).toHaveCount(3);
+  await expect(strip.getByTestId("hq-tasks-stop-all")).toBeVisible();
 });
 
 test("the working mark opens the strip from another section: rows, 44px targets, keyboard order", async ({
