@@ -91,6 +91,15 @@ export type UpdateStatus =
   | { state: "withdrawn" }
   | { state: "damaged" };
 
+/** The states a `GalleryIndex` may carry. Checked at runtime because the listing is server data:
+ *  anything else (a missing state, a catch-all mock's `{}`) is not a listing (#2254). */
+const LISTING_STATES: ReadonlySet<string> = new Set([
+  "empty",
+  "ready",
+  "stale",
+  "unavailable",
+]);
+
 /** "Update available" holds only when the stored listing is an accepted, unexpired publication
  *  with an available entry of the same upstream kind + id whose version is newer than the copy's
  *  imported base. Every other case is one plain, non-importable state. */
@@ -101,7 +110,15 @@ export function updateStatus(
   if (!origin) return null;
   if (origin.state !== "verified" || !origin.kind || !origin.id || !origin.version)
     return { state: "damaged" };
-  if (!catalog || catalog.state === "empty" || catalog.state === "unavailable")
+  // A malformed listing is as unusable as an unreachable one: it must never reach
+  // `entries.filter` (where `{}` crashed every gallery copy's detail page, #2254).
+  if (
+    !catalog ||
+    !LISTING_STATES.has(catalog.state) ||
+    !Array.isArray(catalog.entries)
+  )
+    return { state: "unreachable" };
+  if (catalog.state === "empty" || catalog.state === "unavailable")
     return { state: "unreachable" };
   if (catalog.state === "stale") return { state: "stale" };
   const same = catalog.entries.filter(

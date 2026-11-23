@@ -2037,6 +2037,16 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_commit_inside_a_mission_WRITE_FENCE(store,
 
     Red against `fenced_settle` locking only the physical key: the order still holds and the
     roster's epoch does not move.
+
+    **Asked by the HOLDER, not by a stopwatch.** The sequencing this test needs is exact: did the
+    dispatch reach its fence-wait before the write committed? Timing it (`settled.wait(0.5)`, then
+    a 10s join from inside a held fence) answers a proxy, and a loaded runner can blow the budget
+    for scheduling reasons alone. So the settlement signals when it reaches `fenced_settle` on
+    its worker — the patched seam — and the write happens only after that event. The dispatch
+    cannot adopt while this thread holds the fence (`sessions_transaction` is one global mutex),
+    so this thread must not join it from inside the fence; that join was the 10s flake. It is
+    joined only after `fenced_write` has released the lock, and the events that gate it are
+    hang-safe timeouts, not the sequencing mechanism.
     """
     import threading
 
@@ -2048,6 +2058,9 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_commit_inside_a_mission_WRITE_FENCE(store,
 
     order: list[str] = []
     settled = threading.Event()
+    # WHAT THE CODE UNDER TEST FIRES: the settlement reached the adoption fence. The write below
+    # waits on THIS rather than on a stopwatch.
+    at_fence = threading.Event()
 
     async def launcher(**kw):
         on_key = kw.get("on_key")
@@ -2057,27 +2070,47 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_commit_inside_a_mission_WRITE_FENCE(store,
 
     monkeypatch.setattr(mission_structured, "dispatch", launcher)
 
+    real_fenced_settle = mission_dispatch.fenced_settle
+
+    def settle_enters_the_fence(mission_id, **kwargs):
+        # Only the adoption path is the fence-wait this test asks about: a failure settlement
+        # carries no session key and never adopts.
+        if kwargs.get("session_key"):
+            at_fence.set()
+        return real_fenced_settle(mission_id, **kwargs)
+
+    monkeypatch.setattr(mission_dispatch, "fenced_settle", settle_enters_the_fence)
+
     def _dispatch_from_another_request():
         order.append("dispatch-begin")
         asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
         order.append("adopt")
         settled.set()
 
+    t = threading.Thread(target=_dispatch_from_another_request, daemon=True)
+
     def _the_write():
         # INSIDE THE FENCE, past the re-read: this is where a question commits, and the roster it
         # was computed against is the one it is holding.
-        t = threading.Thread(target=_dispatch_from_another_request, daemon=True)
         t.start()
-        settled.wait(timeout=0.5)  # a real chance to win the race if nothing stops it
+        # NOT a race window. The dispatch has reached the fence — the event is fired immediately
+        # before it takes it — and it cannot get past this thread's held lock. The timeout only
+        # keeps a genuinely stuck dispatch from hanging the suite.
+        assert at_fence.wait(timeout=60), (
+            "the dispatch never reached the adoption fence, so the write cannot be ordered "
+            f"against it: {order}"
+        )
         order.append("write")
-        t.join(timeout=10)
         return "written"
 
     from agent_sessions import session_input
 
     before = session_input.current_epoch(mission_fence.roster_key(mid))
     assert asyncio.run(mission_fence.fenced_write(mid, _the_write)) == "written"
-    assert settled.wait(timeout=10), "the dispatch never settled"
+    # THE FENCE IS RELEASED ONLY NOW, so the adoption below can only follow the write above.
+    assert settled.wait(timeout=60), f"the dispatch never settled: {order}"
+    t.join(timeout=10)
+    assert not t.is_alive(), f"the dispatch never returned: {order}"
 
     assert order.index("write") < order.index("adopt"), order
     # THE INVALIDATION. The adoption changed which sessions this mission holds, so anything

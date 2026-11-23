@@ -102,6 +102,8 @@ type Options = {
   playbooks?: boolean;
   /** After the first refresh, the stored-listing read fails until `control.catalogOk = true`. */
   failCatalogAfterRefresh?: boolean;
+  /** The gallery answers a non-listing `{}` (like a sweep's catch-all mock, #2254). */
+  malformedListing?: boolean;
   /** The second stored-listing read (the one after the automatic check) waits for `control.release()`. */
   holdSecondRead?: boolean;
 };
@@ -158,6 +160,7 @@ async function setup(page: Page, options: Options = {}) {
       // must not race the app's first config read).
       if (!request.headers()["x-csrf-token"]) return reply({ detail: "forbidden" }, 403);
       refreshes.push(Date.now());
+      if (options.malformedListing) return reply({});
       if (readsAtRefresh === Infinity) readsAtRefresh = reads;
       if (options.refresh === "unreachable")
         return reply(
@@ -170,6 +173,7 @@ async function setup(page: Page, options: Options = {}) {
     }
     if (path === "/api/gallery") {
       reads += 1;
+      if (options.malformedListing) return reply({});
       if (options.holdSecondRead && reads >= 2) await held;
       // Only a read that arrives AFTER the check fails, and never the page's first one: the
       // first listing read and the automatic check go out together, and when the refresh landed
@@ -929,6 +933,25 @@ test("an up-to-date local copy shows no badge", async ({ page }) => {
   const source = page.getByRole("region", { name: "Gallery source" });
   await expect(source).toContainText("From the gallery · v1.0.0 · unchanged");
   await expect(source.getByTestId("update-available")).toHaveCount(0);
+});
+
+test("a copy's detail renders when /api/gallery answers a non-listing (#2254)", async ({
+  page,
+}) => {
+  await setup(page, { malformedListing: true });
+  await page.goto(`${SKILLS_PATH}/my-skill`);
+  // The automatic check settles (a 200 `{}` is a successful refresh), so the page is not stuck on
+  // "Checking…": the malformed listing is what is rendered, and it reads as unreachable.
+  const source = page.getByRole("region", { name: "Gallery source" });
+  await expect(source).toContainText("From the gallery · v1.0.0 · unchanged");
+  await expect(source).toContainText("Can't check for updates right now.");
+  await expect(source.getByTestId("update-available")).toHaveCount(0);
+  await expect(source.getByRole("link", { name: /Review update/ })).toHaveCount(0);
+  // The copied skill's own content still renders and no route boundary tripped.
+  await expect(page.getByLabel("Your draft: SKILL.md")).toHaveValue(
+    /Read the change and report concrete findings\./,
+  );
+  await expect(page.getByText(/couldn.t load this part of the app/)).toHaveCount(0);
 });
 
 test.describe("a listing kept from an earlier check is shown but never acted on while the current check fails (#1440)", () => {

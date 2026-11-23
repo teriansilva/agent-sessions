@@ -107,6 +107,25 @@ describe("updateStatus", () => {
     expect(updateStatus(origin, catalog([], "unavailable"))?.state).toBe("unreachable");
     expect(updateStatus(origin, null)?.state).toBe("unreachable");
   });
+  it("treats a malformed listing as unreachable, never current or available (#2254)", () => {
+    // The stored listing is server data: a non-listing answer (`{}` from a catch-all mock, a
+    // truncated body, a missing/unknown state or entries that are not an array) must read exactly
+    // like any other unreachable gallery instead of reaching `entries.filter` on undefined.
+    const malformed: unknown[] = [
+      {},
+      { state: "weird", entries: [entry("inbox-triage", "1.3.0")] },
+      { state: "ok", entries: null },
+      { state: "ready" },
+      { state: "ready", entries: null },
+      { state: "ready", entries: {} },
+      { state: "stale" },
+    ];
+    for (const bad of malformed)
+      expect(updateStatus(origin, bad as GalleryIndex)).toEqual({ state: "unreachable" });
+    // A complete ready listing still offers its update: the guard never swallows a real result.
+    const newer = entry("inbox-triage", "1.3.0");
+    expect(updateStatus(origin, catalog([newer]))).toEqual({ state: "available", entry: newer });
+  });
   it("reports damaged source history", () => {
     expect(updateStatus({ state: "unavailable", error: "x" }, catalog([entry("inbox-triage", "1.3.0")]))?.state).toBe("damaged");
   });
