@@ -652,11 +652,124 @@ def guarded_text_refusal(codec: _Codec, text: str) -> str | None:
     """Why a GUARDED (mission) ``text`` may not be sent to ``codec``, or None (#1903).
 
     A client that runs slash commands itself takes no text whose first non-blank character is "/":
-    the command it names can run a child session unasked. The operator's own words are not
-    guarded and keep their commands."""
+    the command it names can run a child session unasked. An operator's own turn is not
+    mission-guarded: it keeps its ordinary commands (`operator_subtask_refusal` refuses only a
+    command that opens a child in a no-bypass session, #1892)."""
     if not codec.runs_slash_commands:
         return None
     return _slash_refusal(text)
+
+
+#: Why an operator's slash command that opens a child session is refused in a guarded session.
+_SUBTASK_REFUSAL = (
+    "this slash command starts a subagent, and a guarded (no bypass) session cannot answer its "
+    "permission request, so it would hang; enable bypass for this session to run it"
+)
+#: Why an operator's slash command cannot go to a worker that reports no command inventory.
+_INVENTORY_REFUSAL = (
+    "this session's worker cannot report which slash commands open a subagent; stop and resume "
+    "this session to send slash commands"
+)
+
+
+def _slash_command_name(text: str) -> str | None:
+    """The command name after a leading `/` (blank and invisible characters skipped), or None.
+    A name is the whole token up to its first whitespace, so a command with a dot in its name
+    (``my.command``) is compared exactly, never a prefix."""
+    body = text.lstrip()
+    start = 0
+    while start < len(body) and unicodedata.category(body[start])[0] in "ZC":
+        start += 1
+    if body[start : start + 1] != "/":
+        return None
+    token = body[start + 1 :].split(None, 1)
+    return token[0] if token else None
+
+
+def _subtask_refusal(
+    runs: bool, builtins: frozenset[str], text: str, commands: frozenset[str]
+) -> str | None:
+    if not runs:
+        return None
+    name = _slash_command_name(text)
+    if name is None:
+        return None
+    if name in builtins or name in commands:
+        return _SUBTASK_REFUSAL
+    return None
+
+
+def operator_subtask_refusal(
+    codec: _Codec, text: str, commands: frozenset[str] = frozenset()
+) -> str | None:
+    """Why an OPERATOR ``text`` may not be sent to a guarded (no bypass) ``codec``, or None (#1892).
+
+    A client that runs slash commands itself starts a CHILD session for a command declaring
+    ``subtask: true``, or — when ``subtask`` is not false — one routed to a ``subagent`` agent.
+    opencode 1.18.35 never forwards that child's permission request over ACP, so its first ask
+    waits for ever. A guarded session therefore refuses such a command before it is written;
+    ordinary commands and plain text still go. ``commands`` is the names the resolved config
+    resolves to that child route (`engines.opencode.subtask_commands`); built-ins are not in it,
+    so the codec names its own. A bypass session never calls this: its child runs under the
+    config-level all-allow (#1891)."""
+    return _subtask_refusal(
+        getattr(codec, "runs_slash_commands", False),
+        getattr(codec, "builtin_subtask_commands", frozenset()),
+        text,
+        commands,
+    )
+
+
+def _codec_class(adapter: str | None) -> type[_Codec] | None:
+    """The codec class an adapter names, or None (every level: a subclass of a subclass counts)."""
+    pending = list(_Codec.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        if adapter and getattr(cls, "ADAPTER", None) == adapter:
+            return cls
+    return None
+
+
+def operator_adapter_subtask_refusal(
+    adapter: str | None, text: str, commands: frozenset[str] = frozenset()
+) -> str | None:
+    """`operator_subtask_refusal` by the adapter's kind, for the SERVER (#1892): a worker started
+    before the worker-side check existed would write the command, so the app refuses first. An
+    adapter nobody can name is not known to run slash commands and is left to its worker."""
+    cls = _codec_class(adapter)
+    if cls is None or not cls.runs_slash_commands:
+        return None
+    return _subtask_refusal(
+        True, getattr(cls, "builtin_subtask_commands", frozenset()), text, commands
+    )
+
+
+def operator_adapter_reports_inventory(adapter: str | None) -> bool:
+    """Whether an adapter's worker reports its resolved child-opening command names (#1892).
+    A worker that reports an EMPTY list has proved no declared command opens a child; a worker
+    that reports NOTHING (an older build) has proved nothing."""
+    cls = _codec_class(adapter)
+    return bool(cls and cls.runs_slash_commands and cls.reports_subtask_inventory)
+
+
+def operator_adapter_without_inventory_refusal(adapter: str | None, text: str) -> str | None:
+    """Why an operator ``text`` may not go to a worker that has NO command inventory (#1892).
+
+    Such a worker has no worker-side refusal, so the app cannot prove any slash command safe:
+    not even a built-in name, because a project's config can redefine a built-in (``/init``)
+    as a child-opening command (#1892 review 8789). A child-opening built-in gets the subtask
+    reason; every other slash command waits for a stop and resume, which starts a worker that
+    can report the inventory. Plain text is untouched."""
+    cls = _codec_class(adapter)
+    if cls is None or not cls.runs_slash_commands or not cls.reports_subtask_inventory:
+        return None
+    name = _slash_command_name(text)
+    if name is None:
+        return None
+    if name in getattr(cls, "builtin_subtask_commands", frozenset()):
+        return _SUBTASK_REFUSAL
+    return _INVENTORY_REFUSAL
 
 
 def guarded_adapter_refusal(adapter: str | None, text: str) -> str | None:
@@ -700,8 +813,15 @@ class _Codec:
     # A prompt that begins with "/" may name a slash command the CLI runs ITSELF, and a command
     # can start a child session under an agent of its own, outside the guarded one's permission
     # block (#1903: opencode's `subtask: true` commands run unasked). A guarded (mission) text
-    # never reaches such a client that way; see `guarded_text_refusal`.
+    # never reaches such a client that way; see `guarded_text_refusal`. An operator's own turn in
+    # a no-bypass session refuses only these child-opening commands (#1892).
     runs_slash_commands = False
+    #: The client's OWN commands that open a child session (`subtask: true`), which the resolved
+    #: config never lists. Empty: the client declares none here.
+    builtin_subtask_commands: frozenset[str] = frozenset()
+    #: Whether this client's worker reports the resolved config's child-opening command names at
+    #: `native_started`. False: an absent lifecycle field is not a missing inventory here.
+    reports_subtask_inventory = False
 
     def __init__(self) -> None:
         # A turn the agent runs that no operator command owns, and its Send now target: minted
@@ -3862,6 +3982,12 @@ class OpencodeAcpCodec(_Codec):
     MIN_VERSION = OPENCODE_MIN_VERSION
     FLOOR_REFUSAL = "opencode {} or later is required"
     runs_slash_commands = True
+    #: opencode 1.18.35's built-in registry has two commands, and only `review` declares
+    #: `subtask: true` (`init` does not). `opencode debug config` lists operator/project commands
+    #: but never built-ins, so this name is ours (`tests/fixtures/opencode_tool_routes.json`).
+    builtin_subtask_commands = frozenset({"review"})
+    #: The worker reports the resolved config's child-opening command names (#1892).
+    reports_subtask_inventory = True
 
     def __init__(self, session_id: str | None = None, *, agent: str) -> None:
         super().__init__()
@@ -4651,6 +4777,9 @@ class Opencode2AcpCodec(OpencodeAcpCodec):
     ADAPTER = "opencode2-acp"
     MIN_VERSION = OPENCODE2_MIN_VERSION
     FLOOR_REFUSAL = "opencode 2 {} or later is required"
+    #: 2.x forbids `opencode debug config` (see `config_probe_argv` below), so its worker
+    #: reports no command inventory: an absent lifecycle field is normal here, not an old build.
+    reports_subtask_inventory = False
 
     @staticmethod
     def argv(binary: str) -> list[str]:

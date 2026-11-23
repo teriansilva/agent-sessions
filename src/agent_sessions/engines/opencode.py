@@ -359,6 +359,72 @@ def mcp_server_states(resolved: object) -> list[tuple[str, str]]:
     ]
 
 
+#: opencode 1.18.35's BUILT-IN agent modes (the installed binary's registry: ``build``, ``plan``
+#: and the hidden helper agents are ``primary``; ``general`` and ``explore`` are ``subagent``).
+#: `opencode debug config` reports an operator's own agents (with their ``mode``) but never these
+#: built-ins, so a command routed to one needs this table (#1892).
+OPENCODE_BUILTIN_AGENT_MODES = {
+    "build": "primary",
+    "plan": "primary",
+    "compaction": "primary",
+    "title": "primary",
+    "summary": "primary",
+    "general": "subagent",
+    "explore": "subagent",
+}
+
+
+def _agent_mode(resolved_agents: object, agent: object) -> str | None:
+    """The routed agent's effective mode, the way opencode 1.18.35 merges it: a configured
+    ``mode`` wins; a configured entry without one KEEPS the built-in agent's mode (opencode
+    initialises built-ins first, then applies ``mode = configured ?? builtin``, #1892 review
+    8789); a new agent declared without a mode runs as opencode's default ``all``, which is not
+    a subagent. ``None``: nobody knows this agent (fail closed)."""
+    if not isinstance(agent, str) or not agent:
+        return None
+    builtin = OPENCODE_BUILTIN_AGENT_MODES.get(agent)
+    if isinstance(resolved_agents, dict):
+        entry = resolved_agents.get(agent)
+        if isinstance(entry, dict):
+            mode = entry.get("mode")
+            if isinstance(mode, str) and mode:
+                return mode
+            return builtin or "all"
+    return builtin
+
+
+def subtask_commands(resolved: object) -> frozenset[str]:
+    """The NAMES of the resolved config's commands that open a CHILD session (#1892), by
+    opencode 1.18.35's real condition: ``subtask == true``, or — when ``subtask`` is not
+    ``false`` — the routed agent's effective mode is ``subagent``. A command routed to a
+    ``primary`` (or default ``all``) agent, and one that says ``subtask: false``, does not open
+    a child. An agent nobody can name is treated as a subagent (fail closed). Names only;
+    templates and every other field are never kept. Built-in commands are not in the resolved
+    config (``opencode debug config`` lists the operator's and the project's only), so
+    ``native_protocol`` names those itself."""
+    commands = resolved.get("command") if isinstance(resolved, dict) else None
+    agents = resolved.get("agent") if isinstance(resolved, dict) else None
+    if not isinstance(commands, dict):
+        return frozenset()
+    out = set()
+    for name, entry in commands.items():
+        if not isinstance(name, str) or not name or not isinstance(entry, dict):
+            continue
+        subtask = entry.get("subtask")
+        if subtask is True:
+            out.add(name)
+            continue
+        if subtask is False:
+            continue
+        agent = entry.get("agent")
+        if agent is None:
+            continue
+        mode = _agent_mode(agents, agent)
+        if mode == "subagent" or mode is None:
+            out.add(name)
+    return frozenset(out)
+
+
 def api_config_content(
     agent: str,
     mcp: dict | None = None,

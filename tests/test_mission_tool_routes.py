@@ -138,10 +138,12 @@ def test_every_tool_not_offered_is_refused_by_the_config_or_unreachable():
 
 
 def test_the_slash_command_door_to_a_child_session_is_measured_and_closed():
-    """A prompt `/name` runs a command by itself, and `subtask: true` runs it in a CHILD session
-    under another agent: on the measured build that child ran its tool with no request reaching
-    BattleLab. The model cannot type a slash command into its own prompt, but a mission text can
-    begin with one, so a guarded text that does is refused before it is written."""
+    """A prompt `/name` runs a command by itself, and `subtask: true` (or a command routed to an
+    agent) runs it in a CHILD session under another agent: on the measured build that child ran
+    its tool with no request reaching BattleLab. The model cannot type a slash command into its
+    own prompt, but a mission text can begin with one, so a guarded text that does is refused
+    before it is written. #1892: an operator's own turn in a no-bypass session is refused the
+    same doors, built-in or declared by the operator or the project."""
     doors = {c: r for c, r in MEASURED["commands"].items() if r["subagent_started"]}
     assert doors, "the probe found no sub-agent door to close"
     assert any(r["child_ran"] for r in doors.values()), "no door was proved open"
@@ -150,6 +152,15 @@ def test_the_slash_command_door_to_a_child_session_is_measured_and_closed():
         for text in (command, f"  {command} now", f"\n{command}"):
             assert native_protocol.guarded_text_refusal(codec, text), text
         assert native_protocol.guarded_text_refusal(codec, f"run {command}") is None
+    # `/review` is opencode's built-in `subtask: true` command; the rest are declared in a config
+    # (the probe's source has `/probe-sub` as `subtask: true, agent: general`), so a resolved
+    # command table covers them too (both triggers).
+    assert native_protocol.operator_subtask_refusal(codec, "/review")
+    declared = frozenset(c.lstrip("/") for c in doors)
+    for command in doors:
+        for text in (command, f"  {command} now", f"\n{command}"):
+            assert native_protocol.operator_subtask_refusal(codec, text, declared), text
+        assert native_protocol.operator_subtask_refusal(codec, f"run {command}", declared) is None
 
 
 @pytest.mark.parametrize("prefix", ["\ufeff", "\u200b", "\u00a0", " \ufeff\n", "\u2028", "\x00"])
@@ -171,3 +182,142 @@ def test_a_client_without_slash_commands_is_not_touched():
         )
         is None
     )
+
+
+def _operator_worker(codec, **overrides):
+    import types
+
+    from agent_sessions import native_worker
+
+    fields = {"config": {"cwd": "/w", "bypass": False}, "subtask_commands": frozenset()}
+    fields.update(overrides)
+    namespace = types.SimpleNamespace(codec=codec, **fields)
+    namespace.frame = native_worker.Worker.frame.__get__(namespace)
+    return namespace
+
+
+def test_an_operator_subtask_command_is_refused_in_a_guarded_session():
+    """#1892: an operator's own `/review` (a built-in `subtask: true` command) or a project
+    command routed to an agent starts a child session whose first ask never reaches ACP. A
+    guarded (no bypass) session refuses both before anything is written."""
+    codec = native_protocol.OpencodeAcpCodec(agent=oc.mint_api_agent())
+    guarded = _operator_worker(codec, subtask_commands=frozenset({"probe-sub", "my.command"}))
+    for text in ("/review", "  /review the change", "\ufeff/review", "/probe-sub", "/my.command"):
+        with pytest.raises(native_protocol.ProtocolError, match="subagent"):
+            guarded.frame("submit", {"text": text, "operation_id": str(uuid.uuid4())})
+        with pytest.raises(native_protocol.ProtocolError, match="subagent"):
+            guarded.frame("steer", {"text": text, "operation_id": str(uuid.uuid4())})
+
+
+def test_an_operator_command_without_a_child_and_a_plain_message_are_untouched():
+    codec = native_protocol.OpencodeAcpCodec(agent=oc.mint_api_agent())
+    guarded = _operator_worker(codec, subtask_commands=frozenset({"probe-sub"}))
+    for text in ("/init", "/probe-plain", "please run /review yourself", "Fix the login flow"):
+        with pytest.raises(native_protocol.ProtocolError) as exc:
+            guarded.frame("submit", {"text": text, "operation_id": str(uuid.uuid4())})
+        assert "subagent" not in str(exc.value)
+
+
+def test_a_bypass_operator_keeps_every_command():
+    codec = native_protocol.OpencodeAcpCodec(agent=oc.mint_api_agent())
+    bypass = _operator_worker(
+        codec,
+        config={"cwd": "/w", "bypass": True},
+        subtask_commands=frozenset({"probe-sub"}),
+    )
+    for text in ("/review", "/probe-sub"):
+        with pytest.raises(native_protocol.ProtocolError) as exc:
+            bypass.frame("submit", {"text": text, "operation_id": str(uuid.uuid4())})
+        assert "subagent" not in str(exc.value)
+
+
+def test_the_resolved_command_table_marks_only_child_opening_commands():
+    """opencode 1.18.35's real condition: `subtask == true`, or — when `subtask` is not false —
+    the routed agent's effective mode is `subagent` (built-in modes from the installed binary:
+    build/plan are primary, general/explore subagent; `debug config` reports operator agents).
+    A primary-routed command is ordinary and must not be refused; an unknown agent fails closed."""
+    resolved = {
+        "agent": {
+            "lint": {"mode": "primary"},
+            "custom-sub": {"mode": "subagent"},
+            "default-agent": {},  # opencode's default mode is "all", not subagent
+            # A configured BUILT-IN without a mode keeps its built-in mode (review 8789).
+            "general": {"description": "customized built-in"},
+            "build": {"description": "customized built-in"},
+        },
+        "command": {
+            # `subtask: true` always opens a child, whatever the routed agent.
+            "probe-sub": {"subtask": True, "agent": "general", "template": "child"},
+            "true-primary": {"subtask": True, "agent": "lint", "template": "child"},
+            # `subtask: false` never opens one, whatever the routed agent.
+            "not-subtask": {"subtask": False, "template": "text"},
+            "agent-but-off": {"agent": "general", "subtask": False, "template": "text"},
+            # An unset subtask: only a subagent mode opens a child.
+            "agent-only": {"agent": "explore", "template": "child"},
+            "custom-sub": {"agent": "custom-sub", "template": "child"},
+            "primary-custom": {"agent": "lint", "template": "text"},
+            "primary-builtin": {"agent": "build", "template": "text"},
+            "default-mode": {"agent": "default-agent", "template": "text"},
+            "audit": {"agent": "general", "template": "child"},  # customized built-in subagent
+            "tidy": {"agent": "build", "template": "text"},  # customized built-in primary
+            # Unknown agent: fail closed.
+            "mystery": {"agent": "mystery", "template": "child"},
+            "plain": {"template": "text"},
+        },
+    }
+    commands = oc.subtask_commands(resolved)
+    assert commands == frozenset(
+        {"probe-sub", "true-primary", "agent-only", "custom-sub", "mystery", "audit"}
+    )
+    for malformed in ({}, {"command": []}, {"command": {"x": "not a table"}}):
+        assert oc.subtask_commands(malformed) == frozenset()
+
+
+def test_the_adapter_lookup_refuses_subtask_commands_by_kind():
+    """The app's own layer (#1892): it knows the CLI's built-ins, so an older worker never
+    writes `/review`; a client without slash commands and an unnamed adapter are untouched."""
+    for commands in (frozenset(), frozenset({"review"})):
+        assert native_protocol.operator_adapter_subtask_refusal(
+            "opencode-acp", "\ufeff/review", commands
+        )
+        assert (
+            native_protocol.operator_adapter_subtask_refusal(
+                "opencode-acp", "please run /review", commands
+            )
+            is None
+        )
+    for adapter in (None, "", "claude-stream-json", "codex-app-server"):
+        assert native_protocol.operator_adapter_subtask_refusal(adapter, "/review") is None
+    # The named config trigger is the caller's table, never invented here.
+    assert native_protocol.operator_adapter_subtask_refusal(
+        "opencode-acp", "/probe-sub", frozenset({"probe-sub"})
+    )
+
+
+def test_a_worker_without_a_command_inventory_refuses_every_slash_command():
+    """#1892: a worker started before the inventory has neither the field nor its own refusal.
+    A child-opening built-in keeps the subtask reason; EVERY other slash command waits for a stop
+    and resume, even a built-in name like `/init`, because a project can redefine it as a
+    child-opening command (review 8789). Plain text goes."""
+    subtask = native_protocol.operator_adapter_without_inventory_refusal("opencode-acp", "/review")
+    assert subtask and "subagent" in subtask
+    inventory = native_protocol.operator_adapter_without_inventory_refusal(
+        "opencode-acp", "/probe-sub"
+    )
+    assert inventory and "stop and resume" in inventory
+    for text in ("/init", "/customize-opencode"):
+        refused = native_protocol.operator_adapter_without_inventory_refusal("opencode-acp", text)
+        assert refused and "stop and resume" in refused, text
+    for text in ("please run /review", "", "fix this"):
+        assert (
+            native_protocol.operator_adapter_without_inventory_refusal("opencode-acp", text) is None
+        )
+    # Kinds that report no inventory at all (opencode2) and kinds without slash commands are
+    # untouched, and only opencode's worker reports one.
+    assert native_protocol.operator_adapter_reports_inventory("opencode-acp")
+    for adapter in (None, "", "opencode2-acp", "claude-stream-json", "copilot-acp"):
+        assert not native_protocol.operator_adapter_reports_inventory(adapter)
+        assert (
+            native_protocol.operator_adapter_without_inventory_refusal(adapter, "/probe-sub")
+            is None
+        )

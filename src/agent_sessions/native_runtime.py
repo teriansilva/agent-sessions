@@ -2524,6 +2524,37 @@ async def _effect(
                         reason=native_ipc.AUTHORITY_UNSUPPORTED,
                         remedy="stop_resume",
                     )
+            if (
+                action == "submit"
+                and "authority" not in params
+                and current
+                and not _effective_bypass(current)
+            ):
+                # An operator's own turn in a guarded (no bypass) opencode session keeps its
+                # ordinary commands but not one that opens a child (#1892). The resolved command
+                # names are the worker's probe result (reported at native_started). A worker that
+                # reports NOTHING (an older build) has no worker-side refusal either, so the app
+                # fails closed: only plain text goes until a restart (a built-in name proves
+                # nothing, since a project can redefine it as a child-opening command).
+                adapter = (current or {}).get("adapter")
+                text = str(params.get("text", ""))
+                life = await asyncio.to_thread(native_state.read_lifecycle, gen.worker_id)
+                names = life.get("subtask_commands")
+                if isinstance(names, list):
+                    refused = native_protocol.operator_adapter_subtask_refusal(
+                        adapter,
+                        text,
+                        frozenset(n for n in names if isinstance(n, str)),
+                    )
+                elif native_protocol.operator_adapter_reports_inventory(adapter):
+                    refused = native_protocol.operator_adapter_without_inventory_refusal(
+                        adapter, text
+                    )
+                else:
+                    # Not a kind that reports an inventory: only its built-ins are known.
+                    refused = native_protocol.operator_adapter_subtask_refusal(adapter, text)
+                if refused:
+                    raise NativeError(409, refused)
             if action == "submit" and any(
                 a["mime"] == native_attachments.FILE_MIME for a in params.get("attachments") or ()
             ):

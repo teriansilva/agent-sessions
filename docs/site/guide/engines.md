@@ -187,7 +187,12 @@ the patch shown. **opencode — API** runs BattleLab's own opencode agent, which
 **every** tool call — commands, edits, file reads, web fetches, subagents, MCP tools — whatever
 your own opencode config allows; it uses your default model and prompt, like `build`. An edit's
 card shows the full diff, and **Approve once** applies exactly that request (opencode's "always
-allow" is never offered). It needs opencode 1.18.35 or later; your console opencode and its config are unchanged,
+allow" is never offered). A slash command that would start a subagent — `/review`, or a command
+you or the project route to a subagent agent — is refused before it is sent when **Skip permission
+prompts** is off: the subagent's permission request never reaches BattleLab, so it would hang.
+Enable **Skip permission prompts** to run such a command. A command routed to a primary agent is
+ordinary and still goes. In a session whose worker predates this check, every slash command is
+refused until you **Stop** and resume it. It needs opencode 1.18.35 or later; your console opencode and its config are unchanged,
 and a conversation started here does not show up in the console's session list (nor can the
 console resume it). Interrupt stops the current turn; Stop ends the worker and reports whether it is
 confirmed gone. Closing the tab never cancels a turn: the view picks up where it left off.

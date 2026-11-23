@@ -210,11 +210,33 @@ def test_a_mission_supervises_the_api_session_end_to_end(adapter, store, judged,
 
 
 def test_a_mission_text_that_starts_a_slash_command_is_refused_before_it_is_written(
-    adapter, store, judged, host, project
+    adapter, store, judged, host, project, monkeypatch
 ):
     """A prompt `/name` runs a command by itself, and a `subtask: true` one runs a child session
     under another agent, outside the guarded block (`test_mission_tool_routes.py`). The operator's
-    own prompt keeps its commands; a mission's never reaches the client."""
+    own prompt keeps its ordinary commands; a mission's never reaches the client. #1892: in this
+    no-bypass session the operator's own `subtask` command is refused too, and a plain message
+    still goes; a bypass session keeps the command."""
+    from test_native_opencode import _control
+
+    # Commands the operator/project declares: the worker's resolved table must cover them, and
+    # the routed agent's mode decides whether an unset subtask opens a child.
+    _control(
+        "operator.json",
+        json.dumps(
+            {
+                "agent": {
+                    "lint": {"mode": "primary", "description": "lint"},
+                    "custom-sub": {"mode": "subagent", "description": "child"},
+                },
+                "command": {
+                    "probe-sub": {"agent": "general", "subtask": True, "template": "child"},
+                    "lint-cmd": {"agent": "lint", "template": "lint"},
+                    "subagent-cmd": {"agent": "custom-sub", "template": "child"},
+                },
+            }
+        ),
+    )
     mid, key = _dispatched(adapter, project, judged)
     before = _prompts(project)
     rec = _deliver(_action(mid, key, text="/review the whole tree"))
@@ -223,11 +245,74 @@ def test_a_mission_text_that_starts_a_slash_command_is_refused_before_it_is_writ
     # A text that merely mentions one goes through.
     fine = _deliver(_action(mid, key, text="please run /review yourself"))
     assert fine["state"] == "delivered", fine
-    # The operator's own turn, not guarded, is written as typed.
+    # The operator's own turn keeps its ordinary commands, but not one that opens a child.
     own = ident()
     asyncio.run(runtime.submit_turn(key, operation_id=own, text="/help"))
     asyncio.run(settle(key, own))
     assert _prompts(project)[-1] == "/help"
+    with pytest.raises(runtime.StructuredError) as refused:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/review the whole tree"))
+    assert "subagent" in refused.value.detail
+    assert "/review the whole tree" not in _prompts(project)
+    # The worker's resolved table (reported at native_started) covers a declared command too.
+    with pytest.raises(runtime.StructuredError) as declared:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/probe-sub"))
+    assert "subagent" in declared.value.detail
+    assert "/probe-sub" not in _prompts(project)
+    # A command routed to a PRIMARY agent does not open a child: it is ordinary and delivered.
+    # One routed to a SUBAGENT opens a child and is refused (opencode 1.18.35's real condition).
+    lint = ident()
+    asyncio.run(runtime.submit_turn(key, operation_id=lint, text="/lint-cmd"))
+    asyncio.run(settle(key, lint))
+    assert _prompts(project)[-1] == "/lint-cmd"
+    with pytest.raises(runtime.StructuredError) as routed:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/subagent-cmd"))
+    assert "subagent" in routed.value.detail
+    assert "/subagent-cmd" not in _prompts(project)
+    # A worker started before this change reports no inventory and has no worker-side refusal:
+    # a declared command would reach it, so the app fails closed until a stop and resume.
+    from agent_sessions import native_state
+
+    real_read = native_state.read_lifecycle
+
+    def legacy(worker_id):
+        life = real_read(worker_id)
+        life.pop("subtask_commands", None)
+        return life
+
+    monkeypatch.setattr(native_state, "read_lifecycle", legacy)
+    with pytest.raises(runtime.StructuredError) as legacy_refused:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/probe-sub"))
+    assert "stop and resume" in legacy_refused.value.detail
+    assert "/probe-sub" not in _prompts(project)
+    # A child-opening built-in keeps its subtask reason. Even `/init` waits for a stop and
+    # resume: a project can redefine it as a child-opening command (review 8789). Plain text goes.
+    with pytest.raises(runtime.StructuredError) as legacy_review:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/review"))
+    assert "subagent" in legacy_review.value.detail
+    with pytest.raises(runtime.StructuredError) as legacy_init:
+        asyncio.run(runtime.submit_turn(key, operation_id=ident(), text="/init"))
+    assert "stop and resume" in legacy_init.value.detail
+    assert "/init" not in _prompts(project)
+    legacy_plain = ident()
+    asyncio.run(
+        runtime.submit_turn(key, operation_id=legacy_plain, text="a plain legacy instruction")
+    )
+    asyncio.run(settle(key, legacy_plain))
+    assert _prompts(project)[-1] == "a plain legacy instruction"
+    plain = ident()
+    asyncio.run(runtime.submit_turn(key, operation_id=plain, text="a plain instruction"))
+    asyncio.run(settle(key, plain))
+    assert _prompts(project)[-1] == "a plain instruction"
+    # A bypass session's child runs under the config-level all-allow, so it keeps the command.
+    bypass = asyncio.run(
+        runtime.create_session(_engine(adapter), str(project), operation_id=ident(), bypass=True)
+    )["session_key"]
+    asyncio.run(runtime.start_session(bypass))  # a skip creation launches only on start
+    command = ident()
+    asyncio.run(runtime.submit_turn(bypass, operation_id=command, text="/review"))
+    asyncio.run(settle(bypass, command))
+    assert _prompts(project)[-1] == "/review"
 
 
 def test_the_mission_ready_bit_is_the_rollback_switch(

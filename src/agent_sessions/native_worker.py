@@ -689,6 +689,8 @@ class Worker:
         self.native_id: str | None = config.get("native_id")
         # opencode: the resolved config-level permission block (#1891), from the spawn's probe.
         self.operator_permission: object = None
+        # opencode: the resolved config's commands that open a child (#1892), names only.
+        self.subtask_commands: frozenset[str] = frozenset()
         self.codec: (
             native_protocol.CodexCodec
             | native_protocol.ClaudeCodec
@@ -870,7 +872,12 @@ class Worker:
             # compactor's process scan, which refuses to run while it holds the database.
             if guard is not None:
                 guard.release()
-        self.report(phase="native_started", native_pid=self.proc.pid)
+        # The names the resolved config marks for a child (#1892), so the app can refuse a guarded
+        # operator turn before it asks this worker. Names only; never a template.
+        extra = (
+            {"subtask_commands": sorted(self.subtask_commands)} if self.adapter == OPENCODE else {}
+        )
+        self.report(phase="native_started", native_pid=self.proc.pid, **extra)
 
     def spawn_argv(self) -> list[str]:
         """The agent's argv behind the exec trampoline (#1732, `native_exec`): the agent and
@@ -940,6 +947,9 @@ class Worker:
         # The config-level permission rules the child would merge ours over (#1891): patterns
         # and actions, no credential. Bypass restates each as allow.
         self.operator_permission = resolved.get("permission")
+        # The commands that would open a child session by a slash prompt (#1892): names only,
+        # whether the operator or the project declared them, from this same resolved config.
+        self.subtask_commands = opencode.subtask_commands(resolved)
         # The servers' names only (#1726), `configured`: reported with the session once bound.
         self.codec.configured_mcp(opencode.mcp_server_states(resolved))
         return overrides
@@ -3111,11 +3121,19 @@ class Worker:
             images = ()
             text = params["text"]
             # A guarded turn (#1897) carries its caller's authority; its words never start a
-            # slash command the client would run unasked (#1903).
+            # slash command the client would run unasked (#1903). An operator's own turn in a
+            # no-bypass session keeps its ordinary commands but not one that opens a child
+            # (#1892): opencode never forwards that child's ask over ACP, so it would hang.
             if "authority" in params:
                 refused = native_protocol.guarded_text_refusal(self.codec, text)
-                if refused:
-                    raise native_protocol.ProtocolError(refused)
+            elif getattr(self, "config", {}).get("bypass") is not True:
+                refused = native_protocol.operator_subtask_refusal(
+                    self.codec, text, getattr(self, "subtask_commands", frozenset())
+                )
+            else:
+                refused = None
+            if refused:
+                raise native_protocol.ProtocolError(refused)
             if params.get("attachments"):
                 try:
                     # Reverify before constructing either images or file references (#1396).
