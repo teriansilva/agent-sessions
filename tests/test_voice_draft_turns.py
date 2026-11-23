@@ -30,6 +30,24 @@ def rig(monkeypatch, app):  # noqa: F811
     return r
 
 
+@pytest.fixture
+def admission_barrier(rig, monkeypatch):  # noqa: F811
+    """Hold a draft's admission at `ask_orchestrator.begin`, deterministically (#2044): a draft's
+    begin waits for `release`, so a mute can land before the orchestrator holds its turn."""
+    real_begin = ask_orchestrator.begin
+    reached = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_begin(cid, turn_id, text, **kw):
+        if kw.get("draft"):
+            reached.set()
+            await release.wait()
+        return await real_begin(cid, turn_id, text, **kw)
+
+    monkeypatch.setattr(ask_orchestrator, "begin", blocked_begin)
+    return reached, release
+
+
 def _questions(cid: str) -> list[str]:
     return [r["text"] for r in ask_store.read(cid) if r.get("type") == "user"]
 
@@ -224,11 +242,92 @@ def test_muting_asks_what_was_said_at_once(rig, held):  # noqa: F811
         await _until(lambda: r.call.draft is not None)
         r.call.muted = True
         await r.call.commit_draft()
-        assert _questions(r.call.cid) == ["Archive the idle sessions"]
+        # A mute before admission records the intent; the question lands once admission does
+        # (#2044). Waiting here keeps the test true whichever side of admission the mute lands.
+        await _until(lambda: _questions(r.call.cid) == ["Archive the idle sessions"])
         await _done(r)
 
     run(go())
     assert _answers(r) == ["Asked."]
+
+
+def test_muting_while_admission_is_held_commits_once_it_is_admitted(rig, held, admission_barrier):  # noqa: F811
+    """#2044: mute recorded before `begin` admitted the draft is consumed after admission, so the
+    Commander's question is not lost. It must return at once, not wait for admission."""
+    script = held(answer("Asked."))
+    script.go.set()
+    r = rig
+    reached, release = admission_barrier
+
+    async def go():
+        await _speak(r, "Archive the idle sessions")
+        await _until(lambda: reached.is_set())  # the draft exists, its begin is held
+        assert r.call.draft is not None and _questions(r.call.cid) == []
+        r.call.on_mute(True)
+        await r.call.commit_draft()  # nonblocking: the intent is recorded on this draft
+        assert r.call.draft is not None  # still the open draft, not claimed by the commit
+        assert _questions(r.call.cid) == []  # admission has not been released yet
+        release.set()
+        await _done(r)
+
+    run(go())
+    assert _questions(r.call.cid) == ["Archive the idle sessions"]
+    assert _answers(r) == ["Asked."]
+
+
+def test_muting_after_admission_and_the_quiet_timer_commit_exactly_once(
+    rig,
+    held,  # noqa: F811
+    admission_barrier,
+):
+    """A racing mute and quiet timer both claim ONE commit: one stored question, one answer."""
+    script = held(answer("Asked."))
+    script.go.set()
+    r = rig
+    _, release = admission_barrier
+    release.set()  # admission is not held in this test
+
+    async def go():
+        await _speak(r, "Archive the idle sessions")
+        await _until(lambda: _rounds(script) == 1)  # the orchestrator holds the draft
+        r.call.on_mute(True)
+        d = r.call.draft
+        # The mute's commit and the quiet timer's own commit, racing on the same draft.
+        await asyncio.gather(r.call._commit_draft(d), r.call._commit_draft(d))
+        assert _questions(r.call.cid) == ["Archive the idle sessions"]
+        await _done(r)
+
+    run(go())
+    assert _questions(r.call.cid) == ["Archive the idle sessions"]  # never twice
+    assert _answers(r) == ["Asked."]  # never twice
+
+
+def test_commit_intent_never_commits_a_superseded_draft(rig, held, admission_barrier):  # noqa: F811
+    """A draft whose commit was requested before admission is superseded by more words: the
+    intent must not commit it; only the whole joined question is stored."""
+    script = held(answer("ok"))
+    script.go.set()
+    r = rig
+    reached, release = admission_barrier
+
+    async def go():
+        await _speak(r, "First part")
+        await _until(lambda: reached.is_set())
+        old = r.call.draft
+        await r.call._commit_draft(old)  # recorded, never claimed while admission is held
+        assert old.commit_requested and r.call.draft is old
+        more = asyncio.create_task(_speak(r, "and the rest."))
+        await _until(lambda: old.dropped)  # more words claimed it before admission
+        release.set()  # admission completes: the dropped draft is discarded, never committed
+        await more
+        await _until(lambda: r.call.draft is not None and r.call.draft is not old)
+        await _done(r)
+        assert not old.committed.is_set()  # its intent never committed the superseded draft
+
+    run(go())
+    assert _questions(r.call.cid) == ["First part and the rest."]
+    assert _answers(r) == ["ok"]
+    assert _free(r.call.cid) and not ask_orchestrator._RUNNING  # no leaked slot or turn lock
 
 
 def test_quick_drafts_nothing(rig, held):  # noqa: F811

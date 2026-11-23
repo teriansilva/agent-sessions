@@ -765,7 +765,14 @@ def _setup_locked(*, stt: str, runtime: bool, server: bool, arts: list, say, fet
               stt=stt if server else st.get("stt", stt), last_error=None, stt_by_set=stt_by_set,
               setup_at=time.strftime("%Y-%m-%dT%H:%M:%S"))  # fmt: skip
     _write_stamp(st)
-    say("Done. In Settings → HQ calls, press “Use this machine”.")
+    if server:
+        # "Use this machine" points HQ calls at the local speech server this run installed.
+        say("Done. In Settings → HQ calls, press “Use this machine”.")
+    else:
+        # Runtime-only installs no local server (and a fresh one has no speech endpoints yet), so
+        # name what is still needed instead of sending the operator to a button it cannot serve.
+        say("Done. Call runtime installed; configure speech endpoints in Settings → HQ calls "
+            "before calling (Use this machine needs `voice setup --server-only`).")  # fmt: skip
     return 0
 
 

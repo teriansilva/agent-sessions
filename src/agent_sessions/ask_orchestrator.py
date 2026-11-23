@@ -6764,6 +6764,10 @@ class _Running:
     task: asyncio.Task
     listeners: set[asyncio.Queue] = field(default_factory=set)
     turn: _Turn | None = None
+    #: The conversation's cross-process turn lock held by `task`: `_settle_turn`'s finally closes
+    #: it. A task cancelled before its FIRST step never runs that finally, so `discard` closes it
+    #: and frees the slot there (#2044).
+    lock_fd: int | None = None
 
 
 _RUNNING: dict[str, _Running] = {}
@@ -7559,7 +7563,7 @@ def _launch(turn: _Turn, lock_fd: int) -> asyncio.Task:
     """The turn's own task, holding the turn lock ``lock_fd``, registered as the conversation's
     running turn. The caller holds the conversation lock."""
     task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{turn.cid}")
-    _RUNNING[turn.cid] = _Running(turn.turn_id, task, turn=turn)
+    _RUNNING[turn.cid] = _Running(turn.turn_id, task, turn=turn, lock_fd=lock_fd)
 
     def _done(t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
@@ -8392,9 +8396,18 @@ async def discard(cid: str, turn_id: str) -> bool:
             or not r.turn.draft.open()
         ):
             return False
-        task = r.task
+        task, lock_fd = r.task, r.lock_fd
         task.cancel()
     await asyncio.wait({task})  # its own `finally` frees the slot and closes the lock
+    # A task cancelled before its first step never ran `_settle_turn`'s finally (#2044): free
+    # the slot and the turn lock it still holds here, or the conversation stays blocked.
+    async with _lock(cid):
+        running = _RUNNING.get(cid)
+        if running is not None and running.task is task:
+            _RUNNING.pop(cid, None)
+            if lock_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(lock_fd)
     return True
 
 

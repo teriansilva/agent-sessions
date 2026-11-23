@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -360,10 +362,12 @@ class FakeWorker:
     """Stands in for the Pipecat worker on a real Unix socket: says it is ready, turns the first
     audio frame into an utterance, and records every `say`."""
 
-    def __init__(self):
+    def __init__(self, drafting: bool = False):
         self.said: list[str] = []
+        self.muted: list[bool] = []
         self.config: dict | None = None
         self.server = None
+        self.drafting = drafting
 
     async def handler(self, conn):
         self.config = json.loads(await conn.recv())
@@ -373,9 +377,24 @@ class FakeWorker:
             if isinstance(msg, bytes):
                 if not sent:
                     sent = True
-                    await conn.send(json.dumps({"t": "utterance", "text": "How is api rebase?"}))
+                    if self.drafting:
+                        # A numbered worker turn, so the call drafts it (#1845).
+                        await conn.send(json.dumps({"t": "user_started", "turn": 1}))
+                        await conn.send(
+                            json.dumps({"t": "user_stopped", "turn": 1, "at": time.monotonic()})
+                        )
+                        await conn.send(
+                            json.dumps({"t": "utterance", "text": "How is api rebase?", "turn": 1})
+                        )
+                        await conn.send(json.dumps({"t": "turn_end", "turn": 1}))
+                    else:
+                        await conn.send(
+                            json.dumps({"t": "utterance", "text": "How is api rebase?"})
+                        )
                 continue
             ev = json.loads(msg)
+            if ev.get("t") == "mute":
+                self.muted.append(bool(ev.get("on")))
             if ev.get("t") == "say":
                 self.said.append(ev["text"])
                 await conn.send(b"\x01\x00" * 100)
@@ -518,6 +537,80 @@ def test_a_question_turn_says_its_question_once_through_the_socket(ready, monkey
     assert heard == 1
     spoken = [s for s in fw.said if not s.startswith("HQ,")]
     assert spoken == [q, "One: Battlelab. Two: Docs Site."]
+
+
+def test_mute_and_hangup_are_served_while_draft_admission_is_held(ready, monkeypatch):
+    """#2044 through the real socket: `commit_draft` must record the mute's intent, forward mute
+    to the worker and ack it while `begin` is still admitting the draft, and the same receive
+    loop must then serve a hangup — never stuck waiting for admission."""
+    c, hdr, cfg = ready
+    fw = FakeWorker(drafting=True)
+    monkeypatch.setattr(voice_calls, "start_worker", fw.start)
+    monkeypatch.setattr(voice_calls, "SEND_BUDGET_S", 0.2)  # the bounded hang-up wait
+    reached = threading.Event()
+    release = threading.Event()
+
+    async def blocked_begin(cid, turn_id, text, **kw):
+        if kw.get("draft"):
+            reached.set()
+            await asyncio.to_thread(release.wait, 10)  # admission held, but the loop stays free
+        return None, {"turn_id": turn_id, "status": "done", "answer": "Done."}
+
+    monkeypatch.setattr(ask_orchestrator, "begin", blocked_begin)
+    call = _admit(c, hdr)
+    try:
+        with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+            ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+            events_seen: list[dict] = []
+            mute_sent = end_sent = False
+            for _ in range(400):
+                m = ws.receive()
+                if m.get("text") is None:
+                    if m.get("bytes") is not None:
+                        continue
+                    break
+                ev = json.loads(m["text"])
+                events_seen.append(ev)
+                if ev.get("t") == "connected":
+                    ws.send_bytes(b"\x00" * 640)  # the FakeWorker answers with an utterance
+                if not mute_sent:
+                    if reached.is_set():
+                        # Admission is held: mute must still reach the worker and be acknowledged.
+                        ws.send_text(json.dumps({"t": "mute", "on": True}))
+                        mute_sent = True
+                    else:
+                        # A bounded end marker keeps the socket turning until admission is held.
+                        ws.send_text(json.dumps({"t": "mute", "on": False}))
+                if ev.get("t") == "muted" and ev.get("on") is True:
+                    assert reached.is_set() and not release.is_set()
+                    assert True in fw.muted  # the worker heard the mute before admission ended
+                    assert voice_calls.REGISTRY.current.draft is not None
+                    assert voice_calls.REGISTRY.current.draft.commit_requested
+                    ws.send_text(json.dumps({"t": "end"}))  # the same loop must serve the hang-up
+                    end_sent = True
+                if end_sent and ev.get("t") == "ended":
+                    assert not release.is_set()  # hang-up finished while admission was held
+                    break
+    finally:
+        release.set()  # free the blocked `begin` before the app loop shuts down
+    assert mute_sent and end_sent
+    assert any(e.get("t") == "muted" and e.get("on") is True for e in events_seen)
+    assert any(e.get("t") == "ended" for e in events_seen)
+    cid = call["conversation_id"]
+    assert _no_user_records(cid)  # no stale or late question was published
+    assert _free_conv(cid) and not ask_orchestrator._RUNNING
+
+
+def _no_user_records(cid: str) -> bool:
+    return not [r for r in ask_store.read(cid) if r.get("type") == "user"]
+
+
+def _free_conv(cid: str) -> bool:
+    fd = ask_store.try_turn_lock(cid)
+    if fd is None:
+        return False
+    os.close(fd)
+    return True
 
 
 def test_the_browsers_played_ack_arms_the_challenge_through_the_socket(ready, worker):

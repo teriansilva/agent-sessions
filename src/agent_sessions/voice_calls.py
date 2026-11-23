@@ -1390,7 +1390,17 @@ class Call:
     async def _commit_draft(self, d: _CallDraft) -> None:
         """The Commander has finished: the draft `d` becomes HQ's turn (#1845). While the commit
         is being written the draft is `committing`: no longer `self.draft`, not yet a visible
-        running turn — a Stop in that window waits for `commit_done` and stops it by id (#2076)."""
+        running turn — a Stop in that window waits for `commit_done` and stops it by id (#2076).
+
+        Before admission (#2044) there is no orchestrator turn to commit yet, and the mute route
+        must not wait for `begin`: the intent is recorded on THIS draft and `_run_turn` consumes it
+        once admission succeeds. Discard and supersession stay authoritative — they claim the
+        draft first (`_take_draft`) and mark it `dropped`, which always wins."""
+        if self.draft is not d:
+            return
+        if not d.admitted:
+            d.commit_requested = True
+            return
         if not self._take_draft(d):
             return
         self.committing = d
@@ -1409,7 +1419,9 @@ class Call:
             await self._drop_draft(self.draft)
 
     async def commit_draft(self) -> None:
-        """Muted (#1845): the Commander will say no more, so what they said is asked now."""
+        """Muted (#1845): the Commander will say no more, so what they said is asked now.
+        Before admission this only records the intent (#2044), so the mute route never waits
+        for `begin`."""
         if self.draft is not None:
             await self._commit_draft(self.draft)
 
@@ -2360,7 +2372,11 @@ class Call:
             if draft.dropped:  # more words arrived while it was being begun
                 await ask_orchestrator.discard(self.cid, turn_id)
                 raise _DraftDropped
-            self._side(self._commit_when_quiet(draft))
+            draft.admitted = True  # the orchestrator holds it: a commit can be written now
+            if draft.commit_requested:  # muted while it was being admitted (#2044)
+                await self._commit_draft(draft)
+            else:
+                self._side(self._commit_when_quiet(draft))
         return await self._watch_turn(task, draft)
 
     async def _watch_turn(self, task: asyncio.Task, draft: _CallDraft | None = None) -> dict:
@@ -2537,6 +2553,11 @@ class _CallDraft:
     commit_done: asyncio.Event = field(default_factory=asyncio.Event)
     #: Claimed for a discard (`Call._drop_draft`): it is never committed, said or shown.
     dropped: bool = False
+    #: The orchestrator holds this draft (`_run_turn`): a commit can be written now.
+    admitted: bool = False
+    #: A commit was asked for before admission succeeded (#2044): `_run_turn` consumes it once,
+    #: unless the draft was discarded or superseded first (`dropped`).
+    commit_requested: bool = False
 
 
 def _call_record_counts(records: list[dict]) -> dict:

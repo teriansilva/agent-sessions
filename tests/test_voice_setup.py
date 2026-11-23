@@ -192,6 +192,34 @@ def test_a_good_setup_swaps_and_keeps_the_previous(monkeypatch, tmp_path):
     assert vs.active() == {k: "0" * 16 for k in vs.KINDS}
 
 
+RUNTIME_ONLY_DONE = (
+    "Done. Call runtime installed; configure speech endpoints in Settings → HQ calls "
+    "before calling (Use this machine needs `voice setup --server-only`)."
+)
+LOCAL_SERVER_DONE = "Done. In Settings → HQ calls, press “Use this machine”."
+
+
+@pytest.mark.parametrize(
+    ("runtime", "server", "expected"),
+    [
+        (True, False, RUNTIME_ONLY_DONE),
+        (False, True, LOCAL_SERVER_DONE),
+        (True, True, LOCAL_SERVER_DONE),
+    ],
+)
+def test_the_closing_line_follows_what_was_installed(monkeypatch, runtime, server, expected):
+    """#1666: `--runtime-only` installs no local speech server, so it must not send the operator
+    to "Use this machine" (which needs the server). A fresh runtime-only install also has no
+    speech endpoints yet, so it names that next step instead of promising calls can start."""
+    fetch = _fake_build(monkeypatch)
+    monkeypatch.setattr(vs, "install_unit", lambda stt: True)
+    monkeypatch.setattr(vs, "restart_verified", lambda token: True)
+    lines = []
+    assert vs.setup(yes=True, runtime=runtime, server=server, fetch=fetch,
+                    say=lines.append) == 0  # fmt: skip
+    assert lines[-1] == expected
+
+
 def test_both_kinds_switch_in_one_rename(monkeypatch):
     """One pointer, so no crash point leaves a mixed runtime/server pair: every rename during
     setup either leaves the old set fully active or the new one."""

@@ -36,6 +36,9 @@ key never leaves the server.
 
 - `--stt small` picks a larger speech-recognition model (~480 MB instead of ~145 MB). It is more
   accurate but about 2.5× slower on a CPU, so use it on a fast machine.
+- `--runtime-only` installs just the call runtime, with no local speech server or its models. Point
+  HQ calls at a speech server you already run; **Use this machine** needs
+  `agent-sessions voice setup --server-only` (the speech server alone).
 - No user service manager (for example, in a container)? Run `agent-sessions voice serve` in a
   terminal instead. It keeps the soft limits (2 threads, one request at a time, lower priority)
   but has no hard memory or CPU cap; `voice status` shows `"limits": "soft"`.
