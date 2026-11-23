@@ -1,0 +1,39 @@
+{
+  "run_script": [
+    "Action: Run a script (plugin run_script, version 1)",
+    "Runs the script scripts/deploy-preview.sh — /home/op/shop/scripts/deploy-preview.sh (sha256 3f9a00000000000000000000000000000000000000000000000000000000c21e)",
+    "With the arguments: [\"--\", <the delivery's pull_request.number, as a number>]",
+    "Its interpreter: /usr/bin/env (sha256 1111111111111111111111111111111111111111111111111111111111111111)",
+    "Its interpreter: /usr/bin/bash (sha256 2222222222222222222222222222222222222222222222222222222222222222)",
+    "It runs exactly the bytes checked at the launch (a sealed copy); if the script or its interpreter changes, or the project's folder moves, it asks for your approval again",
+    "Runs in /home/op/shop (project p1) as your user op (uid 1000)",
+    "Never through a shell: the program is started directly with exactly this argument list. A value from the delivery is one inert argument or variable by construction: never part of another string, never the program or the script, never right after an option",
+    "What the program does with an argument is the program's own. BattleLab refuses the positions known to take code: an option's value, and anything before an interpreter's script or program text (python, node, perl, awk, sed, jq, …); it can't know every program",
+    "Environment: PATH, HOME, LANG, TERM=dumb, and PR_NUMBER (<the delivery's pull_request.number, as a number>)",
+    "Starts with a clean environment: nothing of BattleLab's own is passed on",
+    "Stops after 5 minutes; keeps at most 64 KB of stdout and of stderr, with secrets redacted",
+    "Secrets never go in as values: a fixed argument or variable that looks like a credential or holds a stored secret is refused, and no stored secret is passed to it",
+    "Reports exit_code",
+    "Exit 0 is ok, any other exit code is failed, the time limit is failed; a run cut off by a crash is never run again by itself",
+    "Runs only inside a separate process scope (systemd-run --user); without one it is refused. When it ends, everything it started is stopped",
+    "What it can reach: everything your user can — your files, your network, your credentials. The project folder is only where it starts and the scope only bounds how long it runs; neither is a filesystem or network sandbox"
+  ],
+  "run_command": [
+    "Action: Run a command (plugin run_command, version 1)",
+    "Runs this command: [\"make\", \"-C\" (option), \"site\"]",
+    "The program is /usr/bin/make (sha256 4444444444444444444444444444444444444444444444444444444444444444)",
+    "If the program or its interpreter changes, or the project's folder moves, it asks for your approval again",
+    "Runs in /home/op/shop (project p1) as your user op (uid 1000)",
+    "Never through a shell: the program is started directly with exactly this argument list. A value from the delivery is one inert argument or variable by construction: never part of another string, never the program or the script, never right after an option",
+    "What the program does with an argument is the program's own. BattleLab refuses the positions known to take code: an option's value, and anything before an interpreter's script or program text (python, node, perl, awk, sed, jq, …); it can't know every program",
+    "Environment: PATH, HOME, LANG, TERM=dumb, and MODE=\"fast\"",
+    "Starts with a clean environment: nothing of BattleLab's own is passed on",
+    "Stops after 10 minutes; keeps at most 64 KB of stdout and of stderr, with secrets redacted",
+    "Secrets never go in as values: a fixed argument or variable that looks like a credential or holds a stored secret is refused, and no stored secret is passed to it",
+    "Reports exit_code",
+    "Exit 0 is ok, any other exit code is failed, the time limit is failed; a run cut off by a crash is never run again by itself",
+    "Runs only inside a separate process scope (systemd-run --user); without one it is refused. When it ends, everything it started is stopped",
+    "What it can reach: everything your user can — your files, your network, your credentials. The project folder is only where it starts and the scope only bounds how long it runs; neither is a filesystem or network sandbox"
+  ],
+  "drift_reason": "scripts/build-docs.sh changed since you approved it (sha256 71c0…9ab2 → 08d4…e3f1)"
+}

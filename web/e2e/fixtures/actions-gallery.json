@@ -489,6 +489,160 @@
       ],
       "available": true,
       "used_by": 0
+    },
+    {
+      "id": "run_command",
+      "label": "Run a command",
+      "category": "run_locally",
+      "description": "Runs a program you name with the arguments you list, in a project folder, contained and never through a shell.",
+      "effect": "run-local",
+      "executor": "run_command",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Runs in project",
+          "required": true
+        },
+        {
+          "name": "argv",
+          "type": "arguments",
+          "label": "Program and arguments",
+          "required": true
+        },
+        {
+          "name": "env",
+          "type": "environment",
+          "label": "Environment variables",
+          "required": false
+        },
+        {
+          "name": "timeout_minutes",
+          "type": "duration",
+          "label": "Time limit",
+          "required": false
+        },
+        {
+          "name": "outputs",
+          "type": "output_fields",
+          "label": "Output fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "exit_code",
+          "type": "number",
+          "label": "Exit code"
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Typed fields from its last line"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "containment",
+          "words": "a contained process scope for commands (systemd-run --user)",
+          "ok": true,
+          "detail": "commands run in their own process scope"
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "run_script",
+      "label": "Run a script",
+      "category": "run_locally",
+      "description": "Runs one script file from a project folder directly, contained, pinned by its checksum, never through a shell.",
+      "effect": "run-local",
+      "executor": "run_script",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "script",
+          "type": "file",
+          "label": "Script file",
+          "required": true
+        },
+        {
+          "name": "args",
+          "type": "arguments",
+          "label": "Extra arguments",
+          "required": false
+        },
+        {
+          "name": "env",
+          "type": "environment",
+          "label": "Environment variables",
+          "required": false
+        },
+        {
+          "name": "timeout_minutes",
+          "type": "duration",
+          "label": "Time limit",
+          "required": false
+        },
+        {
+          "name": "outputs",
+          "type": "output_fields",
+          "label": "Output fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "exit_code",
+          "type": "number",
+          "label": "Exit code"
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Typed fields from its last line"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "containment",
+          "words": "a contained process scope for commands (systemd-run --user)",
+          "ok": true,
+          "detail": "commands run in their own process scope"
+        }
+      ],
+      "available": true,
+      "used_by": 0
     }
   ],
   "categories": [

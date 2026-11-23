@@ -51,3 +51,10 @@ export interface ActionGallery {
   categories: { id: string; label: string }[];
   effects: { id: ActionEffect; level: number; label: string }[];
 }
+
+/** `GET /api/actions/scripts` (#2248 P3): what "Run a script" may pick in a project's folder. */
+export interface ActionScripts {
+  folder: string;
+  scripts: { path: string; size: number }[];
+  truncated: boolean;
+}

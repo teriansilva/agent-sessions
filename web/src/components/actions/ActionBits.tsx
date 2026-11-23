@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Crosshair,
+  FileTerminal,
   MessageSquare,
   FileUp,
   NotebookPen,
@@ -13,6 +14,7 @@ import {
   Repeat,
   Search,
   SquareTerminal,
+  Terminal,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -44,6 +46,8 @@ const ICON: Record<string, LucideIcon> = {
   call_webhook: Webhook,
   publish_artifact: FileUp,
   write_memory: NotebookPen,
+  run_command: Terminal,
+  run_script: FileTerminal,
 };
 
 export function ActionIcon({ id }: { id: string }) {

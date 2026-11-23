@@ -6,26 +6,30 @@ import { join, resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
 
 import {
+  appmodeAgentBinary,
   hermeticGitEnv,
   killGroupsAndWait,
+  reapRunOwnedMasters,
   removeTree,
   withTempHome,
   STARTUP_BUDGET_MS,
 } from "./harness";
 
-/** A real app-mode stack for the Home Free E2E (#579, #806, #807).
+/** A real app-mode stack for the Home Free E2E (#579, #806, #807, #1147).
  *
- *  Every piece here is the production one except the relay, and the relay is the one piece where a
- *  stand-in loses nothing: it is **blind** by design — it authenticates the agent by signature,
- *  pairs a viewer with it, and pipes ciphertext. `tests/appmode/relay.py` does exactly that,
- *  including the Ed25519 registration check and the ALTCHA challenge the connect page will not
- *  proceed without.
+ *  Every piece here is production except the relay and the agent BINARY. The relay is a stand-in
+ *  that loses nothing: it is **blind** by design — it authenticates the agent by signature, pairs
+ *  a viewer with it, and pipes ciphertext. `tests/appmode/relay.py` does exactly that, including
+ *  the Ed25519 registration check and the ALTCHA challenge the connect page will not proceed
+ *  without. The agent is the run's own fixture (`e2e/fake-agent.sh`, set through the manifest's
+ *  `AGENT_SESSIONS_CLAUDE_BIN`): no spec here asserts Claude Code behaviour, and letting the
+ *  harness find the operator's real `claude` leaked a spinning agent per run (#1147).
  *
  *  So what these tests actually exercise is the whole real path: the browser's connect page, the
  *  real Noise-style handshake, the real mux with its real flow control, `tunnel.fetch`, the real
- *  agent process, `AppProxyTarget`'s Origin/CSRF rewriting, the real FastAPI app, and a real git
- *  repository on disk. That is the boundary #806/#807 name as acceptance evidence, and it is not
- *  reachable from a test that mocks `/api/**` at the network edge.
+ *  agent process (running the stand-in), `AppProxyTarget`'s Origin/CSRF rewriting, the real
+ *  FastAPI app, and a real git repository on disk. That is the boundary #806/#807 name as
+ *  acceptance evidence, and it is not reachable from a test that mocks `/api/**` at the edge.
  */
 
 const REPO_ROOT = resolve(process.cwd(), "..");
@@ -188,8 +192,17 @@ export async function startStack(): Promise<Stack> {
   const procs: ChildProcess[] = [];
   /** Kill every group started so far and WAIT for them to be gone. Safe to call twice, and
    *  never by name — a `pgrep -f "agent-sessions serve"` would also match the operator's OWN
-   *  running service. Awaiting is what makes the subsequent delete safe rather than a race. */
-  const killAll = () => killGroupsAndWait(procs);
+   *  running service. Awaiting is what makes the subsequent delete safe rather than a race.
+   *
+   *  Then reap the run's SESSION MASTERS: the app launches each `dtach` master with
+   *  `start_new_session`, deliberately outside the app's own group (the session-continuity
+   *  guarantee), so the group kill above never reaches them — and each holds a real agent. They
+   *  are found by the run's OWN socket paths in their argv, never by process name (#1147). The
+   *  runtime dir is unique per run, so this cannot touch another job's sessions. */
+  const killAll = async () => {
+    await killGroupsAndWait(procs);
+    if (runtimeDir) await reapRunOwnedMasters(runtimeDir);
+  };
   /** The app's runtime dir (dtach sockets + the #1006 hooks-void), declared before the fence for
    *  exactly the reason `procs` is: the failure path has to be able to remove it. */
   let runtimeDir = "";
@@ -252,9 +265,16 @@ export async function startStack(): Promise<Stack> {
   mkdirSync(join(homedir(), ".cache"), { recursive: true });
   runtimeDir = mkdtempSync(join(homedir(), ".cache", "bl-e2e-rt-"));
 
+  // A stand-in agent, resolved fail-closed (an absolute path, required by the manifest's
+  // `binary.env_var`). Without it the app searches Claude's manifest paths and launches the
+  // operator's REAL claude — which is what leaked a spinning agent per run (#1147). The fixture
+  // writes a marker so a spec can prove it was actually the thing that launched.
+  const agentMarker = join(home, "fake-agent-started");
   const env = {
     ...clean,
     HOME: home,
+    AGENT_SESSIONS_CLAUDE_BIN: appmodeAgentBinary(),
+    AGENT_SESSIONS_APPMODE_MARKER: agentMarker,
     AGENT_SESSIONS_HOME: home,
     AGENT_SESSIONS_FS_ROOT: home,
     AGENT_SESSIONS_RUNTIME_DIR: runtimeDir,
@@ -334,10 +354,12 @@ export async function startStack(): Promise<Stack> {
     env: { ...env, AGENT_SESSIONS_ORIGIN: `http://127.0.0.1:${appPort}` },
     logs,
     stop: async () => {
-      // AWAIT the group kill before deleting. `uv run` is a launcher, so the signal goes to the
-      // group; and `process.kill()` returns before the processes are actually gone, so deleting
-      // straight after it raced its own children — measured, a PASSING run left a temp home
-      // behind containing the agent's `.claude.json`, written after the delete had walked past.
+      // AWAIT the group kill AND the session-master reap before deleting. `uv run` is a
+      // launcher, so the signal goes to the group; and `process.kill()` returns before the
+      // processes are actually gone, so deleting straight after it raced its own children —
+      // measured, a PASSING run left a temp home behind containing the agent's `.claude.json`,
+      // written after the delete had walked past. `reapRunOwnedMasters` also THROWS if anything
+      // still references the runtime dir: a leak is a failed run, not a silent one (#1147).
       await killAll();
       // `removeTree` stays as the belt: bounded, best-effort, never throws.
       removeTree(home);
@@ -355,6 +377,12 @@ export async function startStack(): Promise<Stack> {
       if (runtimeDir) removeTree(runtimeDir);
     },
   );
+}
+
+/** Did the stand-in agent actually launch for this stack (#1147)? The fixture writes this marker
+ *  as its first act, so an unavailable/refused engine cannot leave a spec green with no agent. */
+export function fixtureAgentStarted(stack: Stack): boolean {
+  return existsSync(join(stack.home, "fake-agent-started"));
 }
 
 /** Drive the real connect page all the way to a mounted SPA over the tunnel. `entry` is the page

@@ -163,6 +163,13 @@ def _forge() -> tuple[bool, str]:
     return True, "Forgejo is set up"
 
 
+def _containment() -> tuple[bool, str]:
+    from . import run_local
+
+    why = run_local.containment_problem()
+    return (False, why) if why else (True, "commands run in their own process scope")
+
+
 #: The requirements this read can check now. The rest depend on a choice made in the wizard (which
 #: project, which session, which reviewer) and are checked there and at save.
 _CHECKS = {
@@ -170,6 +177,7 @@ _CHECKS = {
     "forge": _forge,
     "messenger": _messenger,
     "artifacts": _artifacts,
+    "containment": _containment,
 }
 
 #: Where a requirement that does not hold is set up: a Settings section id (`settingsTabs.ts`).

@@ -21,6 +21,9 @@ export const webhookApiPath = (id: string) => `${WEBHOOKS_API}/${encodeURICompon
 /** `GET` — Library → Actions (#2248 P1): every action an automation can take, with its manifest
  *  facts, what it needs and how many automations use it. Read-only; the wizard picks from it too. */
 export const ACTIONS_API = "/api/actions";
+/** `GET ?project_id=` — the files a "Run a script" action could pick in a project's folder (#2248
+ *  P3): `#!` files inside it, never hidden, never a link. Read-only; the save checks the pick. */
+export const ACTION_SCRIPTS_API = "/api/actions/scripts";
 
 /** `POST` — stop one running HQ turn (#2076). It names the turn, so it can never end another. */
 export const askStopTurnPath = (cid: string, turnId: string) =>

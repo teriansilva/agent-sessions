@@ -5,6 +5,9 @@
  *  the page SENT (the consent resend's digest), not only what it painted. Scope lines are the
  *  server's `describe()` wording for the configs used here, copied, so the widened highlight is
  *  exercised against real text. */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { expect, type Page, type Route } from "@playwright/test";
 
 import { mockActions } from "./actions";
@@ -12,6 +15,10 @@ import { commonMocks } from "./mission-directions";
 import { mockMissions } from "./mission-console";
 
 type Json = Record<string, unknown>;
+
+/** The run-local actions' consent lines and drift words, as the server says them (#2248 P3). */
+export const RUN_LOCAL_CONSENT: { run_command: string[]; run_script: string[]; drift_reason: string } =
+  JSON.parse(readFileSync(resolve(process.cwd(), "e2e/fixtures/run-local-consent.json"), "utf8"));
 
 export const PROJECT = {
   id: "p1",
@@ -106,6 +113,12 @@ export function scopeLines(config: Json): string[] {
       lines.push(`To ${String(inputs.recipient)}, a recipient you allowed for it`);
       lines.push(messageLine("Message", inputs.message as Json));
     }
+    if (action.plugin === "run_command" || action.plugin === "run_script") {
+      // The server's own wording (`fixtures/run-local-consent.json`, pinned by
+      // `tests/test_action_run_local.py`), past its "Action:" line.
+      lines.pop();
+      lines.push(...RUN_LOCAL_CONSENT[action.plugin as "run_command" | "run_script"]);
+    }
     if (action.plugin === "write_memory") {
       lines.push(`Writes a note titled “${String(inputs.title)}” into project ${String(inputs.project_id)}'s memory`);
       lines.push(messageLine("Message", inputs.message as Json));
@@ -140,7 +153,11 @@ export function scopeLines(config: Json): string[] {
     lines.push(`On a schedule (${trigger.tz}), up to ${policy.max_runs_per_day ?? 48}/day`);
   else if (trigger.kind === "once") lines.push(`Once, at ${trigger.at} (${trigger.tz})`);
   else if (trigger.kind === "webhook")
-    lines.push(`Starts when Forgejo sends a signed event for ${action.repo}`);
+    lines.push(
+      action.repo
+        ? `Starts when Forgejo sends a signed event for ${action.repo}`
+        : "Starts when its webhook delivers a signed event",
+    );
   else lines.push("Only when you press Run now");
   lines.push(`At most ${policy.max_runs_per_day ?? 48} runs a day`);
   lines.push(`Pauses after ${policy.pause_after_failures ?? 3} failures in a row`);

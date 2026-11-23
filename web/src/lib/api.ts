@@ -69,6 +69,7 @@ import type {
 } from "../types/artifacts";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
+  ACTION_SCRIPTS_API,
   ACTIONS_API,
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
@@ -93,7 +94,7 @@ import type {
   DestinationState,
   WebhookSecret,
 } from "../types/automations";
-import type { ActionGallery } from "../types/actions";
+import type { ActionGallery, ActionScripts } from "../types/actions";
 import type {
   Webhook,
   WebhookCreated,
@@ -3489,6 +3490,11 @@ export const api = {
   // ---- actions (#2248 P1) ------------------------------------------------------------------------
   /** The action gallery: manifest facts, requirements now and use. Read-only. */
   actions: () => getJsonWithDetail<ActionGallery>(ACTIONS_API),
+  /** The `#!` files a "Run a script" action could pick in a project's folder (#2248 P3). */
+  actionScripts: (projectId: string) =>
+    getJsonWithDetail<ActionScripts>(
+      `${ACTION_SCRIPTS_API}?project_id=${encodeURIComponent(projectId)}`,
+    ),
   // ---- webhooks (#2221) --------------------------------------------------------------------------
   webhooks: () => getJsonWithDetail<WebhookList>(WEBHOOKS_API),
   /** The webhook and its last delivery's SHAPE (field names + types). Never a secret. */

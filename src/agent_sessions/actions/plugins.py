@@ -43,6 +43,7 @@ import asyncio
 import contextlib
 import json
 import re
+import threading
 from types import ModuleType
 
 from .. import automations as model
@@ -57,15 +58,40 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 def _modules() -> dict[str, ModuleType]:
     # At call time: each module imports the stores and transports it needs.
-    from . import call_webhook, publish_artifact, send_message, write_memory
+    from . import (
+        call_webhook,
+        publish_artifact,
+        run_command,
+        run_script,
+        send_message,
+        write_memory,
+    )
 
-    return {m.ID: m for m in (send_message, call_webhook, publish_artifact, write_memory)}
+    return {
+        m.ID: m
+        for m in (
+            send_message,
+            call_webhook,
+            publish_artifact,
+            write_memory,
+            run_command,
+            run_script,
+        )
+    }
 
 
 #: The closed table of plugin ids, in the gallery's order. A manifest whose executor is not one of
 #: these is refused by the registry; a stored action naming another id is refused at save and runs
 #: nothing.
-PLUGINS = ("send_message", "call_webhook", "publish_artifact", "write_memory")
+PLUGINS = (
+    "send_message",
+    "call_webhook",
+    "publish_artifact",
+    "write_memory",
+    # #2248 P3: Run locally.
+    "run_command",
+    "run_script",
+)
 
 
 def module(plugin_id: object) -> ModuleType:
@@ -264,18 +290,36 @@ def _locked(run: dict, config: dict, pins_: dict) -> tuple[str, str]:
         return mod_of(config["action"]).effect(run, config, pins_)
 
 
+#: ``{run_id: Event}``: set when the run is cancelled, so an effect that WAITS (a command
+#: running, #2248 P3) can stop what it started before the worker is joined.
+_CANCELS: dict[str, threading.Event] = {}
+_CANCELS_LOCK = threading.Lock()
+
+
+def cancel_event(run_: dict) -> threading.Event:
+    """This run's cancellation signal (set by `run` when the run is cancelled)."""
+    with _CANCELS_LOCK:
+        return _CANCELS.setdefault(run_["id"], threading.Event())
+
+
 async def run(run_: dict, config: dict, pins_: dict, *, registry=None) -> tuple[str, str]:
     """Run a plugin action: the whole effect on ONE worker thread under the effect lock. On
-    cancellation the worker is JOINED, however often we are cancelled meanwhile, before the
-    cancellation goes on (`automation_runner._tell_hq`'s contract)."""
+    cancellation the run's `cancel_event` is set, and the worker is JOINED, however often we are
+    cancelled meanwhile, before the cancellation goes on (`automation_runner._tell_hq`'s
+    contract)."""
+    cancel = cancel_event(run_)
     task = asyncio.ensure_future(asyncio.to_thread(_locked, run_, config, pins_))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
+        cancel.set()
         while not task.done():
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(task)
         raise
+    finally:
+        with _CANCELS_LOCK:
+            _CANCELS.pop(run_["id"], None)
 
 
 def run_async(coro) -> object:

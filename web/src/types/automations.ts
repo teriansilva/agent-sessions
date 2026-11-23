@@ -110,13 +110,30 @@ export type AutomationAction =
 
 /** The registry's plugin actions (#2248 P2), stored as ONE kind. `inputs` is the plugin's own,
  *  validated strictly by the server; `from_delivery` maps a webhook delivery's typed values. */
-export type PluginId = "send_message" | "call_webhook" | "publish_artifact" | "write_memory";
+export type PluginId =
+  | "send_message"
+  | "call_webhook"
+  | "publish_artifact"
+  | "write_memory"
+  | "run_command"
+  | "run_script";
 export const PLUGIN_IDS: readonly PluginId[] = [
   "send_message",
   "call_webhook",
   "publish_artifact",
   "write_memory",
+  // #2248 P3: Run locally.
+  "run_command",
+  "run_script",
 ];
+
+/** One element of a run-local action's argument list (#2248 P3): a fixed text (an `option` keeps
+ *  the element after it fixed too), or ONE typed value from the delivery filling the whole element. */
+export type RunArg = { value: string; option?: true } | { from: string };
+/** A run-local action's environment variable: fixed, or one typed value from the delivery. */
+export type RunEnv = { name: string; value: string } | { name: string; from: string };
+/** The types a run-local action may declare for a field read from its last line of stdout. */
+export type RunOutputType = "number" | "text" | "yes_no";
 
 /** "Call a webhook" (#2248 P2): its destination and whether its signing secret exists. Never the
  *  secret: that is in the ONE answer that made it (`destination_secret`). */

@@ -323,7 +323,70 @@ def _plugin_scopes() -> dict[str, dict]:
             )
         )
     )
+    hook_trigger = {"kind": "webhook", "webhook_id": "0a1b2c3d4e5f6a7b"}
+    title = {"title": {"path": "pull_request.title", "type": "text"}}
+    cmd = model.validate_config(
+        _config(
+            _plugin(
+                "run_command",
+                {
+                    "project_id": "p1",
+                    "argv": [{"value": "git"}, {"value": "-C", "option": True},
+                             {"value": "site"}, {"value": "tag"}, {"value": "--"},
+                             {"from": "title"}],
+                    "env": [{"name": "MODE", "value": "fast"}, {"name": "PR", "from": "title"}],
+                    "timeout_minutes": 7,
+                    "outputs": {"build_id": "text"},
+                },
+                title,
+            ),
+            trigger=hook_trigger,
+        )
+    )  # fmt: skip
+    run_pins = {
+        "cwd": {"path": "/w/shop", "real": "/srv/shop", "dev": 1, "ino": 2},
+        "run_as": {"uid": 1000, "user": "op", "home": "/home/op"},
+    }
+    cmd_pins = {
+        "template": None,
+        "checklist": None,
+        "plugin": {
+            "of": "run_command",
+            **run_pins,
+            "program": {"real": "/usr/bin/git", "sha256": "a" * 64},
+            "interpreter": [{"path": "/usr/bin/env", "real": "/usr/bin/env", "sha256": "b" * 64}],
+        },
+    }
+    script = model.validate_config(
+        _config(
+            _plugin(
+                "run_script",
+                {
+                    "project_id": "p1",
+                    "script": "scripts/deploy.sh",
+                    "args": [{"value": "--"}, {"from": "title"}],
+                    "env": [{"name": "PR", "from": "title"}],
+                    "outputs": {"preview_url": "text", "ok": "yes_no"},
+                },
+                title,
+            ),
+            trigger=hook_trigger,
+        )
+    )
+    script_pins = {
+        "template": None,
+        "checklist": None,
+        "plugin": {
+            "of": "run_script",
+            **run_pins,
+            "script": {"path": "scripts/deploy.sh", "real": "/srv/shop/scripts/deploy.sh",
+                       "sha256": "c" * 64},
+            "interpreter": [{"path": "/bin/sh", "real": "/usr/bin/dash", "sha256": "d" * 64}],
+        },
+    }  # fmt: skip
     return {
+        "run_command": model.scope_of(_scheduled(cmd), cmd_pins),
+        "run_script": model.scope_of(_scheduled(script), script_pins),
         "write_memory": model.scope_of(_scheduled(note), {"template": None, "checklist": None}),
         "publish_artifact": model.scope_of(_scheduled(art), art_pins),
         "send_message": model.scope_of(_scheduled(send), pins_),

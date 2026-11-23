@@ -170,5 +170,9 @@ function whatWords(form: EditorForm, projectName: (id: string) => string): strin
       return form.artifactPath.trim() ? `${label} · ${form.artifactPath.trim()}` : label;
     case "call_webhook":
       return form.destination.trim() ? `${label} · ${form.destination.trim()}` : label;
+    case "run_command":
+      return form.runProgram.trim() ? `${label} · ${form.runProgram.trim()}` : label;
+    case "run_script":
+      return form.runScript.trim() ? `${label} · ${form.runScript.trim()}` : label;
   }
 }

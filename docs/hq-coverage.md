@@ -317,6 +317,7 @@ POST   /api/2fa/disable                                                         
 POST   /api/2fa/enroll                                                            never  # credentials
 POST   /api/2fa/recovery-codes                                                    never  # credentials
 GET    /api/actions                                                               P4  # read: the action gallery (#2248 P1); HQ's action tools are #2248 P4
+GET    /api/actions/scripts                                                       never  # the Run a script picker (#2248 P3): HQ never authors a command or picks a script
 PATCH  /api/agents/budgets                                                        P2
 GET    /api/agent-accounts                                                         P2  # read: pools, labels and health, never a path (#1820, HQ is its P5)
 POST   /api/agent-accounts/{engine}                                                P2

@@ -70,6 +70,8 @@ REQUIREMENTS: dict[str, str] = {
     "messenger": "a messenger (Telegram, Matrix or mail) that can send",
     "artifacts": "artifacts switched on in Settings",
     "memory": "project memory switched on for the project",
+    # #2248 P3
+    "containment": "a contained process scope for commands (systemd-run --user)",
 }
 
 #: The triggers that may start an action (`automations.TRIGGER_KINDS`).
@@ -79,6 +81,12 @@ TRIGGERS = ("once", "schedule", "manual", "webhook")
 INPUT_TYPES = frozenset(
     {
         "agent",
+        # #2248 P3: an argument list (each fixed or one typed delivery value), named environment
+        # variables, a time limit, and the typed fields read from a command's last line.
+        "arguments",
+        "duration",
+        "environment",
+        "output_fields",
         "choice",
         # #2248 P2: a messenger, one of its saved recipients, an operator-set https destination,
         # typed body fields, and a file or folder inside a project.
@@ -101,7 +109,18 @@ INPUT_TYPES = frozenset(
 )
 #: An output's type: what a later step could use.
 OUTPUT_TYPES = frozenset(
-    {"mission", "notification", "session", "message", "artifact", "note", "response"}
+    {
+        "mission",
+        "notification",
+        "session",
+        "message",
+        "artifact",
+        "note",
+        "response",
+        # #2248 P3: a command's exit code, and the typed fields it reports.
+        "number",
+        "fields",
+    }
 )
 
 #: Field names that would carry behaviour. Refused by name at every level, before the unknown-field

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { connect, openSessions, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
+import { connect, fixtureAgentStarted, openSessions, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 
@@ -54,6 +54,9 @@ test("the panel switches a real branch through the relay, and the repo moves on 
   // The streamed SPA lists the seeded session; open it, then the file panel's GIT tab.
   // The sidebar renders each session as a link to `/s/<engine>/<uuid>`.
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });
+  // Opening the session launches its agent. Assert the run's OWN stand-in actually started, so
+  // a missing/refused engine cannot leave this spec green (#1147).
+  await expect.poll(() => fixtureAgentStarted(stack), { timeout: 30_000 }).toBe(true);
   await clickHeadAction(page, FILES_ACTION, { timeout: 30_000 });
   await expect(page.locator("[data-file-panel]")).toBeVisible({ timeout: 20_000 });
   await page.getByRole("tab", { name: /Git/ }).click();

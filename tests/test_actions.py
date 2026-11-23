@@ -539,6 +539,9 @@ def test_the_committed_browser_fixture_is_what_the_server_sends(monkeypatch):
     # Every requirement met; the browser specs flip one to meet the needs-setup state.
     monkeypatch.setitem(registry._CHECKS, "messenger", lambda: (True, "a messenger can send"))
     monkeypatch.setitem(registry._CHECKS, "artifacts", lambda: (True, "artifacts are on"))
+    monkeypatch.setitem(
+        registry._CHECKS, "containment", lambda: (True, "commands run in their own process scope")
+    )
     used = {"start_session": 3, "send_to_session": 1, "forge_review_loop": 2, "tell_hq": 4}
     monkeypatch.setattr(registry, "_used_by", lambda: used)
     text = json.dumps(registry.gallery(), indent=2, ensure_ascii=False) + "\n"

@@ -42,6 +42,7 @@ import type { useActions } from "../../actions/useActions";
 import { offeredActions } from "../../../lib/actions";
 import { CallWebhookFields } from "../../actions/CallWebhookFields";
 import { PublishArtifactFields } from "../../actions/PublishArtifactFields";
+import { RunLocalFields } from "../../actions/RunLocalFields";
 import type { ReactNode } from "react";
 import { Fold, Seg, StepIssues, type StepProps } from "./bits";
 import { ReviewLoopFields } from "./ReviewLoopFields";
@@ -62,6 +63,8 @@ const KNOWN: readonly Kind[] = Object.keys({
   call_webhook: 1,
   publish_artifact: 1,
   write_memory: 1,
+  run_command: 1,
+  run_script: 1,
 } satisfies Record<Kind, 1>) as Kind[];
 
 export function StepWhat({
@@ -506,6 +509,17 @@ export function StepWhat({
         />
       )}
 
+      {(form.actionKind === "run_command" || form.actionKind === "run_script") && (
+        <RunLocalFields
+          form={form}
+          update={update}
+          f={f}
+          listHook={listHook}
+          shape={shape}
+          projects={projects}
+        />
+      )}
+
       {form.actionKind === "call_webhook" && (
         <>
           <CallWebhookFields
@@ -562,7 +576,11 @@ export function StepWhat({
         </div>
       )}
 
-      {!loop && form.actionKind !== "call_webhook" && form.actionKind !== "publish_artifact" && (
+      {!loop &&
+        form.actionKind !== "call_webhook" &&
+        form.actionKind !== "publish_artifact" &&
+        form.actionKind !== "run_command" &&
+        form.actionKind !== "run_script" && (
         <>
           <div className={styles.fields}>
             <div className={styles.field}>

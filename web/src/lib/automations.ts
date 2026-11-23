@@ -40,6 +40,9 @@ import type {
   WebhookCondition,
   PluginAction,
   PluginId,
+  RunArg,
+  RunEnv,
+  RunOutputType,
 } from "../types/automations";
 import type { Session, Template } from "../types/api";
 import type { Specialist } from "../types/specialists";
@@ -284,6 +287,8 @@ export function actionLabel(
   if (kind === "call_webhook") return "Call a webhook";
   if (kind === "publish_artifact") return "Publish an artifact";
   if (kind === "write_memory") return "Write a memory note";
+  if (kind === "run_command") return "Run a command";
+  if (kind === "run_script") return "Run a script";
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
@@ -326,6 +331,11 @@ function pluginTargetWords(action: PluginAction): string {
   if (action.plugin === "call_webhook") return hostOf(String(i.destination ?? ""));
   if (action.plugin === "publish_artifact") return String(i.path ?? "");
   if (action.plugin === "write_memory") return "project memory";
+  if (action.plugin === "run_command") {
+    const first = (i.argv as RunArg[] | undefined)?.[0];
+    return first && "value" in first ? baseName(first.value) : "a command";
+  }
+  if (action.plugin === "run_script") return String(i.script ?? "");
   return action.plugin;
 }
 
@@ -667,6 +677,61 @@ export interface EditorForm {
   // "Write a memory note" (#2248 P2): the note's title; its project is `projectId`, its text the
   // message (text or template, as for the five).
   noteTitle: string;
+  // "Run a command" / "Run a script" (#2248 P3): the program (a command's argv[0], always fixed) or
+  // the script inside the project's folder (`projectId`), the further arguments and variables (each
+  // fixed or one typed value from the delivery), the time limit and the declared output fields.
+  runProgram: string;
+  runScript: string;
+  runArgs: RunArgDraft[];
+  runEnv: RunEnvDraft[];
+  runTimeout: number;
+  runOutputs: RunOutputDraft[];
+}
+
+/** One argument row of a run-local action (#2248 P3). `option` keeps the NEXT row fixed too. */
+export interface RunArgDraft {
+  value: string;
+  option: boolean;
+  map: MappingDraft | null;
+}
+export interface RunEnvDraft {
+  name: string;
+  value: string;
+  map: MappingDraft | null;
+}
+export interface RunOutputDraft {
+  name: string;
+  type: RunOutputType;
+}
+/** The server's bounds (`actions/run_local.py`). */
+export const RUN_ARGS_MAX = 31; // argv holds at most 32, the program included
+export const RUN_ENV_MAX = 16;
+export const RUN_OUTPUTS_MAX = 8;
+export const RUN_TIMEOUT_DEFAULT = 5;
+export const RUN_TIMEOUT_MAX = 30;
+export const RUN_OUTPUT_TYPE_WORDS: Record<RunOutputType, string> = {
+  number: "number",
+  text: "short text",
+  yes_no: "yes / no",
+};
+const RUN_ENV_RE = /^[A-Z_][A-Z0-9_]{0,63}$/;
+const RUN_ENV_FIXED = ["HOME", "LANG", "PATH", "TERM"];
+const RUN_PROGRAM_RE = /^[A-Za-z0-9._+-]{1,128}$/;
+const RUN_OUTPUT_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
+/** A fixed row a program reads as an option: marked so, or starting with `-` (exactly `--` ends the
+ *  options and is not one). The row after it is always fixed (#2279 review; the server decides). */
+export function runArgIsOption(a: RunArgDraft | undefined, hook: boolean): boolean {
+  if (!a || (a.map && hook)) return false;
+  return a.option || (a.value.startsWith("-") && a.value !== "--");
+}
+
+/** The delivery field an argument row or a variable fills (a `from_delivery` key). */
+export function runArgField(i: number): string {
+  return `arg_${i + 1}`;
+}
+export function runEnvField(name: string): string {
+  return `env_${name.toLowerCase()}`.slice(0, 32);
 }
 
 /** A condition as the wizard edits it. Each value is its own element with its OWN type, kept as
@@ -750,6 +815,12 @@ export function blankForm(tz: string): EditorForm {
     artifactWhy: "",
     lineMaps: { title: null, why: null },
     noteTitle: "",
+    runProgram: "",
+    runScript: "",
+    runArgs: [],
+    runEnv: [],
+    runTimeout: RUN_TIMEOUT_DEFAULT,
+    runOutputs: [],
   };
 }
 
@@ -890,6 +961,32 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.projectId = String(i.project_id ?? "");
       f.noteTitle = String(i.title ?? "");
     }
+    if (act.plugin === "run_command" || act.plugin === "run_script") {
+      const draftOf = (field: string): MappingDraft | null => {
+        const m = act.from_delivery?.[field];
+        return m ? { path: m.path, type: m.type, choices: [...(m.choices ?? [])] } : null;
+      };
+      f.projectId = String(i.project_id ?? "");
+      const argv = ((act.plugin === "run_command" ? i.argv : i.args) ?? []) as RunArg[];
+      const rest = act.plugin === "run_command" ? argv.slice(1) : argv;
+      const first = argv[0];
+      f.runProgram = act.plugin === "run_command" && first && "value" in first ? first.value : "";
+      f.runScript = String(i.script ?? "");
+      f.runArgs = rest.map((a) =>
+        "from" in a
+          ? { value: "", option: false, map: draftOf(a.from) }
+          : { value: a.value, option: a.option === true, map: null },
+      );
+      f.runEnv = ((i.env ?? []) as RunEnv[]).map((e) =>
+        "from" in e
+          ? { name: e.name, value: "", map: draftOf(e.from) }
+          : { name: e.name, value: e.value, map: null },
+      );
+      f.runTimeout = Number(i.timeout_minutes ?? RUN_TIMEOUT_DEFAULT);
+      f.runOutputs = Object.entries((i.outputs ?? {}) as Record<string, RunOutputType>).map(
+        ([name, type]) => ({ name, type }),
+      );
+    }
     if (act.plugin === "publish_artifact") {
       f.projectId = String(i.project_id ?? "");
       f.artifactPath = String(i.path ?? "");
@@ -1004,6 +1101,7 @@ export function formTrigger(f: EditorForm): Trigger {
 /** A plugin action (#2248 P2): its inputs, and what a delivery fills on the ACTION (never inside
  *  the message), exactly the fields the server's strict validator accepts. */
 function formPlugin(f: EditorForm, plugin: PluginId): PluginAction {
+  if (plugin === "run_command" || plugin === "run_script") return formRunLocal(f, plugin);
   if (plugin === "publish_artifact") {
     const drafts: Record<string, MappingDraft> = {};
     const hook = fromListHook(f);
@@ -1044,6 +1142,83 @@ function formPlugin(f: EditorForm, plugin: PluginId): PluginAction {
       : { connector: f.connector, recipient: f.recipient, message };
   const out: PluginAction = { kind: "plugin", plugin, version: 1, inputs };
   return mapped && Object.keys(mapped).length ? { ...out, from_delivery: mapped } : out;
+}
+
+/** "Run a command" / "Run a script" (#2248 P3): every row exactly as the operator wrote it; a row
+ *  from the delivery is `{from}` naming its own field, so a value is always ONE whole argument. */
+function formRunLocal(f: EditorForm, plugin: "run_command" | "run_script"): PluginAction {
+  const hook = fromListHook(f);
+  const drafts: Record<string, MappingDraft> = {};
+  const args: RunArg[] = f.runArgs.map((a, i) => {
+    if (a.map && hook) {
+      drafts[runArgField(i)] = a.map;
+      return { from: runArgField(i) };
+    }
+    return a.option ? { value: a.value, option: true } : { value: a.value };
+  });
+  const env: RunEnv[] = f.runEnv.map((e) => {
+    if (e.map && hook) {
+      drafts[runEnvField(e.name)] = e.map;
+      return { name: e.name, from: runEnvField(e.name) };
+    }
+    return { name: e.name, value: e.value };
+  });
+  const outputs: Record<string, RunOutputType> = {};
+  for (const o of f.runOutputs) outputs[o.name.trim()] = o.type;
+  const common = { env, timeout_minutes: f.runTimeout, outputs };
+  const inputs: Record<string, unknown> =
+    plugin === "run_command"
+      ? { project_id: f.projectId, argv: [{ value: f.runProgram.trim() }, ...args], ...common }
+      : { project_id: f.projectId, script: f.runScript.trim(), args, ...common };
+  const mapped = mappingBody(drafts);
+  const out: PluginAction = { kind: "plugin", plugin, version: 1, inputs };
+  return Object.keys(mapped).length ? { ...out, from_delivery: mapped } : out;
+}
+
+/** What is wrong with a run-local action's draft, in the wizard's words (the server decides). */
+function runLocalProblems(f: EditorForm): string[] {
+  const out: string[] = [];
+  const hook = fromListHook(f);
+  if (!f.projectId) out.push("Choose a project");
+  if (f.actionKind === "run_command") {
+    const p = f.runProgram.trim();
+    if (!p) out.push("Name the program to run");
+    else if (!(p.startsWith("/") || RUN_PROGRAM_RE.test(p)))
+      out.push("The program is a name (like make) or an absolute path; for a file of the project, use Run a script");
+  } else {
+    const p = f.runScript.trim();
+    if (!p) out.push("Pick the script to run");
+    else if (p.startsWith("/") || p.startsWith("~"))
+      out.push("The script is a file inside the project’s folder");
+    else if (p.split("/").some((s) => s === ".." || s.startsWith(".")))
+      out.push("The script must stay inside the project’s folder and not be hidden");
+  }
+  if (f.runArgs.length > RUN_ARGS_MAX) out.push(`At most ${RUN_ARGS_MAX} arguments`);
+  f.runArgs.forEach((a, i) => {
+    const prev = f.runArgs[i - 1];
+    const fromDelivery = a.map && hook;
+    if (fromDelivery && runArgIsOption(prev, hook))
+      out.push(`Argument ${i + 1} is the value of the option ${prev!.value || "before it"}: it is always fixed`);
+    if (fromDelivery && !validPath(a.map!.path)) out.push(`Argument ${i + 1}: pick a field of the delivery`);
+    if (a.option && fromDelivery) out.push(`Argument ${i + 1}: an option is always fixed`);
+  });
+  const names = f.runEnv.map((e) => e.name);
+  if (names.length > RUN_ENV_MAX) out.push(`At most ${RUN_ENV_MAX} variables`);
+  if (names.some((n) => !RUN_ENV_RE.test(n)))
+    out.push("Each variable needs a name: capital letters, digits and _ (not starting with a digit)");
+  if (names.some((n) => RUN_ENV_FIXED.includes(n)))
+    out.push("PATH, HOME, LANG and TERM are set by the run itself");
+  if (new Set(names).size !== names.length) out.push("Two variables have the same name");
+  for (const e of f.runEnv)
+    if (e.map && hook && !validPath(e.map.path)) out.push(`${e.name || "A variable"}: pick a field of the delivery`);
+  if (!Number.isInteger(f.runTimeout) || f.runTimeout < 1 || f.runTimeout > RUN_TIMEOUT_MAX)
+    out.push(`The time limit is 1 to ${RUN_TIMEOUT_MAX} minutes`);
+  const outs = f.runOutputs.map((o) => o.name.trim());
+  if (outs.length > RUN_OUTPUTS_MAX) out.push(`At most ${RUN_OUTPUTS_MAX} output fields`);
+  if (outs.some((n) => !RUN_OUTPUT_RE.test(n) || n === "exit_code"))
+    out.push("Each output field needs a name: lower-case letters, digits and _ (exit_code is always reported)");
+  if (new Set(outs).size !== outs.length) out.push("Two output fields have the same name");
+  return out;
 }
 
 export function formAction(f: EditorForm): AutomationAction {
@@ -1203,6 +1378,10 @@ function whatProblems(f: EditorForm): string[] {
   if (f.actionKind === "write_memory") {
     if (!f.projectId) out.push("Choose a project");
     if (!f.noteTitle.trim()) out.push("Give the note a title");
+  }
+  if (f.actionKind === "run_command" || f.actionKind === "run_script") {
+    out.push(...runLocalProblems(f));
+    return out; // its argument list is its content: there is no message to write
   }
   if (f.actionKind === "publish_artifact") {
     if (!f.projectId) out.push("Choose a project");

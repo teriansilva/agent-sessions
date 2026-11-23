@@ -1,7 +1,8 @@
 # Actions
 
 An **action** is one step an automation can take: start a session, message a session, run a review
-loop, tell HQ, start a mission, or send a message through a messenger you set up. **Library → Actions** shows every action BattleLab has, so you
+loop, tell HQ, start a mission, send a message through a messenger you set up, or run a command or
+a script on this machine. **Library → Actions** shows every action BattleLab has, so you
 can see what each one does, how far it reaches and what it needs before you build an
 [automation](/guide/automations) around it.
 
@@ -38,9 +39,9 @@ are a class, never a state, so they never turn green, amber or red.
 | **Notify** | 2 | Your notifications (the bell), or a message to a chat or inbox you set up. *Tell HQ* and *Send a message* are. |
 | **Write · BattleLab** | 3 | Things inside BattleLab: it starts or messages a session, creates a mission draft, publishes an artifact or writes a memory note. |
 | **Write · external** | 4 | Something outside BattleLab, such as another service. *Call a webhook* is one. |
-| **Run · local** | 5 | It runs a program on this machine. |
+| **Run · local** | 5 | It runs a program on this machine, as your user. *Run a command* and *Run a script* are. |
 
-The other classes are listed so you know what a later action means when it arrives.
+The *Read* class is listed so you know what a later action means when it arrives.
 
 ## The actions today
 
@@ -55,6 +56,8 @@ The other classes are listed so you know what a later action means when it arriv
 | Call a webhook | Web | Write · external | any trigger |
 | Publish an artifact | Files | Write · BattleLab | any trigger |
 | Write a memory note | BattleLab | Write · BattleLab | any trigger |
+| Run a command | Run locally | Run · local | any trigger |
+| Run a script | Run locally | Run · local | any trigger |
 
 What each one asks for, and how its approval works, is in [Automations](/guide/automations), step 3 (*What*).
 
@@ -177,9 +180,96 @@ project.
 - Agents read notes as hints, never as instructions.
 - A run files its note at most once, even if it is retried after a crash.
 
+## Run a command
+
+**What it is for.** Running one program you name, with the arguments you list, in a project's
+folder: `make site`, `npm run build`, `git fetch --prune`. Use it for a single program; for pipes,
+redirects, `&&` or anything else a shell does, write a script and use *Run a script*.
+
+**What you set.**
+
+- **Runs in project:** the project whose folder the command starts in.
+- **Program and arguments:** one row per argument. The first row is the **program**: a name such
+  as `make` (looked up in `/usr/local/bin`, `/usr/bin` and `/bin`) or an absolute path. Every other
+  row is either a **fixed** text you type, or, when a webhook starts the automation, **a typed
+  value from the delivery** (a number, a short text, yes/no or a choice) that becomes exactly that
+  one argument. A row that starts with `-` (such as `-C`, `-e` or `--exec`) is an **option**, and
+  the row right after it is always fixed: it could be that option's value. You can also mark a row
+  as an option yourself.
+- **Environment variables:** up to 16, each a fixed value or a typed value from the delivery.
+- **Time limit:** 5 minutes unless you say; at most 30.
+- **Output fields:** names and types (number, short text, yes/no) to read from the last line of
+  what it prints, if that line is one JSON object, for example
+  `{"build_id": "b-42", "tests": 312}`.
+
+**What keeps it safe.**
+
+- **You write it.** HQ never writes or edits a command. A delivery only fills the rows you marked
+  for it: it never chooses the program, an option's value, or a variable a program reads as code
+  (such as `LD_PRELOAD` or `BASH_ENV`).
+- **No shell.** The program is started directly with exactly the argument list you approved. A
+  value from the delivery is one inert argument by construction, never part of another, so
+  `; rm -rf /` or `$(…)` reach the program as plain text. A shell, or a program that runs other
+  commands from its arguments (`env`, `xargs`, `sudo`, `ssh`, `npx`, …), can't be the program:
+  write a script instead. A delivered value that starts with `-` would read as an option, so it is
+  refused unless a fixed `--` row comes before it.
+- **What the program does with an argument is the program's.** BattleLab can't know every
+  program, so be clear about what you pass. It refuses the positions it knows take code:
+  - right after any option (`python3 -c <value>`, `node -e <value>`, `find -exec <value>`);
+  - before an interpreter's own script or program text: for `python`, `node`, `perl`, `ruby`,
+    `php`, `lua`, `awk`, `sed`, `jq` and similar, a value may only come after the script or the
+    code you wrote (`python3 tool.py <value>` and `python3 -c "…" <value>` are fine;
+    `python3 <value>` or `awk <value>` are refused). Put interpreter flags you need in the script
+    or an environment variable, since a flag before the script hides it from this check;
+  - anywhere for programs that read commands from any argument (`make`, `sqlite3`, `psql`, …).
+- **Pinned.** When you approve, BattleLab records the program's full path and its sha256 checksum
+  (and its interpreter's, when the program is itself a script). If the program changes, the
+  automation pauses and asks you again. Right before the start, the file is hashed again and must
+  still be the file the path names.
+- **Clean environment.** It starts with only `PATH`, `HOME`, `LANG`, `TERM=dumb` and the
+  variables you listed: nothing of BattleLab's own, no tokens.
+- **Contained.** It runs in its own process scope (`systemd-run --user`). If that is switched off
+  or unavailable, the command is refused and nothing runs. At the time limit, when you cancel, or
+  when it ends, everything it started is stopped.
+- **No secrets as values.** A fixed argument or variable that looks like a credential, or holds one
+  of your stored secrets, is refused when you save. What it prints is kept up to 64 KB for stdout
+  and for stderr, and a line holding a secret is withheld.
+- **What it can reach.** Be clear about this: the command runs **as your user**. It can read and
+  change anything your user can, and reach the network. The project folder is only where it
+  starts, and the scope only limits how long it runs; neither is a sandbox. The approval says so.
+
+**What a run records.** `exit_code` (0 is *ok*, anything else *failed* with the code; the time limit
+is *failed*, "stopped after N minutes"), what it printed, how long it took, and the output fields.
+A run cut off by a crash is recorded as *interrupted* and is never run again by itself.
+
+## Run a script
+
+**What it is for.** Anything that needs a shell's pipes and logic, or several steps: put it in a
+script file in the project (for example `scripts/deploy-preview.sh`) and run that file.
+
+**What you set.**
+
+- **Project** and **Script file:** pick the file from the project's folder. It must start with a
+  `#!` line naming its interpreter by an absolute path (`#!/bin/sh`, `#!/usr/bin/python3`, or
+  `#!/usr/bin/env bash` with one name), be at most 1 MB, and be a real file inside the folder (not
+  a symbolic link, not hidden).
+- **Extra arguments**, **environment variables**, **time limit** and **output fields:** as for
+  *Run a command*.
+
+**What keeps it safe.** Everything under *Run a command*, and:
+
+- **Pinned.** The script's sha256 and its interpreter's are recorded when you approve. If you edit
+  the script, or the interpreter is updated, the automation pauses and shows what changed; nothing
+  runs until you approve the new version.
+- **It runs the bytes that were checked.** At each run BattleLab reads the script once, checks its
+  checksum, and runs a sealed in-memory copy of exactly those bytes. Changing or replacing the file
+  at that moment can't change what runs. One effect of this: inside the script, `$0` is
+  `/proc/self/fd/N`, not the script's path. The script starts in the project's folder, so use paths
+  relative to the folder.
+
 ## More actions later
 
-More actions come in later releases: running a command or script you saved, and reading from your
-forge or files. Each will have the same card here, and each will ask for your approval before an
-automation can use it. Categories without an action yet don't have a chip until their first action
-arrives.
+More actions come in later releases: reading from your forge or files, and passing a stored secret
+to a command as a file path. Each will have the same card here, and each will ask for your approval
+before an automation can use it. Categories without an action yet don't have a chip until their
+first action arrives.
