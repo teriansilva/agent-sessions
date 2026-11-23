@@ -328,6 +328,67 @@ def test_the_file_part_may_not_arrive_before_the_fields(client, root, auth_cfg):
     assert not (root / "x.txt").exists()
 
 
+# --------------------------------------------------------------------------- malformed framing
+
+
+def _raw_upload(client, auth_cfg, body: bytes, boundary: str):
+    return client.post(
+        "/api/files/upload",
+        content=body,
+        headers={
+            **_hdr(client, auth_cfg),
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+
+
+def _assert_refused_malformed(r, root):
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "malformed multipart body"
+    assert list(root.iterdir()) == [], "a refused malformed upload left an artifact"
+
+
+def test_a_garbage_body_that_claims_to_be_multipart_is_a_400(client, root, auth_cfg):
+    """A body that only CLAIMS ``multipart/form-data`` raises at ``parser.write()``; the route's
+    catch-all used to answer 500. Client-fault framing is a typed 400 (#1944)."""
+    r = _raw_upload(client, auth_cfg, b"not multipart at all", "x")
+    _assert_refused_malformed(r, root)
+
+
+def test_a_boundary_longer_than_the_parser_allows_is_a_400(client, root, auth_cfg):
+    """MEASURED before the fix: the pinned parser's CONSTRUCTOR raises ``FormParserError`` for a
+    boundary over 256 bytes — before ``write()``/``finalize()`` — so it escaped the parse guards
+    and the route's catch-all answered 500. Same client-fault framing, same typed 400."""
+    r = _raw_upload(client, auth_cfg, b"not multipart at all", "x" * 257)
+    _assert_refused_malformed(r, root)
+
+
+def test_a_body_framed_with_an_undeclared_boundary_is_a_400(client, root, auth_cfg):
+    """The body's delimiter must be the boundary named in ``Content-Type``; a mismatch raises at
+    ``parser.write()`` just like garbage and must not be a 500."""
+    body = _multipart("----body", root, "x.txt", b"payload").replace(b"------body", b"------other")
+    r = _raw_upload(client, auth_cfg, body, "----bnd")
+    _assert_refused_malformed(r, root)
+
+
+def test_a_body_missing_its_final_boundary_is_a_400_and_publishes_nothing(client, root, auth_cfg):
+    """MEASURED before the fix: a complete part with no terminating boundary raises NOTHING from
+    ``write()``/``finalize()``, so the partial file was published with a 200. The parser's state
+    is the only signal that the message never ended; the upload must be refused, not landed."""
+    body = _multipart("----bnd", root, "x.txt", b"payload")
+    assert body.endswith(b"------bnd--\r\n")
+    r = _raw_upload(client, auth_cfg, body[: -len(b"------bnd--\r\n")], "----bnd")
+    _assert_refused_malformed(r, root)
+
+
+def test_a_truncated_part_is_a_400_and_publishes_nothing(client, root, auth_cfg):
+    """A body cut mid-payload leaves the parser in ``PART_DATA`` with no error; same rule."""
+    body = _multipart("----bnd", root, "x.txt", b"payload")
+    cutoff = body.index(b"payload") + len(b"pay")
+    r = _raw_upload(client, auth_cfg, body[:cutoff], "----bnd")
+    _assert_refused_malformed(r, root)
+
+
 # --------------------------------------------------------------------------- batches
 
 

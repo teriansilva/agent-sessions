@@ -33,9 +33,11 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 try:  # the package renamed; the old name still works but emits a PendingDeprecationWarning
-    from python_multipart.multipart import MultipartParser, parse_options_header
+    from python_multipart.exceptions import FormParserError
+    from python_multipart.multipart import MultipartParser, MultipartState, parse_options_header
 except ImportError:  # pragma: no cover - older pins
-    from multipart.multipart import MultipartParser, parse_options_header
+    from multipart.exceptions import FormParserError
+    from multipart.multipart import MultipartParser, MultipartState, parse_options_header
 
 from .. import files, filewrite
 
@@ -74,6 +76,17 @@ def _check_then_publish(dest: filewrite.Destination) -> None:
     """Refuse a completed gitdir, else publish — in one synchronous step, off the loop."""
     filewrite.refuse_completed_gitdir(dest.dest_dir)
     dest.publish()
+
+
+def _malformed_body() -> files.FsError:
+    """Client-fault multipart framing.
+
+    python-multipart's parse errors are ``FormParserError``/``ValueError`` (and
+    ``MultipartParseError`` is a subclass of both); its ``finalize()`` is a no-op, so an
+    unterminated body only shows as a parser state short of ``END``. All of these are the
+    client's, never a 500 (#1944).
+    """
+    return files.FsError("malformed multipart body", status=400)
 
 
 def _write_chunk(dest: filewrite.Destination, data: bytes) -> None:
@@ -223,17 +236,22 @@ async def ingest(request: Request) -> JSONResponse:
 
     loop = asyncio.get_running_loop()
     st = _Ingest(owner_of(request))
-    parser = MultipartParser(
-        boundary,
-        {
-            "on_part_begin": st.on_part_begin,
-            "on_header_field": st.on_header_field,
-            "on_header_value": st.on_header_value,
-            "on_header_end": st.on_header_end,
-            "on_headers_finished": st.on_headers_finished,
-            "on_part_data": st.on_part_data,
-        },
-    )
+    try:
+        parser = MultipartParser(
+            boundary,
+            {
+                "on_part_begin": st.on_part_begin,
+                "on_header_field": st.on_header_field,
+                "on_header_value": st.on_header_value,
+                "on_header_end": st.on_header_end,
+                "on_headers_finished": st.on_headers_finished,
+                "on_part_data": st.on_part_data,
+            },
+        )
+    except (FormParserError, ValueError):
+        # The CONSTRUCTOR is a parse boundary too: the pinned parser raises
+        # `FormParserError` before `write()` for a boundary over its length limit (#1944).
+        raise _malformed_body() from None
 
     slot = None
     total = 0
@@ -255,7 +273,10 @@ async def ingest(request: Request) -> JSONResponse:
             # hand us headers and payload inside one network chunk, and the destination open is
             # blocking filesystem work that must not run on the event loop.
             for i in range(0, len(chunk), _SLICE):
-                parser.write(chunk[i : i + _SLICE])
+                try:
+                    parser.write(chunk[i : i + _SLICE])
+                except (FormParserError, ValueError):
+                    raise _malformed_body() from None
                 if st.saw_file and st.dest is None:
                     # Blocking filesystem work on the panel's OWN pool under its admission slot,
                     # the same rule every other filesystem call in this surface follows.
@@ -295,7 +316,15 @@ async def ingest(request: Request) -> JSONResponse:
                 if st.pending:
                     data, st.pending = b"".join(st.pending), []
                     await loop.run_in_executor(files.executor(), _write_chunk, st.dest, data)
-        parser.finalize()
+        try:
+            parser.finalize()
+        except (FormParserError, ValueError):
+            raise _malformed_body() from None
+        # `finalize()` is a no-op in the pinned parser: the only proof a message ENDED is that
+        # the closing boundary took it to END. Without this check a body missing its final
+        # boundary published the partial file with a 200 (measured under #1944).
+        if parser.state is not MultipartState.END:
+            raise _malformed_body()
         if st.pending and st.dest is not None:
             data, st.pending = b"".join(st.pending), []
             await loop.run_in_executor(files.executor(), _write_chunk, st.dest, data)

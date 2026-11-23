@@ -57,7 +57,7 @@ event loop.
 | `GET /api/files/capabilities` | `{ok, reason}` — whether this platform supports the panel's containment checks. The panel disables itself with the reason when it does not. |
 | `POST /api/files/write` | Save an edited text file in place. A refusal the viewer must act on (changed on disk, open in another process) is a 409 carrying its details. |
 | `POST /api/files/upload/batch` `{files:[{relpath,size}]}` | Reserve an upload batch from a manifest, refusing an over-limit drop (500 files, 250 MiB, 25 MiB per file) before a byte moves → `{batch_id, …}`. |
-| `POST /api/files/upload` | One file, as multipart with the `dir`, `relpath`, `on_collision` (`fail` · `keep_both` · `replace`) and optional `batch_id` fields **before** the file part. Counted as the bytes arrive; a name clash on the default `fail` is a 409. |
+| `POST /api/files/upload` | One file, as multipart with the `dir`, `relpath`, `on_collision` (`fail` · `keep_both` · `replace`) and optional `batch_id` fields **before** the file part. Counted as the bytes arrive; a name clash on the default `fail` is a 409; malformed multipart framing (including a missing final boundary) is a 400 and publishes nothing. |
 | `POST /api/files/upload/skip` `{batch_id, relpath}` | Record the operator's **Skip** for a name clash, so the batch can settle. |
 | `GET /api/git/branches` | Local and remote-tracking branches, for the branch menu. |
 | `GET /api/git/push-target?path=&remote=` | The push preflight: which remote the current branch would push to, decided server-side (upstream → `remote.pushDefault` → sole remote), plus the `expect` token a push must send back. An ambiguous or impossible push is `ok:false` with the reason and the candidate remotes, not an error. Changes nothing. |
