@@ -98,6 +98,9 @@ MAX_SENDS_PER_TURN = 10
 #: confirmed). They keep the slot they took; every other refusal wrote nothing and gives it back.
 UNSETTLED_REFUSALS = frozenset({"uncertain"})
 SCREEN_TAIL_MAX = 4_000
+#: `untrusted_screen` when the secret store cannot be read: content-free, so no raw tail leaks.
+#: The rest of the status still goes (#1580).
+SCREEN_UNAVAILABLE = "[screen unavailable: it could not be checked for secrets]"
 TOOL_RESULT_MAX = 12_000
 SUMMARY_MAX = 500
 REASON_MAX = 280
@@ -787,6 +790,16 @@ def _session_facts(key: str) -> tuple[str, str | None]:
     return screen[-SCREEN_TAIL_MAX:], held
 
 
+def _guarded_screen(screen: str) -> str:
+    """The bounded live tail through the store's text boundary (#1580): known secrets redacted, a
+    screen that still looks like a credential withheld whole. Fails closed — redaction unavailable
+    sends a content-free marker, never the raw tail. Blocking (it may read the secret store)."""
+    try:
+        return ask_store.guard_text(screen, SCREEN_TAIL_MAX)
+    except ask_store.StoreRefused:
+        return SCREEN_UNAVAILABLE
+
+
 async def _session_status(turn: _Turn, args: dict) -> tuple[dict, dict]:
     key = _known_key(turn, args)
     card = next((c for c in await turn.catalog() if c.get("id") == key), None)
@@ -796,6 +809,9 @@ async def _session_status(turn: _Turn, args: dict) -> tuple[dict, dict]:
             "not_available",
         )
     screen, held = await asyncio.to_thread(_session_facts, key)
+    # Untrusted data must pass the store boundary before the model sees it (#1580): the live tail
+    # is redacted for known secrets and withheld whole if it still looks like a credential.
+    screen = await asyncio.to_thread(_guarded_screen, screen)
     decision = await asyncio.to_thread(_live_decision, key)
     if held and missions.MISSION_ID_RE.match(held):
         turn.mission_ids.add(held)

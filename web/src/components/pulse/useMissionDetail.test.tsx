@@ -82,11 +82,13 @@ function turnDetail(turn: unknown) {
 
 // `waitFor` waits in REAL time, 1 s by default, while the hook's polls ride timers that advance with
 // real time (`shouldAdvanceTime`). Under a loaded CI host the poll → read → commit chain takes longer
-// than that, and three tests here failed as `waitFor` giving up rather than on a wrong value (#1001).
+// than that, and some tests here failed as `waitFor` giving up rather than on a wrong value (#1001).
 // The budget is raised for this file only; no assertion changes. The ENCLOSING test deadline is
 // raised with it — Vitest's default 5 s would otherwise cut every wait off before its 10 s (Hermes
-// 5267). This is wall-clock tolerance for a loaded host, not the deterministic sequencing #1001 asks
-// for.
+// 5267). The three VALUE-asserting tests (a failed settlement retry, the stale full-load debt, and
+// polling stopping after the settlement) do not use this: they install a manual clock and advance
+// every tick explicitly (`flushMount`), because a raised budget still lets real elapsed time fire
+// the next tick before the assertion (#1001).
 const WAIT_MS = 10_000;
 vi.setConfig({ testTimeout: 2 * WAIT_MS });
 const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
@@ -103,6 +105,20 @@ afterEach(() => {
   vi.clearAllMocks();
   configure({ asyncUtilTimeout: defaultAsyncTimeout });
 });
+
+/** Flush the mount's resolved mock reads WITHOUT moving the clock (#1001).
+ *
+ *  The value-asserting tests below install a manual clock (`vi.useFakeTimers()` with no
+ *  `shouldAdvanceTime`). Under a loaded runner, an auto-advancing clock can carry real elapsed
+ *  time past the next 150 s tick while a `waitFor` is merely checking a value, so a later read
+ *  lands between the advance and the assertion — the flake reported in #1001. Every mocked read in
+ *  these tests resolves immediately, so draining the microtask queue at the same instant installs
+ *  everything the mount issued and leaves the next tick where the test put it. */
+async function flushMount() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
 
 test("a PENDING objective list is re-read on its own fast cadence", async () => {
   vi.mocked(api.mission).mockResolvedValue(detail("pending") as never);
@@ -217,6 +233,9 @@ test("a poll in flight when `reload` runs cannot restore the objectives it fetch
 });
 
 test("polling stops only on a list read that STARTED after the settlement", async () => {
+  // A manual clock: the read ORDER this pins is fixed by the test's own advances, never by how
+  // long a loaded host takes (#1001).
+  vi.useFakeTimers();
   // #896 review 3, finding 1: fired in parallel, the objectives request can snapshot BEFORE the
   // producer's transaction while the mission request snapshots after it — so the hook sees `done`,
   // stops, and keeps an empty list for ever. Settled, and wrong.
@@ -237,11 +256,12 @@ test("polling stops only on a list read that STARTED after the settlement", asyn
   });
 
   const { result } = renderHook(() => useMissionDetail("msn_1"));
-  await waitFor(() => expect(api.missionObjectives).toHaveBeenCalled());
-  await vi.advanceTimersByTimeAsync(4_000);
-  await waitFor(() =>
-    expect(result.current.objectives).toEqual([{ key: "arrived" }]),
-  );
+  await flushMount();
+  expect(api.missionObjectives).toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4_000);
+  });
+  expect(result.current.objectives).toEqual([{ key: "arrived" }]);
 
   // Each tick reads the mission and THEN the objectives — never the other way round, and never
   // both at once.
@@ -414,6 +434,9 @@ test("a page issued before a reload cannot append onto the list that replaced it
 });
 
 test("a FAILED settlement read is retried on a later detail tick, not lost", async () => {
+  // Manual clock: each advance fires exactly the tick under test, so the retry cannot be paid by a
+  // real-time slip on a loaded host before the pre-retry assertion (#1001).
+  vi.useFakeTimers();
   // THE SLOW PATH. The fast poll already refuses to settle without a list and tries again next
   // tick — but it is bounded at 40 attempts (120s), and after that a settlement arrives on the
   // ordinary 150s detail tick, where `installMission` fetches the list once. `settles` is true
@@ -440,9 +463,8 @@ test("a FAILED settlement read is retried on a later detail tick, not lost", asy
   const { result } = renderHook(() => useMissionDetail("msn_1"));
   // A started request has not mounted the pending-state poll yet (#1016). Advancing
   // its whole budget before that render leaves it active during the later settlement.
-  await waitFor(() =>
-    expect(result.current.mission?.objectives_state).toBe("pending"),
-  );
+  await flushMount();
+  expect(result.current.mission?.objectives_state).toBe("pending");
 
   // Past the bounded fast poll, with the producer still working.
   const beforeFastPoll = vi.mocked(api.mission).mock.calls.length;
@@ -458,21 +480,19 @@ test("a FAILED settlement read is retried on a later detail tick, not lost", asy
   await act(async () => {
     await vi.advanceTimersByTimeAsync(150_000);
   });
-  // The state is the truth and is installed either way; the list is what is missing.
-  await waitFor(() =>
-    expect(result.current.mission?.objectives_state).toBe("done"),
-  );
+  // The state is the truth and is installed either way; the list is what is missing. Asserted
+  // straight after the tick — NOT through a `waitFor`, which under an auto-advancing clock could
+  // itself let the next detail tick pay the debt first.
+  expect(result.current.mission?.objectives_state).toBe("done");
   expect(result.current.objectives).toEqual([]);
 
   // The next ordinary tick pays the debt.
   await act(async () => {
     await vi.advanceTimersByTimeAsync(150_000);
   });
-  await waitFor(() =>
-    expect(result.current.objectives).toEqual([
-      { key: "pr_open", title: "A PR is open" },
-    ]),
-  );
+  expect(result.current.objectives).toEqual([
+    { key: "pr_open", title: "A PR is open" },
+  ]);
 });
 
 test("a settled list that ARRIVED is not asked for again on every tick", async () => {
@@ -514,6 +534,9 @@ test("a settled list that ARRIVED is not asked for again on every tick", async (
 });
 
 test("a STALE full-load response cannot clear the settled-list debt", async () => {
+  // Manual clock: the pre-release assertion must run at exactly the settlement tick, before any
+  // real-time slip can let a later tick pay the debt (#1001, the value failure at line 575).
+  vi.useFakeTimers();
   // The debt has to be owed FROM A TICKET, not as a bare boolean (#896 review 8, finding 1).
   //
   // The mount's objective read can snapshot BEFORE the producer settles and resolve long after
@@ -555,7 +578,8 @@ test("a STALE full-load response cannot clear the settled-list debt", async () =
   }) as never);
 
   const { result } = renderHook(() => useMissionDetail("msn_1"));
-  await waitFor(() => expect(api.mission).toHaveBeenCalled());
+  await flushMount();
+  expect(api.mission).toHaveBeenCalled();
 
   // Past the bounded fast poll, producer still working.
   await act(async () => {
@@ -569,9 +593,9 @@ test("a STALE full-load response cannot clear the settled-list debt", async () =
   await act(async () => {
     await vi.advanceTimersByTimeAsync(150_000);
   });
-  await waitFor(() =>
-    expect(result.current.mission?.objectives_state).toBe("done"),
-  );
+  // Asserted straight after the tick, with no `waitFor`: under an auto-advancing clock a loaded
+  // host could fire the NEXT detail tick before this line and pay the debt it is meant to owe.
+  expect(result.current.mission?.objectives_state).toBe("done");
   expect(result.current.objectives).toEqual([]);
 
   // ...and NOW the mount's pre-settlement read finally lands. It must not count as payment.
@@ -585,11 +609,9 @@ test("a STALE full-load response cannot clear the settled-list debt", async () =
   await act(async () => {
     await vi.advanceTimersByTimeAsync(150_000);
   });
-  await waitFor(() =>
-    expect(result.current.objectives).toEqual([
-      { key: "pr_open", title: "A PR is open" },
-    ]),
-  );
+  expect(result.current.objectives).toEqual([
+    { key: "pr_open", title: "A PR is open" },
+  ]);
 });
 
 test("a SLOW mission response cannot restore state a newer one replaced", async () => {

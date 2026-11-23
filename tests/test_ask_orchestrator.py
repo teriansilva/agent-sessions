@@ -950,8 +950,9 @@ def test_prose_with_ordinary_bars_and_tags_is_an_answer(app, ai):
 
 
 def test_a_screen_with_a_secret_and_a_credential_leaves_neither_on_disk(app, ai, found, screen):
-    """(a) The tool read both; the model saw the credential (the secret is redacted on the wire by
-    `_post_chat`); the conversation dir holds neither."""
+    """(a) The tool read both; the screen is withheld whole by the store boundary before the model
+    sees it (a credential can still look credential-shaped after known secrets are redacted); the
+    conversation dir holds neither and the status keeps its other facts."""
     template_secrets.register_typed([PLANTED])
     screen["screen"] = f"$ deploy --token {PLANTED}\n{CRED}\nok"
     script = ai(
@@ -962,8 +963,11 @@ def test_a_screen_with_a_secret_and_a_credential_leaves_neither_on_disk(app, ai,
     turn = app.ask(app.new(), "did the deploy finish?").json()["turn"]
     assert turn["status"] == "done"
     sent = json.dumps(script.bodies[2])
-    assert PLANTED not in sent  # the transport's own redaction
-    assert CRED in sent  # what the model was shown
+    assert PLANTED not in sent
+    assert CRED not in sent
+    status = json.loads(script.tool_results(2)[-1]["content"])
+    assert status["untrusted_screen"] == ask_store.WITHHELD
+    assert status["key"] == S1 and status["state"] == "idle"  # the screen refusal is one field
     on_disk = _dir_bytes()
     assert PLANTED.encode() not in on_disk
     assert CRED.encode() not in on_disk
@@ -972,7 +976,68 @@ def test_a_screen_with_a_secret_and_a_credential_leaves_neither_on_disk(app, ai,
     tools = [r for r in ask_store.read(next(iter(_cids()))) if r["type"] == "tool"]
     assert tools[-1]["name"] == "session_status"
     assert tools[-1]["meta"]["keys"] == [S1]
-    assert tools[-1]["meta"]["length"] > 0
+    assert tools[-1]["meta"]["length"] == len(ask_store.WITHHELD)
+
+
+def test_a_registered_secret_on_the_screen_is_redacted_before_the_model(app, ai, found, screen):
+    """A known secret is redacted in the tool output itself, before it becomes `untrusted_screen`;
+    the model never sees the value even if the transport's own redaction were not there."""
+    template_secrets.register_typed([PLANTED])
+    screen["screen"] = f"$ echo {PLANTED}\nall green"
+    script = ai(
+        call("find_sessions", {"query": "deploy"}),
+        call("session_status", {"key": S1}),
+        answer("It echoed."),
+    )
+    app.ask(app.new(), "what did it echo?")
+    status = json.loads(script.tool_results(2)[-1]["content"])
+    assert status["untrusted_screen"] == f"$ echo {template_secrets.REDACTED}\nall green"
+    # The transport redacts known secrets too; the tool output itself must already carry the marker
+    # (#1580), so the endpoint assertion above is not the only proof.
+    assert ask_orchestrator._guarded_screen(screen["screen"]) == status["untrusted_screen"]
+    assert PLANTED not in json.dumps(script.bodies[2])
+
+
+def test_an_ordinary_screen_reaches_the_model_unchanged(app, ai, found, screen):
+    """The boundary leaves a screen with no secret or credential shape alone."""
+    screen["screen"] = "$ make test\nall green"
+    script = ai(
+        call("find_sessions", {"query": "rebase"}),
+        call("session_status", {"key": S1}),
+        answer("idle"),
+    )
+    app.ask(app.new(), "how is the rebase?")
+    status = json.loads(script.tool_results(2)[-1]["content"])
+    assert status["untrusted_screen"] == "$ make test\nall green"
+
+
+def test_a_screen_whose_redaction_is_unavailable_sends_no_screen(
+    app, ai, found, screen, monkeypatch
+):
+    """Redaction unavailable: the screen field is a content-free unavailable marker and every other
+    status fact still reaches the model. The raw tail is never echoed in the field or metadata."""
+    screen["screen"] = "SECRET-STORE-UNAVAILABLE screen content"
+    real = ask_store.guard_text
+
+    def guard(value, cap, *, secrets=None):
+        if value == screen["screen"]:
+            raise ask_store.StoreRefused("the secret store is unreadable")
+        return real(value, cap, secrets=secrets)
+
+    monkeypatch.setattr(ask_store, "guard_text", guard)
+    script = ai(
+        call("find_sessions", {"query": "rebase"}),
+        call("session_status", {"key": S1}),
+        answer("I could not read its screen."),
+    )
+    app.ask(app.new(), "how is the rebase?")
+    status = json.loads(script.tool_results(2)[-1]["content"])
+    assert status["untrusted_screen"] == ask_orchestrator.SCREEN_UNAVAILABLE
+    assert status["key"] == S1 and status["state"] == "idle" and status["title"] == "api rebase"
+    sent = json.dumps(script.bodies[2])
+    assert "SECRET-STORE-UNAVAILABLE" not in sent
+    tools = [r for r in ask_store.read(next(iter(_cids()))) if r["type"] == "tool"]
+    assert tools[-1]["meta"]["length"] == len(ask_orchestrator.SCREEN_UNAVAILABLE)
 
 
 def _cids() -> list[str]:
