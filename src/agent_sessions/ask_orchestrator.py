@@ -479,6 +479,10 @@ class _Turn:
     keys: set[str] = field(default_factory=set)
     mission_ids: set[str] = field(default_factory=set)
     matches: dict[str, dict] = field(default_factory=dict)
+    #: The `matches` the answer SHOWS as session rows: what a find or a list the Commander asked
+    #: for returned (`show`), never what HQ looked up for its own work. The rest are stored
+    #: `hidden` — still this turn's keys, carried and titled, never a row under the answer.
+    shown: set[str] = field(default_factory=set)
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
     sends: int = 0
@@ -699,6 +703,7 @@ def _project_name(card: dict) -> str:
 
 async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
     query = _str_arg(args, "query", QUERY_MAX)
+    show = args.get("show") is True
 
     def on_event(ev: dict) -> None:
         if ev.get("type") == "progress":
@@ -725,6 +730,8 @@ async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
         turn.matches.setdefault(
             key, {"id": key, "title": str(m.get("title") or ""), "why": str(m.get("why") or "")}
         )
+        if show:
+            turn.shown.add(key)
         sessions.append(
             {
                 "key": key,
@@ -3128,6 +3135,8 @@ async def _list_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
         title = str(row.get("title") or "")[: pulse_chat.TITLE_MAX]
         turn.keys.add(key)
         turn.matches.setdefault(key, {"id": key, "title": title, "why": ""})
+        if args.get("show") is True:
+            turn.shown.add(key)
         project = row.get("project") if isinstance(row.get("project"), dict) else {}
         rows.append(
             {
@@ -3801,6 +3810,17 @@ _REF_PROP = {"item_ref": {"type": "string", "description": "a ref a connector to
 
 _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool returned"}}
 
+#: `find_sessions` / `list_sessions`: whether the sessions found show as rows under the answer.
+#: Unset, they are HQ's own lookup: usable this turn and the next, never a row (`_answer_matches`).
+_SHOW_PROP = {
+    "show": {
+        "type": "boolean",
+        "description": "true only when the Commander asked you to find or list sessions: the "
+        "results then show as rows under your answer. Leave it out when you look sessions up "
+        "for your own work.",
+    }
+}
+
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
@@ -3813,7 +3833,10 @@ TOOLS: dict[str, Tool] = {
                 "find_sessions",
                 "Search the operator's sessions and missions by topic. Returns matching session "
                 "keys and mission ids with why each matched. The only way to find 'the X session'.",
-                {"query": {"type": "string", "description": "what to look for, in words"}},
+                {
+                    "query": {"type": "string", "description": "what to look for, in words"},
+                    **_SHOW_PROP,
+                },
                 ["query"],
             ),
             _find_sessions,
@@ -4210,6 +4233,7 @@ TOOLS: dict[str, Tool] = {
                     "archived": {"type": "boolean"},
                     "working": {"type": "boolean"},
                     "offset": {"type": "integer"},
+                    **_SHOW_PROP,
                 },
                 [],
             ),
@@ -5657,6 +5681,7 @@ async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:
         turn.matches.setdefault(
             key, {"id": key, "title": str(m.get("title") or ""), "why": str(m.get("why") or "")}
         )
+        turn.shown.add(key)  # the router asked for the search: its matches ARE the answer
     for m in result.get("mission_matches") or []:
         mid = str(m.get("id") or "")
         turn.mission_matches.setdefault(
@@ -5676,9 +5701,18 @@ def _assistant(turn: _Turn, text: str) -> dict:
         "type": "assistant",
         "turn_id": turn.turn_id,
         "text": text,
-        "matches": list(turn.matches.values())[: ask_store.MATCHES_MAX],
+        "matches": _answer_matches(turn),
         "mission_matches": _mission_links(turn, text)[: ask_store.MATCHES_MAX],
     }
+
+
+def _answer_matches(turn: _Turn) -> list[dict]:
+    """The sessions an answer stores: the ones it SHOWS first, then the ones HQ only looked up,
+    marked ``hidden``. A hidden match is never a row under the answer, but it is still one of
+    this turn's keys, so the next turn may use it (`_named_before`) and a step names it."""
+    shown = [m for k, m in turn.matches.items() if k in turn.shown]
+    hidden = [{**m, "hidden": True} for k, m in turn.matches.items() if k not in turn.shown]
+    return (shown + hidden)[: ask_store.MATCHES_MAX]
 
 
 #: A listed mission's title shorter than this is never matched in an answer's text: too likely

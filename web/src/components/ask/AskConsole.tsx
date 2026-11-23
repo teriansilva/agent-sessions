@@ -166,6 +166,8 @@ export interface AskTurn {
   /** The sessions the answer is ABOUT, each with the reason it matched. Without these an answer
    *  naming a session gives the operator no way to reach it. */
   matches: AskStoredMatch[];
+  /** Sessions HQ only looked up for its own work: never rows, only titles for its steps. */
+  lookedUp?: AskStoredMatch[];
   /** The missions the answer is about (#1069), each with why it matched. */
   missions: AskStoredMissionMatch[];
   /** The step the turn is on while it runs (#1171); `null` once it has settled. */
@@ -249,7 +251,10 @@ function fromServer(t: AskConversationTurn): AskTurn {
       t.status === "failed"
         ? t.detail || "That didn't work."
         : null,
-    matches: t.matches ?? [],
+    // A session HQ looked up for itself is not what the answer is about: only the ones the
+    // Commander asked it to find are rows (`hidden` is the server's word for the rest).
+    matches: (t.matches ?? []).filter((m) => m.hidden !== true),
+    lookedUp: (t.matches ?? []).filter((m) => m.hidden === true),
     missions: t.mission_matches ?? [],
     // A running turn read back (a reload, another device) is on the step the SERVER says.
     step: t.steps?.live ? { step: "tool", tool: t.steps.live.tool } : null,
@@ -1586,7 +1591,7 @@ export function AskConsole({
   const titles = useMemo(() => {
     const out = new Map<string, string>();
     for (const t of turns) {
-      for (const m of t.matches) if (m.title) out.set(m.id, m.title);
+      for (const m of [...t.matches, ...(t.lookedUp ?? [])]) if (m.title) out.set(m.id, m.title);
       for (const m of t.missions) if (m.title) out.set(m.id, m.title);
       for (const p of t.proposals) if (p.kind === "nudge" && p.title) out.set(p.key, p.title);
     }
@@ -1747,6 +1752,22 @@ export function AskConsole({
       void load(cid);
     }
   };
+  const stepsDrawnAt = (turnId: string) => stepLists.some((l) => l.drawn_at_turn === turnId);
+  const questionOf = (t: AskTurn) =>
+    t.ask ? (
+      <QuestionCard
+        ask={t.ask}
+        disabled={busy || !configured}
+        onAnswer={(r) =>
+          "option" in r
+            ? void ask(t.ask!.options[r.option], [], {
+                answers: t.ask!.question_id,
+                option: r.option,
+              })
+            : void ask(r.text, [], { answers: t.ask!.question_id })
+        }
+      />
+    ) : null;
   const stepListsAt = (turnId: string) =>
     stepLists.map((l) =>
       l.drawn_at_turn === turnId ? (
@@ -2184,20 +2205,7 @@ export function AskConsole({
                   ) : null}
                   {/* Cards are the server's records, not part of the answer text: a turn that
                       staged a proposal and then failed still shows the live decision. */}
-                  {t.ask ? (
-                    <QuestionCard
-                      ask={t.ask}
-                      disabled={busy || !configured}
-                      onAnswer={(r) =>
-                        "option" in r
-                          ? void ask(t.ask!.options[r.option], [], {
-                              answers: t.ask!.question_id,
-                              option: r.option,
-                            })
-                          : void ask(r.text, [], { answers: t.ask!.question_id })
-                      }
-                    />
-                  ) : null}
+                  {stepsDrawnAt(t.id) ? null : questionOf(t)}
                   {(() => {
                     const shownCards = t.proposals.filter((p) => !hiddenCard(p));
                     return shownCards.map((p) => renderCard(p, shownCards));
@@ -2205,6 +2213,9 @@ export function AskConsole({
                 </article>
                 )}
                 {stepListsAt(t.id)}
+                {/* A turn that drew the steps asks its question AFTER them: the plan first, then
+                    what HQ needs from the Commander, last, right above the composer. */}
+                {stepsDrawnAt(t.id) ? questionOf(t) : null}
               </div>
             ))}
             <FollowingBlock

@@ -1473,7 +1473,10 @@ def test_a_cut_stream_settles_and_a_same_id_retry_does_not_run_the_model_again(a
 
 
 def test_the_stream_shows_progress_then_exactly_one_turn_line(app, ai, found):
-    ai(call("find_sessions", {"query": "rebase"}), answer("It is the api rebase session."))
+    ai(
+        call("find_sessions", {"query": "rebase", "show": True}),
+        answer("It is the api rebase session."),
+    )
     cid = app.new()
     r = app.c.post(
         f"/api/ask/conversations/{cid}/message/stream",
@@ -1488,6 +1491,77 @@ def test_the_stream_shows_progress_then_exactly_one_turn_line(app, ai, found):
     turn = lines[-1]["turn"]
     assert turn["matches"] == [{"id": S1, "title": "api rebase", "why": "rebase"}]
     assert turn["mission_matches"][0]["id"] == M1
+
+
+# ---- session rows: only what the Commander asked to find -----------------------------------
+
+
+def test_a_find_hq_runs_for_its_own_work_is_no_row_under_the_answer(app, ai, found):
+    """HQ looked the session up while working on something else: the answer stores it `hidden`,
+    so it is no "Open / Open in map" row, yet the next turn may still use its key."""
+    ai(
+        call("find_sessions", {"query": "listing overview"}),
+        answer("Which folder should it run in?"),
+    )
+    cid = app.new()
+    turn = app.ask(cid, "set up a fixed session for the listing overview").json()["turn"]
+    assert turn["matches"] == [{"id": S1, "title": "api rebase", "why": "rebase", "hidden": True}]
+    stored = [r for r in ask_store.read(cid) if r.get("type") == "assistant"]
+    assert stored[-1]["matches"][0]["hidden"] is True
+    # Still one of this conversation's sessions: carried into the next turn, as before.
+    assert ask_orchestrator._named_before(ask_store.read(cid), "next") == [S1]
+
+
+def test_a_find_the_commander_asked_for_is_shown(app, ai, found):
+    ai(call("find_sessions", {"query": "rebase", "show": True}), answer("The api rebase one."))
+    turn = app.ask(app.new(), "which session was the rebase?").json()["turn"]
+    assert turn["matches"] == [{"id": S1, "title": "api rebase", "why": "rebase"}]
+
+
+@pytest.mark.parametrize("show", ["true", 1, None])
+def test_only_a_boolean_true_shows_the_rows(app, ai, found, show):
+    ai(call("find_sessions", {"query": "rebase", "show": show}), answer("ok"))
+    turn = app.ask(app.new(), "which session was the rebase?").json()["turn"]
+    assert [m.get("hidden") for m in turn["matches"]] == [True]
+
+
+def test_shown_rows_come_before_looked_up_ones_under_the_cap():
+    turn = ask_orchestrator._Turn(
+        cid="c", turn_id="t", question="q", working_keys=set(), progress=lambda _ev: None
+    )
+    keys = [f"claude:00000000-0000-4000-8000-{i:012d}" for i in range(12)]
+    for k in keys:
+        turn.matches[k] = {"id": k, "title": k[-2:], "why": ""}
+    turn.shown.add(keys[-1])
+    out = ask_orchestrator._answer_matches(turn)
+    assert len(out) == ask_store.MATCHES_MAX
+    assert out[0] == {"id": keys[-1], "title": keys[-1][-2:], "why": ""}
+    assert all(m["hidden"] is True for m in out[1:])
+
+
+def test_the_store_keeps_hidden_only_as_a_true_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_ASK_DIR", str(tmp_path / "ask"))
+    cid = ask_store.create()
+    tid = str(uuid.uuid4())
+    ask_store.append(cid, {"type": "user", "turn_id": tid, "text": "q", "qd": QD})
+    ask_store.append(
+        cid,
+        {
+            "type": "assistant",
+            "turn_id": tid,
+            "text": "a",
+            "matches": [
+                {"id": S1, "title": "a", "why": "", "hidden": True},
+                {"id": S2, "title": "b", "why": "", "hidden": "yes"},
+            ],
+            "mission_matches": [],
+        },
+    )
+    rec = [r for r in ask_store.read(cid) if r["type"] == "assistant"][0]
+    assert rec["matches"] == [
+        {"id": S1, "title": "a", "why": "", "hidden": True},
+        {"id": S2, "title": "b", "why": ""},
+    ]
 
 
 def test_two_different_withheld_questions_cannot_share_a_turn_id(app, ai):

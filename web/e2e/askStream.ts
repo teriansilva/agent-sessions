@@ -19,7 +19,7 @@ export interface FakeTurn {
   answer: string | null;
   detail: string | null;
   code: string | null;
-  matches: { id: string; title: string; why: string }[];
+  matches: { id: string; title: string; why: string; hidden?: boolean }[];
   mission_matches: { id: string; title: string; state: string; why: string }[];
   tools: { name: string; outcome: string }[];
   ask?: {
@@ -190,11 +190,12 @@ export function turnOf(
     answer: String(result.answer ?? ""),
     detail: null,
     code: null,
-    // Only what the store keeps: key, title and why.
+    // Only what the store keeps: key, title and why, and `hidden` on a session HQ only looked up.
     matches: matches.map((m) => ({
       id: String(m.id),
       title: String(m.title ?? ""),
       why: String(m.why ?? ""),
+      ...(m.hidden === true ? { hidden: true } : {}),
     })),
     mission_matches: missions.map((m) => ({
       id: String(m.id),

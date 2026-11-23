@@ -607,6 +607,9 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                     "id": m["id"],
                     "title": text(m.get("title"), TITLE_MAX),
                     "why": text(m.get("why"), WHY_MAX),
+                    # A session HQ only looked up (not one the Commander asked to find): kept
+                    # for the next turn and for titles, never shown as a row (`_answer_matches`).
+                    **({"hidden": True} if m.get("hidden") is True else {}),
                 }
             )
         out["matches"] = matches

@@ -1048,6 +1048,9 @@ export interface AskStoredMatch {
   id: string;
   title: string;
   why: string;
+  /** A session HQ only looked up for its own work: never a row under the answer, still a title
+   *  a step can name. Absent on a row the Commander asked for, and on every older record. */
+  hidden?: boolean;
 }
 
 export interface AskStoredMissionMatch {

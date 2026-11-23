@@ -494,6 +494,17 @@ def test_list_sessions_is_the_sidebar_list_and_never_a_path(live, ai, fake_jsonl
     assert all(r["archived"] is False for r in rows)
 
 
+@pytest.mark.parametrize("show", [True, False])
+def test_list_sessions_rows_show_only_when_asked_for(live, ai, fake_jsonl, show):
+    """A list the Commander asked for is rows under the answer; one HQ read for its own work is
+    stored `hidden`: no rows, and still this turn's keys."""
+    cid, _script = _listed(live, ai, {"show": True} if show else {})
+    turn = live.c.get(f"/api/ask/conversations/{cid}").json()["turns"][-1]
+    keys = {m["id"] for m in turn["matches"]}
+    assert {S_A, S_B} <= keys
+    assert all(m.get("hidden") is (None if show else True) for m in turn["matches"])
+
+
 def test_list_sessions_archived_lists_the_archive(live, ai, fake_jsonl):
     _cid, script = _listed(live, ai, {"archived": True})
     rows = json.loads(script.tool_results(1)[0]["content"])["sessions"]
