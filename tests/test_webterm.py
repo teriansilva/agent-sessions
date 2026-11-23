@@ -3023,3 +3023,158 @@ def test_webterm_child_never_inherits_the_apps_own_secrets(tmp_path, monkeypatch
         assert name not in child_env, f"{name} reached the interactive agent"
     assert child_env["ANTHROPIC_API_KEY"] == "vendor-key-not-ours"
     assert "TERM" in child_env  # the terminal variables are not ours to scrub
+
+
+# --- The pty master's fd number outlives every user (2026-11-23 missions.db corruption) -------
+
+
+def test_input_held_behind_the_repair_never_lands_on_a_reused_fd(tmp_path, monkeypatch):
+    """A viewer leaving while the #805 repair holds its input must not write into another file.
+
+    Production incident: a codex viewer attached and left within 10 s. The browser's answers to
+    codex's cursor-position queries (``ESC[1;1R``…) were held behind the repair. Teardown closed
+    the pty master BEFORE gathering the cancelled tasks, and the replay's ``finally`` then wrote
+    the held bytes to the closed fd number, which a missions-store thread had just been handed
+    by ``open()``. They overwrote the SQLite header and every mission read failed from then on.
+
+    The proxy below reproduces that reuse exactly: the moment the master number is closed it is
+    pointed at a sentinel file. The held bytes must reach the agent's pty, never the sentinel.
+    """
+    real_os = os
+    sentinel = tmp_path / "reused-by-another-thread.db"
+    state: dict = {"master": None, "closed": False, "pty_writes": []}
+
+    class _ReusingOs:
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+        def openpty(self):
+            master, slave = real_os.openpty()
+            state["master"] = master
+            return master, slave
+
+        def write(self, fd, data):
+            if fd == state["master"] and not state["closed"]:
+                state["pty_writes"].append(bytes(data))
+            return real_os.write(fd, data)
+
+        def close(self, fd):
+            real_os.close(fd)
+            if fd == state["master"] and not state["closed"]:
+                state["closed"] = True
+                # What any other thread's open() may get at this instant: the same number.
+                # open() hands out the lowest free number, usually this one already; dup2 makes
+                # the reuse certain rather than likely.
+                other = real_os.open(sentinel, real_os.O_RDWR | real_os.O_CREAT, 0o600)
+                if other != fd:
+                    real_os.dup2(other, fd)
+                    real_os.close(other)
+                state["reused"] = fd
+
+    async def repair_until_the_viewer_leaves(_key):
+        await asyncio.sleep(3600)  # still probing when teardown cancels it
+
+    monkeypatch.setattr(webterm, "os", _ReusingOs())
+    monkeypatch.setattr(webterm, "_repair_tty", repair_until_the_viewer_leaves)
+    monkeypatch.setattr(webterm.tty_health, "agent_input", lambda key: None)
+    replies = ("\x1b[1;1R", "\x1b[19;3R", "\x1b[18;3R")
+    frames = [{"text": json.dumps({"t": "i", "d": d})} for d in replies]
+    argv, _out = _timed_reader(tmp_path)
+    try:
+        asyncio.run(
+            webterm.run(
+                _FramesThenLinger(frames, linger_s=0.2),
+                argv,
+                cwd=str(tmp_path),
+                buf_key="codex:11111111-2222-3333-4444-555555555555",
+            )
+        )
+    finally:
+        if state.get("reused") is not None:
+            with contextlib.suppress(OSError):
+                real_os.close(state["reused"])
+    assert state["closed"], "teardown never released the pty master"
+    assert sentinel.read_bytes() == b"", "held input was written into a file that reused the fd"
+    assert b"".join(state["pty_writes"]) == "".join(replies).encode()
+
+
+def test_a_retired_pty_fd_closes_only_after_its_last_user():
+    """A pump thread between its check and its syscall must still find OUR file there."""
+    master, slave = os.openpty()
+    try:
+        lease = webterm._PtyFd(master)
+        with lease.use() as fd:
+            lease.retire()  # teardown runs while this user is mid-operation
+            assert os.isatty(fd)  # still the pty, not closed under the user
+            with pytest.raises(OSError), lease.use():
+                pass  # nobody new gets in once retired
+        with pytest.raises(OSError):
+            os.fstat(master)  # the last user out closed it
+        assert webterm._read_via(lease) == b""  # a late read is EOF, never another file
+        lease.retire()  # idempotent
+    finally:
+        os.close(slave)
+
+
+_RAW_NON_READER = """
+import os, sys, time, tty
+tty.setraw(0)
+with open(sys.argv[1] + ".tmp", "w") as f:
+    f.write(str(os.getpid()))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+os.write(1, b"READY")
+time.sleep(60)  # never reads: the pty's input queue fills and stays full
+"""
+
+
+def test_a_held_flush_into_a_full_pty_never_stalls_the_loop_or_teardown(tmp_path, monkeypatch):
+    """#2317 review P1: teardown gathers BEFORE releasing the master, so the cancelled replay's
+    flush hits a live pty. A raw-mode client that stopped reading must cost the held input,
+    never a blocked event loop (every session shares it) or a teardown that cannot reach
+    terminate_then_kill."""
+    import signal
+    import threading
+
+    async def repair_until_the_viewer_leaves(_key):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(webterm, "_repair_tty", repair_until_the_viewer_leaves)
+    monkeypatch.setattr(webterm.tty_health, "agent_input", lambda key: None)
+    script = tmp_path / "non_reader.py"
+    script.write_text(_RAW_NON_READER)
+    pidfile = tmp_path / "agent.pid"
+    frames = [{"text": json.dumps({"t": "i", "d": "x" * (128 * 1024)})}]
+    ticks: list[float] = []
+    done: dict = {}
+
+    async def scenario():
+        async def heartbeat():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.05)
+
+        beat = asyncio.create_task(heartbeat())
+        try:
+            await webterm.run(
+                _FramesThenLinger(frames, linger_s=0.2),
+                [sys.executable, str(script), str(pidfile)],
+                cwd=str(tmp_path),
+                buf_key="codex:11111111-2222-3333-4444-555555555555",
+            )
+            done["at"] = time.monotonic()
+        finally:
+            beat.cancel()
+
+    runner = threading.Thread(target=lambda: asyncio.run(scenario()), daemon=True)
+    started = time.monotonic()
+    runner.start()
+    runner.join(15)
+    stuck = runner.is_alive()
+    if stuck and pidfile.exists():  # unblock the wedged write so the thread can exit
+        with contextlib.suppress(ProcessLookupError, ValueError):
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        runner.join(5)
+    assert not stuck, "teardown never finished: the held flush blocked on a full pty"
+    assert done["at"] - started < 12
+    gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+    assert max(gaps) < 1.0, f"the event loop stalled for {max(gaps):.1f}s"

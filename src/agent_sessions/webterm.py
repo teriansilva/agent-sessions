@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import fcntl
 import json
 import logging
@@ -391,6 +392,65 @@ class _InputGate:
         self._held = False
         queued, self._queue = self._queue, []
         return queued
+
+
+class _PtyFd:
+    """The bridge's pty master fd NUMBER, closed only once nothing can still use it.
+
+    A closed fd number is handed to the very next ``open()`` in ANY thread: a SQLite store, a
+    socket, a log. A late ``write(number)`` then succeeds into that file at its current offset.
+    That is how a viewer leaving a codex session overwrote ``missions.db``'s header with the
+    browser's cursor-position replies (2026-11-23). So the number is never closed while a user
+    may still hold it: :meth:`retire` refuses new users, and whoever leaves last closes it, which
+    covers a pump thread that was between its check and its ``read()`` when teardown ran.
+    """
+
+    __slots__ = ("_fd", "_lock", "_retired", "_users")
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._lock = threading.Lock()
+        self._users = 0
+        self._retired = False
+
+    @contextlib.contextmanager
+    def use(self):
+        """Yield the fd for one bounded operation; ``OSError(EBADF)`` once retired."""
+        with self._lock:
+            if self._retired:
+                raise OSError(errno.EBADF, "the pty master was released")
+            self._users += 1
+        try:
+            yield self._fd
+        finally:
+            with self._lock:
+                self._users -= 1
+                last = self._retired and self._users == 0
+            if last:
+                self._close()
+
+    def retire(self) -> None:
+        """Refuse new users; close now, or when the last current user leaves. Idempotent."""
+        with self._lock:
+            if self._retired:
+                return
+            self._retired = True
+            last = self._users == 0
+        if last:
+            self._close()
+
+    def _close(self) -> None:
+        with contextlib.suppress(OSError):
+            os.close(self._fd)
+
+
+def _read_via(pty_fd: _PtyFd) -> bytes:
+    """`_read` through the lease: a retired master reads as EOF, never as another file."""
+    try:
+        with pty_fd.use() as fd:
+            return _read(fd)
+    except OSError:
+        return b""
 
 
 async def _repair_tty(buf_key: str | None) -> None:
@@ -805,6 +865,27 @@ async def run(
     except OSError:
         client_pts = None
     os.close(slave)  # parent keeps only the master end
+    # Every use of `master` that can run off the event loop or after teardown goes through this
+    # lease; teardown retires it instead of closing the number outright (see `_PtyFd`).
+    pty_fd = _PtyFd(master)
+    # Set once teardown starts cancelling the pumps: from then on every write is bounded.
+    releasing = {"on": False}
+
+    def _write_at_teardown(data: bytes) -> None:
+        # The cancelled replay and seed drain flush held input here while gather() waits on
+        # them, on the event loop that serves every session (#2317 review). The master is
+        # non-blocking by now and the lock is only tried, so a dtach client that stopped reading
+        # (or a seed worker holding the lock) costs the departed viewer's input, never a stalled
+        # loop or a teardown that can't reach terminate_then_kill. What the pty won't take now
+        # is dropped.
+        if not write_lock.acquire(blocking=False):
+            return
+        try:
+            with contextlib.suppress(OSError), pty_fd.use() as fd:
+                os.write(fd, data)
+        finally:
+            write_lock.release()
+
     loop = asyncio.get_event_loop()
     # Every writer to this master is serialized (#701 round 4 P1): pump_in and the seed
     # delivery worker share this lock, so delivery's under-lock writability check can't be
@@ -1131,8 +1212,11 @@ async def run(
         _write_now(data)
 
     def _write_now(data: bytes) -> None:
-        with contextlib.suppress(OSError), write_lock:
-            os.write(master, data)
+        if releasing["on"]:
+            _write_at_teardown(data)
+            return
+        with contextlib.suppress(OSError), write_lock, pty_fd.use() as fd:
+            os.write(fd, data)
         last_input["at"] = time.monotonic()
         if data.startswith(_PASTE_START) and buf_key:
             paste_intake["pending"] = True
@@ -1169,7 +1253,7 @@ async def run(
     async def pump_out() -> None:
         timings = launchtiming.current() if launch_provider is not None else None
         while True:
-            data = await loop.run_in_executor(None, _read, master)
+            data = await loop.run_in_executor(None, _read_via, pty_fd)
             if not data:
                 break
             if timings is not None:
@@ -1433,6 +1517,10 @@ async def run(
         # than a master that is about to be closed under it.
         if input_writer_token is not None and buf_key:
             session_input.unregister_writer(buf_key, input_writer_token)
+        # From here every flush into the pty is bounded (see `_write_at_teardown`).
+        releasing["on"] = True
+        with contextlib.suppress(OSError), pty_fd.use() as fd:
+            os.set_blocking(fd, False)
         for t in tasks:
             t.cancel()
         nudge_task.cancel()  # short-lived; cancel in case we tore down mid-nudge
@@ -1444,20 +1532,24 @@ async def run(
         if stop_waiter is not None:
             stop_waiter.cancel()
 
-        # Re-ordered cleanup (#398): close the master BEFORE gathering tasks.
-        # pump_out is blocked on a read(master) in an executor; it won't check
-        # its cancellation until that read returns. Closing the master here
-        # makes the read return immediately (b''), letting the task finish
-        # and be gathered without hanging for 30+ minutes on a silent session.
-        with contextlib.suppress(OSError):
-            os.close(master)
-
-        with contextlib.suppress(Exception):
-            renudge_tasks = [renudge["task"]] if renudge["task"] is not None else []
-            seed_tasks = [seed_task] if seed_task is not None else []
-            await asyncio.gather(
-                *tasks, nudge_task, *renudge_tasks, *seed_tasks, return_exceptions=True
-            )
+        # Gather the cancelled tasks BEFORE releasing the master, never after. Their cleanup
+        # still writes: the #805 replay and the seed-queue drain flush held owner input in their
+        # `finally`. Released first (the old #398 order), those writes went to a closed fd
+        # NUMBER, which the next open() anywhere had already been handed: the 2026-11-23
+        # missions.db header was overwritten with a departing viewer's cursor-position replies.
+        # Gathering cannot hang on pump_out: cancelling its executor await completes the task at
+        # once, while the blocked read() keeps its own reference to the pty and returns EIO when
+        # the dtach client is terminated below. Closing the fd never woke that read anyway.
+        # The lease closes the number when that read returns, or now if nothing holds it.
+        try:
+            with contextlib.suppress(Exception):
+                renudge_tasks = [renudge["task"]] if renudge["task"] is not None else []
+                seed_tasks = [seed_task] if seed_task is not None else []
+                await asyncio.gather(
+                    *tasks, nudge_task, *renudge_tasks, *seed_tasks, return_exceptions=True
+                )
+        finally:
+            pty_fd.retire()
         if stop_waiter is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter
