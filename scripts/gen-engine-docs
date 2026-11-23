@@ -107,8 +107,8 @@ def engine_table() -> str:
         if m.store is None:
             store = "—"
         else:
-            # `store.read_only` is not rendered: no consumer reads it yet, and claude's archive
-            # moves JSONL files under its store — the guide states the write rule in prose.
+            # `store.read_only` is not rendered here: it declares BattleLab's access and is
+            # enforced by the manifest validator (#1182); the guide states the write rule in prose.
             store = _code(m.store.root)
             overrides = [m.store.env_override] if m.store.env_override else []
             overrides += [m.store.path_env[k] for k in sorted(m.store.path_env)]

@@ -101,12 +101,15 @@ const REJECT_REASON: Record<number, string> = {
   4500: "couldn’t start this session",
 };
 
-/** A model refusal (4422, #1189) says WHICH model and why, and a stale default (4412, #1728)
- *  names the new default, so the server's own reason is shown — as text, trimmed and bounded.
+/** A model refusal (4422, #1189) says WHICH model and why, a stale default (4412, #1728)
+ *  names the new default, and a launch refusal (4500, #2088) names its cause (the AF_UNIX
+ *  socket-path limit), so the server's own reason is shown — as text, trimmed and bounded.
  *  Every other code keeps its fixed wording. */
 export function rejectReason(code: number, serverReason?: string): string {
   const fixed = REJECT_REASON[code] ?? "unavailable";
-  if (code !== 4422 && code !== 4412 && code !== CLOSE_SESSION_LIMIT) return fixed;
+  if (code !== 4422 && code !== 4412 && code !== CLOSE_SESSION_LIMIT && code !== 4500) {
+    return fixed;
+  }
   const r = typeof serverReason === "string" ? serverReason.trim().slice(0, 160) : "";
   return r || fixed;
 }

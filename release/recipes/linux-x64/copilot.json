@@ -94,6 +94,7 @@
                 "archive": "session-state-archive",
                 "sessions": "session-state"
             },
+            "read_only": false,
             "root": "~/.copilot"
         },
         "terminal": {

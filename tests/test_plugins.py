@@ -1612,6 +1612,75 @@ def test_the_chat_kinds_are_refused_on_a_pty_manifest(mutate, field):
         parse(d)
 
 
+# --- #1182: `store.read_only` declares BattleLab's access, and is enforced ----------------------
+
+
+def _writing_doc(layout: str, *, read_only: bool | None = None) -> dict:
+    """A terminal manifest on a layout BattleLab writes, with `read_only` omitted by default."""
+    d = doc()
+    d["store"]["layout"] = layout
+    d["store"].pop("read_only", None)
+    if read_only is not None:
+        d["store"]["read_only"] = read_only
+    return d
+
+
+@pytest.mark.parametrize("layout", ["claude-projects", "shell-records", "copilot-sessions"])
+@pytest.mark.parametrize("read_only", [None, True], ids=["omitted", "true"])
+def test_a_store_battlelab_writes_cannot_declare_read_only(layout, read_only):
+    """The manifest default is `true`; a written layout may not keep it, and an explicit `true`
+    is refused the same way. Keyed by layout, so a plugin inheriting the kind inherits the rule."""
+    d = _writing_doc(layout, read_only=read_only)
+    with pytest.raises(ManifestError) as exc:
+        parse(d)
+    assert exc.value.field == "store.read_only"
+
+
+@pytest.mark.parametrize("layout", ["claude-projects", "shell-records", "copilot-sessions"])
+def test_a_store_battlelab_writes_may_declare_read_write(layout):
+    m = parse(_writing_doc(layout, read_only=False))
+    assert m.store is not None and m.store.read_only is False
+
+
+def test_a_store_with_admitted_vacuum_maintenance_cannot_declare_read_only():
+    d = doc()
+    d["store"].update(layout="opencode-sqlite", paths={"db": "opencode.db"})
+    d["maintenance"] = ["sqlite-vacuum"]
+    with pytest.raises(ManifestError) as exc:
+        parse(d)
+    assert exc.value.field == "store.read_only"
+    d["store"]["read_only"] = False
+    assert parse(d).store.read_only is False
+
+
+def test_a_store_battlelab_only_reads_may_stay_read_only():
+    """A sidecar-only archive (gemini here) never touches the store, so the default stays true."""
+    d = doc()
+    assert "read_only" not in d["store"]
+    m = parse(d)
+    assert m.store is not None and m.store.read_only is True
+
+
+@pytest.mark.parametrize(
+    "engine,written",
+    [
+        ("claude", True),
+        ("shell", True),
+        ("copilot", True),
+        ("opencode", True),  # admitted maintenance compaction writes its database
+        ("opencode2", False),  # no maintenance: read-only
+        ("codex", False),
+        ("gemini", False),
+        ("kimi", False),
+        ("antigravity", False),
+    ],
+)
+def test_every_first_party_store_declares_its_real_access(engine, written):
+    m = parse(doc(engine))
+    assert m.store is not None
+    assert m.store.read_only is (not written), engine
+
+
 def test_pty_manifests_still_require_binary_and_launch():
     for block in ("binary", "launch"):
         d = doc()

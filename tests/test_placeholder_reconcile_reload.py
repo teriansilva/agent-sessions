@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,8 +20,10 @@ from agent_sessions import (
     prefs,
     project_dirs,
     ptybridge,
+    relaunch,
     runtime_cleanup,
     scanner,
+    scopedspawn,
     sessionlock,
     sessions,
     webterm,
@@ -561,3 +564,193 @@ def test_ws_placeholder_disconnect_under_unknown_liveness_or_second_subscriber_k
                     break
         task_after = placeholder_launch._TASKS.get(ph_key)
         assert task_after is task and not task_after.done() and not cancelled["flag"]
+
+
+# ---- #2087: a reconnecting NEW=1 tab must not relaunch a fresh session -------------
+
+
+@pytest.mark.parametrize(("engine_id", "real_id"), list(ADOPT_ENGINES.items()))
+def test_ws_new1_placeholder_with_recorded_adoption_resumes_the_adopted_id(
+    engine_id, real_id, tmp_home, auth_cfg, monkeypatch
+):
+    """#2087: a still-open tab reconnects with its frozen ``new-<uuid>`` key AND ``new=1``
+    after the agent exited. The placeholder already has a recorded adoption, so the server must
+    resolve it forward to the adopted id and RESUME it — never launch a fresh blank session.
+
+    The client cannot be trusted to drop ``new=1`` (old/stale tabs keep it), so this is the
+    server-side backstop. Checked for every ``adopt`` engine."""
+    cwd = str(tmp_home / "claude" / "proj")
+    Path(cwd).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [cwd])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+
+    ph_key = f"{engine_id}:{_PLACEHOLDER}"
+    real_key = f"{engine_id}:{real_id}"
+    fake_session = scanner.Session(
+        engine=engine_id,
+        uuid=real_id,
+        cwd=cwd,
+        last_mtime=1000.0,
+        first_user_message="the conversation that must survive",
+        archived=False,
+        created_at=990.0,
+    )
+    monkeypatch.setattr(engines, "resolve_session", lambda e, n, arrival=None: fake_session)
+
+    prov = engines.registry._BY_ID[engine_id]
+    resume_natives: list[str] = []
+    fresh_natives: list[str] = []
+
+    def resume_argv(native, **kwargs):
+        resume_natives.append(native)
+        return ["/bin/true", native]
+
+    def fresh_argv(native, **kwargs):
+        fresh_natives.append(native)
+        return ["/bin/true", native]
+
+    monkeypatch.setattr(prov, "launch_argv", resume_argv)
+    monkeypatch.setattr(prov, "new_launch_argv", fresh_argv)
+
+    class _Lock:
+        def release(self):
+            pass
+
+        def transfer(self):
+            pass
+
+    opened: list[tuple[str, str]] = []
+
+    def open_action(engine: str, native: str):
+        opened.append((engine, native))
+        return sessions.LAUNCH, _Lock()
+
+    monkeypatch.setattr(sessions, "open_action", open_action)
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
+    monkeypatch.setattr(ptybridge, "launch_argv", lambda **kw: ["/bin/true"])
+    monkeypatch.setattr(ptybridge, "attach_argv", lambda **kw: ["/bin/true"])
+    monkeypatch.setattr(scopedspawn, "wrap", lambda argv, **kw: (argv, None))
+    monkeypatch.setattr(relaunch, "blocked", lambda key: False)
+    monkeypatch.setattr(relaunch, "note_exit", lambda *a, **k: None)
+
+    async def fake_run(ws, argv, **kwargs):
+        await ws.send_text(json.dumps({"t": "ready"}))
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(webterm, "run", fake_run)
+
+    # The adoption record already exists (published by the reconcile after the first message).
+    metadata.set_alias(ph_key, real_key)
+
+    c, headers = _authed_client(auth_cfg)
+    with c.websocket_connect(
+        f"/ws/term/{ph_key}?new=1&cwd={quote(cwd)}&bypass=1", headers=headers
+    ) as ws:
+        frames: list[dict] = []
+        while True:
+            msg = ws.receive()
+            if msg["type"] == "websocket.close":
+                break
+            if "text" in msg:
+                frames.append(json.loads(msg["text"]))
+        assert any(f.get("t") == "ready" for f in frames)
+        # The client is told the logical id so its URL converges and its next reconnect is a
+        # plain attach (no new=1).
+        assert {"t": "id", "sid": real_key} in frames
+
+    # The adopted session was resumed under the placeholder's physical key …
+    assert resume_natives == [real_id]
+    assert opened == [(engine_id, _PLACEHOLDER)]
+    # … and a fresh launch never happened.
+    assert fresh_natives == []
+
+
+def test_ws_new1_placeholder_with_unreadable_adoption_state_refuses_not_launch(
+    tmp_home, auth_cfg, monkeypatch
+):
+    """#2087 (Hermes): an unreadable adoption record is never permission to launch fresh. A
+    `new=1` reconnect whose alias index cannot be read is refused retryably (4502) before any
+    launch argument is built."""
+    cwd = str(tmp_home / "claude" / "proj")
+    Path(cwd).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [cwd])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+
+    ph_key = f"antigravity:{_PLACEHOLDER}"
+    prov = engines.registry._BY_ID["antigravity"]
+    fresh_natives: list[str] = []
+    monkeypatch.setattr(
+        prov, "new_launch_argv", lambda native, **kw: fresh_natives.append(native) or ["/bin/true"]
+    )
+
+    c, headers = _authed_client(auth_cfg)
+    monkeypatch.setattr(
+        metadata,
+        "load_checked",
+        lambda: (_ for _ in ()).throw(metadata.MetadataUnreadable("unreadable sidecar")),
+    )
+    assert _close_code(c, f"/ws/term/{ph_key}?new=1&cwd={quote(cwd)}&bypass=1", headers) == 4502
+    assert fresh_natives == []
+
+
+def test_ws_new1_placeholder_with_recorded_adoption_and_live_master_attaches(
+    tmp_home, auth_cfg, monkeypatch
+):
+    """#2087: the same redirect on a LIVE master. A `new=1` reconnect of an adopted placeholder
+    whose master is still up ATTACHes under the physical placeholder key (the live socket is
+    preserved) and never builds a launch argv."""
+    cwd = str(tmp_home / "claude" / "proj")
+    Path(cwd).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [cwd])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+
+    ph_key = f"antigravity:{_PLACEHOLDER}"
+    real_id = ADOPT_ENGINES["antigravity"]
+    real_key = f"antigravity:{real_id}"
+    fake_session = scanner.Session(
+        engine="antigravity",
+        uuid=real_id,
+        cwd=cwd,
+        last_mtime=1000.0,
+        first_user_message="hi",
+        archived=False,
+        created_at=990.0,
+    )
+    monkeypatch.setattr(engines, "resolve_session", lambda e, n, arrival=None: fake_session)
+
+    prov = engines.registry._BY_ID["antigravity"]
+    built: list[str] = []
+    monkeypatch.setattr(
+        prov, "launch_argv", lambda native, **kw: built.append(native) or ["/bin/true"]
+    )
+    monkeypatch.setattr(
+        prov, "new_launch_argv", lambda native, **kw: built.append(native) or ["/bin/true"]
+    )
+
+    def open_action(engine: str, native: str):
+        assert (engine, native) == ("antigravity", _PLACEHOLDER)
+        return sessions.ATTACH, None
+
+    monkeypatch.setattr(sessions, "open_action", open_action)
+
+    async def fake_run(ws, argv, **kwargs):
+        await ws.send_text(json.dumps({"t": "ready"}))
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(webterm, "run", fake_run)
+    metadata.set_alias(ph_key, real_key)
+
+    c, headers = _authed_client(auth_cfg)
+    with c.websocket_connect(
+        f"/ws/term/{ph_key}?new=1&cwd={quote(cwd)}&bypass=1", headers=headers
+    ) as ws:
+        frames: list[dict] = []
+        while True:
+            msg = ws.receive()
+            if msg["type"] == "websocket.close":
+                break
+            if "text" in msg:
+                frames.append(json.loads(msg["text"]))
+        assert any(f.get("t") == "ready" for f in frames)
+        assert {"t": "id", "sid": real_key} in frames
+    assert built == []

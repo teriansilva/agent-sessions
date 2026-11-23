@@ -1072,7 +1072,11 @@ async def prepare(
             "config": {"action": a.get("action") or {}},
             "status": "enable",
         }
-        return _staged(op, aid, str(a.get("name") or aid), {}, draft)
+        # The revision of THIS read, never one a later read finds (#2260): staging re-reads the
+        # facts and refuses the card when the automation moved in between.
+        return _staged(
+            op, aid, str(a.get("name") or aid), {}, draft, {"revision": int(a.get("revision") or 0)}
+        )
 
     # automation.edit — narrowing or off: a plain save; widening an enabled one: the consent card.
     from . import automations_store
@@ -1101,11 +1105,25 @@ async def prepare(
         "status": "enabled" if enabled else "off",
         **({"scope_digest": digest, "widened": [str(w) for w in widened]} if widen else {}),
     }
-    return _staged(target_op, aid, str(stored.get("name") or aid), {"enabled": enabled}, draft)
+    # The revision of the SAME read the draft and its scope preview came from (#2260): a save that
+    # landed before staging's facts read refuses the card instead of binding a newer revision.
+    return _staged(
+        target_op,
+        aid,
+        str(stored.get("name") or aid),
+        {"enabled": enabled},
+        draft,
+        {"revision": int(stored["revision"] or 0)},
+    )
 
 
-def _staged(op, target: str, title: str, fields: dict, draft: dict | None) -> dict:
-    return {"op": op, "target": target, "title": title, "fields": fields, "draft": draft}
+def _staged(
+    op, target: str, title: str, fields: dict, draft: dict | None, expected: dict | None = None
+) -> dict:
+    out = {"op": op, "target": target, "title": title, "fields": fields, "draft": draft}
+    if expected is not None:
+        out["expected"] = expected
+    return out
 
 
 # ---- the card's content (GET /api/ask/proposals/{id}/content) ------------------------------------

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from agent_sessions import ptybridge
+from agent_sessions import ptybridge, sessionlock, sessions
 
 
 @pytest.fixture(autouse=True)
@@ -278,3 +280,152 @@ def test_probe_unknown_on_timeout_never_unlinks(tmp_path, monkeypatch):
         for c in fillers:
             c.close()
         srv.close()
+
+
+# ---- AF_UNIX `sun_path` guard (#2088) -----------------------------------------
+#
+# A runtime dir that pushes the socket past `sun_path` is the silent-BUSY bug: dtach
+# still creates its master, but BattleLab's connect-probe fails with ENAMETOOLONG, so
+# every attach is answered 4409 forever. The guard refuses the launch/attach up front
+# with its own terminal error. These tests build paths of an EXACT byte length under a
+# short `mktemp` base (pytest's own tmp_path is too long for AF_UNIX, see conftest).
+
+
+def _runtime_with_socket_bytes(
+    target: int,
+    name: str = "claude-abcd1234.sock",
+    char: str = "d",
+) -> tuple[str, str]:
+    """A runtime dir whose ``<runtime>/<name>`` is exactly ``target`` bytes."""
+    base = tempfile.mkdtemp(prefix="blrt-")  # short on purpose — see the AF_UNIX note
+    # full path = base + "/" + pad + "/" + name ; solve for the pad's byte count.
+    pad_bytes = target - len(os.fsencode(base)) - 2 - len(os.fsencode(name))
+    unit = len(char.encode())
+    # The base's length depends on the host's TMPDIR, so a multi-byte `char` may not divide the
+    # pad evenly: top up the remainder with single-byte ASCII so the total is still exact.
+    assert pad_bytes >= 0, (target, pad_bytes, unit)
+    count, rest = divmod(pad_bytes, unit)
+    return base + "/" + char * count + "d" * rest, base
+
+
+@pytest.mark.parametrize(
+    ("platform", "usable"),
+    [("linux", 107), ("darwin", 103), ("freebsd14", 103), ("openbsd7", 103)],
+)
+def test_the_usable_sun_path_excludes_the_trailing_nul_on_every_platform(platform, usable):
+    # #2088 review: the field is 108 bytes on Linux and 104 on macOS/BSD, both INCLUDING the
+    # trailing NUL, and CPython refuses len >= field size. So the usable limit is one less.
+    assert ptybridge._sun_path_max(platform) == usable
+
+
+def test_the_guard_refuses_the_first_byte_past_the_platform_limit(monkeypatch):
+    # Exercise the guard itself at the macOS boundary, without needing a macOS kernel: 103
+    # bytes pass, 104 (the full field, no room for the NUL) is refused.
+    monkeypatch.setattr(ptybridge, "SUN_PATH_MAX", ptybridge._sun_path_max("darwin"))
+    for size, ok in ((103, True), (104, False)):
+        raw, base = _runtime_with_socket_bytes(size)
+        try:
+            monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+            if ok:
+                ptybridge.check_socket_path("claude", "abcd1234")
+            else:
+                with pytest.raises(ptybridge.SocketPathTooLong):
+                    ptybridge.check_socket_path("claude", "abcd1234")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def test_socket_path_at_the_sun_path_limit_is_accepted(monkeypatch):
+    raw, base = _runtime_with_socket_bytes(ptybridge.SUN_PATH_MAX)
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        p = ptybridge.socket_path("claude", "abcd1234")
+        assert len(os.fsencode(str(p))) == ptybridge.SUN_PATH_MAX
+        # The validator passes, and the kernel really does accept this exact path.
+        ptybridge.check_socket_path("claude", "abcd1234")
+        assert ptybridge.attach_argv(engine="claude", session_id="abcd1234")[2] == str(p)
+        srv = _bind_listening_sock(p)
+        try:
+            assert ptybridge.session_exists("claude", "abcd1234") is True
+        finally:
+            srv.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_socket_path_one_byte_over_the_limit_is_refused(monkeypatch):
+    raw, base = _runtime_with_socket_bytes(ptybridge.SUN_PATH_MAX + 1)
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        p = ptybridge.socket_path("claude", "abcd1234")
+        assert len(os.fsencode(str(p))) == ptybridge.SUN_PATH_MAX + 1
+        with pytest.raises(ptybridge.SocketPathTooLong) as err:
+            ptybridge.check_socket_path("claude", "abcd1234")
+        # The message names the actual bytes and the limit, never the path itself.
+        assert str(ptybridge.SUN_PATH_MAX + 1) in str(err.value)
+        assert str(ptybridge.SUN_PATH_MAX) in str(err.value)
+        assert str(p) not in str(err.value)
+        # Every create/attach argv construction refuses before dtach can spawn.
+        with pytest.raises(ptybridge.SocketPathTooLong):
+            ptybridge.attach_argv(engine="claude", session_id="abcd1234")
+        with pytest.raises(ptybridge.SocketPathTooLong):
+            ptybridge.launch_argv(
+                engine="claude",
+                session_id="abcd1234",
+                launch_argv=["/bin/true"],
+            )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_the_126_byte_reproduction_is_refused(monkeypatch):
+    # The exact length from #1986's P1 run: dtach "created" the master, every attach
+    # probe returned UNKNOWN → BUSY forever with no error.
+    sid = "new-00000000-0000-0000-0000-000000000000"
+    name = f"opencode2-{sid}.sock"
+    raw, base = _runtime_with_socket_bytes(126, name)
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        with pytest.raises(ptybridge.SocketPathTooLong) as err:
+            ptybridge.check_socket_path("opencode2", sid)
+        assert "126" in str(err.value)
+        assert str(ptybridge.SUN_PATH_MAX) in str(err.value)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_non_ascii_runtime_dir_is_measured_in_filesystem_bytes(monkeypatch):
+    # 'é' is 2 bytes in UTF-8: the CHARACTER length is under the limit, the BYTES are
+    # not. The kernel measures bytes, so the guard must too.
+    raw, base = _runtime_with_socket_bytes(ptybridge.SUN_PATH_MAX + 1, char="é")
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        full = str(Path(raw) / "claude-abcd1234.sock")
+        assert len(full) < ptybridge.SUN_PATH_MAX  # chars fit…
+        assert len(os.fsencode(full)) == ptybridge.SUN_PATH_MAX + 1  # …bytes do not
+        with pytest.raises(ptybridge.SocketPathTooLong):
+            ptybridge.check_socket_path("claude", "abcd1234")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_open_action_refuses_an_overlong_socket_before_any_lock(monkeypatch):
+    # The BUSY-loop root cause: with a live master at an overlong path, `open_action`
+    # found no reachable socket and took the lock (BUSY for every later attach). The
+    # guard must fire BEFORE the probes and before any lock, so nothing is wedged.
+    raw, base = _runtime_with_socket_bytes(ptybridge.SUN_PATH_MAX + 1)
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        key = "claude:abcd1234"
+        try:
+            action, lock = sessions.open_action("claude", "abcd1234")
+        except ptybridge.SocketPathTooLong:
+            pass
+        else:
+            if lock is not None:
+                lock.release()
+            pytest.fail(f"open_action should have refused the overlong socket: {action}")
+        assert sessionlock.is_locked(key) is False
+        assert not (Path(raw) / "claude-abcd1234.sock").exists()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

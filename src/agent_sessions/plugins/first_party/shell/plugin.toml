@@ -21,6 +21,9 @@ mint = "pinned"
 root = "~/.claude/shell-sessions"
 env_override = "AGENT_SESSIONS_SHELL_DIR"
 layout = "shell-records"
+# BattleLab writes this store: it creates a per-session record on launch and removes it when the
+# launch is rejected (#1182).
+read_only = false
 
 [launch]
 resume = { kind = "fresh" }  # a relaunch is a fresh shell; there is no transcript to restore

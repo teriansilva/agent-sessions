@@ -82,6 +82,7 @@
         "db": "opencode.db",
         "log": "log/opencode.log"
       },
+      "read_only": false,
       "root": "~/.local/share/opencode"
     },
     "terminal": {

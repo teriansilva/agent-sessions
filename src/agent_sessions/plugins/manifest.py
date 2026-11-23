@@ -1018,8 +1018,6 @@ def _cross_check(m: Manifest) -> None:
             raise ManifestError(
                 "transcript.kind", f"must be 'battlelab-chat' for runtime {m.runtime!r}"
             )
-        if m.store.read_only:
-            raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
         if m.models:
             # A chat agent's model is the OPERATOR's endpoint configuration (#1209), never the
             # manifest's: a list here would offer choices no launch could honour (#1189).
@@ -1066,6 +1064,12 @@ def _cross_check(m: Manifest) -> None:
         # A managed plugin must say which env override would flip it to adopted (§2b), so the flip
         # can be detected rather than silently honoured.
         raise ManifestError("binary.env_var", "is required when install is declared")
+    if m.store is not None and m.store.read_only:
+        # `store.read_only` declares BattleLab's access to the store (#1182). A layout BattleLab
+        # writes in normal operation, or any manifest admitting a writing maintenance kind, may
+        # not also claim read-only: the served value would be wrong on the Agents detail page.
+        if m.store.layout in kinds.WRITABLE_STORE_LAYOUTS or "sqlite-vacuum" in m.maintenance:
+            raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
 
 
 def _cross_check_launch(m: Manifest) -> None:

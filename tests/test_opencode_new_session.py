@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -306,9 +308,15 @@ def test_open_action_uses_physical_key_for_lock(tmp_home, monkeypatch):
     # (single-writer must be one key across the alias). The ws route resolves to the
     # physical native before calling open_action; assert open_action on the placeholder
     # native locks the placeholder key.
-    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_home / "pty"))
-    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_home / "locks"))
-    action, lock = sessions.open_action("opencode", _PLACEHOLDER)
-    assert action == sessions.LAUNCH and lock is not None
-    assert sessionlock.is_locked(_PLACEHOLDER_KEY) is True  # held under the placeholder
-    lock.release()
+    # A short runtime dir: `tmp_home/pty` + the placeholder name is over AF_UNIX's
+    # `sun_path`, and the #2088 guard now (correctly) refuses that before the lock.
+    runtime = tempfile.mkdtemp(prefix="blrt-")
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", runtime)
+        monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_home / "locks"))
+        action, lock = sessions.open_action("opencode", _PLACEHOLDER)
+        assert action == sessions.LAUNCH and lock is not None
+        assert sessionlock.is_locked(_PLACEHOLDER_KEY) is True  # held under the placeholder
+        lock.release()
+    finally:
+        shutil.rmtree(runtime, ignore_errors=True)

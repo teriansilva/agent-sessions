@@ -1339,6 +1339,14 @@ async def stage(
                 "again with list_mcp_servers. Nothing was installed",
                 "stale",
             )
+        if op.group == "automation":  # the automation whose config and scope the card previews
+            # is not the one a later read would bind (#2260): the card binds the revision its
+            # draft came from, so a save in between stages nothing.
+            raise Refused(
+                "refused: the automation was saved elsewhere while the card was prepared; read it "
+                "again with automation_detail and propose again. Nothing was written",
+                "stale",
+            )
         raise Refused("refused: that note changed after HQ read it; search again", "not_available")
     shown = facts.get("title") or facts.get("name") or title
     pid = uuid.uuid4().hex

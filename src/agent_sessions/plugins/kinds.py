@@ -227,6 +227,17 @@ STORE_LAYOUTS = frozenset(
         "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
 )
+#: Store layouts BattleLab itself writes, so `store.read_only = true` is refused (#1182). The flag
+#: declares BattleLab's access to the store — never the launched CLI's, and never an OS boundary.
+#: Keyed by layout, never by engine id, so a third-party plugin inheriting the layout inherits the
+#: rule. Claude's archive moves JSONL between `projects/` and `projects-archive/`; Copilot's archive
+#: moves `session-state/<id>/` to `session-state-archive/<id>/`; shell creates and removes its
+#: per-session record; the chat/API runtime writes its own conversations. Every other layout is
+#: read-only to BattleLab: archive there is a sidecar flag outside the engine's store.
+WRITABLE_STORE_LAYOUTS = frozenset(
+    {"battlelab-chat", "claude-projects", "copilot-sessions", "shell-records"}
+)
+
 #: A MANAGED agent runs no self-updater BattleLab can switch off (2026-11-19): BattleLab's catalog
 #: pins and digest-verifies the install and owns its upgrades. Per `store.layout`, the vendor's
 #: environment switch that stops the CLI's own updater, laid on every process started from a

@@ -16,7 +16,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -55,14 +57,19 @@ def _close_code(c, url, headers):
     the real code, not a 1006 handshake failure that would reconnect-loop). Connect,
     then read the deliberate close — TestClient may raise WebSocketDisconnect or
     return a {'type':'websocket.close','code':…} message depending on version."""
+    return _close_detail(c, url, headers)[0]
+
+
+def _close_detail(c, url, headers):
+    """``(code, reason)`` of the route's deliberate close — the reason is what the pane shows."""
     try:
         with c.websocket_connect(url, headers=headers) as ws:
             msg = ws.receive()
             if isinstance(msg, dict) and msg.get("type") == "websocket.close":
-                return msg.get("code")
-            return None
+                return msg.get("code"), msg.get("reason") or ""
+            return None, ""
     except WebSocketDisconnect as e:
-        return e.code
+        return e.code, getattr(e, "reason", "") or ""
 
 
 def test_ws_rejects_unauthenticated(auth_cfg):
@@ -292,6 +299,27 @@ def test_ws_busy_rejects_4409(fake_jsonl, auth_cfg, monkeypatch):
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4409
+
+
+def test_ws_refuses_overlong_socket_path_4500_with_reason(fake_jsonl, auth_cfg, monkeypatch):
+    # #2088: a runtime dir that pushes the dtach socket past AF_UNIX's `sun_path` used to
+    # answer 4409 (BUSY) forever — the client reconnected twice a second with nothing shown.
+    # The guard refuses before launch/probes: 4500 (terminal, never retried) AND a reason the
+    # pane can show. No master/socket is ever created for the refused path.
+    base = tempfile.mkdtemp(prefix="blrt-")  # short base, then pad past the limit
+    raw = f"{base}/{'d' * 120}"
+    try:
+        monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", raw)
+        c = _client(auth_cfg)
+        headers = _login_headers(c, auth_cfg)
+        code, reason = _close_detail(c, f"/ws/term/{_GOOD}", headers)
+        assert code == 4500
+        assert "dtach socket path is" in reason
+        assert "AF_UNIX limit" in reason
+        assert str(Path(raw)) not in reason  # never echo the operator's runtime dir
+        assert not list(Path(raw).glob("*.sock"))  # nothing was spawned
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_ws_releases_launch_lock_on_launch_failure(fake_jsonl, auth_cfg, monkeypatch):

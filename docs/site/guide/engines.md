@@ -15,16 +15,17 @@ show the same engines in the same order. [Agent definitions](./plugins) document
 
 Every engine handles its own conversation persistence. BattleLab reads each tool's own on-disk
 history for the sidebar, and "resume" always means launching *that tool's own resume command*
-under BattleLab's `dtach` PTY. Nothing is re-implemented and, with one exception, nothing is
-written back.
+under BattleLab's `dtach` PTY. Nothing is re-implemented; BattleLab writes back only where it must.
 
 The API agent is the one engine with no tool of its own, so BattleLab keeps its transcript itself
 (see [The API agent](#the-api-agent-a-model-endpoint-with-no-process)).
 
-The other exception is Claude Code, whose archive moves its JSONL between `projects/` and
-`projects-archive/`. Every other engine's archive is a flag in BattleLab's own sidecar. opencode's
-SQLite database in particular is opened read-only and never written, which is why renaming,
-favouriting and archiving an opencode session change nothing inside opencode.
+Claude Code's archive moves its JSONL between `projects/` and `projects-archive/`; Copilot's
+moves `session-state/<id>/` to `session-state-archive/<id>/`; shell keeps its own small
+per-session record. Every other engine's archive is a flag in BattleLab's own sidecar. opencode's
+SQLite database is read-only during normal work — its one admitted write is the operator's explicit
+compaction (VACUUM + a truncating checkpoint) — which is why renaming, favouriting and archiving
+an opencode session change nothing inside opencode.
 
 ## The roster
 
@@ -95,6 +96,8 @@ UUID and launches straight into it. The row exists with its final identity from 
 BattleLab snapshots the engine's store *before* launch, starts the session under a temporary
 `new-<uuid>` placeholder, then diffs the store afterwards and adopts whichever id appeared. A
 reconciling engine's row therefore carries a placeholder id for the first moments of its life.
+Once the real id is adopted, the open tab's URL switches to it; a reconnect of that tab — even
+after the agent exits — resumes the adopted session rather than opening a blank one.
 
 With nobody watching (missions and automations), "whichever id appeared" is not good enough, so a
 reconciling engine is started unattended only once it can show two things against the real CLI:

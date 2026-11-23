@@ -122,6 +122,12 @@ Because the decision runs through a filesystem lock rather than in-process state
 multiple app instances** on the same host. There is no double-resume and no double-write even if
 you run two copies of BattleLab.
 
+One refusal can come before any of those three: if the configured runtime directory makes the
+`dtach` socket path longer than the kernel's `AF_UNIX` limit (107 bytes on Linux), the session is
+refused with a terminal error naming the length and the limit. BattleLab never launches a master
+whose socket it cannot reach, and it never answers **BUSY** for such a path — the pane shows the
+reason and does not retry.
+
 On LAUNCH the lock file descriptor is handed to the spawned `dtach` process, so the lock lives
 exactly as long as the master and survives BattleLab restarting or being redeployed underneath it.
 

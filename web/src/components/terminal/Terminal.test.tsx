@@ -147,6 +147,8 @@ interface FakeSocket {
   emitRole?: (role: "owner" | "secondary") => void;
   // #1502 hook: drive the socket status as the real TermSocket would on a close code.
   emitStatus: (status: unknown) => void;
+  // #2087 hook: fire the server's placeholder→real converge frame.
+  emitId: (sid: string) => void;
   // Grid size measured at the moment connect() fired — lets the connect-when-quiet test assert the
   // attach happened at the SETTLED size, not an in-flight one. Captured from the live xterm directly
   // (NOT via url(), which would consume the one-shot force flag the #184 takeover test depends on).
@@ -162,6 +164,7 @@ vi.mock("../../lib/termSocket", () => ({
     send = vi.fn(() => true);
     emitRole: (role: "owner" | "secondary") => void;
     emitStatus: (status: unknown) => void;
+    emitId: (sid: string) => void;
     connectCols?: number;
     connectRows?: number;
     constructor(
@@ -169,6 +172,7 @@ vi.mock("../../lib/termSocket", () => ({
       handlers: {
         onRole?: (role: "owner" | "secondary") => void;
         onStatus?: (status: unknown) => void;
+        onId?: (sid: string) => void;
       },
     ) {
       this.url = urlFor;
@@ -180,6 +184,7 @@ vi.mock("../../lib/termSocket", () => ({
       });
       this.emitRole = (role) => handlers.onRole?.(role);
       this.emitStatus = (status) => handlers.onStatus?.(status);
+      this.emitId = (sid) => handlers.onId?.(sid);
       sockets.push(this as unknown as FakeSocket);
     }
   },
@@ -272,8 +277,9 @@ test("attaches at the SETTLED grid, not an in-flight one — fixes 'switch almos
 
 // The regression for Hermes's #131 finding: SessionView drops the fresh-launch route state
 // once the server reconciles the placeholder to the real id. That prop change must NOT tear
-// down the live socket and reconnect without new=1 (which the server would 4404 while the id
-// is still the pending placeholder), killing the terminal the converge is meant to preserve.
+// down the live socket, killing the terminal the converge is meant to preserve. #2087: the
+// converge frame also ends the placeholder's launch phase, so future reconnects no longer send
+// new=1 — they resolve forward to the adopted id on the server.
 test("dropping `fresh` during convergence keeps the same live socket (no relaunch, no 4404)", () => {
   const { rerender } = render(
     wrap(
@@ -286,16 +292,47 @@ test("dropping `fresh` during convergence keeps the same live socket (no relaunc
   );
   expect(sockets).toHaveLength(1);
 
-  // Owner clears route state during placeholder→real converge: same key, fresh now undefined.
+  // The server converged the placeholder to its real id (the live socket stays open).
+  act(() => sockets[0].emitStatus({ kind: "connected" }));
+  act(() => sockets[0].emitId("opencode:ses_realreal0000000000000000"));
+
+  // Owner clears route state during that converge: same key, fresh now undefined.
   rerender(
     wrap(<Terminal engine="opencode" id={PLACEHOLDER} fresh={undefined} />),
   );
 
   // No teardown, no new socket — the socket effect is identity-only (engine:id), so the live
-  // connection is preserved, and its frozen URL still carries new=1 for any future reconnect.
+  // connection is preserved. A future reconnect is a plain attach by the placeholder (#2087):
+  // the server resolves it forward to the adopted id, never a fresh new=1 launch.
   expect(sockets).toHaveLength(1);
   expect(sockets[0].close).not.toHaveBeenCalled();
+  expect(sockets[0].url(0)).not.toContain("new=1");
+});
+
+// #2087: after the placeholder was adopted, a reconnect of this still-open tab must not re-send
+// new=1. The frozen placeholder transport identity is kept (the live socket is never torn down),
+// but once the server has converged it to the real id, a reconnect after the agent exits (`/exit`)
+// is a plain attach that the server resolves forward to the adopted session — not a fresh launch.
+test("an adopted placeholder stops sending new=1 on reconnect (#2087)", () => {
+  render(
+    wrap(
+      <Terminal engine="opencode2" id={PLACEHOLDER} fresh={{ cwd: "/proj", bypass: true }} />,
+    ),
+  );
+  expect(sockets).toHaveLength(1);
+  // Before adoption the placeholder really is a launch: new=1 is correct.
   expect(sockets[0].url(0)).toContain("new=1");
+
+  // The live socket opened; the server then converged the placeholder to the adopted id.
+  act(() => sockets[0].emitStatus({ kind: "connected" }));
+  act(() => sockets[0].emitId("opencode2:ses_adopted00000000000000002"));
+
+  // A reconnect targets the frozen placeholder with no launch params: the server resolves it
+  // forward to the adopted id and resumes/attaches it.
+  const url = sockets[0].url(123);
+  expect(url).toContain(`opencode2:${encodeURIComponent(PLACEHOLDER)}`);
+  expect(url).not.toContain("new=1");
+  expect(url).not.toContain("cwd=");
 });
 
 // #157: pasting an image over the terminal opens Compose and adds an attachment pill —

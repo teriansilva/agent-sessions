@@ -314,6 +314,23 @@ test("a 4422 model refusal shows the server's reason, bounded; other codes keep 
   expect(rejectReason(4404, "server text")).toBe("session not found or ended");
 });
 
+// #2088: an AF_UNIX socket path over the kernel limit is refused 4500 BEFORE any launch.
+// 4500 is already terminal (no reconnect loop), and its reason must now reach the pane so
+// the operator sees the cause instead of a bare "couldn't start this session".
+test("a 4500 launch refusal shows the server's socket-path reason and never reconnects (#2088)", () => {
+  vi.useFakeTimers();
+  const { ts, statuses } = makeSocket();
+  ts.connect();
+  const reason =
+    "dtach socket path is 126 bytes; the AF_UNIX limit is 107 bytes — this session cannot be launched or attached";
+  FakeWS.instances[0].drop(4500, reason);
+  vi.advanceTimersByTime(60_000);
+  expect(FakeWS.instances).toHaveLength(1); // terminal: never retried in a BUSY-style loop
+  expect(statuses.at(-1)).toEqual({ kind: "rejected", reason, code: 4500 });
+  expect(rejectReason(4500, "")).toBe("couldn’t start this session");
+  expect(rejectReason(4500, "y".repeat(500))).toHaveLength(160);
+});
+
 // #1502: "not a terminal session" is its own outcome, never the not-found text — the page drew a
 // terminal for an engine that is not one and must re-gate. Like 4404 it is never retried.
 test("4415 reports wrong-runtime, never 'not found', and is not retried (#1502)", () => {

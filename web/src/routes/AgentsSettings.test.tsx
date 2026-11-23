@@ -94,7 +94,7 @@ const DETAIL: EngineDetail = {
     root: "~/.claude",
     resolved: "/home/op/.claude",
     layout: "claude-projects",
-    read_only: true,
+    read_only: false,
   },
   launch: { resume: "flag", new: "pin-flag", admission: null },
   transcript: { kind: "claude-jsonl", strict: false },
@@ -258,7 +258,7 @@ test("agent page: status and actions first; identity, provenance, store and capa
   expect(tech.open).toBe(false);
   expect(within(tech).getByText("AGENT_SESSIONS_CLAUDE_BIN")).toBeInTheDocument();
   expect(within(tech).getByText("claude-projects")).toBeInTheDocument();
-  expect(within(tech).getByText("read-only")).toBeInTheDocument();
+  expect(within(tech).getByText("read-write")).toBeInTheDocument();
   expect(within(tech).getByText("None declared")).toBeInTheDocument();
   const caps = within(tech).getByText("Capabilities").closest("section")!;
   expect(within(caps).getAllByRole("listitem")).toHaveLength(8);

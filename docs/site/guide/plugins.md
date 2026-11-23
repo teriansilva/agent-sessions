@@ -114,7 +114,7 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `[api]` | for `api` only | `kind` selects a reviewed native protocol; `source` names a compatible active console provider. The API entry owns a pinned UUID and BattleLab conversation store, with no binary, launch flags, endpoint, model list or setup instructions of its own. This release validates the declaration but does not implement or offer native API clients yet; feed installation refuses them. Source resolution does not inherit console bypass flags or grant execution. |
 | `[binary]` | for `pty` | `name` (the agent id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
-| `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
+| `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`, and `read_only` (default `true`: BattleLab only reads this store). `read_only` declares BattleLab's access, not the launched CLI's: a layout BattleLab writes (`claude-projects`, `copilot-sessions`, `shell-records`, `battlelab-chat`) must declare `false`, and so must a manifest admitting a writing `maintenance`. |
 | `[launch]` | for `pty` | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`; and `model` (`{ kind = "flag", flag, on_resume }`): the flag that takes a model id, and whether the engine honours it on a resume. The kind assembles the argv — the manifest never writes one, and never names the model value: that is a model the launch resolved against `[models]` and your added ids. |
 | `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` definition may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
 | `[transcript]` | no | `kind`, the built-in adapter that renders the conversation for scroll-up and AI review; `strict`. Absent means none. |
@@ -134,9 +134,10 @@ be a restriction, and a reader that skipped it would grant what the author meant
 
 The validator also checks the blocks against each other. For example: `capabilities.new` needs
 `launch.new`; a `pin-flag` new session needs `mint = "pinned"`; `owns_transcript` needs a
-transcript kind; `sqlite-vacuum` and store admission need `store.paths.db`; an `install` block
-needs `binary.env_var`; and `launch.model` needs a non-empty `models.list` and may not be combined
-with `configured_elsewhere`.
+transcript kind; `sqlite-vacuum` and store admission need `store.paths.db`; a `store.read_only`
+declaration must be `false` on a layout BattleLab writes or when the manifest admits
+`sqlite-vacuum`; an `install` block needs `binary.env_var`; and `launch.model` needs a non-empty
+`models.list` and may not be combined with `configured_elsewhere`.
 
 A field added to the format after your BattleLab was built is an unknown field to it, so an older
 build refuses a manifest that uses one rather than skipping it. The `contract` number moves only

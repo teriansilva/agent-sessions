@@ -73,6 +73,7 @@ import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import action from "../ui/actionButton.module.css";
 import { useFocusContainment } from "./useModalDrawer";
 import { SaveAsPlanDialog } from "../missionPlans/SaveAsPlanDialog";
+import { openDialogFromMenuItem } from "./menuDialog";
 import { MissionOverflow } from "./MissionOverflow";
 import { MissionActivationDialog } from "../artifacts/ActivationDialog";
 import { missionDotClass, missionStateLabel } from "./missionState";
@@ -449,12 +450,10 @@ export function MissionHeaderActions({
         <button
           type="button"
           className={styles.menuItem}
-          onClick={() =>
-            setArtifactsOpen({
-              returnTo: document.querySelector<HTMLElement>(
-                "[data-testid='mission-overflow']",
-              ),
-            })
+          onClick={(e) =>
+            openDialogFromMenuItem(e.currentTarget, (trigger) =>
+              setArtifactsOpen({ returnTo: trigger }),
+            )
           }
           role="menuitem"
           data-testid="mission-artifacts"
@@ -468,20 +467,11 @@ export function MissionHeaderActions({
       <button
         type="button"
         className={styles.menuItem}
-        onClick={(e) => {
-          // The ⋯ trigger of THIS header (not the first one in the document): focus returns to it.
-          // A phone's sheet is portalled to <body>, outside the header: then the one console's.
-          const trigger =
-            (e.currentTarget.closest('[data-testid="mission-lifecycle"]') ?? document)
-              .querySelector<HTMLButtonElement>('[data-testid="mission-overflow"]') ?? null;
-          // A desktop panel stays open on an item's click; a dialog over it closes it first.
-          const inSheet = !!e.currentTarget.closest("[data-sheet]");
-          if (trigger?.getAttribute("aria-expanded") === "true" && !inSheet) trigger.click();
-          // A phone's sheet closes on a microtask and lifts its own `inert` as it goes: the dialog
-          // opens after that, so it marks the page behind it inert itself (independent review).
-          if (inSheet) setTimeout(() => setSavingPlan({ trigger }), 0);
-          else setSavingPlan({ trigger });
-        }}
+        onClick={(e) =>
+          openDialogFromMenuItem(e.currentTarget, (trigger) =>
+            setSavingPlan({ trigger }),
+          )
+        }
         role="menuitem"
         data-testid="mission-save-as-plan"
       >

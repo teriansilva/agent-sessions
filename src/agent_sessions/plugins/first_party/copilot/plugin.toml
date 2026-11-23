@@ -24,6 +24,9 @@ mint = "pinned"  # `--session-id <uuid>` pins a new session's id; `--resume <uui
 [store]
 root = "~/.copilot"
 layout = "copilot-sessions"
+# BattleLab writes this store: archive/unarchive moves `session-state/<id>/` to
+# `session-state-archive/<id>/` and back (#1565, #1182).
+read_only = false
 [store.paths]
 sessions = "session-state"
 archive = "session-state-archive"

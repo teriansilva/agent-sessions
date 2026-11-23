@@ -446,7 +446,13 @@ async def _admit_open(prov, native: str, phys_key: str, phys_native: str, *, is_
     except freeze_lock.FreezeBusy:
         raise _OpenRefused(4409) from None  # being archived / unarchived right now: retry
     try:
-        action, lock = await _open_action_offloop(prov.engine_id, phys_native)
+        try:
+            action, lock = await _open_action_offloop(prov.engine_id, phys_native)
+        except ptybridge.SocketPathTooLong as e:
+            # A socket path the kernel cannot carry is TERMINAL (#2088): no master can be
+            # reached or created, so 4409/4502 would retry forever. 4500 is non-retryable in
+            # the client, and its reason is shown so the operator learns the cause.
+            raise _OpenRefused(4500, str(e)) from None
         if action == sessions.BUSY:
             return action, lock
         try:
@@ -535,20 +541,29 @@ def register(
         # placeholder→real alias. When a client later attaches by the *real* id (after the URL
         # converged or an app restart), its live resources (dtach socket / single-writer lock /
         # buffer) are still under the placeholder — so resolve the real id back to the physical
-        # placeholder key before any socket/lock/buffer derivation. Conversely (#2097), when a
-        # client reloads `/s/<engine>/new-<uuid>` without `new=1` AFTER adoption, resolve the
-        # placeholder forward to its real logical id while keeping `phys_native` on the
-        # placeholder, and send `{"t":"id"}` once authorized so the URL converges.
+        # placeholder key before any socket/lock/buffer derivation. Conversely (#2097/#2087),
+        # when a client reconnects `/s/<engine>/new-<uuid>` after adoption — reload without
+        # `new=1`, or a still-open tab whose frozen URL keeps it — resolve the placeholder
+        # forward to its real logical id while keeping `phys_native` on the placeholder, and
+        # send `{"t":"id"}` once authorized so the URL converges.
         phys_native = native
         placeholder_aliased_to: str | None = None
-        if is_placeholder and not is_new:
+        if is_placeholder:
             logical_resolved = await resolve_logical_key(prov, native)
             if logical_resolved is None:
                 return await reject(4502)
             if logical_resolved != f"{prov.engine_id}:{native}":
+                # A recorded adoption redirects EVERY reconnect, `new=1` included (#2087): a
+                # still-open tab reconnects with its frozen placeholder key and `new=1` after
+                # the agent exits, and must resume the adopted session rather than start a
+                # fresh blank one. `is_new` is cleared so this connect takes the
+                # resume/attach path (the placeholder's physical socket/lock still resolve
+                # through `resolve_physical_key` below), and the client is sent `{"t":"id"}`
+                # so its URL converges and its next reconnect drops `new=1`.
                 _eng, _, native = logical_resolved.partition(":")
                 placeholder_aliased_to = logical_resolved
                 is_placeholder = False
+                is_new = False
         if not is_placeholder:
             # The alias first, then — for a late-id engine with no alias — the mission store's own
             # mapping (#994 review 1, finding 2). `None` is a store we could not read for a key
@@ -1195,7 +1210,7 @@ def register(
                     if scope_unit is not None:
                         log.info("launching %s in scope %s", phys_key, scope_unit)
                     launchtiming.mark("command")
-            except ptybridge.PtyBridgeError:
+            except ptybridge.PtyBridgeError as e:
                 # A pinned-id new session persisted a record above; the launch argv was rejected,
                 # so drop it rather than leave a phantom row (best-effort, no-op for engines
                 # without the hook / for attach + resume where nothing was written).
@@ -1204,7 +1219,11 @@ def register(
                     if on_fail is not None:
                         with contextlib.suppress(Exception):
                             on_fail(native)
-                return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
+                # A socket path past the kernel's AF_UNIX limit has its own cause; pass it so
+                # the pane shows why, never a bare "couldn't start" (#2088). Any other launch
+                # argv refusal keeps the generic wording (it may name an internal path).
+                reason = str(e) if isinstance(e, ptybridge.SocketPathTooLong) else ""
+                return await reject(4500, reason)  # terminal; never a BUSY retry loop
             if model_record is not None:
                 # The launch argv was accepted; record what was asked for once the master it
                 # spawns is actually live — never before (a failed spawn keeps the prior record).

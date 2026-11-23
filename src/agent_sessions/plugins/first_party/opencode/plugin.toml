@@ -19,6 +19,9 @@ mint = "adopt"  # opencode mints its own ses_ id (#127)
 [store]
 root = "~/.local/share/opencode"
 layout = "opencode-sqlite"
+# Normal access is read-only, but BattleLab's admitted maintenance compaction (declared below)
+# writes this database with VACUUM and a truncating checkpoint (#1182).
+read_only = false
 [store.paths]
 db = "opencode.db"
 log = "log/opencode.log"

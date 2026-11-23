@@ -35,7 +35,10 @@ stable alias layer — never a physical rename of a live dtach socket:
    persisted private pre-launch `cwd` under `ptybridge.runtime_dir()/placeholders/`)
    and resolves forward through `metadata.load_aliases()` once adopted (#2097). A reload
    without `new=1` when no master is live and no alias exists is refused `4404` and
-   never spawns a fresh agent. The socket, lock, buffer, and metadata are all keyed by
+   never spawns a fresh agent. A reconnect that still carries `new=1` (a still-open tab
+   whose frozen URL keeps it) is held to the same rule once adoption is recorded: the
+   placeholder resolves forward and the adopted session is resumed or attached, never
+   launched fresh (#2087). The socket, lock, buffer, and metadata are all keyed by
    this placeholder — it is the **physical key**.
 2. **Snapshot + launch.** Before launch the route snapshots the set of ids in that `cwd`
    from the engine's store (read-only) and persists `{cwd, snapshot}` in the private
@@ -59,10 +62,12 @@ stable alias layer — never a physical rename of a live dtach socket:
    live resources are under the **placeholder**, so an attach by the *real* id resolves
    **real → placeholder** (`engines.physical_key`, the inverse of the stored map) before
    any socket / single-writer-lock / scrollback-buffer / metadata derivation. Conversely,
-   a reload or deep link on `/s/<engine>/new-<uuid>` after adoption resolves
-   **placeholder → real** (`GET /api/sessions/<engine>:new-<uuid>` returns the resolved
-   row with `resolved_from`, and `/ws/term/<engine>:new-<uuid>` resolves the logical
-   identity and sends `{"t":"id"}`). The session list resolves each scanned row's
+   a reload, deep link or `new=1` reconnect on `/s/<engine>/new-<uuid>` after adoption
+   resolves **placeholder → real** (`GET /api/sessions/<engine>:new-<uuid>` returns the
+   resolved row with `resolved_from`, and `/ws/term/<engine>:new-<uuid>` resolves the
+   logical identity and sends `{"t":"id"}`; with `new=1` the adopted key is then
+   resumed/attached — the physical placeholder socket and lock are retained). The
+   session list resolves each scanned row's
    metadata via its physical key, so a title set while on the placeholder follows the
    real row — **one row, no placeholder/ghost row** (the #64 failure mode). The
    placeholder is never scanned, so it can't appear as a second row.
@@ -71,8 +76,10 @@ stable alias layer — never a physical rename of a live dtach socket:
    SessionView replaces the URL `/s/<engine>/new-<uuid>` → `/s/<engine>/<real_id>`
    (history replace, no reload) and drops the fresh-launch state, while keeping the
    terminal mounted under its original key — the live socket is preserved (no
-   relaunch/flicker). A later reload attaches by the real id and resolves back to the
-   placeholder socket via the persisted alias.
+   relaunch/flicker). The terminal also drops its frozen `new=1` params, so a later
+   reconnect of that tab (e.g. after the agent exits) asks for the placeholder without
+   a launch and the server resolves it forward (#2087). A later reload attaches by the
+   real id and resolves back to the placeholder socket via the persisted alias.
 6. **Restart survival.** The alias lives in the on-disk sidecar, the pre-adoption
    `{cwd, snapshot}` lives in `ptybridge.runtime_dir()/placeholders/`, and the dtach
    socket/lock stay under the placeholder for the master's lifetime. After an app restart
@@ -109,6 +116,19 @@ Resuming/launching a session is gated by an **advisory exclusive file lock**:
   `release()` is only for the lost-race path where no master inherited the fd.)
 - If a launch fails before a master exists (bad cwd / unresolvable binary), `transfer`
   closes the last fd and the lock frees immediately — no BUSY wedge.
+
+## Socket path length (#2088)
+
+A `{engine}:{id}` whose `dtach` socket path exceeds the kernel's AF_UNIX `sun_path` limit (107
+usable bytes on Linux; the field is 108 including the NUL) has no reachable master and cannot be
+created. `dtach` may still bind a master the broker can never `connect()` to, so every attach
+would read "not alive + lock held" and be answered **BUSY** forever with no visible cause. The
+guard (`ptybridge.check_socket_path`) runs before the open-action probes and before every
+create/attach argv, measures `os.fsencode(path)` bytes (a non-ASCII runtime dir counts as bytes),
+and raises a terminal `SocketPathTooLong` naming the measured length and the limit — never the
+path. The terminal route maps it to close code 4500 (non-retryable), and the pane shows the
+reason. Shortening the socket *name* (hashed new-only names with a both-names lookup) is a
+separate follow-up; live masters are never renamed.
 
 ## Attach, never relaunch
 

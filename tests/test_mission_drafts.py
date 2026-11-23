@@ -367,7 +367,14 @@ async def test_a_draft_naming_a_different_objective_than_the_nudge_is_dropped(en
     }
     reading = await sup.consider(mid, SESSION)
     assert reading["draft"] is None
-    assert reading["nudge"] == {"objective_key": "other", "why": "quiet"}
+    assert reading["nudge"]["objective_key"] == "other"
+    assert reading["nudge"]["why"] == "quiet"
+    # …carrying the identity of the objective the model read, not a bare key (#1003).
+    ident = _identity(mid, "other")
+    assert (reading["nudge"]["objective_episode"], reading["nudge"]["objective_incarnation"]) == (
+        ident["expect_episode"],
+        ident["expect_incarnation"],
+    )
 
 
 @pytest.mark.anyio
@@ -430,7 +437,7 @@ async def test_while_a_draft_or_nudge_is_live_for_an_episode_no_second_one_is_pr
         )
         assert res["proposed"] is False and "not settled" in res["why"], res
     else:
-        res = await sup.nudge(mid, session_key=other, objective_key=KEY, why="w")
+        res = await sup.nudge(mid, session_key=other, objective_key=KEY, why="w", **_identity(mid))
         assert res["sent"] is False and "not settled" in res["why"], res
     assert sorted(ledger.latest_by_id()) == before, "a second intervention was minted"
 
@@ -503,6 +510,67 @@ async def test_a_draft_is_dropped_when_its_objective_is_REPLACED_DURING_the_mode
     assert typed == b""
     drafted = (out.get("per_session") or [{}])[0].get("drafted") or {}
     assert "re-created" in str(drafted.get("why")), drafted
+
+
+@pytest.mark.anyio
+async def test_a_nudge_is_REFUSED_when_its_objective_is_REPLACED_DURING_the_model_call(
+    env, model, monkeypatch
+):
+    """A nudge is bound to the objective identity the MODEL READ (#1003), as a draft now is.
+
+    The reply is narrowed against the checklist `consider` snapshotted before the call, so its
+    identity is that snapshot's. Dropping and re-adding the same key while the call is in flight
+    must refuse at reservation, not rebind the nudge to the replacement — nothing typed, nothing
+    bound, nothing charged to the objective the operator never read about.
+    """
+    mid = _mission()
+    _add(mid, KEY)
+    old = missions.objective_incarnation(mid, KEY)
+
+    def replace():
+        missions.patch_objectives(mid, [{"op": "drop", "key": KEY}])
+        _add(mid, KEY)
+
+    model["reply"] = {"assessment": "stalled", "nudge": {"objective_key": KEY, "why": "quiet"}}
+    model["during"] = replace
+    with _live(monkeypatch) as slave:
+        out = await sup.run_pass(mid)
+        typed = _typed(slave)
+
+    fresh = missions.objective_incarnation(mid, KEY)
+    assert fresh and fresh != old, "the objective was not actually replaced"
+    assert [r for r in ledger.latest_by_id().values() if r.get("verb") == sup.NUDGE_VERB] == []
+    assert typed == b"", "a nudge for the predecessor reached the session"
+    assert sup.budget_state(mid, KEY)["spent"] == 0, "the replacement was charged"
+    nudged = (out.get("per_session") or [{}])[0].get("nudged") or {}
+    assert nudged.get("sent") is False
+    assert "re-created" in str(nudged.get("why")), nudged
+
+
+@pytest.mark.anyio
+async def test_a_nudge_is_REFUSED_when_its_objective_started_a_NEW_EPISODE_during_the_call(
+    env, model, monkeypatch
+):
+    """Same incarnation, new episode: a state change advanced it while the call was out (#1003).
+
+    The identity is the pair, so an episode that moved under an unchanged row refuses too.
+    """
+    mid = _mission()
+    _add(mid, KEY)
+
+    model["reply"] = {"assessment": "stalled", "nudge": {"objective_key": KEY, "why": "quiet"}}
+    model["during"] = lambda: missions.bump_episode(mid, KEY)
+    with _live(monkeypatch) as slave:
+        out = await sup.run_pass(mid)
+        typed = _typed(slave)
+
+    assert missions.objective_episode(mid, KEY)[0] == 2, "the episode did not advance"
+    assert [r for r in ledger.latest_by_id().values() if r.get("verb") == sup.NUDGE_VERB] == []
+    assert typed == b""
+    assert sup.budget_state(mid, KEY)["spent"] == 0
+    nudged = (out.get("per_session") or [{}])[0].get("nudged") or {}
+    assert nudged.get("sent") is False
+    assert "new episode" in str(nudged.get("why")), nudged
 
 
 @pytest.mark.anyio

@@ -454,6 +454,11 @@ export function Terminal({
   // the converge is meant to preserve. useRef captures only the first render's value, so later
   // prop changes can't move it; a genuine session switch remounts via `key` and re-seeds it.
   const freshRef = useRef(fresh);
+  // #2087: true once the server has sent the real id this placeholder was adopted as. The
+  // terminal's transport identity stays frozen on the placeholder (so the live socket is never
+  // torn down), but a later reconnect must resolve placeholder→real on the server, never re-send
+  // `new=1` — which would launch a blank session once the agent has exited.
+  const adoptedRef = useRef(false);
 
   // First-compose gate for a FRESH launch (#533/#607/#616). The agent boots for several seconds
   // after new=1; input written into that window is swallowed (the composed text) or submitted as
@@ -1345,14 +1350,16 @@ export function Terminal({
     // new=1 (launch) is a one-shot too: the FIRST connect launches the session; a reconnect must
     // ATTACH the now-existing session, not relaunch it. Re-sending new=1 makes the server run
     // `claude --session-id <id>` again → claude rejects the existing id ("session already in use")
-    // → EOF → reconnect loop. EXCEPTION: an opencode placeholder (`new-<uuid>`) keeps new=1 until it
-    // converges to its real id (#127) — the session doesn't exist under a real id yet.
+    // → EOF → reconnect loop. EXCEPTION: an adopt-engine placeholder (`new-<uuid>`) keeps new=1
+    // until it converges to its real id (#127) — the session doesn't exist under a real id yet.
+    // Once it HAS converged (#2087) the placeholder is adopted: a reconnect must resolve it on
+    // the server (attach/resume), never re-launch, so the frozen identity stops sending new=1.
     let freshConsumed = false;
     const sock = new TermSocket(
       (have) => {
         const f = wantsForce && !forceConsumed;
         forceConsumed = true;
-        const keepFresh = !freshConsumed || id.startsWith("new-");
+        const keepFresh = !adoptedRef.current && (!freshConsumed || id.startsWith("new-"));
         const fresh = keepFresh ? freshRef.current : undefined;
         // Pass our current grid so the server sizes the pty to us from the start (#227) — a
         // launched agent then renders at the right width instead of 80x24→reflow. cols/rows
@@ -1425,7 +1432,14 @@ export function Terminal({
             else repaintAfterReconnect();
           }
         },
-        onId: (sid) => onReconcileIdRef.current?.(sid),
+        onId: (sid) => {
+          // #2087: the placeholder was adopted. Drop the frozen launch params so this pane's
+          // next reconnect is a plain `/ws/term/<engine>:new-<uuid>` (the server resolves it
+          // forward to the adopted id) and never re-launches a fresh session.
+          adoptedRef.current = true;
+          freshRef.current = undefined;
+          onReconcileIdRef.current?.(sid);
+        },
         // {t:"hist"} (#348 / Hermes #365 r2): the transcript attach's EXACT turn boundary.
         // Seed the loader so the first lazy-load sends `before=<cursor>` — never the
         // width-dependent server guess. Arrives right after seq; the attach payload's

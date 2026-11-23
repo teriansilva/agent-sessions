@@ -19,10 +19,29 @@ import os
 import re
 import shutil
 import socket
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 DTACH_BIN = os.environ.get("AGENT_SESSIONS_DTACH_BIN") or shutil.which("dtach") or "dtach"
+
+
+def _sun_path_max(platform: str) -> int:
+    """The longest usable AF_UNIX pathname, in bytes, on ``platform`` (#2088).
+
+    ``struct sockaddr_un.sun_path`` holds the path AND its trailing NUL, and CPython refuses a
+    path whose length is >= the field size before it calls ``bind``/``connect``. Linux's field
+    is 108 bytes, so 107 are usable; macOS's and the BSDs' field is 104, so 103 are usable.
+    """
+    return 107 if platform.startswith("linux") else 103
+
+
+#: The kernel's AF_UNIX `sun_path` budget (#2088): 107 usable bytes on Linux, 103 on macOS/BSD
+#: (see `_sun_path_max`). A longer path cannot be `bind()`/`connect()`ed: dtach may still
+#: create its master (it addresses the socket differently), but every liveness probe then fails
+#: with ENAMETOOLONG and each attach is answered BUSY forever. Measured in `os.fsencode` bytes,
+#: because that is what the kernel stores (a non-ASCII runtime dir is longer than its chars).
+SUN_PATH_MAX = _sun_path_max(sys.platform)
 
 # Tri-state master probe (#355). Verdicts: a successful connect or a decisive errno
 # (refused/missing — both immediate) settle on the first attempt; only timeouts walk
@@ -61,6 +80,16 @@ class PtyBridgeError(RuntimeError):
     """Raised when a session descriptor is malformed or unsafe."""
 
 
+class SocketPathTooLong(PtyBridgeError):
+    """The dtach socket path cannot fit the kernel's AF_UNIX ``sun_path`` (#2088).
+
+    A distinct, terminal refusal: this is not BUSY (a retry cannot clear it) and not an
+    uncertain liveness probe. The message reports the measured bytes and the limit only —
+    never the path, which would echo the operator's runtime dir into a websocket close
+    reason.
+    """
+
+
 # The last runtime dir we ensured exists (#678). `socket_path()` runs per probe candidate in
 # the cap sweep and used to `mkdir(parents=True, exist_ok=True)` every call — a syscall per
 # probe. Keyed by the CONFIGURED path (not cached forever): tests and deployments that change
@@ -95,6 +124,25 @@ def socket_path(engine: str, session_id: str) -> Path:
     return runtime_dir() / name
 
 
+def check_socket_path(engine: str, session_id: str) -> None:
+    """Refuse a socket path the kernel cannot ``bind()``/``connect()`` (#2088).
+
+    Called before the open-action probes and before every create/attach argv is built, so
+    an impossible path is a terminal refusal instead of a BUSY reconnect loop: dtach can
+    still create a master whose socket the broker can never reach, and every attach then
+    reads "not alive + lock held" → 4409 forever with no visible cause. ``socket_path``
+    itself stays a pure path builder (the census, owner records and maintenance compare
+    those paths), so this is the one explicit gate.
+    """
+    path = socket_path(engine, session_id)
+    size = len(os.fsencode(str(path)))
+    if size > SUN_PATH_MAX:
+        raise SocketPathTooLong(
+            f"dtach socket path is {size} bytes; the AF_UNIX limit is {SUN_PATH_MAX} bytes "
+            "— this session cannot be launched or attached"
+        )
+
+
 def attach_argv(*, engine: str, session_id: str) -> list[str]:
     """Build the **attach-only** ``dtach`` command — no fallback to create.
 
@@ -106,6 +154,7 @@ def attach_argv(*, engine: str, session_id: str) -> list[str]:
     """
     # dtach's argv shape is `-a <socket> <options>` — the socket must come immediately
     # after `-a` or dtach parses the next option (e.g. `-z`) as the socket path and fails.
+    check_socket_path(engine, session_id)
     sock = str(socket_path(engine, session_id))
     return [DTACH_BIN, "-a", sock, "-z", "-E", "-r", "winch"]
 
@@ -148,6 +197,7 @@ def launch_argv(
         raise PtyBridgeError("launch_argv must not be empty")
     if not argv[0].startswith("/"):
         raise PtyBridgeError(f"launch binary must be an absolute path: {argv[0]!r}")
+    check_socket_path(engine, session_id)
     sock = str(socket_path(engine, session_id))
     mode = CREATE_DETACHED if detached else CREATE_ATTACHED
     return [DTACH_BIN, mode, sock, "-z", "-E", "-r", "winch", *argv]

@@ -123,6 +123,7 @@
         "archive": "projects-archive",
         "sessions": "projects"
       },
+      "read_only": false,
       "root": "~/.claude"
     },
     "terminal": {

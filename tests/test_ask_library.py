@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sessions import ask_library, ask_store, template_secrets
+from agent_sessions import ask_library, ask_operations, ask_store, template_secrets
 from agent_sessions import automations_store as astore
 from agent_sessions.routes import automations as aroutes
 from test_ask_operations import _confirm, _project, _result, _settled, live  # noqa: F401
@@ -509,6 +509,101 @@ def test_an_edit_whose_automation_was_switched_off_since_is_stale(live, ai, miss
     out = _settled(live, cid)
     assert out["state"] == "stale" and "switched off" in out["reason"]
     assert astore.get(aid)["name"] == "nightly audit"
+
+
+def _facts_after_a_save(monkeypatch, aid: str, rev: int, change: dict) -> dict:
+    """Inject the operator's own save exactly at staging's facts read (#2260): after HQ's draft
+    was prepared from its own read, before the facts the card would bind are read again."""
+    real = ask_operations.facts_for
+    raced = {"saved": False}
+
+    async def facts_after_the_save(op, target, fields, app, operator, *, cid=""):
+        if target == aid and not raced["saved"]:
+            raced["saved"] = True
+            aroutes._patch(aid, {"revision": rev, **change})
+        return await real(op, target, fields, app, operator, cid=cid)
+
+    monkeypatch.setattr(ask_operations, "facts_for", facts_after_the_save)
+    return raced
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"name": "HQ's name"},
+        {
+            "trigger": {
+                "kind": "schedule",
+                "cadence": {"kind": "daily", "time": "02:00"},
+                "tz": "UTC",
+            }
+        },
+    ],
+    ids=["plain", "widening"],
+)
+def test_an_edit_card_stages_nothing_when_the_automation_was_saved_before_the_facts_read(
+    live, ai, mission_cwd, monkeypatch, change
+):
+    aid = _stored(enabled=True)
+    rev = astore.get(aid)["revision"]
+    raced = _facts_after_a_save(monkeypatch, aid, rev, {"name": "the operator's name"})
+    cid, script = _ask(
+        live,
+        ai,
+        calls(("list_automations", {})),
+        call(
+            "propose_library",
+            {"group": "automation", "action": "edit", "id": aid, **change},
+            cid="p",
+        ),
+    )
+    assert raced["saved"]
+    assert _cards(live, cid) == []
+    out = json.dumps(_result(script, 2))
+    assert "automation was saved elsewhere" in out and "read it again" in out
+    # The competing save is exactly what it was: staging wrote nothing.
+    row = astore.get(aid)
+    assert row["name"] == "the operator's name" and row["enabled"]
+
+
+def test_an_enable_card_stages_nothing_when_the_automation_was_saved_before_the_facts_read(
+    live, ai, mission_cwd, monkeypatch
+):
+    aid = _stored(enabled=False)
+    rev = astore.get(aid)["revision"]
+    raced = _facts_after_a_save(monkeypatch, aid, rev, {"name": "the operator's name"})
+    cid, script = _ask(
+        live,
+        ai,
+        calls(("list_automations", {})),
+        call("propose_library", {"group": "automation", "action": "enable", "id": aid}, cid="p"),
+    )
+    assert raced["saved"]
+    assert _cards(live, cid) == []
+    out = json.dumps(_result(script, 2))
+    assert "automation was saved elsewhere" in out and "read it again" in out
+    assert not astore.get(aid)["enabled"]
+    assert astore.get(aid)["name"] == "the operator's name"
+
+
+def test_an_edit_saved_after_the_card_was_staged_is_stale_at_the_tap(live, ai, mission_cwd):
+    aid = _stored(enabled=False)
+    cid, _ = _ask(
+        live,
+        ai,
+        calls(("list_automations", {})),
+        call(
+            "propose_library",
+            {"group": "automation", "action": "edit", "id": aid, "name": "HQ's name"},
+            cid="p",
+        ),
+    )
+    (card,) = _cards(live, cid)
+    rev = astore.get(aid)["revision"]
+    aroutes._patch(aid, {"revision": rev, "name": "the operator's name"})
+    _confirm(live, card["action_id"])
+    assert _settled(live, cid)["state"] == "stale"
+    assert astore.get(aid)["name"] == "the operator's name"
 
 
 # ---- review round (#1611): what HQ read is what it edits ----------------------------------------

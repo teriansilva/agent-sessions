@@ -40,6 +40,11 @@ def open_action(engine: str, native_id: str) -> tuple[str, sessionlock.SessionLo
     ``acquire`` across ``await`` points would reopen the very race the flock closes.
     """
     key = f"{engine}:{native_id}"
+    # A socket path past the kernel's AF_UNIX limit is never "not alive": dtach can still
+    # create a master the broker cannot reach, and this decision would then take the lock
+    # and answer BUSY for every later attach (#2088). Refuse BEFORE the probes and before
+    # any lock, so nothing is wedged and the caller can show the real cause.
+    ptybridge.check_socket_path(engine, native_id)
     # A live master already runs the agent → attach; its holder owns the lock.
     if ptybridge.session_exists(engine, native_id):
         return ATTACH, None

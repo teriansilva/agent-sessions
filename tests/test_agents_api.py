@@ -55,6 +55,27 @@ def test_the_detail_route_is_what_the_manifest_declares(auth_cfg, engine_bin):
     assert all(d["capabilities"].values())
 
 
+def test_every_first_party_store_reports_its_real_access(auth_cfg):
+    """#1182: the Agents detail page renders this value, so the API must serve the accurate
+    declaration. Claude, Copilot and Shell archives/records write their stores; opencode's only
+    write is admitted maintenance compaction; the rest are read-only to BattleLab."""
+    c = _client(auth_cfg)
+    written = {"claude", "shell", "copilot", "opencode"}
+    for engine in (
+        "claude",
+        "shell",
+        "copilot",
+        "opencode",
+        "opencode2",
+        "codex",
+        "gemini",
+        "kimi",
+        "antigravity",
+    ):
+        store = c.get(f"/api/engines/{engine}").json()["store"]
+        assert store["read_only"] is (engine not in written), engine
+
+
 def test_an_absent_binary_is_a_state_not_an_error(auth_cfg, no_engine_bin):
     c = _client(auth_cfg)
     r = c.get("/api/engines/gemini")

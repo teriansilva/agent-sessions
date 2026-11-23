@@ -62,6 +62,16 @@ def _objective(mid, key, *, gate=True):
     )
 
 
+def _identity(mid: str, key: str = KEY) -> dict:
+    """The objective identity a model reading the checklist right now would have been shown."""
+    snap = missions.objective_snapshot(mid, key)
+    assert snap is not None, key
+    return {
+        "expect_episode": int(snap["episode"]),
+        "expect_incarnation": str(snap["incarnation"]),
+    }
+
+
 # =================================================================================== finding 3
 def test_WAIVING_an_objective_starts_a_new_episode(store):
     """`bump_episode` had no production caller at all.
@@ -162,7 +172,9 @@ async def test_a_KNOWN_refusal_does_not_charge_the_budget(store, monkeypatch):
     monkeypatch.setattr(orchestrator, "precondition_for", lambda *a, **k: None)
     monkeypatch.setattr(orchestrator, "_persist", lambda recs: [])
 
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
     assert res["sent"] is False
 
     b = sup.budget_state(store, KEY)
@@ -238,10 +250,11 @@ async def test_an_objective_WAIVED_while_the_model_ran_is_not_nudged(store, monk
     persisted: list = []
     monkeypatch.setattr(orchestrator, "_persist", lambda recs: persisted.extend(recs) or recs)
 
-    # The operator settles it after the proposal was formed, before the write.
+    # The model read this identity; the operator settles it after that, before the write.
+    ident = _identity(store)
     missions.patch_objectives(store, [{"op": "waive", "key": KEY}])
 
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
     assert res["sent"] is False
     assert "waived" in res["why"]
     assert persisted == [], "a stale proposal was written after the objective was settled"
@@ -256,9 +269,10 @@ async def test_an_objective_DROPPED_while_the_model_ran_is_not_nudged(store, mon
     monkeypatch.setattr(orchestrator, "precondition_for", lambda *a, **k: None)
     persisted: list = []
     monkeypatch.setattr(orchestrator, "_persist", lambda recs: persisted.extend(recs) or recs)
+    ident = _identity(store)
     missions.patch_objectives(store, [{"op": "drop", "key": KEY}])
 
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
     assert res["sent"] is False and persisted == []
 
 
@@ -502,7 +516,9 @@ async def test_a_session_ADOPTED_ELSEWHERE_mid_pass_is_not_written_to(store, tmp
     persisted: list = []
     monkeypatch.setattr(orchestrator, "_persist", lambda recs: persisted.extend(recs) or recs)
 
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
     assert res["sent"] is False
     assert other in res["why"], res["why"]
     assert persisted == [], "a mission wrote into a session another mission now owns"
@@ -1655,7 +1671,9 @@ async def test_a_REFUSED_delivery_is_not_reported_as_sent(store, monkeypatch):
         return {"id": action["id"], "state": "stale", "error": "a viewer was busy"}
 
     monkeypatch.setattr(actuator, "deliver_auto", _refused)
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
 
     assert res["sent"] is False, "a refusal was reported as a delivered nudge"
     assert "viewer" in res["why"]
@@ -1682,7 +1700,9 @@ async def test_a_DELIVERED_nudge_is_still_reported_as_sent(store, monkeypatch):
         return {"id": action["id"], "state": "delivered"}
 
     monkeypatch.setattr(actuator, "deliver_auto", _ok)
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
     assert res["sent"] is True
 
 
@@ -1698,14 +1718,33 @@ async def test_ONE_pass_nudges_ONCE_even_with_several_held_sessions(store, monke
     _running(store, SESSION, OTHER, third)
     _objective(store, KEY)
 
+    ident = _identity(store)
+
     async def _wants_a_nudge(mission_id, session_key, *, path=None):
-        return {"assessment": "on_track", "nudge": {"objective_key": KEY, "why": "poke"}}
+        return {
+            "assessment": "on_track",
+            "nudge": {
+                "objective_key": KEY,
+                "why": "poke",
+                "objective_episode": ident["expect_episode"],
+                "objective_incarnation": ident["expect_incarnation"],
+            },
+        }
 
     monkeypatch.setattr(sup, "consider", _wants_a_nudge)
     sent: list = []
 
     async def _spy(
-        mid, *, session_key, objective_key, why, registry=None, path=None, expected_authority=None
+        mid,
+        *,
+        session_key,
+        objective_key,
+        why,
+        expect_episode,
+        expect_incarnation,
+        registry=None,
+        path=None,
+        expected_authority=None,
     ):
         sent.append(session_key)
         return {"sent": True, "id": f"a{len(sent)}", "episode": 1}
@@ -1925,7 +1964,9 @@ async def test_a_HOLD_that_cannot_be_RECORDED_is_RETRIED_not_lost(store, monkeyp
         "ensure_held_event",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the store is unavailable")),
     )
-    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
     assert res["sent"] is False
     aid = res["id"]
 

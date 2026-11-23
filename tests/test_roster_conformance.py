@@ -492,6 +492,9 @@ mint = "adopt"
 [store]
 root = "~/.zetab"
 layout = "zetab-store"
+# It admits the writing sqlite-vacuum maintenance, so — like the real opencode manifest — its
+# store is not read-only to BattleLab (#1182).
+read_only = false
 [store.paths]
 db = "zetab.db"
 

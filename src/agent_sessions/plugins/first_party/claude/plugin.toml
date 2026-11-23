@@ -21,6 +21,9 @@ legacy_bare_id = true
 [store]
 root = "~/.claude"
 layout = "claude-projects"
+# BattleLab writes this store: archive/unarchive moves the session's JSONL between `projects/`
+# and `projects-archive/` (#1182).
+read_only = false
 [store.paths]
 sessions = "projects"
 archive = "projects-archive"

@@ -75,7 +75,7 @@ const DETAIL = {
     search_paths: ["~/.local/bin"],
   },
   provenance: { state: "adopted", via: "search_paths", path: LONG_BIN, note: null },
-  store: { root: "~/.claude", resolved: "/home/operator/.claude", layout: "claude-projects", read_only: true },
+  store: { root: "~/.claude", resolved: "/home/operator/.claude", layout: "claude-projects", read_only: false },
   launch: { resume: "flag", new: "pin-flag", admission: null },
   transcript: { kind: "claude-jsonl", strict: false },
   usage: { source: "plan", kind: "claude-cli-probe" },

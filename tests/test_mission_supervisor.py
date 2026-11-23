@@ -88,6 +88,16 @@ def _real_objective(mid, key=KEY, *, gate=True):
     )
 
 
+def _identity(mid: str, key: str = KEY) -> dict:
+    """The objective identity a model reading the checklist right now would have been shown."""
+    snap = missions.objective_snapshot(mid, key)
+    assert snap is not None, key
+    return {
+        "expect_episode": int(snap["episode"]),
+        "expect_incarnation": str(snap["incarnation"]),
+    }
+
+
 def test_a_fresh_objective_has_its_whole_budget(store):
     b = sup.budget_state(store, KEY)
     assert (b["spent"], b["remaining"], b["episode"]) == (0, sup.NUDGE_BUDGET, 1)
@@ -407,7 +417,14 @@ async def test_a_nudge_naming_an_UNKNOWN_objective_is_dropped_not_remapped(
         {"recap": "r", "assessment": "stalled", "nudge": {"objective_key": "pr_open", "why": "x"}},
     )
     out = await sup.consider(store, SESSION)
-    assert out["nudge"] == {"objective_key": "pr_open", "why": "x"}
+    ident = _identity(store, "pr_open")
+    assert out["nudge"]["objective_key"] == "pr_open"
+    assert out["nudge"]["why"] == "x"
+    # …carrying the identity of the objective the model read, not a bare key (#1003).
+    assert (out["nudge"]["objective_episode"], out["nudge"]["objective_incarnation"]) == (
+        ident["expect_episode"],
+        ident["expect_incarnation"],
+    )
 
 
 @pytest.mark.anyio
@@ -508,7 +525,9 @@ async def test_a_nudge_REFUSED_by_the_budget_sends_nothing_and_says_why(store):
     missions.adopt(store, SESSION)
     for i in range(sup.NUDGE_BUDGET):
         _sent(store, f"d{i}", "delivered")
-    out = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+    out = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
     assert out["sent"] is False and "budget" in out["why"]
 
 
@@ -530,13 +549,135 @@ async def test_the_BINDING_is_written_before_the_action(store, monkeypatch):
 
     monkeypatch.setattr(orchestrator, "_persist", die)
     with pytest.raises(RuntimeError):
-        await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move")
+        await sup.nudge(
+            store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+        )
 
     ids = missions.supervisor_action_ids(store, KEY, 1)
     assert len(ids) == 1, "the binding was not written before the append"
     b = sup.budget_state(store, KEY)
     assert (b["spent"], b["indeterminate"]) == (1, True)
     assert sup.may_nudge(store, KEY)[0] is False
+
+
+# ---- the identity the model read (#1003) ----------------------------------------------------
+
+
+def _delivered(monkeypatch):
+    from agent_sessions import actuator, orchestrator
+
+    monkeypatch.setattr(orchestrator, "precondition_for", lambda *a, **k: None)
+    monkeypatch.setattr(orchestrator, "_persist", lambda recs: recs)
+
+    async def _ok(action, *, registry=None, extra_authority=None, extra_fingerprint=None):
+        return {"id": action["id"], "state": "delivered"}
+
+    monkeypatch.setattr(actuator, "deliver_auto", _ok)
+
+
+@pytest.mark.anyio
+async def test_a_nudge_bound_to_the_SAME_identity_is_sent_and_charged(store, monkeypatch):
+    """The ordinary path: the model-read identity still names the slot, so nothing changed."""
+    _real_objective(store)
+    _delivered(monkeypatch)
+    res = await sup.nudge(
+        store, session_key=SESSION, objective_key=KEY, why="move", **_identity(store)
+    )
+    assert res["sent"] is True, res
+    assert missions.supervisor_action_ids(store, KEY, 1) == [res["id"]]
+    assert sup.budget_state(store, KEY)["spent"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_nudge_for_an_objective_REPLACED_after_the_reading_is_REFUSED(store, monkeypatch):
+    """A drop and a re-add during the model call leaves a nudge about an objective that is gone.
+
+    The episode alone cannot tell them apart — the replacement starts at 1 again — so the
+    incarnation the model read is compared. Nothing is bound, sent or charged to the replacement.
+    """
+    _real_objective(store)
+    ident = _identity(store)
+    old = ident["expect_incarnation"]
+    missions.patch_objectives(store, [{"op": "drop", "key": KEY}])
+    _real_objective(store)
+    assert missions.objective_incarnation(store, KEY) not in ("", old)
+
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
+    assert res["sent"] is False and "re-created" in res["why"], res
+    assert missions.supervisor_action_ids(store, KEY, 1) == [], "a binding was taken"
+    assert sup.budget_state(store, KEY)["spent"] == 0, "the replacement was charged"
+    assert ledger.latest_by_id() == {}, "a sendable ledger action was left behind"
+
+
+@pytest.mark.anyio
+async def test_a_nudge_for_an_objective_REPLACED_before_the_RESERVATION_is_REFUSED(
+    store, monkeypatch
+):
+    """The LATE window: the pre-checks passed, then the slot was replaced during precondition.
+
+    Every guard that reads the current row agrees with itself, so only the reservation's own
+    incarnation comparison — against the identity captured before the call — can refuse this.
+    """
+    from agent_sessions import orchestrator
+
+    _real_objective(store)
+    ident = _identity(store)
+    old = ident["expect_incarnation"]
+
+    def replace(key):
+        missions.patch_objectives(store, [{"op": "drop", "key": KEY}])
+        _real_objective(store)
+        return None
+
+    monkeypatch.setattr(orchestrator, "precondition_for", replace)
+    persisted: list = []
+    monkeypatch.setattr(orchestrator, "_persist", lambda recs: persisted.extend(recs) or recs)
+
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
+    assert missions.objective_incarnation(store, KEY) not in (
+        "",
+        old,
+    ), "the replacement did not land"
+    assert res["sent"] is False, res
+    assert "re-created" in res["why"], f"reported as {res['why']!r}, not an identity refusal"
+    assert persisted == [], "a nudge was appended against the replacement"
+    assert missions.supervisor_action_ids(store, KEY, 1) == [], "a binding was taken"
+    assert ledger.latest_by_id() == {}
+
+
+@pytest.mark.anyio
+async def test_a_nudge_for_an_objective_whose_EPISODE_moved_is_REFUSED(store):
+    """Same incarnation, new episode: a state change advanced it while the call was out.
+
+    The identity is the pair, not just which row is in the slot, so this refuses too.
+    """
+    _real_objective(store)
+    ident = _identity(store)
+    missions.bump_episode(store, KEY)
+
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
+    assert res["sent"] is False and "new episode" in res["why"], res
+    assert missions.supervisor_action_ids(store, KEY, ident["expect_episode"]) == []
+    assert sup.budget_state(store, KEY)["spent"] == 0
+
+
+@pytest.mark.anyio
+async def test_the_reservation_names_an_IDENTITY_refusal_not_the_budget(store, monkeypatch):
+    """Both come back through `record_supervisor_action`'s `False`; only the re-read tells them
+    apart, and calling an identity refusal "budget spent" misleads the operator."""
+    from agent_sessions import orchestrator
+
+    _real_objective(store)
+    ident = _identity(store)
+
+    def replace(key):
+        missions.patch_objectives(store, [{"op": "drop", "key": KEY}])
+        _real_objective(store)
+        return None
+
+    monkeypatch.setattr(orchestrator, "precondition_for", replace)
+    res = await sup.nudge(store, session_key=SESSION, objective_key=KEY, why="move", **ident)
+    assert "budget" not in res["why"], res
 
 
 @pytest.mark.anyio

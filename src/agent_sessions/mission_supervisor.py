@@ -919,10 +919,22 @@ def _reading(reply: dict, a: dict, input_fp: str) -> dict:
         assessment = "on_track"
     nudge = reply.get("nudge")
     if isinstance(nudge, dict) and str(nudge.get("objective_key") or "") in keys:
-        nudge = {
-            "objective_key": str(nudge["objective_key"]),
-            "why": str(nudge.get("why") or "")[:400],
-        }
+        key = str(nudge["objective_key"])
+        o = next((o for o in a["objectives"] if o["key"] == key), None)
+        # THE IDENTITY THE MODEL ACTUALLY READ rides with the narrowing, exactly as `_draft_reading`
+        # carries a draft's (#1003). The reply is about the objective on THIS checklist; the slot
+        # may hold a different one by the time the answer lands, and a nudge must refuse rather
+        # than be rebound to it. Never taken from the model, never read from the current row here.
+        nudge = (
+            {
+                "objective_key": key,
+                "why": str(nudge.get("why") or "")[:400],
+                "objective_episode": int(o.get("episode") or 0),
+                "objective_incarnation": str(o.get("incarnation") or ""),
+            }
+            if o is not None
+            else None
+        )
     else:
         nudge = None
     draft = _draft_reading(reply.get("draft"), a)
@@ -1000,6 +1012,8 @@ async def nudge(
     session_key: str,
     objective_key: str,
     why: str,
+    expect_episode: int,
+    expect_incarnation: str,
     registry=None,
     path=None,
     expected_authority: dict | None = None,
@@ -1011,6 +1025,12 @@ async def nudge(
     session, and delivered through `deliver_auto` — so it inherits the tier check, the viewer-busy
     rule, the precondition, the single-writer fence and the mission fence without any of them
     being restated here. A second delivery path is a second place for those to be forgotten.
+
+    `expect_episode` and `expect_incarnation` are the objective identity the MODEL READ, carried
+    from the checklist its input was built from (#1003), exactly as `propose_draft` carries a
+    draft's (#1002). They are required, not defaulted: adopting whatever is in the slot now is the
+    bug — a drop and a re-add of the same key during the call would charge the nudge to, and show
+    it against, a different objective wearing that key.
 
     The binding is written BEFORE the action is persisted. That ordering is what makes the budget
     survive a crash: a binding with no ledger row reads as `indeterminate` (charged, and the
@@ -1049,6 +1069,11 @@ async def nudge(
     episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
     cfg = prefs.get_mission_orchestration()
 
+    # THE IDENTITY THE MODEL READ (#1003). Required, never defaulted: an objective with no identity
+    # cannot be bound, and reading the current row here would be the very rebinding this refuses.
+    if not expect_incarnation:
+        return {"sent": False, "why": "the objective has no identity to bind a nudge to"}
+
     # WHAT WILL BE TYPED, decided here and bound to the action (#983). The operator's direction
     # for this objective filled with its own checked facts, or the global nudge when it has none —
     # never the model's `why`, which is only the action's title. Delivery renders again and types
@@ -1057,10 +1082,21 @@ async def nudge(
     # An UNFILLABLE direction is not sent and is not swapped for the default nudge: the pass holds
     # it and escalates, the way it does a spent budget. Rendered before the reservation, so a
     # direction that cannot be filled costs the episode nothing.
+    #
+    # BEFORE any of that, is this still the objective the model read? Both facts that can move are
+    # compared: the episode it is in, and which objective is in the slot. A drop and a re-add of the
+    # same key starts its episode at 1 again, so only the incarnation can tell the replacement from
+    # the predecessor; the reservation below re-checks the incarnation inside its own transaction.
     try:
         snapshot = await missions.run_admitted(
             lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
         )
+        if snapshot is None:
+            return {"sent": False, "why": "the objective was dropped while this was prepared"}
+        if episode != int(expect_episode) or int(snapshot.get("episode") or 0) != episode:
+            return {"sent": False, "why": "the objective started a new episode meanwhile"}
+        if str(snapshot.get("incarnation") or "") != expect_incarnation:
+            return {"sent": False, "why": "the objective was re-created while this was prepared"}
         rendered = mission_directions.render(snapshot, cfg)
     except mission_directions.NotRenderable as e:
         return {
@@ -1124,17 +1160,33 @@ async def nudge(
             mission_id,
             session_key=session_key,
             objective_key=objective_key,
-            episode=episode,
+            episode=int(expect_episode),
             action_id=action_id,
             max_per_episode=NUDGE_BUDGET,
+            # THE INCARNATION IS THE IDENTITY, checked inside the transaction that takes the
+            # binding (#1003). An episode number alone is not one: a drop and a re-add of the same
+            # key starts at 1 again, so the nudge minted for the predecessor would bind to its
+            # replacement. This is the same argument `propose_draft` passes.
+            expect_incarnation=expect_incarnation,
             path=path,
         )
     )
     if not reserved:
-        return {
-            "sent": False,
-            "why": f"the {NUDGE_BUDGET}-nudge budget for this episode is spent",
-        }
+        # The transaction is the decision; this only names it for the operator. An identity
+        # refusal must NOT be reported as budget exhaustion, though both come back through the
+        # same `False`: the re-read is what tells them apart, as `propose_draft`'s does.
+        why = f"the {NUDGE_BUDGET}-nudge budget for this episode is spent"
+        with contextlib.suppress(Exception):
+            latest = await missions.run_admitted(
+                lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
+            )
+            if latest is None:
+                why = "the objective was dropped while this was prepared"
+            elif str(latest.get("incarnation") or "") != expect_incarnation:
+                why = "the objective was re-created while this was prepared"
+            elif int(latest.get("episode") or 0) != int(expect_episode):
+                why = "the objective started a new episode meanwhile"
+        return {"sent": False, "why": why}
     try:
         kept = await missions.run_admitted(lambda: orchestrator._persist([rec]))
     except BaseException:
@@ -2370,6 +2422,9 @@ async def _pass_one_session(
             session_key=session_key,
             objective_key=proposal["objective_key"],
             why=proposal.get("why") or "",
+            # The identity from the checklist the model read, not from the slot as it is now.
+            expect_episode=int(proposal["objective_episode"]),
+            expect_incarnation=str(proposal["objective_incarnation"]),
             registry=registry,
             path=path,
             expected_authority=reading.get("authority") or {},
