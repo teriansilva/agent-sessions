@@ -59,6 +59,10 @@ dev = [
     "pytest-xdist==3.8.0",  # pr-validate runs `pytest -n 8 --dist loadfile` (#1098)
     "httpx==0.28.1",  # for FastAPI TestClient
     "ruff==0.8.4",
+    # scripts/build-landing renders the landing page + blog (#2280); build/test time only, never served.
+    "markdown==3.11.2",
+    "pyyaml==6.0.3",
+    "pygments==2.21.0",
 ]
 
 [build-system]

@@ -8086,26 +8086,33 @@ def stop_escalated(
     kind: str = "stall",
     fp: str = "",
     path: Path | None = None,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     """The objectives this session was escalated on at this transcript mark (#1577).
 
-    A STOP is a session at a mark: until the transcript moves, it is the same stop. Read from the
-    escalation events, which carry the session and — for a session-level escalation — the
-    `stop_mark` it was raised at. A `needs_approval` stop is also its KIND and the input the model
-    read (`stop_fp`): a fresh decision at the same mark is a new stop. Empty when never raised.
+    Each pair is ``(objective_key, objective_incarnation)`` (#1587). A STOP is a session at a
+    mark: until the transcript moves, it is the same stop. Read from the escalation events, which
+    carry the session and — for a session-level escalation — the `stop_mark` it was raised at. A
+    `needs_approval` stop is also its KIND and the input the model read (`stop_fp`): a fresh
+    decision at the same mark is a new stop. Empty when never raised.
+
+    The incarnation is what tells "the objective that was raised" from "a new objective under the
+    same key": drop a key and re-add it and the operator is looking at a question nothing has ever
+    been raised about. An escalation written before #1587 has no incarnation recorded, and its
+    pair's second element is `""` — the caller matches it by key alone, as it did before.
     """
     validate_id(mission_id)
     con = _ready(path)
     try:
         rows = con.execute(
-            "SELECT json_extract(meta, '$.objective_key') AS k FROM mission_events "
+            "SELECT json_extract(meta, '$.objective_key') AS k, "
+            "json_extract(meta, '$.objective_incarnation') AS i FROM mission_events "
             "WHERE mission_id=? AND kind='escalation' AND session_key=? AND json_valid(meta) "
             "AND json_extract(meta, '$.stop_mark')=? "
             "AND COALESCE(json_extract(meta, '$.stop_kind'), 'stall')=? "
             "AND COALESCE(json_extract(meta, '$.stop_fp'), '')=? ORDER BY seq",
             (mission_id, session_key, int(mark), kind, fp),
         ).fetchall()
-        return [str(r["k"]) for r in rows if r["k"] is not None]
+        return [(str(r["k"]), str(r["i"] or "")) for r in rows if r["k"] is not None]
     finally:
         con.close()
 

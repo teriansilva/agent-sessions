@@ -93,10 +93,23 @@ test("minimised, the on-call bar takes room under the top bar and never covers t
   await connect(page, srv);
   srv.connected[0] = true;
   say(srv, { t: "connected" });
+  // HQ says one line, then a queued follow-up arrives (#1664). The bar quotes only the line the
+  // operator heard; the panel keeps the queued one muted.
+  say(srv, { t: "caption", who: "hq", id: "h1", text: "Two auth tests fail.", kind: "answer", turn_id: "t1" });
+  say(srv, { t: "speaking", on: true });
+  say(srv, { t: "speaking", on: false });
+  say(srv, { t: "caption", who: "hq", id: "h2", text: "And one more thing.", kind: "answer", turn_id: "t2" });
   await page.getByTestId("call-minimise").click();
   const bar = page.getByTestId("call-bar");
   await expect(bar).toBeVisible();
   await expect(page.getByTestId("call-panel")).toHaveCount(0);
+  await expect(bar).toContainText("HQ: “Two auth tests fail.”");
+  await expect(bar).not.toContainText("And one more thing.");
+  // The queued line is interrupted (cut): the bar still quotes only the spoken line.
+  say(srv, { t: "speaking", on: true });
+  say(srv, { t: "interrupt" });
+  await expect(bar).toContainText("HQ: “Two auth tests fail.”");
+  await expect(bar).not.toContainText("And one more thing.");
   await expect(page.getByTestId("call-bar-open")).toBeFocused();
   const barBox = (await bar.boundingBox())!;
   const header = (await page.locator(".hud-topbar").boundingBox())!;

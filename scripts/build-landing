@@ -1,0 +1,916 @@
+#!/usr/bin/env python3
+"""Build battlelabos.com's landing page and blog from landing/src/ (#2280).
+
+    scripts/build-landing           write landing/index.html, site.css, site.js, sitemap.xml, blog/**
+    scripts/build-landing --check   exit 1 if any of those differ from what the sources produce
+
+Sources (landing/src/):
+  landing.py             the landing page body and the FAQ (plain strings, no template engine)
+  base.css, site.css     the page primitives (NIGHTJAR, from the old inline <style>) + landing/blog styles
+  site.js, page.js       progressive enhancement: site.js on every page, page.js on the landing page only
+  briefing.html          General Lupu's briefing figure (page.js picks the cut and lazy-loads it)
+  brandmark.svg          the Chevron Plate mark: the brand kit's `mark` slot content, verbatim
+  posts/<slug>/          one folder per post: index.md (YAML front matter + Markdown) + its media
+
+Every link the build writes is RELATIVE, so the output also renders under a prefix (a BattleLab
+artifact preview). Two paths are absolute on purpose: /connect (the app, not this site) and the
+/favicon.svg link, whose exact markup the brand kit pins (web/src/theme/brandAssets.test.ts).
+The top bar's logo is the kit's <!-- brand:mark --> slot; its content is src/brandmark.svg.
+The output is deterministic (no build date), so --check can compare bytes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import importlib.util
+import json
+import math
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+import markdown
+import yaml
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import TextLexer, get_lexer_by_name
+from pygments.util import ClassNotFound
+
+REPO = Path(__file__).resolve().parent.parent
+LANDING = REPO / "landing"
+SRC = LANDING / "src"
+SITE = "https://battlelabos.com"
+UMAMI_ID = "b35559ca-4f3d-43ea-aa44-879a354cf889"
+
+# Media limits the blog's authoring rules promise (landing/README.md).
+MAX_VIDEO = 4 * 1024 * 1024
+MAX_FILE = 1024 * 1024
+VIDEO_EXT = {".mp4", ".webm"}
+
+ENGINES = {  # badge text + name, the app's engine colours (web/src/lib/format.ts)
+    "claude": ("CC", "Claude Code"),
+    "codex": ("CX", "Codex"),
+    "opencode": ("OC", "opencode"),
+    "gemini": ("GM", "Gemini"),
+    "antigravity": ("AG", "Antigravity"),
+    "kimi": ("KI", "Kimi Code"),
+}
+KINDS = {"how-to": "How-to", "field-report": "Field report", "release": "Release"}
+TAG_LABELS = {"hq": "HQ"}
+REQUIRED = ("title", "date", "kind", "summary", "tags", "author")
+
+esc = html.escape
+
+
+class BuildError(Exception):
+    pass
+
+
+def tag_label(t: str) -> str:
+    return TAG_LABELS.get(t, t.replace("-", " ").title())
+
+
+# ----------------------------------------------------------------------------- markdown
+DIRECTIVE_RE = re.compile(r"^(:{3,})\s*([a-z][\w-]*)(?:\[(.*?)\])?(?:\{(.*)\})?\s*$")
+ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
+FENCE_RE = re.compile(r"^(```+|~~~+)\s*([\w+-]*)\s*(.*)$")
+CALLOUTS = {"note": "NOTE", "tip": "TIP", "warning": "CAUTION", "danger": "DANGER"}
+
+
+class Renderer:
+    """Markdown + container directives. Fenced code and directive output are stashed as
+    placeholders so python-markdown never rewrites the HTML this build generates."""
+
+    def __init__(self, post_dir: Path):
+        self.post_dir = post_dir
+        self.stash: list[str] = []
+        self.files_used: set[str] = set()
+        self.count = {"video": 0, "images": 0, "files": 0, "embeds": 0}
+        self.toc: list = []
+
+    def fail(self, msg: str) -> None:
+        raise BuildError(f"{self.post_dir.name}: {msg}")
+
+    def _ph(self, html_: str) -> str:
+        self.stash.append(html_)
+        return f"\n\nBLSTASH{len(self.stash) - 1}X\n\n"
+
+    def render(self, text: str) -> str:
+        md = markdown.Markdown(
+            extensions=["tables", "toc", "sane_lists", "attr_list"],
+            extension_configs={"toc": {"permalink": False, "toc_depth": "2-3"}},
+        )
+        out = md.convert(self._pre(text))
+        self.toc = md.toc_tokens  # type: ignore[attr-defined]
+        return self._images(self._post(out))
+
+    def _images(self, out: str) -> str:
+        """EVERY image in the finished post, inline or alone in a paragraph: a local one must be in the
+        post's folder (and so is copied with it) within the size limit, and every one needs alt text.
+        Runs once on the final HTML, so an image inside a directive is checked and counted once."""
+
+        def check(m: re.Match) -> str:
+            tag = m.group(0)
+            src = (re.search(r'\ssrc="([^"]*)"', tag) or [None, ""])[1]
+            if not re.match(r"^https?://", src):
+                self.media(src)
+            if not re.search(r'\salt="[^"]+"', tag):
+                self.fail(f"image '{src}' has no alt text")
+            self.count["images"] += 1
+            return tag.replace("<img ", '<img loading="lazy" decoding="async" ', 1)
+
+        return re.sub(r"<img\b[^>]*>", check, out)
+
+    def render_inner(self, text: str) -> str:
+        return self._post(
+            markdown.markdown(self._pre(text), extensions=["tables", "sane_lists", "attr_list"])
+        )
+
+    def _pre(self, text: str) -> str:
+        lines, out, i = text.split("\n"), [], 0
+        while i < len(lines):
+            line = lines[i]
+            fm = FENCE_RE.match(line)
+            if fm:
+                fence, lang, rest = fm.groups()
+                body, i = [], i + 1
+                while i < len(lines) and not lines[i].startswith(fence):
+                    body.append(lines[i])
+                    i += 1
+                out.append(self._ph(self._code("\n".join(body), lang, dict(ATTR_RE.findall(rest)))))
+                i += 1
+                continue
+            dm = DIRECTIVE_RE.match(line)
+            if dm and dm.group(2):
+                colons, name, label, attrs = dm.groups()
+                body, depth, i = [], 1, i + 1
+                while i < len(lines):
+                    m2 = DIRECTIVE_RE.match(lines[i])
+                    if m2 and m2.group(2) and len(m2.group(1)) == len(colons):
+                        depth += 1
+                    elif lines[i].strip() == colons:
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    body.append(lines[i])
+                    i += 1
+                out.append(
+                    self._ph(
+                        self._directive(
+                            name, label, dict(ATTR_RE.findall(attrs or "")), "\n".join(body)
+                        )
+                    )
+                )
+                i += 1
+                continue
+            out.append(line)
+            i += 1
+        return "\n".join(out)
+
+    def _post(self, out: str) -> str:
+        for _ in range(4):  # directives nest, so a stash can hold a stash
+            out = re.sub(r"<p>BLSTASH(\d+)X</p>", lambda m: self.stash[int(m.group(1))], out)
+            out = re.sub(r"BLSTASH(\d+)X", lambda m: self.stash[int(m.group(1))], out)
+
+        def fig(
+            m: re.Match,
+        ) -> str:  # a lone image paragraph becomes a figure; its title, the caption
+            tag = m.group(1)
+            cap = re.search(r'title="([^"]*)"', tag)
+            tag = re.sub(r'\s*title="[^"]*"', "", tag)
+            c = f"<figcaption>{cap.group(1)}</figcaption>" if cap else ""
+            return f'<figure class="fig">{tag}{c}</figure>'
+
+        out = re.sub(r"<p>(<img [^>]+>)</p>", fig, out)
+        return out.replace("<table>", '<div class="tbl"><table>').replace(
+            "</table>", "</table></div>"
+        )
+
+    def _code(self, src: str, lang: str, attrs: dict) -> str:
+        try:
+            lexer = get_lexer_by_name(lang) if lang else TextLexer()
+        except ClassNotFound:
+            lexer = TextLexer()
+        body = highlight(src, lexer, HtmlFormatter(nowrap=True))
+        title = attrs.get("title") or (lang.upper() if lang else "TEXT")
+        return (
+            f'<div class="code"><div class="code-h"><span class="sq"></span>{esc(title)}'
+            f'<button type="button" class="copy" data-copy>Copy</button></div>'
+            f"<pre><code>{body}</code></pre></div>"
+        )
+
+    def media(self, name: str) -> str:
+        """A file the post uses: it must sit in the post's own folder, within the size limits."""
+        f = self.post_dir / name
+        if not re.match(r"^[\w.-]+$", name) or not f.is_file():
+            self.fail(f"missing or unsafe media '{name}'")
+        limit = MAX_VIDEO if f.suffix in VIDEO_EXT else MAX_FILE
+        if f.stat().st_size > limit:
+            self.fail(f"'{name}' is {f.stat().st_size} bytes, over the {limit}-byte limit")
+        self.files_used.add(name)
+        return name
+
+    def _caption(self, body: str) -> str:
+        cap = self.render_inner(body).strip()
+        return f"<figcaption>{re.sub(r'^<p>|</p>$', '', cap)}</figcaption>" if cap else ""
+
+    def _directive(self, name: str, label: str | None, a: dict, body: str) -> str:
+        if name in CALLOUTS:
+            title = esc(label) if label else CALLOUTS[name]
+            return (
+                f'<aside class="callout {name}" role="note"><div class="callout-h">'
+                f'<span class="glyph" aria-hidden="true"></span>{title}</div>{self.render_inner(body)}</aside>'
+            )
+        if name == "video":
+            if not a.get("alt"):
+                self.fail(':::video needs alt="…"')
+            self.count["video"] += 1
+            src = self.media(a["src"])
+            poster = f' poster="{self.media(a["poster"])}"' if a.get("poster") else ""
+            return (
+                f'<figure class="fig vid"><video controls playsinline preload="metadata"{poster} '
+                f'aria-label="{esc(a["alt"])}"><source src="{src}" type="video/mp4"></video>{self._caption(body)}</figure>'
+            )
+        if name == "files":
+            rows = []
+            for m in re.finditer(r"^- \[([^\]]+)\]\(([^)]+)\)\s*(?:[—-]\s*)?(.*)$", body, re.M):
+                lbl, path, desc = m.groups()
+                size = (self.post_dir / self.media(path)).stat().st_size
+                hsize = (
+                    f"{size} B"
+                    if size < 1024
+                    else f"{size / 1024:.1f} KB"
+                    if size < 1048576
+                    else f"{size / 1048576:.1f} MB"
+                )
+                ext = Path(path).suffix.lstrip(".").upper() or "FILE"
+                rows.append(
+                    f'<li><a class="file" href="{path}" download><span class="ext">{esc(ext)}</span>'
+                    f'<span class="fn"><b>{esc(lbl)}</b><small>{esc(desc)}</small></span>'
+                    f'<span class="sz">{hsize}</span><span class="dl" aria-hidden="true">↓</span></a></li>'
+                )
+            self.count["files"] += len(rows)
+            title = esc(label) if label else "ATTACHED FILES"
+            return (
+                f'<section class="files" aria-label="Attached files"><div class="files-h">{title}'
+                f'<span>{len(rows)}</span></div><ul>{"".join(rows)}</ul></section>'
+            )
+        if name == "steps":
+            return f'<div class="steps-list">{self.render_inner(body)}</div>'
+        if name == "embed":
+            self.count["embeds"] += 1
+            src = self.media(a["src"])
+            h = int(a.get("height", "360"))
+            title = esc(a.get("title", "Embedded demo"))
+            return (
+                f'<figure class="fig embed"><div class="embed-h"><span class="sq" aria-hidden="true"></span>LIVE EMBED // '
+                f'{title}<a href="{src}" target="_blank" rel="noopener">Open ↗</a></div>'
+                f'<iframe src="{src}" title="{title}" loading="lazy" sandbox="allow-scripts" '
+                f'style="height:{h}px"></iframe>{self._caption(body)}</figure>'
+            )
+        self.fail(f"unknown directive :::{name}")
+        return ""
+
+
+def load_posts() -> list[dict]:
+    posts = []
+    for d in sorted((SRC / "posts").iterdir()):
+        if not d.is_dir():
+            continue
+        src = (d / "index.md").read_text()
+        m = re.match(r"^---\n(.*?)\n---\n(.*)$", src, re.S)
+        if not m:
+            raise BuildError(f"{d.name}: no front matter")
+        meta, body = yaml.safe_load(m.group(1)), m.group(2)
+        for req in REQUIRED:
+            if req not in meta:
+                raise BuildError(f"{d.name}: front matter is missing '{req}'")
+        if meta["kind"] not in KINDS:
+            raise BuildError(f"{d.name}: kind must be one of {list(KINDS)}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", d.name):
+            raise BuildError(
+                f"{d.name}: a post folder name is its URL slug: lowercase, digits and dashes"
+            )
+        if meta.get("status", "published") != "published":
+            continue
+        r = Renderer(d)
+        meta.update(
+            slug=d.name, dir=d, html=r.render(body), toc=r.toc, renderer=r, date=str(meta["date"])
+        )
+        meta["minutes"] = max(
+            1, math.ceil(len(re.findall(r"\w+", re.sub(r"```.*?```", "", body, flags=re.S))) / 220)
+        )
+        hero = meta.get("hero") or {}
+        for k in ("video", "poster", "image"):
+            if hero.get(k):
+                r.media(hero[k])
+        if (hero.get("video") or hero.get("image")) and not hero.get("alt"):
+            raise BuildError(f"{d.name}: the hero needs alt text")
+        meta["media"] = dict(r.count)
+        meta["media"]["video"] += 1 if hero.get("video") else 0
+        meta["media"]["images"] += 1 if hero.get("image") else 0
+        posts.append(meta)
+    posts.sort(key=lambda p: (p["date"], p["slug"]), reverse=True)
+    for i, p in enumerate(posts):
+        p["no"] = len(posts) - i
+    return posts
+
+
+# ----------------------------------------------------------------------------- chrome
+def head(
+    title: str, desc: str, rel: str, url: str, extra: str = "", og_type: str = "website"
+) -> str:
+    return f"""<!doctype html>
+<!-- GENERATED by scripts/build-landing from landing/src/ — edit the sources, then run the script. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{esc(title)}</title>
+<meta name="description" content="{esc(desc)}" />
+<meta name="robots" content="index, follow" />
+<meta name="theme-color" content="#07080a" />
+<link rel="canonical" href="{url}" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="sitemap" type="application/xml" href="{rel}sitemap.xml" />
+<link rel="alternate" type="application/atom+xml" title="BattleLab Blog" href="{rel}blog/feed.xml" />
+<link rel="preload" href="{rel}chakra-petch-600.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="{rel}jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin />
+<meta property="og:title" content="{esc(title)}" />
+<meta property="og:description" content="{esc(desc)}" />
+<meta property="og:type" content="{og_type}" />
+<meta property="og:url" content="{url}" />
+<meta property="og:site_name" content="BattleLab" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:image" content="{SITE}/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="{esc(title)}" />
+<meta name="twitter:description" content="{esc(desc)}" />
+<meta name="twitter:image" content="{SITE}/og.png" />
+<link rel="stylesheet" href="{rel}site.css" />
+{extra}<!-- Self-hosted Umami analytics, OPT-OUT (#1161): consent.js loads the tracker unless the visitor
+     switched it off on privacy.html or sends Global Privacy Control; it also filters headless sends. -->
+<script defer src="{rel}consent.js" data-website-id="{UMAMI_ID}"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="atmo" aria-hidden="true"><div class="hex"></div><div class="vig"></div><div class="scan"></div><div class="sweep"></div></div>
+"""
+
+
+def topbar(rel: str, here: str) -> str:
+    def a(href: str, label: str, key: str, cls: str = "") -> str:
+        cur = ' aria-current="page"' if key == here else ""
+        return f'<a class="{cls}" href="{href}"{cur}>{label}</a>'
+
+    home = rel or "./"
+    brand = (SRC / "brandmark.svg").read_text().strip()
+    return f"""<header class="top">
+  <div class="topin">
+    <a class="brand" href="{home}"><!-- brand:mark -->{brand}<!-- /brand:mark --><span>BATTLE<b>LAB</b></span><span class="sub">// COMMAND &amp; CODE</span></a>
+    <nav class="nav" aria-label="Site">
+      {a(home + "#platform", "Platform", "platform", "anchor")}
+      {a(home + "#library", "Library", "library", "anchor")}
+      {a(rel + "blog/", "Blog", "blog")}
+      {a(home + "#pricing", "Pricing", "pricing", "anchor")}
+      {a("https://docs.battlelabos.com/", "Docs", "docs")}
+      <a class="hot" href="/connect">Connect ▸</a>
+    </nav>
+  </div>
+</header>
+"""
+
+
+def footer(rel: str, scripts: str = "") -> str:
+    return f"""<footer>
+  <div class="classbar"><span class="stripe" aria-hidden="true"></span><span>UNCLASSIFIED // SELF-HOSTED</span><span class="wide">OP // BATTLELAB</span><span class="r">STATUS // <span data-clock>00:00:00Z</span></span></div>
+  <div class="credit">Created with <span class="heart" aria-hidden="true">&#9829;</span> by <a href="https://superstatus.io" target="_blank" rel="noopener">superstatus.io</a> &middot; <a href="{rel}blog/">Blog</a> &middot; <a href="https://docs.battlelabos.com/" target="_blank" rel="noopener">Docs</a> &middot; <a href="https://github.com/teriansilva/agent-sessions" target="_blank" rel="noopener">GitHub</a> &middot; <a href="https://buymeacoffee.com/teriansilva" target="_blank" rel="noopener">Buy me a coffee</a> &middot; <a href="{rel}legal.html">Legal</a> &middot; <a href="{rel}privacy.html">Privacy</a> &middot; <a href="{rel}privacy.html#settings">Privacy settings</a> &middot; <a href="{rel}blog/feed.xml">RSS</a></div>
+</footer>
+<script src="{rel}site.js" defer></script>
+{scripts}</body>
+</html>
+"""
+
+
+def engine_badge(eng: str) -> str:
+    code, _ = ENGINES.get(eng, ("AI", eng))
+    return f'<span class="eng eng-{esc(eng)}" aria-hidden="true">{code}</span>'
+
+
+def byline(p: dict, short: bool = False) -> str:
+    a = p["author"]
+    if a.get("kind") == "agent":
+        name = ENGINES.get(a.get("engine", ""), ("", a.get("engine", "Agent")))[1]
+        model = f" · {esc(a['model'])}" if a.get("model") and not short else ""
+        return f'<span class="by">{engine_badge(a.get("engine", ""))}<span>{esc(name)}{model}</span></span>'
+    return f'<span class="by"><span class="eng eng-human" aria-hidden="true">CO</span><span>{esc(a.get("name", "Commander"))}</span></span>'
+
+
+def media_flags(p: dict) -> str:
+    m, out = p["media"], []
+    if m["video"]:
+        out.append(f'<span title="Video">▶ {m["video"]} VIDEO</span>')
+    if m["images"]:
+        out.append(f'<span title="Images">▣ {m["images"]} IMG</span>')
+    if m["files"]:
+        out.append(
+            f'<span title="Downloadable files">⎘ {m["files"]} FILE{"S" if m["files"] > 1 else ""}</span>'
+        )
+    if m["embeds"]:
+        out.append('<span title="Interactive embed">◈ LIVE</span>')
+    return f'<span class="mflags">{"".join(out)}</span>' if out else ""
+
+
+MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
+
+
+def fmt_date(d: str) -> str:
+    y, mo, day = d.split("-")
+    return f"{day} {MONTHS[int(mo) - 1]} {y}"
+
+
+def thumb(p: dict, base: str) -> str:
+    h = p.get("hero") or {}
+    img = h.get("image") or h.get("poster")
+    if not img:
+        return '<div class="thumb none"></div>'
+    play = '<span class="play" aria-hidden="true">▶</span>' if h.get("video") else ""
+    return f'<div class="thumb"><img src="{base}{img}" alt="" loading="lazy" decoding="async">{play}</div>'
+
+
+def tag_chips(tags: list[str], rel_blog: str) -> str:
+    return "".join(f'<a class="tagc" href="{rel_blog}tag/{t}/">#{esc(t)}</a>' for t in tags)
+
+
+def card(p: dict, rel_blog: str, featured: bool = False) -> str:
+    href = f"{rel_blog}{p['slug']}/"
+    cls = "pcard cf feat" if featured else "pcard cf"
+    return f"""<article class="{cls}" data-kind="{p['kind']}" data-slug="{p['slug']}">
+  <div class="face">
+    <a class="cover" href="{href}" tabindex="-1" aria-hidden="true">{thumb(p, href)}</a>
+    <div class="pc-body">
+      <div class="pc-k"><span class="stamp k-{p['kind']}">{KINDS[p['kind']]}</span><span>POST {p['no']:03d}</span>{media_flags(p)}</div>
+      <h3><a href="{href}">{esc(p['title'])}</a></h3>
+      <p>{esc(p['summary'])}</p>
+      <div class="pc-meta">{byline(p, short=True)}<span>{fmt_date(p['date'])}</span><span>{p['minutes']} MIN</span></div>
+      <div class="pc-tags">{tag_chips(p['tags'], rel_blog)}</div>
+    </div>
+  </div>
+</article>"""
+
+
+def all_tags(posts: list[dict]) -> list[tuple[str, int]]:
+    c: dict[str, int] = {}
+    for p in posts:
+        for t in p["tags"]:
+            c[t] = c.get(t, 0) + 1
+    return sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+# ----------------------------------------------------------------------------- pages
+def blog_index(posts: list[dict], tag: str | None = None) -> str:
+    rel = "../../../" if tag else "../"
+    rel_blog = "../../" if tag else ""
+    shown = [p for p in posts if not tag or tag in p["tags"]]
+    idx = json.dumps(
+        [
+            {"s": p["slug"], "t": p["title"], "d": p["summary"], "g": p["tags"], "k": p["kind"]}
+            for p in posts
+        ]
+    ).replace("</", "<\\/")
+    tag_nav = "".join(
+        f'<a class="tagc{" on" if t == tag else ""}" href="{rel_blog}tag/{t}/"{" aria-current=page" if t == tag else ""}>#{esc(t)}<small>{n}</small></a>'
+        for t, n in all_tags(posts)
+    )
+    kinds = "".join(
+        f'<button type="button" class="kchip" data-kind="{k}" aria-pressed="false">{v}</button>'
+        for k, v in KINDS.items()
+    )
+    feat = "" if tag else card(shown[0], rel_blog, featured=True)
+    rest = shown if tag else shown[1:]
+    if tag:
+        hdr = (
+            f'<h1 class="h1 sm">#{esc(tag)}</h1><p class="lede">{len(shown)} post{"" if len(shown) == 1 else "s"} tagged '
+            f'<b>{esc(tag_label(tag))}</b>. <a href="{rel_blog}">All posts ▸</a></p>'
+        )
+        title, url = f"#{tag} — Blog — BattleLab", f"{SITE}/blog/tag/{tag}/"
+    else:
+        hdr = (
+            '<h1 class="h1 sm">Blog</h1>'
+            '<p class="lede">How-tos and field reports from the deck: running agents, missions, HQ, secrets, '
+            "automations and calls. Most posts are <b>drafted by agents working on BattleLab itself</b>, and every "
+            "one shows who wrote it and who reviews it.</p>"
+        )
+        title, url = "Blog — BattleLab", f"{SITE}/blog/"
+    return (
+        head(title, "How-tos and field reports from the BattleLab deck.", rel, url)
+        + topbar(rel, "blog")
+        + f"""
+<main class="page" id="main">
+  <section class="cf glow fm-head" aria-labelledby="fm-h">
+    <div class="face">
+      <span class="rail short"></span><span class="tick tr"></span><span class="tick bl"></span>
+      <div class="kicker"><span class="notch"></span> SEC // <b>BLOG</b> — HOW-TOS &amp; FIELD REPORTS // <b>{len(posts)} POSTS</b></div>
+      <div id="fm-h">{hdr}</div>
+      <div class="fm-tools">
+        <label class="search"><span class="sr-only">Search the blog</span><span aria-hidden="true">⌕</span>
+          <input type="search" id="q" placeholder="Search posts…" autocomplete="off"></label>
+        <div class="kchips" role="group" aria-label="Filter by kind">{kinds}</div>
+        <a class="ghost" href="{rel_blog}feed.xml">RSS ▸</a>
+      </div>
+    </div>
+  </section>
+
+  <div class="fm-layout">
+    <div class="fm-main">
+      {feat}
+      <div class="pgrid" id="pgrid">{"".join(card(p, rel_blog) for p in rest)}</div>
+      <p class="empty" id="empty" hidden>No post matches. <button type="button" class="linkish" id="clear">Clear filters</button></p>
+    </div>
+    <aside class="fm-side" aria-label="Tags">
+      <div class="cf side-box"><div class="face">
+        <div class="cs"><span class="notch"></span><h2>Tags</h2></div>
+        <div class="tagcloud">{tag_nav}</div>
+      </div></div>
+      <div class="cf side-box"><div class="face">
+        <div class="cs"><span class="notch"></span><h2>Chain of custody</h2></div>
+        <p class="side-p">Every post names its author (a human, or an agent with its engine and model) and its sign-offs: an AI review on the pull request and a human editor before it ships. Nothing is published that the released product doesn't do.</p>
+        <a class="side-link" href="{rel_blog}how-this-blog-is-written/">How posts are written ▸</a>
+      </div></div>
+    </aside>
+  </div>
+</main>
+<script>window.FM_INDEX={idx};</script>
+"""
+        + footer(rel)
+    )
+
+
+def toc_html(toc: list) -> str:
+    def walk(items: list) -> str:
+        if not items:
+            return ""
+        return (
+            "<ol>"
+            + "".join(
+                f'<li><a href="#{t["id"]}">{t["name"]}</a>{walk(t.get("children", []))}</li>'
+                for t in items
+            )
+            + "</ol>"
+        )
+
+    return walk(toc)
+
+
+def custody(p: dict) -> str:
+    a = p["author"]
+    rows = []
+    if a.get("kind") == "agent":
+        eng = ENGINES.get(a.get("engine", ""), ("AI", a.get("engine", "")))[1]
+        rows.append(
+            (
+                "Author",
+                f'{engine_badge(a.get("engine", ""))}<span><b>{esc(eng)}</b>'
+                f'<small>{esc(a["model"]) + " · " if a.get("model") else ""}agent session</small></span>',
+            )
+        )
+        if a.get("operator"):
+            rows.append(
+                (
+                    "Tasked by",
+                    f'<span class="eng eng-human">CO</span><span><b>{esc(a["operator"])}</b><small>operator</small></span>',
+                )
+            )
+    else:
+        rows.append(
+            (
+                "Author",
+                f'<span class="eng eng-human">CO</span><span><b>{esc(a.get("name", "Commander"))}</b><small>human</small></span>',
+            )
+        )
+    for r in p.get("reviewers", []):
+        # A verdict is shown only when the post records one; a reviewer is otherwise listed by role.
+        st = r.get("state")
+        verdict = f'<span class="verdict v-{esc(st)}">{esc(st.upper())}</span>' if st else ""
+        if r.get("engine"):
+            badge = engine_badge(r["engine"])
+        elif str(r.get("kind", "")).startswith("agent"):
+            badge = '<span class="eng">AI</span>'
+        else:
+            badge = '<span class="eng eng-human">CO</span>'
+        rows.append(
+            (
+                r.get("role", "Review"),
+                f"{badge}<span><b>{esc(r['name'])}</b><small>{esc(r.get('kind', ''))}</small></span>{verdict}",
+            )
+        )
+    src = p.get("source") or {}
+    srcl = (
+        f'<a class="side-link" href="{esc(src["url"])}" rel="noopener">Source: {esc(src.get("label", "pull request"))} ▸</a>'
+        if src.get("url")
+        else ""
+    )
+    li = "".join(
+        f'<li><span class="crole">{esc(k)}</span><span class="cval">{v}</span></li>'
+        for k, v in rows
+    )
+    return f"""<section class="cf custody side-box" aria-label="Chain of custody"><div class="face">
+  <div class="cs"><span class="notch"></span><h2>Chain of custody</h2></div>
+  <ol class="chain">{li}</ol>{srcl}
+</div></section>"""
+
+
+def post_page(p: dict, posts: list[dict]) -> str:
+    rel, rel_blog = "../../", "../"
+    hero = p.get("hero") or {}
+    cap = f"<figcaption>{esc(hero['caption'])}</figcaption>" if hero.get("caption") else ""
+    if hero.get("video"):
+        poster = f' poster="{hero["poster"]}"' if hero.get("poster") else ""
+        hero_html = (
+            f'<figure class="hero-media"><video controls playsinline preload="metadata"{poster} '
+            f'aria-label="{esc(hero["alt"])}"><source src="{hero["video"]}" type="video/mp4"></video>{cap}</figure>'
+        )
+    elif hero.get("image"):
+        hero_html = f'<figure class="hero-media"><img src="{hero["image"]}" alt="{esc(hero["alt"])}">{cap}</figure>'
+    else:
+        hero_html = ""
+    i = posts.index(p)
+    newer, older = (posts[i - 1] if i > 0 else None), (posts[i + 1] if i + 1 < len(posts) else None)
+    related = sorted(
+        (q for q in posts if q is not p),
+        key=lambda q: (-len(set(q["tags"]) & set(p["tags"])), q["slug"]),
+    )[:2]
+    pn = "".join(
+        f'<a class="pn {cls}" href="{rel_blog}{q["slug"]}/"><small>{lbl}</small><b>{esc(q["title"])}</b></a>'
+        for q, lbl, cls in ((older, "◂ OLDER", "o"), (newer, "NEWER ▸", "n"))
+        if q
+    )
+    url = f"{SITE}/blog/{p['slug']}/"
+    ld = json.dumps(
+        {
+            "@context": "https://schema.org",
+            "@type": "TechArticle",
+            "headline": p["title"],
+            "description": p["summary"],
+            "datePublished": p["date"],
+            "keywords": p["tags"],
+            "url": url,
+        }
+    ).replace("</", "<\\/")
+    return (
+        head(
+            f"{p['title']} — Blog — BattleLab",
+            p["summary"],
+            rel,
+            url,
+            f'<script type="application/ld+json">{ld}</script>\n',
+            og_type="article",
+        )
+        + topbar(rel, "blog")
+        + f"""
+<main class="page post" id="main">
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="{rel_blog}">Blog</a><span>/</span><a href="{rel_blog}#kind={p['kind']}">{KINDS[p['kind']]}</a><span>/</span><span aria-current="page">POST {p['no']:03d}</span></nav>
+  <header class="post-h">
+    <div class="kicker"><span class="notch"></span> <b>{KINDS[p['kind']].upper()}</b> // POST {p['no']:03d} // {fmt_date(p['date'])} // {p['minutes']} MIN READ</div>
+    <h1 class="h1 post-t">{esc(p['title'])}</h1>
+    <p class="lede">{esc(p['summary'])}</p>
+    <div class="post-meta">{byline(p)}{media_flags(p)}<span class="pc-tags">{tag_chips(p['tags'], rel_blog)}</span></div>
+  </header>
+  {hero_html}
+  <div class="post-layout">
+    <article class="prose" id="article">
+      {p['html']}
+      <footer class="post-end">
+        <div class="pc-tags">{tag_chips(p['tags'], rel_blog)}</div>
+        <div class="pn-row">{pn}</div>
+      </footer>
+    </article>
+    <aside class="post-side">
+      {custody(p)}
+      <details class="cf toc side-box" open><summary class="cs"><span class="notch"></span><h2>On this page</h2></summary><div class="face">
+        <nav aria-label="On this page">{toc_html(p['toc'])}</nav></div></details>
+    </aside>
+  </div>
+  <section class="related" aria-label="Related posts">
+    <div class="sect"><span class="idx">//</span><h2>Related</h2><span class="rule"></span><span class="tag">KEEP READING</span></div>
+    <div class="pgrid two">{"".join(card(q, rel_blog) for q in related)}</div>
+  </section>
+</main>
+"""
+        + footer(rel)
+    )
+
+
+def author_name(p: dict) -> str:
+    a = p["author"]
+    if a.get("kind") == "agent":
+        name = ENGINES.get(a.get("engine", ""), ("", a.get("engine", "Agent")))[1]
+        return f"{name} ({a['model']})" if a.get("model") else name
+    return a.get("name", "Commander")
+
+
+def feed(posts: list[dict]) -> str:
+    updated = f"{posts[0]['date']}T00:00:00Z"
+    entries = "".join(
+        f"""<entry><title>{esc(p['title'])}</title><link href="{SITE}/blog/{p['slug']}/"/><id>{SITE}/blog/{p['slug']}/</id>
+<updated>{p['date']}T00:00:00Z</updated><author><name>{esc(author_name(p))}</name></author><summary>{esc(p['summary'])}</summary>{''.join(f'<category term="{t}"/>' for t in p['tags'])}</entry>
+"""
+        for p in posts
+    )
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>BattleLab Blog</title><author><name>BattleLab</name></author><link href="{SITE}/blog/"/><id>{SITE}/blog/</id><updated>{updated}</updated>
+{entries}</feed>
+"""
+
+
+def sitemap(posts: list[dict]) -> str:
+    urls = [(f"{SITE}/", "weekly", "1.0"), (f"{SITE}/blog/", "weekly", "0.8")]
+    urls += [(f"{SITE}/blog/{p['slug']}/", "monthly", "0.7") for p in posts]
+    urls += [(f"{SITE}/blog/tag/{t}/", "weekly", "0.4") for t, _ in all_tags(posts)]
+    body = "".join(
+        f"  <url>\n    <loc>{u}</loc>\n    <changefreq>{c}</changefreq>\n    <priority>{pr}</priority>\n  </url>\n"
+        for u, c, pr in urls
+    )
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{body}</urlset>\n'
+
+
+def landing_page(posts: list[dict]) -> str:
+    spec = importlib.util.spec_from_file_location("landing_src", SRC / "landing.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    ld = json.dumps(
+        {
+            "@context": "https://schema.org",
+            "@graph": [
+                {
+                    "@type": "SoftwareApplication",
+                    "name": "BattleLab (agent-sessions)",
+                    "alternateName": "agent-sessions",
+                    "url": f"{SITE}/",
+                    "applicationCategory": "DeveloperApplication",
+                    "operatingSystem": "Linux",
+                    "description": mod.DESC,
+                    "softwareHelp": "https://docs.battlelabos.com/",
+                    "license": "https://spdx.org/licenses/AGPL-3.0-or-later.html",
+                    "featureList": mod.FEATURES,
+                    "offers": [
+                        {
+                            "@type": "Offer",
+                            "name": n,
+                            "price": "0",
+                            "priceCurrency": "USD",
+                            "availability": "https://schema.org/InStock",
+                        }
+                        for n in ("Self Host", "Home Free")
+                    ],
+                    "isAccessibleForFree": True,
+                },
+                {"@type": "WebSite", "name": "BattleLab", "url": f"{SITE}/"},
+                mod.faq_jsonld_obj(),
+            ],
+        },
+        ensure_ascii=False,
+        indent=1,
+    ).replace("</", "<\\/")
+    page_js = (SRC / "page.js").read_text()
+    return (
+        head("BattleLab — sessions, missions, your call", mod.DESC, "", f"{SITE}/")
+        + topbar("", "platform")
+        + mod.body(posts, card, KINDS, (SRC / "briefing.html").read_text().strip())
+        + footer(
+            "",
+            f'<script type="application/ld+json">\n{ld}\n</script>\n<script>\n{page_js}</script>\n',
+        )
+    )
+
+
+# ----------------------------------------------------------------------------- output
+OWNED_ROOT = {"index.html", "site.css", "site.js", "sitemap.xml"}
+
+
+def owned(path: str) -> bool:
+    """A path this build owns: it exists after the build only if this build produced it."""
+    return path in OWNED_ROOT or path.startswith("blog/")
+
+
+def check_links(files: dict[str, bytes], root: Path = LANDING) -> None:
+    """Every relative href/src in the output resolves to a file the build writes or one already in landing/."""
+    for name, data in files.items():
+        if not name.endswith(".html"):
+            continue
+        base = Path(name).parent
+        # Attributes of real tags only: a code sample that SHOWS src="…" is text, not a link.
+        refs = [
+            r
+            for tag in re.findall(rb"<[a-zA-Z][^<>]*>", data)
+            for r in re.findall(rb'\s(?:href|src|poster)="([^"#?]+)', tag)
+        ]
+        for ref in refs:
+            ref = ref.decode()
+            if re.match(r"^(?:[a-z]+:|//|/)", ref):
+                continue
+            target = (base / ref).as_posix()
+            norm = Path(target)
+            parts: list[str] = []
+            for part in norm.parts:
+                if part == "..":
+                    if not parts:
+                        raise BuildError(f"{name}: link '{ref}' leaves the site")
+                    parts.pop()
+                elif part != ".":
+                    parts.append(part)
+            t = "/".join(parts)
+            if ref.endswith("/") or t == "":
+                t = (t + "/index.html").lstrip("/")
+            # A file this build owns counts only if this build produced it: the old blog/ on disk is
+            # replaced wholesale, so a link into a removed or drafted post would 404 once deployed.
+            if t not in files and (owned(t) or not (root / t).is_file()):
+                raise BuildError(f"{name}: broken link '{ref}'")
+
+
+def render() -> dict[str, bytes]:
+    """Every file the build owns, path relative to landing/ → bytes."""
+    posts = load_posts()
+    if not posts:
+        raise BuildError("no published posts")
+    out: dict[str, bytes] = {}
+    out["index.html"] = landing_page(posts).encode()
+    out["site.css"] = (
+        "/* GENERATED by scripts/build-landing: landing/src/base.css + landing/src/site.css. */\n"
+        + (SRC / "base.css").read_text()
+        + "\n"
+        + (SRC / "site.css").read_text()
+    ).encode()
+    out["site.js"] = (SRC / "site.js").read_bytes()
+    out["sitemap.xml"] = sitemap(posts).encode()
+    out["blog/index.html"] = blog_index(posts).encode()
+    out["blog/feed.xml"] = feed(posts).encode()
+    for t, _ in all_tags(posts):
+        out[f"blog/tag/{t}/index.html"] = blog_index(posts, t).encode()
+    for p in posts:
+        out[f"blog/{p['slug']}/index.html"] = post_page(p, posts).encode()
+        for f in sorted(p["renderer"].files_used):
+            out[f"blog/{p['slug']}/{f}"] = (p["dir"] / f).read_bytes()
+    for name in out:
+        if name.endswith((".html", ".xml")):
+            out[name] = re.sub(rb"[ \t]+\n", b"\n", out[name])
+    check_links(out)
+    return out
+
+
+def owned_on_disk() -> set[str]:
+    have = set(OWNED_ROOT)
+    blog = LANDING / "blog"
+    if blog.is_dir():
+        have |= {p.relative_to(LANDING).as_posix() for p in blog.rglob("*") if p.is_file()}
+    return have
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--check", action="store_true", help="fail if the committed output is not current"
+    )
+    args = ap.parse_args()
+    try:
+        out = render()
+    except BuildError as e:
+        print(f"build-landing: {e}", file=sys.stderr)
+        return 2
+    if args.check:
+        stale = sorted(
+            n
+            for n, b in out.items()
+            if not (LANDING / n).is_file() or (LANDING / n).read_bytes() != b
+        )
+        extra = sorted(owned_on_disk() - set(out))
+        if stale or extra:
+            for n in stale:
+                print(f"build-landing: stale or missing: landing/{n}", file=sys.stderr)
+            for n in extra:
+                print(f"build-landing: not produced by the sources: landing/{n}", file=sys.stderr)
+            print("build-landing: run scripts/build-landing and commit the result", file=sys.stderr)
+            return 1
+        print(f"build-landing: OK — {len(out)} files current")
+        return 0
+    # Write into a fresh blog/ so a renamed or removed post leaves nothing behind.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpblog = Path(tmp) / "blog"
+        for n, b in out.items():
+            dest = (Path(tmp) / n) if n.startswith("blog/") else (LANDING / n)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b)
+        if (LANDING / "blog").exists():
+            shutil.rmtree(LANDING / "blog")
+        shutil.copytree(tmpblog, LANDING / "blog")
+    print(f"build-landing: wrote {len(out)} files")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

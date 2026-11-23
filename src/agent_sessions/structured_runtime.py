@@ -816,9 +816,12 @@ async def submit_turn(
     attachments: list[str] | None = None,
     execution_admission: ExecutionGuard | None = None,
     reply_to: str | None = None,
+    no_relaunch: bool = False,
 ) -> dict:
     """``attachments``: upload names (#1332 Phase 3), admitted here before anything durable.
-    ``reply_to``: the async question this message answers (#1463), native clients only."""
+    ``reply_to``: the async question this message answers (#1463), native clients only.
+    ``no_relaunch``: an automatic turn (#1983) never resumes an idled-out worker; a chat
+    conversation launches no worker, so it needs no such flag."""
     engine, native = _key(session_key)
     adapter = _adapter(engine, "submit")
     await _refuse_archived(engine, native)
@@ -864,6 +867,9 @@ async def submit_turn(
         **uploaded,
         execution_admission=execution_admission,
         idempotent=True,
+        # Only the native adapter has a worker generation to refuse (#1983); a chat send takes
+        # no such keyword.
+        **({"no_relaunch": True} if no_relaunch and isinstance(adapter, _NativeAdapter) else {}),
     )
     raw = await adapter.snapshot(engine, native)
     turn = next(t for t in raw["turns"] if t["turn_id"] == tid and t.get("kind") != "agent")

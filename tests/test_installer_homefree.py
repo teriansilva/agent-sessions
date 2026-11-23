@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from _pids import never_live_pid, pid_max
+
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
 
@@ -1029,11 +1031,30 @@ def test_a_stale_lock_from_a_crashed_run_is_taken_over(tmp_path):
     hf = _setup_stream(tmp_path, env)
     lock = hf / ".lifecycle.lock"
     lock.mkdir()
-    (lock / "pid").write_text("999999\n")  # a PID that is not running
+    dead_pid = never_live_pid()
+    assert dead_pid > pid_max(), (
+        "the stale owner must be above the host's PID ceiling: the old literal 999999 is an "
+        "ordinary PID on a host with pid_max 4194304, and a real process holding it makes "
+        "this lock (correctly) live"
+    )
+    (lock / "pid").write_text(f"{dead_pid}\n")  # a PID the kernel can never hand out
 
-    r = _run("homefree_disable", tmp_path, env)
-    assert r.returncode == 0, r.stderr
+    # Park the command inside its transaction (at `systemctl stop`) so ownership can be read
+    # WHILE it holds the lock. The install removes the lock on EXIT, so a post-run assertion
+    # that its PID file names the new owner cannot work.
+    bindir, reached, go = _blocking_systemctl(tmp_path, verb="stop")
+    proc = _spawn("homefree_disable", tmp_path, _unmanaged(env), bindir, reached, go)
+    try:
+        assert (lock / "pid").read_text().strip() == str(
+            proc.pid
+        ), "the dead owner was not republished under the takeover's PID"
+    finally:
+        go.touch()
+        out, err = proc.communicate(timeout=60)
+
+    assert proc.returncode == 0, err
     assert (hf / "access_key.disabled").exists()
+    assert not lock.exists(), "the takeover did not release its own lock on exit"
 
 
 def test_a_live_lock_is_not_stolen(tmp_path):
@@ -1048,6 +1069,7 @@ def test_a_live_lock_is_not_stolen(tmp_path):
     assert r.returncode != 0
     assert "already running" in (r.stdout + r.stderr)
     assert not (hf / "access_key.disabled").exists()
+    assert (lock / "pid").read_text().strip() == str(os.getpid()), "the live lock was modified"
 
 
 def test_rotation_aborts_when_the_rollback_copy_cannot_be_written(tmp_path):

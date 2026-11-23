@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from _pids import never_live_pid, pid_max
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "e2e_port.sh"
 
 # These tests pick REAL ports, so they need a base range no other port protocol on this host
@@ -99,8 +101,9 @@ def reclaim_port() -> Iterator[int]:
 
 @pytest.fixture()
 def dead_pid() -> int:
-    # 999999 can be a real process on a busy runner; use a value above its PID limit.
-    return int(Path("/proc/sys/kernel/pid_max").read_text()) + 1
+    # A value above pid_max: the kernel can never allocate it, so it is dead whatever the
+    # host is running (999999 is an ordinary PID on a host with pid_max 4194304).
+    return never_live_pid()
 
 
 def test_concurrent_jobs_with_identical_seeds_get_distinct_held_ports(lock_root: Path) -> None:
@@ -203,6 +206,10 @@ def test_overlapping_fixture_invocations_with_independent_roots(lock_root: Path)
 
 
 def test_a_dead_run_leak_is_reclaimed(lock_root: Path, reclaim_port: int, dead_pid: int) -> None:
+    # The owner must be above the host's allocatable range: the old literal 999999 is an
+    # ordinary PID on a host with pid_max 4194304, so a real process could hold it and the
+    # lock would (correctly) read as live.
+    assert dead_pid > pid_max()
     # A run killed before its release trap fired leaves the lock behind. A later job must be
     # able to take the port back — the whole point of the pid-file liveness anchor.
     stale = lock_root / str(reclaim_port)
@@ -220,9 +227,32 @@ def test_a_dead_run_leak_is_reclaimed(lock_root: Path, reclaim_port: int, dead_p
     )
     assert proc.returncode == 0, proc.stderr
     assert int(proc.stdout.strip()) == reclaim_port
-    # And the reclaimed lock now names the reclaiming shell.
+    # And the reclaimed lock now names the reclaiming shell, not the dead sentinel.
     holder = int((stale / "pid").read_text())
     assert holder != dead_pid
+
+
+def test_a_live_run_leak_is_not_reclaimed(lock_root: Path, reclaim_port: int) -> None:
+    # The other half: an owner that IS alive keeps its port. Without this the takeover above
+    # could pass for the wrong reason — an acquire that treats every owner as dead would
+    # reclaim a live lock too.
+    live = lock_root / str(reclaim_port)
+    live.mkdir()
+    (live / "pid").write_text(str(os.getpid()))  # this test process is definitely alive
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {SCRIPT}; export E2E_PORT_LOCK_ROOT={lock_root}; "
+            f"export E2E_PORT_BASE={reclaim_port}; E2E_PORT_SEED=0 e2e_port_acquire 1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    picked = int(proc.stdout.strip())
+    assert picked != reclaim_port, "a LIVE holder's port was taken over"
+    assert int((live / "pid").read_text()) == os.getpid(), "the live lock was modified"
 
 
 def test_release_drops_the_reservation(lock_root: Path) -> None:

@@ -105,6 +105,13 @@ export const IDLE: CallSnapshot = {
   cardSeq: 0,
 };
 
+/** The newest HQ line the operator actually heard (#1664): the minimised bar's one caption line
+ *  never quotes a queued (not yet spoken) or cut (interrupted) line as if HQ said it, matching
+ *  the expanded panel, where those lines are muted. `undefined` until HQ has finished one. */
+export function spokenHqCaption(captions: Caption[]): Caption | undefined {
+  return [...captions].reverse().find((c) => c.who === "hq" && c.status === "spoken");
+}
+
 function socketUrl(path: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}${path}`;

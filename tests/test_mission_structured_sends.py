@@ -138,6 +138,72 @@ async def test_an_automatic_send_needs_the_session_as_it_was_proposed(host, proj
 
 
 @pytest.mark.anyio
+async def test_an_automatic_send_never_relaunches_a_worker_that_exits_after_the_probe(
+    host, project, monkeypatch
+):
+    """#1983: the probe answers `live`, the worker exits before the submit, and the automatic
+    turn settles `stale` without launching a successor."""
+    key = (await runtime.create_session(ENGINE, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    assert worker
+    launched = len(host.launches)
+    real_probe = mission_structured.runtime.probe
+
+    async def probe_then_exit(k):
+        answer = await real_probe(k)
+        assert answer.get("containment") == "live"
+        # The worker leaves the window: it answers the probe and then exits, before the submit's
+        # generation choice.
+        host.kill(worker)
+        return answer
+
+    monkeypatch.setattr(mission_structured.runtime, "probe", probe_then_exit)
+    pre = await mission_structured.precondition(key)
+    state, detail = await mission_structured.send(
+        action_id="act-race",
+        key=key,
+        text="AUTO RACE",
+        mission_id=None,
+        check=lambda: (True, ""),
+        precondition=pre,
+        autonomous=True,
+    )
+    assert state == "stale", (state, detail)
+    assert "not running" in detail
+    assert len(host.launches) == launched
+    assert "AUTO RACE" not in _users(project)
+
+
+@pytest.mark.anyio
+async def test_an_operator_relay_still_resumes_an_idled_out_worker(host, project):
+    """The operator's own words keep resuming (the pane's behaviour): only automatic turns
+    carry the no-relaunch flag."""
+    key = (await runtime.create_session(ENGINE, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    assert worker
+    host.kill(worker)
+    launched = len(host.launches)
+    state, detail = await mission_structured.send(
+        action_id="act-operator",
+        key=key,
+        text="OPERATOR RELAY",
+        mission_id=None,
+        check=lambda: (True, ""),
+        precondition=None,
+        autonomous=False,
+    )
+    assert state == "delivered", (state, detail)
+    assert len(host.launches) == launched + 1
+    assert "OPERATOR RELAY" in _users(project)
+
+
+@pytest.mark.anyio
 async def test_an_unreadable_proposal_snapshot_fails_closed(host, project, monkeypatch):
     key = (await runtime.create_session(ENGINE, str(project), operation_id=ident()))["session_key"]
 

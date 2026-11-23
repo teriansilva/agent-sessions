@@ -29,7 +29,7 @@ import { HqPortrait } from "../hq/HqPortrait";
 import b from "../ui/actionButton.module.css";
 import { AudioSheet } from "./AudioSheet";
 import { CallCards } from "./CallCards";
-import { endedText, normalEnd, phaseAnnouncement } from "./callClient";
+import { endedText, normalEnd, phaseAnnouncement, spokenHqCaption } from "./callClient";
 import { callActive, requestAskConversation, useCall } from "./callContext";
 import s from "./call.module.css";
 
@@ -482,7 +482,7 @@ function CallBar() {
   useEffect(() => {
     openRef.current?.focus();
   }, []);
-  const last = [...snap.captions].reverse().find((c) => c.who === "hq");
+  const last = spokenHqCaption(snap.captions);
   const word = STATE_WORD[snap.serverState] ?? "";
   return (
     <div className={s.bar} role="region" aria-label="Call with HQ" data-testid="call-bar">

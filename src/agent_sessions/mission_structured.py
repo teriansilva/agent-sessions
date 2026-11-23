@@ -283,6 +283,8 @@ async def _create_and_brief(
             text=text,
             context=context,
             execution_admission=admission,
+            # An automatic first brief never relaunches either (#1983).
+            no_relaunch=True,
         )
     except runtime.StructuredError as exc:
         # A 409/422 is a refusal before any claim (busy, withdrawn, an old worker, invalid text):
@@ -460,8 +462,8 @@ async def automation_send(
     * ``uncertain`` — the delivery could not be confirmed. It is never sent again.
 
     The caller has already checked that the session is idle, has no pending request and that its
-    worker is live (`automation_target`): an automation never relaunches an agent (the window
-    between that probe and the claim is #1983's)."""
+    worker is live (`automation_target`): an automation never relaunches an agent, and the submit
+    carries `no_relaunch` so the window between that probe and the claim is closed too (#1983)."""
     try:
         _sid, _brief, operation_id = automation_ids(run_id)
         admission = automation_guard(binding, key, check)
@@ -474,6 +476,9 @@ async def automation_send(
             text=text,
             context={"reservation_id": run_id},
             execution_admission=admission,
+            # An automation never relaunches an agent (#1983): the caller's probe is only the
+            # early refusal; this closes the probe-to-submit race.
+            no_relaunch=True,
         )
     except runtime.StructuredError as exc:
         if exc.status == 404:
@@ -669,7 +674,9 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
     An AUTOMATIC send also needs (#1900) a client still admitted to missions (the kind's
     `API_MISSION_READY` bit, so flipping it off stops every automatic send at once) and a worker
     that a probe says is `live`: a turn into an ended worker would relaunch it, and nothing
-    automatic ever relaunches an agent. The operator's own words may resume it, as the pane does.
+    automatic ever relaunches an agent. The probe is only the early refusal; the flag rides into
+    the generation choice (#1983), so a worker that exits between the two is refused `stale` and
+    never resumed. The operator's own words may resume it, as the pane does.
     """
     if autonomous and mission_id:
         try:
@@ -743,6 +750,9 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
             if mission_id
             else {"reservation_id": action_id},
             execution_admission=action_guard,
+            # An automatic turn never starts a worker (#1983): the probe above is only the early
+            # refusal, and this flag closes the probe-to-submit race at the generation choice.
+            no_relaunch=autonomous,
         )
     except runtime.StructuredError as exc:
         if exc.status == 404:

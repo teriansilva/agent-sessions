@@ -2346,13 +2346,21 @@ def _claude_history_exists(source, native_id: str) -> bool:
     return root is not None and any(Path(root).glob(f"projects/*/{native_id}.jsonl"))
 
 
-def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | None) -> str | None:
+def _relaunch_sync(
+    engine_id: str,
+    session_id: str,
+    permission_operation: str | None,
+    no_relaunch: bool = False,
+) -> str | None:
     with _archive_admission(engine_id, session_id):
-        return _relaunch_sync_admitted(engine_id, session_id, permission_operation)
+        return _relaunch_sync_admitted(engine_id, session_id, permission_operation, no_relaunch)
 
 
 def _relaunch_sync_admitted(
-    engine_id: str, session_id: str, permission_operation: str | None
+    engine_id: str,
+    session_id: str,
+    permission_operation: str | None,
+    no_relaunch: bool = False,
 ) -> str | None:
     prov, _ = _session(engine_id, session_id)
     try:
@@ -2381,6 +2389,16 @@ def _relaunch_sync_admitted(
         current = record.get("current_worker")
         if current and not record.get("closed") and classify(session_id, current) == "live":
             return None  # someone else relaunched it; use it
+        if no_relaunch:
+            # An automatic turn never starts a worker (#1983): a worker that exited between the
+            # caller's probe and this choice is refused HERE, under the same lifecycle lock a
+            # launch takes, so the probe-to-submit race cannot resume it. A definitive 409, never
+            # an unreachable that reads as uncertain: nothing was sent.
+            raise NativeError(
+                409,
+                "the session's worker is not running, and an automatic send never restarts it;"
+                " nothing was sent",
+            )
         # Close the gate, then require EVERY earlier generation proved gone (exact pinned
         # invocation, empty cgroup) before a successor may own the native history.
         record["closed"] = True
@@ -2418,7 +2436,10 @@ def _relaunch_sync_admitted(
 
 
 async def _live_generation(
-    engine_id: str, session_id: str, permission_operation: str | None
+    engine_id: str,
+    session_id: str,
+    permission_operation: str | None,
+    no_relaunch: bool = False,
 ) -> Generation:
     record = await asyncio.to_thread(native_state.read_session, session_id)
     if record and _permission_change(record).get("state") == "stopping":
@@ -2440,7 +2461,14 @@ async def _live_generation(
                 pass  # it died starting: a successor below, once it is proved gone
         elif life.get("phase") == "ready":
             return gen
-    worker_id = await asyncio.to_thread(_relaunch_sync, engine_id, session_id, permission_operation)
+    if no_relaunch:
+        worker_id = await asyncio.to_thread(
+            _relaunch_sync, engine_id, session_id, permission_operation, True
+        )
+    else:
+        worker_id = await asyncio.to_thread(
+            _relaunch_sync, engine_id, session_id, permission_operation
+        )
     if worker_id is not None:
         await _wait_ready(worker_id)
     gen = await asyncio.to_thread(_generation, session_id)
@@ -2455,9 +2483,16 @@ async def _effect(
     action: str,
     params: dict,
     permission_operation: str | None,
+    no_relaunch: bool = False,
 ) -> dict:
     for attempt in range(3):
-        gen = await _live_generation(engine_id, session_id, permission_operation)
+        # The old call shape for every operator decision and operator send: only an automatic
+        # turn asks the generation choice to refuse instead of relaunching (#1983).
+        gen = (
+            await _live_generation(engine_id, session_id, permission_operation, no_relaunch=True)
+            if no_relaunch
+            else await _live_generation(engine_id, session_id, permission_operation)
+        )
         current = await asyncio.to_thread(native_state.read_session, session_id)
         if _permission_change(current or {}).get("operation_id") != permission_operation:
             raise NativeError(
@@ -4140,10 +4175,14 @@ async def submit(
     execution_admission=None,
     idempotent: bool = True,
     reply_to: str | None = None,
+    no_relaunch: bool = False,
 ) -> dict:
     """``attachments``: files/pictures already admitted by ``native_attachments.admit``.
     ``reply_to``: the async question this message answers (#1463); the journal admits it only
-    while that question is still open."""
+    while that question is still open.
+    ``no_relaunch``: an automatic turn (#1983) refuses at the generation choice instead of
+    launching a successor when no worker is live; it is never part of the request's identity,
+    so a replay stays byte-identical."""
     if execution_admission is not None and getattr(execution_admission, "admit", None) is None:
         raise NativeError(409, "this caller's authority can't be checked across processes")
     # An archived session takes no message, live worker or not (#2064).
@@ -4227,6 +4266,7 @@ async def submit(
                 "submit",
                 {**params, **authority, "operation_id": turn_id, "expected_revision": revision},
                 permission_operation,
+                no_relaunch,
             )
             break
         except NativeError as exc:

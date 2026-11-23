@@ -114,7 +114,8 @@ enter that server's key again or remove it.
 - **Captions are off unless you turn them on** (Settings → AI → HQ → Calls → Conversation, or the
   call panel). A call then shows only the cards that need your decision.
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
-  The call bar follows you across the app.
+  The call bar follows you across the app; its one caption line quotes the newest HQ line that
+  has finished playing, never one still queued or cut off by an interruption.
 - **A call ends when you end it:** hang up, or say anything that means you're done ("bye",
   "that's all", "tschüss"…). HQ judges that from what you mean, not from a word list, says
   goodbye and ends the call. A goodbye to a session ("say bye to the docs session") doesn't end

@@ -373,15 +373,24 @@ def _stop_already_raised(
     must not silence a different stop.
     """
     if mark is not None:
-        raised = set(
-            missions.stop_escalated(mission_id, session_key, mark, kind=kind, fp=fp, path=path)
-        )
+        raised = missions.stop_escalated(mission_id, session_key, mark, kind=kind, fp=fp, path=path)
         # …while the work it was raised about is still OPEN (#1577 re-review 3). Settling that
         # objective — waived, stood down, dropped — answers the card's own subject, not the stop:
         # a still-stopped agent with other unmet objectives is raised again, on the next one, one
         # card at a time. "Keep it open" settles nothing, so it keeps holding.
+        #
+        # AND IT MATCHES THE OBJECTIVE'S INCARNATION, not just its key (#1587): dropping a key
+        # and re-adding it puts a NEW question in the same slot, which the earlier card never
+        # asked about. An escalation written before #1587 carries no incarnation, so its empty
+        # one matches by key (the compatibility exception stated on the issue).
         if any(
-            o["key"] in raised and not o["met"] and not o["stood_down"] for o in a["objectives"]
+            not o["met"]
+            and not o["stood_down"]
+            and any(
+                key == o["key"] and (not incarnation or incarnation == o["incarnation"])
+                for key, incarnation in raised
+            )
+            for o in a["objectives"]
         ):
             return "this stop was already escalated; it is raised again when the transcript moves"
     for o in a["objectives"]:
@@ -2323,6 +2332,9 @@ async def _pass_one_session(
                         "stop_mark": int(out["mark"]),
                         "stop_kind": stop_kind,
                         **({"stop_fp": stop_fp} if stop_fp else {}),
+                        # WHICH OBJECTIVE THIS CARD IS ABOUT (#1587). The key alone cannot
+                        # tell it from a re-added one, and the hold compares both.
+                        "objective_incarnation": str(o.get("incarnation") or ""),
                     }
                     if out.get("mark") is not None
                     else None

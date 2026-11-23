@@ -941,6 +941,71 @@ async def test_KEEP_IT_OPEN_does_not_bring_the_same_card_straight_back(store, mo
 
 
 @pytest.mark.anyio
+async def test_a_RE_ADDED_objective_is_raised_again_for_the_same_quiet_stop(store, monkeypatch):
+    """#1587. The hold matched the escalated objective by KEY alone, so an operator who waived the
+    card's objective and then dropped and re-added it under the same key left the still-quiet agent
+    held forever: the re-added objective is a new incarnation that was never raised.
+
+    The unchanged incarnation still holds after a keep-open answer — "once per stop" only ends for
+    the row that was actually raised."""
+    _running(store)
+    _objective(store, "a")
+    _objective(store, "b")
+    _quiet_agent_declines_to_ask(monkeypatch)
+    for _ in range(2):
+        await sup.run_pass(store)
+    q = missions.open_question_row(store)
+    keep = next(i for i, o in enumerate(q["options"]) if o["action"] == "note_answer")
+    missions.answer_question(store, q["seq"], option_index=keep)
+    for _ in range(3):
+        await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 1, "the unchanged objective was raised again"
+
+    # The operator settles the raised card's objective and its neighbour, then drops the raised
+    # one and re-adds it under the same key. The agent has not written, so it is the same stop.
+    missions.patch_objectives(store, [{"op": "waive", "key": "a"}, {"op": "waive", "key": "b"}])
+    missions.patch_objectives(store, [{"op": "drop", "key": "a"}])
+    missions.patch_objectives(
+        store,
+        [{"op": "add", "key": "a", "title": "a", "probe": "forge_pr", "gate": True}],
+    )
+    new_incarnation = missions.objective_incarnation(store, "a")
+    for _ in range(3):
+        await sup.run_pass(store)
+
+    esc = _kinds(store, "escalation")
+    raised = [e["meta"].get("objective_incarnation") for e in esc]
+    assert raised.count(new_incarnation) == 1, esc
+    assert len(esc) == 2, "the re-added objective was raised more than once for one stop"
+    assert missions.derive_needs_you([store])[store]["needs_you"] is True
+
+
+@pytest.mark.anyio
+async def test_a_LEGACY_stop_escalation_without_an_incarnation_still_holds_by_key(
+    store, monkeypatch
+):
+    """#1587 compatibility exception. An escalation written before the change carries
+    `stop_mark`/`stop_kind`/`stop_fp` but no `objective_incarnation`, so it matches by key alone,
+    exactly as it did before: an existing stopped mission is not re-raised by this change."""
+    _running(store)
+    _objective(store, KEY)
+    _quiet_agent_declines_to_ask(monkeypatch)
+    assert missions.escalate_once(
+        store,
+        session_key=SESSION,
+        objective_key=KEY,
+        episode=1,
+        reason="raised before the incarnation was recorded",
+        meta={"stop_mark": 100, "stop_kind": "stall"},
+    )
+    missions.patch_objectives(store, [{"op": "drop", "key": KEY}])
+    _objective(store, KEY)  # a new incarnation under the same key
+
+    await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 1, "a legacy row stopped holding by key"
+
+
+@pytest.mark.anyio
 async def test_a_NEW_stop_after_the_transcript_moved_is_escalated_again(store, monkeypatch):
     """#1577 review. "Once per stop" must not become "once ever": when the session writes and
     stops again, that is a new stop and the operator hears about it."""
