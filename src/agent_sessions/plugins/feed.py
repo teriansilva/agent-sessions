@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from . import kinds, provenance, runner
-from .manifest import Manifest, load_bytes
+from .manifest import SIGNED_FEED, Manifest, load_bytes
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_PLUGINS = 64
@@ -172,7 +172,7 @@ class Feed:
 def entry(value: object, *, signed: bool) -> Entry:
     value = _fields(value, {"manifest", "recipe"})
     raw = canonical(value["manifest"])
-    manifest = load_bytes(raw, name="plugin.json", source="signed-feed" if signed else "local")
+    manifest = load_bytes(raw, name="plugin.json", source=SIGNED_FEED if signed else "local")
     if manifest.runtime == "api" and not signed:
         # A native API client (#1311) only arrives through the operator-signed catalog (or
         # in-tree). It names no executable, but it does choose which console agent the app

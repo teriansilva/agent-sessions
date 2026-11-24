@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent_sessions.plugins import feed, runner  # noqa: E402
+from agent_sessions.plugins.manifest import ManifestError, load_bytes  # noqa: E402
 
 
 def _fsync_directory(path: Path) -> None:
@@ -99,6 +100,13 @@ def main() -> None:
         }
     )
     snapshot = feed.parse(data, now=issued)
+    # Strict as well (#2321): parsing a signed source is lenient on `store.read_only` so published
+    # cuts stay readable, but a NEW cut must never carry a mislabelled writable store.
+    for entry in entries:
+        try:
+            load_bytes(feed.canonical(entry["manifest"]), name="plugin.json", source="recipe")
+        except ManifestError as exc:
+            parser.error(f"entry {entry['manifest'].get('identity', {}).get('id')!r}: {exc}")
     signature = None
     if args.sign_public_key:
         public = args.sign_public_key.read_text().strip()

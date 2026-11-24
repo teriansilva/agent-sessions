@@ -29,7 +29,7 @@ import re
 import stat
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,12 @@ _PREFIX_RE = re.compile(r"^[a-z]{1,16}_$")
 _MODEL_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}\Z")
 #: The picker's "no flag" choice. Never a model id or an alias, so it can never be launched AS one.
 MODEL_DEFAULT = "default"
+#: The `source` a manifest carries when it comes from a signed catalog cut or the bundled catalog
+#: (`feed.entry(..., signed=True)`), as opposed to a local file or an in-tree plugin.toml.
+SIGNED_FEED = "signed-feed"
+#: The `source` prefix of a retiring engine's recorded copy (`roster_state.parse_copy`): bytes that
+#: were admitted when they were recorded, re-read now only to keep live sessions attachable.
+RETIRED_PREFIX = "retired:"
 _SEMVERISH_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
 _PACKAGE_RE = re.compile(r"^(@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -874,6 +880,20 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
     verify = top.strs("verify", one_of=kinds.VERIFY_CHECKS, max_items=len(kinds.VERIFY_CHECKS))
     top.done()
 
+    if (
+        store is not None
+        and store.read_only
+        and _admitted_earlier(source)
+        and _writes_store(store.layout, maintenance)
+    ):
+        # A signed cut published before #2301 omits `store.read_only` (default true) on stores
+        # BattleLab writes (#2321), and a retiring engine's recorded copy holds those same bytes.
+        # Neither can change, and refusing them makes the published catalog unreadable for every
+        # upgraded host, or strands a retiring engine's live sessions. The flag only feeds the
+        # served value, so serve the true one. New local and first-party manifests, and the
+        # catalog builders, stay strict (`_cross_check`).
+        store = replace(store, read_only=False)
+
     m = Manifest(
         contract=contract,
         identity=identity,
@@ -1064,12 +1084,23 @@ def _cross_check(m: Manifest) -> None:
         # A managed plugin must say which env override would flip it to adopted (§2b), so the flip
         # can be detected rather than silently honoured.
         raise ManifestError("binary.env_var", "is required when install is declared")
-    if m.store is not None and m.store.read_only:
+    if m.store is not None and m.store.read_only and _writes_store(m.store.layout, m.maintenance):
         # `store.read_only` declares BattleLab's access to the store (#1182). A layout BattleLab
         # writes in normal operation, or any manifest admitting a writing maintenance kind, may
         # not also claim read-only: the served value would be wrong on the Agents detail page.
-        if m.store.layout in kinds.WRITABLE_STORE_LAYOUTS or "sqlite-vacuum" in m.maintenance:
-            raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
+        # (A signed cut or recorded copy never reaches this: `parse` serves the true value, #2321.)
+        raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
+
+
+def _admitted_earlier(source: str) -> bool:
+    """Bytes admitted before the current rules could apply to them: a signed cut (or the bundled
+    catalog) and a retiring engine's recorded copy. Only `store.read_only` is normalized."""
+    return source == SIGNED_FEED or source.startswith(RETIRED_PREFIX)
+
+
+def _writes_store(layout: str, maintenance) -> bool:
+    """BattleLab itself writes this store: a writable layout, or a writing maintenance kind."""
+    return layout in kinds.WRITABLE_STORE_LAYOUTS or "sqlite-vacuum" in maintenance
 
 
 def _cross_check_launch(m: Manifest) -> None:

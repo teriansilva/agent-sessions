@@ -29,7 +29,7 @@ from pathlib import Path
 
 from ..atomicjson import atomic_write_json
 from . import plugin_state_home, provenance
-from .manifest import MANIFEST_NAMES, Manifest, ManifestError, load_bytes
+from .manifest import MANIFEST_NAMES, RETIRED_PREFIX, Manifest, ManifestError, load_bytes
 
 _MAX_DOC = 2 * 1024 * 1024
 _ID_OK = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
@@ -135,7 +135,7 @@ def load(env: Mapping[str, str] | None = None) -> RosterState:
 
 def parse_copy(eid: str, name: str, raw: bytes) -> Manifest:
     """A recorded manifest, parsed exactly as a live one is. Raises `ManifestError`."""
-    m = load_bytes(raw, name=name, source=f"retired:{eid}")
+    m = load_bytes(raw, name=name, source=f"{RETIRED_PREFIX}{eid}")
     if m.id != eid:
         raise ManifestError("identity.id", f"recorded under {eid!r} but declares {m.id!r}")
     return m

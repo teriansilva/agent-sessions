@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agent_sessions.plugins import feed  # noqa: E402
+from agent_sessions.plugins.manifest import load_bytes  # noqa: E402
 
 
 def build() -> bytes:
@@ -27,6 +28,9 @@ def build() -> bytes:
     entries.sort(key=lambda e: e["manifest"]["identity"]["id"])
     for entry in entries:
         feed.entry(entry, signed=True)
+        # Strict as well (#2321): a signed source is read leniently on `store.read_only` so already
+        # published cuts stay readable, but a recipe entering a NEW cut must declare it correctly.
+        load_bytes(feed.canonical(entry["manifest"]), name="plugin.json", source="recipe")
     return feed.canonical({"format": 1, "agents": entries})
 
 
