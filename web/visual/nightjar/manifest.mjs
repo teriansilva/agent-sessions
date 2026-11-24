@@ -352,6 +352,22 @@ const ART_ITEMS = [
   ART("9530-6128-1472-3389", "file", "Auth middleware review notes", "Findings by severity, with file and line.", 1, "review.md", 1, 14000, 172800),
 ];
 const ART_SETTINGS = { enabled: true, artifacts: 4, public: 1, bytes: 61900000, caps: { revision_bytes: 209715200, revision_files: 2000, revisions: 20, total_bytes: 5368709120 } };
+// Shared artifact repositories (#2347 P1): one repository hosted here with a site and a file.
+const REPO_ID = "4821-3307-9154-6602";
+const REPO = { id: REPO_ID, name: "design-assets", description: "Files several BattleLabs use", quota_bytes: 2147483648, bytes: 432013312, items: 2, created_at: ART_NOW - 86400, updated_at: ART_NOW - 600 };
+const REPO_ITEM = (id, title, kind, entry, bytes, revision, added_by) => ({ id, repository_id: REPO_ID, title, why: `Why ${title}`, kind, revision, added_by, source_artifact: null, created_at: ART_NOW - 7200, updated_at: ART_NOW - 600, files: kind === "site" ? 38 : 1, bytes, entry, url: `/artifacts/i/${id}/` });
+const REPO_API = {
+  "/api/repos": { repositories: [REPO, { ...REPO, id: "7310-2468-1357-9024", name: "release-builds", description: "", bytes: 1181116006, items: 6 }], quota_default: 2147483648 },
+  [`re:/api/repos/${REPO_ID}$`]: REPO,
+  [`re:/api/repos/${REPO_ID}/items`]: {
+    items: [
+      REPO_ITEM("1846-2207-3391-5520", "Onboarding screens v4", "site", "index.html", 19293798, 4, { kind: "session", session_key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001" }),
+      REPO_ITEM("2957-3318-4402-6631", "Brand guidelines 2027", "file", "guidelines.pdf", 8283750, 2, { kind: "operator" }),
+    ],
+    total: 2,
+    next_cursor: null,
+  },
+};
 const ART_DETAIL = (a) => ({
   ...a,
   revisions: [4, 3, 2, 1].map((n) => ({ n, created_at: ART_NOW - 720 - (4 - n) * 1500, files: 38 - (4 - n), bytes: 2400000 - (4 - n) * 100000 })),
@@ -2350,6 +2366,15 @@ export const SWEEP = [
   },
   { id: "route:artifact-detail", path: "/library/artifacts/5449-5592-2107-4372", api: ART_PRIVATE_API, present: "[data-testid='artifact-preview']" },
   { id: "route:artifact-public", path: "/library/artifacts/5449-5592-2107-4372", api: ART_API, present: "[data-testid='artifact-public-url']" },
+  // ---- Shared artifact repositories (#2347 P1) ----
+  { id: "route:artifact-repos", path: "/library/artifacts/repositories", api: REPO_API, present: "[data-repo]" },
+  {
+    id: "route:artifact-repos-empty",
+    path: "/library/artifacts/repositories",
+    api: { ...REPO_API, "/api/repos": { repositories: [], quota_default: 2147483648 } },
+    present: "[data-testid='repos-none']",
+  },
+  { id: "route:artifact-repo", path: `/library/artifacts/repositories/${REPO_ID}`, api: REPO_API, present: "[data-item]" },
   {
     id: "popup:artifact-share",
     path: "/library/artifacts/5449-5592-2107-4372",

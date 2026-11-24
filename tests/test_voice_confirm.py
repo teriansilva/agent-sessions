@@ -176,7 +176,7 @@ def test_a_card_is_read_back_and_confirmed_through_its_own_route(monkeypatch):
     async def go():
         await r.ask("Rerun the tests on api-rebase")
         assert r.said_text()[-1] == (
-            "A message to api-rebase: Rerun the auth tests. Say confirm to send it, or cancel."
+            "A message to api-rebase: Rerun the auth tests. Want me to send it?"
         )
         await r.readback_played()
         await r.ask("confirm")
@@ -258,10 +258,13 @@ def test_everything_is_refused_and_ordinals_pick_one(monkeypatch):
         await r.ask("do both")
         await r.readback_played()
         await r.ask("approve everything")
-        assert r.said_text()[-1] == "I can only confirm one at a time."
+        assert (
+            r.said_text()[-1]
+            == "I can only do one at a time. Which one do you mean, the first or the second?"
+        )
         await r.readback_played()  # the clarification must PLAY before the challenge re-arms
         await r.ask("confirm")
-        assert r.said_text()[-1] == "Which one? Say confirm and the number."
+        assert r.said_text()[-1] == "Which one do you mean, the first or the second?"
         await r.readback_played()
         await r.ask("confirm the second")
 
@@ -281,7 +284,7 @@ def test_cancel_leaves_the_card(monkeypatch):
         await r.ask("no")
 
     run(go())
-    assert r.routes == [] and r.said_text()[-1] == "Okay. It stays on your screen."
+    assert r.routes == [] and r.said_text()[-1] == "Okay, I'll leave it."
 
 
 def test_a_changed_card_is_reported_from_the_route(monkeypatch):
@@ -293,7 +296,7 @@ def test_a_changed_card_is_reported_from_the_route(monkeypatch):
         await r.ask("send it")
 
     run(go())
-    assert r.said_text()[-1] == "That card changed, so I didn't send it. It's on your screen."
+    assert r.said_text()[-1] == "That one changed in the meantime, so I didn't send it."
 
 
 def test_an_ended_call_settles_nothing(monkeypatch):
@@ -525,7 +528,10 @@ def test_what_cannot_be_heard_in_full_is_never_offered_by_voice(monkeypatch, tex
 
     run(go())
     assert r.call.challenge is None
-    assert "I've drafted a message to api-rebase. It's on your screen to send." in r.said_text()
+    assert (
+        "I've written a message for api-rebase. That one you'll want to check yourself."
+        in r.said_text()
+    )
 
 
 def test_the_spoken_read_back_is_exactly_what_is_sent(monkeypatch):
@@ -635,7 +641,7 @@ def test_a_fifth_card_is_still_mentioned(monkeypatch):
 
     run(go())
     assert len(r.call.challenge["cards"]) == 4
-    assert "I've drafted a message to s4. It's on your screen to send." in r.said_text()
+    assert "I've written a message for s4. That one you'll want to check yourself." in r.said_text()
 
 
 def test_a_played_ack_racing_the_said_marker_still_arms(monkeypatch):
@@ -691,7 +697,7 @@ def test_a_destructive_operation_reads_its_whole_effect_back(monkeypatch):
         await r.ask("delete the data project")
         assert r.said_text()[-1] == (
             "Delete project, for Data: Deletes the project Data: its shared memory and launch "
-            "defaults are lost. Say confirm to do it, or cancel."
+            "defaults are lost. Shall I go ahead?"
         )
         await r.readback_played()
         await r.ask("confirm")
@@ -821,7 +827,11 @@ def test_markers_that_arrive_before_the_offer_settles_still_arm(monkeypatch, ear
 
     async def fast_worker(m):
         await plain(m)
-        if isinstance(m, dict) and m.get("t") == "say" and "Say confirm" in str(m.get("text")):
+        if (
+            isinstance(m, dict)
+            and m.get("t") == "say"
+            and "Want me to send it?" in str(m.get("text"))
+        ):
             await r.call.on_worker_event({"t": "said", "id": m["id"]})  # before the send returns
             if early_played:
                 await r.call.on_played(m["id"])
@@ -852,7 +862,11 @@ def test_an_interrupted_read_back_never_arms_however_the_awaits_resolve(monkeypa
 
     async def racing_worker(m):
         await plain(m)
-        if isinstance(m, dict) and m.get("t") == "say" and "Say confirm" in str(m.get("text")):
+        if (
+            isinstance(m, dict)
+            and m.get("t") == "say"
+            and "Want me to send it?" in str(m.get("text"))
+        ):
             await r.call.on_worker_event({"t": "said", "id": m["id"]})
             if gap_event == "talked_over":
                 await r.ev(t="user_started")
@@ -1040,8 +1054,8 @@ def test_a_call_in_another_language_arms_hq_cards_for_the_judge(monkeypatch):
         await r.side()
 
     run(go())
-    assert r.judged == [("A message to api-rebase: Rerun the auth tests. Say confirm to send it, "
-                         "or cancel.", 1, "Ja, mach das")]  # fmt: skip
+    assert r.judged == [("A message to api-rebase: Rerun the auth tests. Want me to send it?",
+                         1, "Ja, mach das")]  # fmt: skip
     assert ("POST", "/api/pulse/actions/act-1/approve", None) in r.routes
     assert r.asked == ["Starte die Tests neu"]
 
@@ -1059,7 +1073,7 @@ def test_a_needs_you_decision_on_another_language_call_stays_on_screen(monkeypat
 
     run(go())
     assert r.call.challenge is None
-    assert r.said_text()[-1].endswith("Confirm it on your screen.")
+    assert r.said_text()[-1].endswith("You'll need to tap that one.")
     assert r.judged == []
 
 
@@ -1240,7 +1254,7 @@ def test_no_verdict_decides_nothing_and_asks_nothing(monkeypatch):
     run(go())
     assert not any(m == "POST" for m, _, _ in r.routes)
     assert r.asked == ["Rerun the tests"]  # not passed on as a question either
-    assert r.said_text()[-1] == "I couldn't tell. It's on your screen."
+    assert r.said_text()[-1] == "Sorry, I didn't catch that. It's still waiting for you."
     assert r.call.challenge is None
 
 
@@ -1275,7 +1289,7 @@ def test_a_judged_cancel_leaves_it_on_screen(monkeypatch):
 
     run(go())
     assert not any(m == "POST" for m, _, _ in r.routes)
-    assert r.said_text()[-1] == "Okay. It stays on your screen."
+    assert r.said_text()[-1] == "Okay, I'll leave it."
 
 
 def test_a_judged_ambiguous_reply_asks_which_and_rearms(monkeypatch):
@@ -1286,7 +1300,7 @@ def test_a_judged_ambiguous_reply_asks_which_and_rearms(monkeypatch):
         await _armed(r)
         await _reply(r, "ja, mach")
         await r.side()
-        assert r.said_text()[-1] == "Which one? Say confirm and the number."
+        assert r.said_text()[-1] == "Which one do you mean, the first or the second?"
         ch = r.call.challenge
         assert ch is not None and ch["armed_at"] is None  # re-arms once that line has played
         await r.readback_played()
@@ -1670,7 +1684,7 @@ def test_a_bare_turn_start_during_the_judgement_never_swallows_the_words(monkeyp
     assert not any(p.endswith("/approve") for _, p, _ in r.routes)
     if verdict is None:
         assert r.call.challenge is None
-        assert r.said_text()[-1] == "I couldn't tell. It's on your screen."
+        assert r.said_text()[-1] == "Sorry, I didn't catch that. It's still waiting for you."
         assert "Wie viele Sitzungen laufen?" not in r.asked
     else:
         # Asked as a question (HQ's answer offers its card afresh: a NEW, unarmed challenge).
@@ -1826,7 +1840,7 @@ def test_no_verdict_after_a_newer_confirm_says_nothing_false(monkeypatch):
 
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes)
-    assert "I couldn't tell. It's on your screen." not in r.said_text()
+    assert "Sorry, I didn't catch that. It's still waiting for you." not in r.said_text()
 
 
 def test_judged_words_take_their_place_before_a_newer_question(monkeypatch):

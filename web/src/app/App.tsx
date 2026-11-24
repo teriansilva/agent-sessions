@@ -115,6 +115,8 @@ import {
   MEMORY_PATH,
   ARTIFACTS_PATH,
   ARTIFACT_ROUTE,
+  ARTIFACT_REPOS_PATH,
+  ARTIFACT_REPO_ROUTE,
   NIGHTJAR_GALLERY_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
@@ -186,6 +188,8 @@ const WebhookNew = lazyWithReload(() => import("../routes/WebhookNew"), "webhook
 const WebhookDetail = lazyWithReload(() => import("../routes/WebhookDetail"), "webhook-detail");
 const Artifacts = lazyWithReload(() => import("../routes/Artifacts"), "artifacts");
 const ArtifactDetail = lazyWithReload(() => import("../routes/ArtifactDetail"), "artifact-detail");
+const ArtifactRepos = lazyWithReload(() => import("../routes/ArtifactRepos"), "artifact-repos");
+const ArtifactRepo = lazyWithReload(() => import("../routes/ArtifactRepo"), "artifact-repo");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // LIBRARY → SPECIALISTS (#1693): the pool HQ staffs missions from.
 const Specialists = lazyWithReload(() => import("../routes/Specialists"), "specialists");
@@ -970,6 +974,9 @@ function Layout() {
                   <Route path={MEMORY_PATH} element={<Memory />} />
                   <Route path={ARTIFACTS_PATH} element={<Artifacts />} />
                   <Route path={ARTIFACT_ROUTE} element={<ArtifactDetail />} />
+                  {/* Shared repositories (#2347 P1): static segments, ranked above `:artifactId`. */}
+                  <Route path={ARTIFACT_REPOS_PATH} element={<ArtifactRepos />} />
+                  <Route path={ARTIFACT_REPO_ROUTE} element={<ArtifactRepo />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

@@ -48,7 +48,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import artifact_relay, artifact_store, auth, shares
+from .. import artifact_relay, artifact_store, auth, repo_store, shares
 from ..auth import AuthConfig, enforce_origin, session_uid
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -80,8 +80,11 @@ def _serializer(cfg: AuthConfig) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(cfg.secret_key, salt=_VIEW_SALT)
 
 
-def view_token(cfg: AuthConfig, aid: str, revision: int | None) -> str:
-    return _serializer(cfg).dumps({"a": aid, "r": revision})
+def view_token(cfg: AuthConfig, aid: str, revision: int | None, *, item: bool = False) -> str:
+    """A view token for one artifact, or (``item``) one repository item (#2347 P1), optionally
+    pinned to one revision. The two never read as each other: an artifact's names ``a``, an item's
+    ``i``."""
+    return _serializer(cfg).dumps({"i" if item else "a": aid, "r": revision})
 
 
 #: A password link's unlock token: its own salt (never a view token, session or share cookie), the
@@ -105,19 +108,21 @@ def _read_unlock(cfg: AuthConfig, token: str, public_id: str) -> bool:
     return isinstance(data, dict) and data.get("p") == public_id
 
 
-def _read_token(cfg: AuthConfig, token: str) -> tuple[str, int | None] | None:
+def _read_token(cfg: AuthConfig, token: str) -> tuple[str, int | None, bool] | None:
+    """``(id, revision, is_item)`` of a live view token, else None."""
     try:
         data = _serializer(cfg).loads(token, max_age=VIEW_TTL_S)
     except (BadSignature, SignatureExpired):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or ("a" in data) == ("i" in data):
         return None
-    aid, rev = data.get("a"), data.get("r")
+    item = "i" in data
+    aid, rev = data.get("i" if item else "a"), data.get("r")
     if not isinstance(aid, str) or not artifact_store.ID_RE.fullmatch(aid):
         return None
     if rev is not None and (not isinstance(rev, int) or isinstance(rev, bool) or rev < 1):
         return None
-    return aid, rev
+    return aid, rev, item
 
 
 def _opened(request: Request) -> bool:
@@ -321,12 +326,21 @@ def markdown_page(name: str, rel: str, data: bytes, renderer: tuple[str, str] | 
     return "".join(head + body)
 
 
-async def _serve(aid: str, rel: str, revision: int | None, request: Request) -> Response:
+async def _serve(
+    aid: str, rel: str, revision: int | None, request: Request, *, item: bool = False
+) -> Response:
+    """One hosted file: an artifact's, or (``item``) a repository item's (#2347 P1), by the same
+    manifest lookup under the same sandbox headers."""
+    resolve = repo_store.resolve if item else artifact_store.resolve
     try:
-        served = await asyncio.to_thread(artifact_store.resolve, aid, rel, revision=revision)
+        served = await asyncio.to_thread(resolve, aid, rel, revision=revision)
     except artifact_store.Redirect as r:
         if r.location == "index":
-            files = await asyncio.to_thread(artifact_store.listing, aid, revision=revision)
+            listing = repo_store.listing if item else artifact_store.listing
+            try:
+                files = await asyncio.to_thread(listing, aid, revision=revision)
+            except (artifact_store.NotServed, artifact_store.ArtifactsUnavailable):
+                return _hosted_error(404, "not found")
             return _listing_page(aid, files)
         return RedirectResponse(r.location, status_code=308, headers=SANDBOX_HEADERS)
     except (artifact_store.NotServed, artifact_store.ArtifactsUnavailable):
@@ -798,6 +812,15 @@ def register(
         read = _read_token(cfg, token)
         if read is None:
             return _hosted_error(404, "this view link has expired; open the artifact again")
+        if read[2]:
+            # A repository item's revision (#2347 P1): its own title, kind and time.
+            try:
+                meta = await asyncio.to_thread(repo_store.item_meta, read[0], read[1])
+            except artifact_store.ArtifactsUnavailable:
+                meta = None
+            if meta is None:
+                return _hosted_error(404, "not found")
+            return JSONResponse({**meta, "header": True}, headers=_VIEWER_HEADERS)
         try:
             art = await asyncio.to_thread(artifact_store.get, read[0])
         except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable):
@@ -849,12 +872,52 @@ def register(
         read = _read_token(cfg, token)
         if read is None:
             return _hosted_error(404, "this view link has expired; open the artifact again")
-        aid, rev = read
-        return await _serve(aid, rest, rev, request)
+        aid, rev, item = read
+        return await _serve(aid, rest, rev, request, item=item)
 
     @app.get("/artifacts/v/{token}")
     async def hosted_view_bare(token: str) -> Response:
         return RedirectResponse(f"/artifacts/v/{token}/", status_code=308, headers=SANDBOX_HEADERS)
+
+    # ---- a repository item (#2347 P1) ---------------------------------------------------------
+    # `/artifacts/i/<item id>[@<n>]/` is the operator's link to one item of a repository hosted
+    # here: signed in, it hands out an item view token exactly as the stable link does, and the
+    # bytes are then served under `/artifacts/v/<token>/` with every sandbox header.
+
+    @app.get("/artifacts/i/{ref}")
+    async def hosted_item_bare(ref: str) -> Response:
+        if not _REF.fullmatch(ref):
+            return _hosted_error(404, "not found")
+        return RedirectResponse(f"/artifacts/i/{ref}/", status_code=308, headers=SANDBOX_HEADERS)
+
+    @app.get("/artifacts/i/{ref}/{rest:path}")
+    async def hosted_item(ref: str, rest: str, request: Request) -> Response:
+        m = _REF.fullmatch(ref)
+        if m is None:
+            return _hosted_error(404, "not found")
+        query = f"?{request.url.query}" if request.url.query else ""
+        if session_uid(cfg, request) is None:
+            target = quote(request.url.path + query, safe="/@")
+            return RedirectResponse(
+                f"/login?next={target}", status_code=303, headers=SANDBOX_HEADERS
+            )
+        iid = m.group("id")
+        rev = int(m.group("rev")) if m.group("rev") else None
+        try:
+            meta = await asyncio.to_thread(repo_store.item_meta, iid, rev)
+        except artifact_store.ArtifactsUnavailable:
+            meta = None
+        if meta is None:
+            return _hosted_error(404, "not found")
+        token = view_token(cfg, iid, rev, item=True)
+        headers = {**SANDBOX_HEADERS, "Cache-Control": "no-store", "Vary": "Sec-Fetch-Dest"}
+        if rest == "" and _opened(request) and _viewer_page() is not None:
+            return RedirectResponse(
+                f"/artifacts/o/{token}/{query}", status_code=303, headers=headers
+            )
+        return RedirectResponse(
+            f"/artifacts/v/{token}/{quote(rest)}{query}", status_code=303, headers=headers
+        )
 
     @app.get("/artifacts/{ref}")
     async def hosted_bare(ref: str) -> Response:

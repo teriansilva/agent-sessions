@@ -804,3 +804,63 @@ for (const d of DEVICES) {
     await ctx.close();
   });
 }
+
+test("quota (#2331): the row and the strip name the account new sessions start on, and the other windows", async ({
+  page,
+}) => {
+  // The server's claude row is the ACTIVE account's figures; the dashboard shows only that one,
+  // says whose they are, and lists the windows the headline does not name.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          {
+            ...USAGE.agents[0],
+            account: { id: "a-1", label: "Personal", email: "op@personal.example" },
+            windows: [
+              { label: "session", used_pct: 12, resets_at: NOW + 3 * 3600 },
+              { label: "week (all models)", used_pct: 91, resets_at: NOW + 2 * 86400 },
+              { label: "week (Fable)", used_pct: 42, resets_at: NOW + 2 * 86400 },
+            ],
+            used_pct: 91,
+            forecast: null,
+          },
+          {
+            ...USAGE.agents[1],
+            stale: false,
+            error: null,
+            account: { id: "default", label: "Default login", email: null },
+          },
+        ],
+        accounts: {
+          claude: [
+            {
+              ...USAGE.agents[0],
+              account: { id: "default", label: "Default login", email: "op@work.example" },
+              active: false,
+            },
+          ],
+        },
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  const row = page.locator('[data-testid="quota-row"][data-engine="claude"]');
+  await expect(row).toContainText("9% left · week (all models)");
+  await expect(row.getByTestId("quota-account")).toContainText("op@personal.example");
+  await expect(row.getByTestId("quota-also")).toHaveText(
+    "also: session 88% left · week (Fable) 58% left",
+  );
+  // The non-active account's figures are never on the dashboard.
+  await expect(page.getByTestId("dash-quota")).not.toContainText("op@work.example");
+  // A default login with no email to name stays unnamed rather than saying "Default login".
+  const codex = page.locator('[data-testid="quota-row"][data-engine="codex"]');
+  await expect(codex.getByTestId("quota-account")).toHaveCount(0);
+  await expect(page.getByTestId("kpi-quota")).toContainText("week (all models)");
+  await expect(page.getByTestId("kpi-quota")).toContainText("op@personal.example");
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});

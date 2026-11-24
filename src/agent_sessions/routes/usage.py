@@ -1,8 +1,9 @@
 """Per-agent usage routes (#839).
 
 * ``GET   /api/agents/usage`` — one row per agent: what it reports, when it was asked, whether
-  that answer is stale, and the operator's own limits. Never probes; serving a page must not
-  depend on six CLIs answering.
+  that answer is stale, and the operator's own limits. An agent's row is the account its new
+  sessions start on; ``accounts`` lists every account of an agent that holds several (#2331).
+  Never probes; serving a page must not depend on six CLIs answering.
 * ``POST  /api/agents/usage/refresh`` — ask the agents now. Bounded by the same single-flight as
   the background sweep, so a page with a Refresh button can't fan out six probes per click.
 * ``PATCH /api/agents/budgets`` — the operator's threshold, notify toggle, per-engine limits and
@@ -22,17 +23,18 @@ from fastapi.responses import JSONResponse
 from .. import agent_usage, prefs, usage_loop
 
 
+def _payload(budgets: dict) -> dict:
+    """The engine rows (each its active account's figures) and, for every agent that holds several
+    accounts, one row per account (#2331) — from one read, so the two agree."""
+    agents, accounts = agent_usage.snapshot_with_accounts(budgets=budgets)
+    return {"agents": agents, "accounts": accounts, "budgets": budgets}
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.get("/api/agents/usage")
     async def get_agent_usage(_: str = Depends(logged_in)) -> JSONResponse:
         budgets = prefs.get_agent_budgets()
-        return JSONResponse(
-            {
-                "agents": agent_usage.snapshot(budgets=budgets),
-                "budgets": budgets,
-                "refreshing": usage_loop.is_running(),
-            }
-        )
+        return JSONResponse({**_payload(budgets), "refreshing": usage_loop.is_running()})
 
     @app.post("/api/agents/usage/refresh")
     async def refresh_agent_usage(
@@ -52,8 +54,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             # 409 rather than a queue: the probes spawn CLIs, and the honest answer to "refresh
             # while a refresh is running" is that one already is.
             return JSONResponse({"detail": "a usage refresh is already running"}, status_code=409)
-        budgets = prefs.get_agent_budgets()
-        return JSONResponse({"agents": agent_usage.snapshot(budgets=budgets), "budgets": budgets})
+        return JSONResponse(_payload(prefs.get_agent_budgets()))
 
     @app.patch("/api/agents/budgets")
     async def patch_agent_budgets(
@@ -72,4 +73,4 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # The rows come back with the patch, because a limit is only meaningful next to the
         # count it is compared against — saving "10M" and being told nothing would leave the
         # operator to guess whether they had just crossed their own threshold.
-        return JSONResponse({"budgets": budgets, "agents": agent_usage.snapshot(budgets=budgets)})
+        return JSONResponse(_payload(budgets))

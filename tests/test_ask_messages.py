@@ -560,6 +560,6 @@ def test_a_message_card_not_read_out_says_to_use_the_screen():
         {"proposals": [{"action_id": "a" * 32, "kind": "message", "recipient": "Ops"}]}
     )
     assert out == [
-        "I've drafted a message to Ops. It can't be read out word for word; "
-        "tap it on your screen to send it."
+        "I've written a message to Ops. It's too long to read out word for word, "
+        "so you'll need to tap that one to send it."
     ]

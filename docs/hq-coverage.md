@@ -178,6 +178,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Artifacts (#1932): find by provenance and get the link | GET /api/artifacts, GET /api/artifacts/{id} | have (`artifacts_find`) |
 | Artifacts: share publicly / revoke (the operator's act in the artifact's page) | POST, DELETE /api/artifacts/{id}/share | **never** (public exposure) |
 | Artifacts: the global switch; activation per session, project, mission; delete | GET/PUT /api/artifacts/settings, GET/PUT /api/artifacts/activation, DELETE /api/artifacts/{id} | **never** (activation widens what agents may publish; delete is the operator's own act) |
+| Artifact repositories (#2347 P1): list, read one, its items; create, rename / describe | GET /api/repos, GET/PATCH /api/repos/{id}, GET /api/repos/{id}/items, POST /api/repos | P4 R/W |
+| Artifact repositories: add an artifact as an item or a revision; remove an item; delete a repository | POST /api/repos/{id}/items, DELETE /api/repos/{id}/items/{item}, DELETE /api/repos/{id} | **never** (adding chooses what a repository holds, which paired instances read once it is shared (P2); removing and deleting are the operator's own destructive acts) |
 | Public shares: list; revoke one; revoke all | GET /api/shares, DELETE /api/shares/{id}, POST …/revoke-all | P6 R/W |
 | Public shares: create (view only) | POST /api/shares mode=view | P6 W (external: public exposure; password and expiry typed on the card) |
 | Public shares: create "can send messages" | POST /api/shares mode=send | **never** (lets outsiders drive an agent) |
@@ -771,6 +773,16 @@ GET    /artifacts/o/{token}/{rest:path}                                         
 GET    /artifacts/o/{token}/~meta                                                 n/a  # the own viewer's title/kind/time (#2270)
 GET    /artifacts/v/{token}/{rest:path}                                           n/a  # hosted bytes
 GET    /artifacts/v/{token}                                                       n/a  # hosted bytes
+GET    /artifacts/i/{ref}                                                         n/a  # a repository item's hosted bytes (#2347)
+GET    /artifacts/i/{ref}/{rest:path}                                             n/a  # a repository item's hosted bytes (#2347)
+GET    /api/repos                                                                 P4  # read: repositories hosted here (#2347 P1)
+POST   /api/repos                                                                 P4
+GET    /api/repos/{rid}                                                           P4
+PATCH  /api/repos/{rid}                                                           P4
+DELETE /api/repos/{rid}                                                           never  # destructive
+GET    /api/repos/{rid}/items                                                     P4
+POST   /api/repos/{rid}/items                                                     never  # chooses what paired instances read once shared (P2)
+DELETE /api/repos/{rid}/items/{iid}                                               never  # destructive
 GET    /artifacts/{ref}                                                           n/a  # hosted bytes
 GET    /artifacts/{ref}/{rest:path}                                               n/a  # hosted bytes
 GET    /p/                                                                        n/a  # public share visitor surface

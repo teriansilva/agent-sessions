@@ -21,6 +21,7 @@ import rr from "../components/agents/Roster.module.css";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import { SessionDefaults } from "../components/agents/SessionDefaults";
 import { AgentAccounts } from "../components/agents/AgentAccounts";
+import { UsageAccountHead, UsageWindows } from "../components/agents/UsageWindows";
 import { ModelGrades } from "../components/specialists/ModelGrades";
 import {
   type CSSProperties,
@@ -212,6 +213,23 @@ function useAgentBudgets() {
     return run;
   }
 
+  /** Read the snapshot again — no probe. After the new-session pick changes, the agent's row is
+   *  another account's figures (#2331). Behind the chain like every other full-snapshot write. */
+  function reload(): Promise<void> {
+    const run = chain.current.then(
+      async () => {
+        try {
+          setUsage(await api.agentUsage());
+        } catch {
+          /* the figures shown stay; the next read corrects them */
+        }
+      },
+      () => undefined,
+    );
+    chain.current = run;
+    return run;
+  }
+
   async function refresh() {
     setErr("");
     setBusy(true);
@@ -249,6 +267,8 @@ function useAgentBudgets() {
     },
     save,
     refresh,
+    reload,
+    accounts: usage?.accounts ?? {},
   };
 }
 
@@ -701,7 +721,19 @@ type DetailState =
   | { for: string; kind: "failed" };
 
 /** The Accounts section, present only when the server lists this agent's pool (#1820). */
-function AccountsSection({ engine, label }: { engine: string; label: string }) {
+function AccountsSection({
+  engine,
+  label,
+  usage,
+  threshold,
+  onChanged,
+}: {
+  engine: string;
+  label: string;
+  usage?: AgentUsageRow[];
+  threshold: number;
+  onChanged: () => void;
+}) {
   const [listed, setListed] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -717,7 +749,13 @@ function AccountsSection({ engine, label }: { engine: string; label: string }) {
   return (
     <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-accounts-h">
       <h2 id="agent-accounts-h">Accounts</h2>
-      <AgentAccounts engine={engine} label={label} />
+      <AgentAccounts
+        engine={engine}
+        label={label}
+        usage={usage}
+        threshold={threshold}
+        onChanged={onChanged}
+      />
     </section>
   );
 }
@@ -917,11 +955,20 @@ export function AgentDetail({ id }: { id: string }) {
         <h2 id="agent-usage-h">Usage</h2>
         {usage && info ? (
           <>
-            <EngineMeter b={b} e={info} />
+            {/* Whose quota (#2331): the account new sessions start on, every window it has. */}
+            <UsageAccountHead row={usage} pooled={(b.accounts[id]?.length ?? 0) > 1} />
+            {usage.source === "plan" ? (
+              <UsageWindows row={usage} threshold={b.threshold} />
+            ) : (
+              <EngineMeter b={b} e={info} />
+            )}
             {usage.source === "plan" && (
               <p className={styles.hint}>
                 Plan usage is reported by the agent itself — there is no limit to set here. The
                 alert threshold is in Agents › Defaults.
+                {(b.accounts[id]?.length ?? 0) > 1
+                  ? " These are the figures of the account new sessions start on; every account's are under Accounts."
+                  : ""}
               </p>
             )}
           </>
@@ -936,7 +983,13 @@ export function AgentDetail({ id }: { id: string }) {
       {d.kind === "agent" && d.runtime === "pty" && (
         // Several logins of this agent (#1820). Renders nothing until the agent is proven to hold
         // them (its manifest names an account kind), so the heading lives inside the section.
-        <AccountsSection engine={d.id} label={d.label} />
+        <AccountsSection
+          engine={d.id}
+          label={d.label}
+          usage={b.accounts[d.id]}
+          threshold={b.threshold}
+          onChanged={() => void b.reload()}
+        />
       )}
 
       {d.model_select?.supported && (

@@ -81,6 +81,17 @@ export const artifactPath = (id: string) => `${ARTIFACTS_PATH}/${encodeURICompon
  *  always shows the latest revision, or one revision pinned best-effort with `@<n>`. */
 export const hostedArtifactPath = (id: string, revision?: number) =>
   `/artifacts/${encodeURIComponent(id)}${revision ? `@${revision}` : ""}/`;
+/** Library → Artifacts → REPOSITORIES (#2347 P1): the shared artifact repositories hosted on this
+ *  BattleLab, and one repository's page at `artifactRepoPath(id)`. A repository id is digit groups
+ *  like an artifact's, so it never equals the static `repositories` segment. */
+export const ARTIFACT_REPOS_PATH = `${ARTIFACTS_PATH}/repositories`;
+export const ARTIFACT_REPO_ROUTE = `${ARTIFACT_REPOS_PATH}/:repoId`;
+export const artifactRepoPath = (id: string) =>
+  `${ARTIFACT_REPOS_PATH}/${encodeURIComponent(id)}`;
+/** One repository item's hosted bytes (served sandboxed by the server, like an artifact's): the
+ *  latest revision, or one pinned with `@<n>`. */
+export const hostedRepoItemPath = (id: string, revision?: number) =>
+  `/artifacts/i/${encodeURIComponent(id)}${revision ? `@${revision}` : ""}/`;
 
 /** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
  *  A playbook ID (`[a-z][a-z0-9-]{1,47}`) or skill ID (`[a-z0-9][a-z0-9-]{0,63}`, #1654) has no

@@ -47,6 +47,7 @@ import {
   VisibilityTag,
 } from "../components/artifacts/ArtifactBits";
 import { StoreGauge } from "../components/artifacts/StoreGauge";
+import { ArtifactsViewTabs } from "../components/artifacts/ArtifactsViewTabs";
 import { useArtifactNames } from "../components/artifacts/useArtifactNames";
 import {
   absoluteLink,
@@ -358,6 +359,7 @@ export default function Artifacts() {
           </p>
           <h1 className={styles.h1}>Artifacts</h1>
         </div>
+        <ArtifactsViewTabs value="mine" />
         <div className={styles.headRow}>
           <p className={styles.lede}>
             Files and static sites your agents published. Each one is a frozen

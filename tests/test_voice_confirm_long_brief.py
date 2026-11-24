@@ -32,8 +32,8 @@ def test_a_long_brief_is_announced_not_read_and_marked_so():
     (card,) = voice_calls.confirmable_cards(SESSION)
     assert card["id"] == "prop-9" and card["kind"] == "session" and card["announced"] is True
     assert card["line"] == (
-        "A new Claude Code session in Gameplay. Its brief is too long to read out; "
-        "it is on your screen."
+        "A new Claude Code session in Gameplay. The brief's too long to read out; "
+        "it's in the chat."
     )
     assert LONG[:40] not in card["line"]  # never a cut piece passed off as the brief
 
@@ -52,8 +52,8 @@ def test_saying_confirm_starts_the_announced_session_through_its_own_route(monke
     async def go():
         await r.ask("Start a session for the team-building mode")
         assert r.said_text()[-1] == (
-            "A new Claude Code session in Gameplay. Its brief is too long to read out; "
-            "it is on your screen. Say confirm to start it, or cancel."
+            "A new Claude Code session in Gameplay. The brief's too long to read out; "
+            "it's in the chat. Shall I start it?"
         )
         await r.readback_played()
         await r.ask("confirm")
@@ -116,8 +116,8 @@ def test_the_read_back_says_api_or_terminal_session_as_the_card_will_start_it():
     long_api = {"proposals": [{**SESSION["proposals"][0], "agent": "Claude — API",
                                "runtime": "api"}]}  # fmt: skip
     assert voice_calls.confirmable_cards(long_api)[0]["line"] == (
-        "A new API session with Claude — API in Gameplay. Its brief is too long to read out; "
-        "it is on your screen."
+        "A new API session with Claude — API in Gameplay. The brief's too long to read out; "
+        "it's in the chat."
     )
 
 

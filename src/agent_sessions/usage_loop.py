@@ -150,7 +150,6 @@ def _announce(alert: dict, budgets: dict) -> bool:
     engine = alert.get("engine") or "?"
     pct = alert.get("used_pct")
     key = str(alert.get("key") or "")
-    row = alert.get("row") or {}
     # A cheap second line of defence behind the outbox: if this exact crossing is already a
     # visible bell row, do not write another. It cannot be the PRIMARY guard — the operator can
     # dismiss a row and the ring evicts at `NOTIFY_MAX`, so its absence proves nothing — but its
@@ -158,23 +157,16 @@ def _announce(alert: dict, budgets: dict) -> bool:
     if key and _already_in_bell(key):
         log.info("usage alert already in the bell, re-committing: %s", key)
         return True
-    window = ""
-    windows = [w for w in row.get("windows") or [] if isinstance(w, dict)]
-    if windows:
-        window = str(max(windows, key=lambda w: w.get("used_pct") or 0).get("label") or "")
+    title, reason = alert_text(alert, budgets)
     try:
         rec = notifications.add(
-            title=f"{engine} at {pct:.0f}% of its budget",
+            title=title,
             project="",
             # No session: this is about the agent, not one conversation with it. The bell's
             # session link is left empty rather than pointed at an arbitrary row.
             session_id="",
             engine=engine,
-            reason=(
-                f"{window} window past the {budgets.get('threshold_pct')}% threshold"
-                if window
-                else f"past the {budgets.get('threshold_pct')}% threshold"
-            ),
+            reason=reason,
             action_id=key,
         )
     except Exception:  # noqa: BLE001 — a full bell must not stop the sweep
@@ -188,6 +180,53 @@ def _announce(alert: dict, budgets: dict) -> bool:
         with contextlib.suppress(Exception):
             notifications.fanout(rec)
     return True
+
+
+def _agent_label(engine: str) -> str:
+    try:
+        from . import ask_settings
+
+        return ask_settings.agent_labels().get(engine) or engine
+    except Exception:  # noqa: BLE001 — a label is a nicety; the engine id still says which agent
+        return engine
+
+
+def alert_text(alert: dict, budgets: dict) -> tuple[str, str]:
+    """The bell row's title and reason (#2331): which agent, which QUOTA, whose account.
+
+    A template over named, bounded fields — the agent's label, the window label the probe stored,
+    the account's email or the operator's own label — and nothing else a vendor wrote. The window
+    is the one the alert is keyed on (`alert_key`: the worst), so the text and the episode agree.
+    """
+    engine = alert.get("engine") or "?"
+    pct = alert.get("used_pct")
+    pct = pct if isinstance(pct, int | float) else 0.0
+    row = alert.get("row") or {}
+    label = _agent_label(engine)
+    windows = [w for w in row.get("windows") or [] if isinstance(w, dict)]
+    used_up = (alert.get("level") or 0) >= agent_usage.EXHAUST_PCT
+    if windows:
+        worst = max(windows, key=lambda w: w.get("used_pct") or 0)
+        what = str(worst.get("label") or "quota")
+        others = [
+            f"{w.get('label')} {float(w.get('used_pct') or 0):.0f}%"
+            for w in windows
+            if w is not worst and w.get("label")
+        ][:3]
+    else:
+        what, others = "token budget", []
+    title = f"{label}: {what} used up ({pct:.0f}%)" if used_up else f"{label}: {what} at {pct:.0f}%"
+    acc = row.get("account") if isinstance(row.get("account"), dict) else {}
+    email, acc_label = acc.get("email"), acc.get("label") or agent_usage.DEFAULT_LABEL
+    if acc.get("id") in (None, agent_usage.DEFAULT_ACCOUNT):
+        who = f"{agent_usage.DEFAULT_LABEL} ({email})" if email else agent_usage.DEFAULT_LABEL
+    else:
+        who = email or acc_label
+    threshold = budgets.get("threshold_pct")
+    parts = [who, "back after the reset" if used_up else f"past your {threshold}% threshold"]
+    if others:
+        parts.append(", ".join(others))
+    return title, " · ".join(parts)
 
 
 def _already_in_bell(key: str) -> bool:

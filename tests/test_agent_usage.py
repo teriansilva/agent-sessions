@@ -671,7 +671,6 @@ def test_a_corrupt_store_does_not_take_the_sweep_down(tmp_path, monkeypatch):
 def test_probes_run_a_literal_argv_never_a_shell(monkeypatch):
     """The launchers' load-bearing rule, extended to the probes: a binary as argv[0] and a list
     of arguments, never a command string, never `shell=`."""
-    seen = {}
 
     class FakeProc:
         returncode = 0
@@ -690,19 +689,25 @@ def test_probes_run_a_literal_argv_never_a_shell(monkeypatch):
         def kill(self):
             pass
 
+    calls = []
+
     def fake_popen(argv, **kw):
-        seen["argv"] = argv
-        seen["kw"] = kw
+        calls.append((argv, kw))
         return FakeProc()
 
     monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(au.os, "set_blocking", lambda *a: None)
     monkeypatch.setattr(au.select, "select", lambda r, w, x, t: (r, [], []))
     au.probe_claude(binary="/usr/local/bin/claude")
-    assert seen["argv"] == ["/usr/local/bin/claude", "--no-session-persistence", "-p", "/usage"]
-    assert "shell" not in seen["kw"]
-    # stdin closed: `claude -p` otherwise blocks waiting for piped input that never comes.
-    assert seen["kw"]["stdin"] is au.subprocess.DEVNULL
+    # The quota read, then the identity read (#2331) — both literal, nothing else.
+    assert [argv for argv, _ in calls] == [
+        ["/usr/local/bin/claude", "--no-session-persistence", "-p", "/usage"],
+        ["/usr/local/bin/claude", "auth", "status"],
+    ]
+    for _, kw in calls:
+        assert "shell" not in kw
+        # stdin closed: `claude -p` otherwise blocks waiting for piped input that never comes.
+        assert kw["stdin"] is au.subprocess.DEVNULL
 
 
 def test_the_claude_probe_leaves_no_transcript(monkeypatch):
@@ -712,12 +717,13 @@ def test_the_claude_probe_leaves_no_transcript(monkeypatch):
     Asserted on the argv because that is where the guarantee lives — the alternative was
     accumulating artifacts and filtering them forever.
     """
-    seen = {}
-    monkeypatch.setattr(au, "_run", lambda argv, **kw: (seen.update(argv=argv), (0, ""))[1])
+    argvs = []
+    monkeypatch.setattr(au, "_run", lambda argv, **kw: (argvs.append(argv), (0, ""))[1])
     au.probe_claude(binary="/usr/local/bin/claude")
-    assert "--no-session-persistence" in seen["argv"]
+    usage = next(a for a in argvs if "/usage" in a)
+    assert "--no-session-persistence" in usage
     # It only works with --print, so the two travel together.
-    assert "-p" in seen["argv"]
+    assert "-p" in usage
 
 
 def test_a_probe_that_floods_stdout_is_killed_not_buffered(monkeypatch):
@@ -1546,23 +1552,45 @@ def test_codex_app_server_error_reply_is_reported_not_guessed():
     assert rep.error == "not logged in"
 
 
-def test_the_codex_probe_sends_only_the_handshake_and_one_read(monkeypatch):
+def test_the_codex_probe_sends_only_the_handshake_and_two_reads(monkeypatch):
     """Literal argv, and what goes to codex is the JSON-RPC handshake plus
-    `account/rateLimits/read` — no thread, no prompt, no path."""
+    `account/rateLimits/read` and `account/read` (#2331) — no thread, no prompt, no path."""
     seen = {}
 
     def fake_run(argv, **kw):
         seen.update(argv=argv, **kw)
-        return 0, _fixture("codex-app-server-ratelimits.jsonl")
+        return 0, _fixture("codex-app-server-account.jsonl")
 
     monkeypatch.setattr(au, "_run", fake_run)
     rep = au.probe_codex(binary="/opt/codex", engine="codex")
     assert seen["argv"] == ["/opt/codex", "app-server"]
     methods = [json.loads(line)["method"] for line in seen["send"].decode().splitlines()]
-    assert methods == ["initialize", "initialized", "account/rateLimits/read"]
-    assert seen["done"](_fixture("codex-app-server-ratelimits.jsonl").encode())
+    assert methods == ["initialize", "initialized", "account/rateLimits/read", "account/read"]
+    assert seen["done"](_fixture("codex-app-server-account.jsonl").encode())
+    # Both reads must be answered: the rate limits alone keep waiting for the account.
+    assert not seen["done"](_fixture("codex-app-server-ratelimits.jsonl").encode())
     assert not seen["done"](b'{"id":1,"result":{}}\n')
     assert [w.used_pct for w in rep.windows] == [25.0]
+    assert rep.email == "op@example.com"
+
+
+def test_an_older_codex_without_account_read_still_reports_its_quota(monkeypatch):
+    """A JSON-RPC error for `account/read` is an answer: the wait ends and the quota stands."""
+    out = _fixture("codex-app-server-ratelimits.jsonl") + (
+        '{"id":3,"error":{"code":-32601,"message":"method not found"}}\n'
+    )
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return 0, out
+
+    monkeypatch.setattr(au, "_run", fake_run)
+    rep = au.probe_codex(binary="/opt/codex", engine="codex")
+    assert seen["done"](out.encode())
+    assert [w.used_pct for w in rep.windows] == [25.0]
+    assert rep.email is None
+    assert rep.error is None
 
 
 def test_a_codex_probe_that_cannot_answer_falls_back_to_the_rollout(tmp_path, monkeypatch):

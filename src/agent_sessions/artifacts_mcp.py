@@ -87,6 +87,20 @@ MEANING: dict[str, str] = {
     ),
     "public_off": "public links are off on this BattleLab (it runs without a login)",
     "store_unavailable": "BattleLab cannot store artifacts right now; try again later",
+    # Shared repositories (#2347 P1).
+    "unknown_repository": (
+        "there is no repository with that name or id on this BattleLab; nothing was published. "
+        "Ask the operator for the repository's name (Library → Artifacts → Repositories)"
+    ),
+    "quota": (
+        "that repository is full (over its quota), so nothing was published; ask the operator "
+        "to remove old items from it"
+    ),
+    "repository_name": (
+        "a repository name is 1–64 lowercase letters, digits, dots, dashes or underscores"
+    ),
+    "repository_exists": "a repository with that name already exists",
+    "unknown_item": "no such item in that repository",
     "unavailable": "the BattleLab artifacts service is not reachable; try again later",
 }
 INSTRUCTIONS = (
@@ -100,7 +114,9 @@ INSTRUCTIONS = (
     "the site is served under its own prefix. Hidden files and key files are never published, "
     "and a file with a secret in it refuses the whole publish. Artifacts are private to the "
     "operator unless the operator shares them. Give every artifact a short title and one line "
-    "saying why."
+    "saying why. To put it in a shared repository the operator made on this BattleLab, pass "
+    "repository (its name or id): the same checks apply, and publishing the same artifact_id "
+    "into it again adds a new revision of that item."
 )
 TOOLS = [
     {
@@ -109,7 +125,9 @@ TOOLS = [
             "Host a file or a static website (a directory with index.html) on BattleLab and get "
             "its link. path is inside the project; relative paths are from your working "
             "directory. Give a short title and a one-line why. Pass artifact_id (from an "
-            "earlier publish) to add a new revision behind the same link."
+            "earlier publish) to add a new revision behind the same link. Pass repository (the "
+            "name or id of a repository on this BattleLab) to also add it there, as a new item "
+            "or a new revision of the item this artifact_id already feeds."
         ),
         "inputSchema": {
             "type": "object",
@@ -119,6 +137,7 @@ TOOLS = [
                 "why": {"type": "string", "maxLength": 300},
                 "kind": {"type": "string", "enum": ["file", "site"]},
                 "artifact_id": {"type": "string"},
+                "repository": {"type": "string", "maxLength": 64},
             },
             "required": ["path", "title", "why"],
             "additionalProperties": False,
@@ -253,6 +272,13 @@ class Server:
         skipped = reply.get("skipped_hidden")
         if isinstance(skipped, int) and skipped > 0:
             text += f" ({skipped} hidden file(s) or folder(s) were left out.)"
+        repo = reply.get("repository")
+        if isinstance(repo, dict):
+            what = "a new item" if repo.get("new_item") else "a new revision of its item"
+            text += (
+                f" Added to repository {repo.get('name')} as {what}"
+                f" (item {repo.get('item_id')}, revision {repo.get('revision')})."
+            )
         return text + " Give the operator this link."
 
     def artifact_share_public(self, args: object) -> str:

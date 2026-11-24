@@ -333,11 +333,15 @@ def handle(token: object, op: object, args: object = None) -> dict:
             return {"ok": True, "items": [_agent_view(a) for a in page["items"]]}
         out = artifact_store.publish(origin, args)
         _shelve(out, origin)
-        return {
+        reply = {
             "ok": True,
             "artifact": _agent_view(out),
             "skipped_hidden": out.get("skipped_hidden", 0),
         }
+        if out.get("repository"):
+            # Published into a hosted repository (#2347 P1): which one, which item, which revision.
+            reply["repository"] = out["repository"]
+        return reply
     except Refused as r:
         return {"ok": False, "error": r.code}
     except artifact_store.ArtifactRefused as r:

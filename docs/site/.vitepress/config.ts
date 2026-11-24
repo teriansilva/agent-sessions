@@ -167,6 +167,7 @@ export default defineConfig({
           { text: "Mission control", link: "/guide/missions" },
           { text: "Prompt Templates", link: "/guide/templates" },
           { text: "Shared memory", link: "/guide/memory" },
+          { text: "Artifact repositories", link: "/guide/artifact-repositories" },
           { text: "Secrets for agents", link: "/guide/secrets" },
           { text: "MCP servers", link: "/guide/mcp-servers" },
           { text: "Playbook & skill gallery", link: "/guide/gallery" },

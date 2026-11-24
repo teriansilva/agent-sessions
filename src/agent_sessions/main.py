@@ -121,6 +121,7 @@ from .routes import playbooks as playbooks_routes
 from .routes import prompts as prompts_routes
 from .routes import public_api as public_api_routes
 from .routes import pulse as pulse_routes
+from .routes import repos as repos_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import shares as shares_routes
@@ -916,6 +917,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     artifacts_routes.register(
         app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard, web_dist=_WEB_DIST
     )
+    # Shared artifact repositories (#2347 P1): the operator API, the same login + CSRF + Origin.
+    repos_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry

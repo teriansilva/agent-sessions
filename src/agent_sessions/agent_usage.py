@@ -157,6 +157,9 @@ class Report:
     checked_at: float | None = None
     #: Why the last refresh failed, when it did. The report still carries the previous figures.
     error: str | None = None
+    #: Which login answered (#2331): the email the vendor's own CLI reports for it, or None. Read
+    #: from the CLI's status output, never from a login file, and shown to the admin only.
+    email: str | None = None
 
     def as_dict(self) -> dict:
         out = asdict(self)
@@ -168,6 +171,31 @@ class Report:
 
 
 _PROBE_PROVIDER = contextvars.ContextVar("usage_probe_provider", default=None)
+#: The account a probe asks about (#2331): ``(recipe, home)``, or None for the default login.
+_PROBE_ACCOUNT = contextvars.ContextVar("usage_probe_account", default=None)
+
+
+@contextlib.contextmanager
+def _account_scope(recipe, home: Path):
+    """Run the probes inside this block on one account's login. The environment is the one every
+    launch on that account gets (`agent_accounts.launch_env`): its home variable set, and the
+    credential variables that would outrank the login removed."""
+    token = _PROBE_ACCOUNT.set((recipe, home))
+    try:
+        yield
+    finally:
+        _PROBE_ACCOUNT.reset(token)
+
+
+def account_key(engine: str, account_id: str) -> str:
+    """Where an account's report and history are stored. The default login keeps the bare engine
+    key, so what was stored before accounts existed is still its own. ``@`` is in neither an engine
+    id nor an account id (both are `agent_accounts._SEGMENT_RE` segments)."""
+    return engine if account_id == DEFAULT_ACCOUNT else f"{engine}@{account_id}"
+
+
+#: The default login's account id, as `agent_account_store.DEFAULT` spells it.
+DEFAULT_ACCOUNT = "default"
 
 
 @contextlib.contextmanager
@@ -227,6 +255,11 @@ def _run(
                 # A managed agent's updater stays off in a probe too (`self_update_off`).
                 off = self_update_off(prov)
                 env = {**agent_env.scrubbed(), **off}
+            account = _PROBE_ACCOUNT.get()
+            if account is not None:
+                from . import agent_accounts
+
+                env = agent_accounts.launch_env(account[0], account[1], env)
             proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
                 argv,
                 env=env,
@@ -527,7 +560,51 @@ def probe_claude(binary: str | None = None, *, engine: str | None = None) -> Rep
     report = parse_claude_usage(out, engine=engine)
     if code != 0 and not report.windows:
         report.error = f"{_binary_name(engine)} -p /usage exited {code}"
+    # Which login answered (#2331): the CLI's own status command, in the same environment — so on
+    # an account, that account's home. No prompt, no session; only two named fields are kept.
+    code, out = _run([exe, *CLAUDE_IDENTITY_ARGS])
+    email, plan = parse_claude_auth_status(out) if code == 0 else (None, None)
+    report.email = email
+    report.plan = report.plan or plan
     return report
+
+
+#: claude's status command. Prints JSON (measured on 2.1.x): ``loggedIn``, ``email``,
+#: ``subscriptionType``, ``planTier`` and fields this module never reads.
+CLAUDE_IDENTITY_ARGS = ("auth", "status")
+
+EMAIL_MAX = 254
+_EMAIL = re.compile(r"^[^\s@]{1,64}@[^\s@]{1,189}$")
+_PLAN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,39}$")
+
+
+def clean_email(v: object) -> str | None:
+    """An address-shaped string within bounds, or None. Vendor output is untrusted: anything else
+    (a token, a path, a sentence) is dropped rather than shown."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    return v if len(v) <= EMAIL_MAX and _EMAIL.fullmatch(v) else None
+
+
+def _clean_plan(v: object) -> str | None:
+    return v if isinstance(v, str) and _PLAN.fullmatch(v) else None
+
+
+def parse_claude_auth_status(text: str) -> tuple[str | None, str | None]:
+    """``(email, plan)`` from ``claude auth status``. ``(None, None)`` for anything unexpected,
+    including a logged-out home (``loggedIn: false`` carries no email)."""
+    start = text.find("{")
+    if start < 0:
+        return None, None
+    try:
+        doc = json.loads(text[start:])
+    except ValueError:
+        return None, None
+    if not isinstance(doc, dict) or doc.get("loggedIn") is not True:
+        return None, None
+    plan = _clean_plan(doc.get("planTier")) or _clean_plan(doc.get("subscriptionType"))
+    return clean_email(doc.get("email")), plan
 
 
 def probe_agy(binary: str | None = None, *, engine: str | None = None) -> Report:
@@ -558,6 +635,7 @@ def _first_line(text: str) -> str:
 #: nothing else: no thread, no prompt, no path. ``account/rateLimits/read`` is the call codex's own
 #: TUI makes for its status line; it asks the vendor with the operator's existing login.
 _CODEX_RATE_LIMITS_ID = 2
+_CODEX_ACCOUNT_ID = 3
 _CODEX_APP_SERVER_REQUEST = (
     "\n".join(
         json.dumps(msg, separators=(",", ":"))
@@ -570,24 +648,49 @@ _CODEX_APP_SERVER_REQUEST = (
             },
             {"jsonrpc": "2.0", "method": "initialized"},
             {"jsonrpc": "2.0", "id": _CODEX_RATE_LIMITS_ID, "method": "account/rateLimits/read"},
+            # Which login answered (#2331). A local read of codex's own auth state; an older codex
+            # without the method answers it with a JSON-RPC error, which ends the wait the same way.
+            {"jsonrpc": "2.0", "id": _CODEX_ACCOUNT_ID, "method": "account/read", "params": {}},
         )
     )
     + "\n"
 ).encode()
 
 
-def _codex_rate_limits_reply(text: str) -> dict | None:
-    """The JSON-RPC reply to the rate-limits read, or None if it has not arrived (yet)."""
+def _codex_reply(text: str, want: int) -> dict | None:
+    """The JSON-RPC reply with id ``want``, or None if it has not arrived (yet)."""
     for line in text.splitlines():
-        if f'"id":{_CODEX_RATE_LIMITS_ID}' not in line.replace(" ", ""):
+        if f'"id":{want}' not in line.replace(" ", ""):
             continue
         try:
             obj = json.loads(line)
         except ValueError:
             continue
-        if isinstance(obj, dict) and obj.get("id") == _CODEX_RATE_LIMITS_ID:
+        if isinstance(obj, dict) and obj.get("id") == want:
             return obj
     return None
+
+
+def _codex_rate_limits_reply(text: str) -> dict | None:
+    """The JSON-RPC reply to the rate-limits read, or None if it has not arrived (yet)."""
+    return _codex_reply(text, _CODEX_RATE_LIMITS_ID)
+
+
+def _codex_answered(raw: bytes) -> bool:
+    """Both reads answered — a result or an error each. JSON-RPC answers every request with an id,
+    so this does not wait on a method an older codex lacks."""
+    text = raw.decode("utf-8", "replace")
+    return _codex_reply(text, _CODEX_RATE_LIMITS_ID) is not None and (
+        _codex_reply(text, _CODEX_ACCOUNT_ID) is not None
+    )
+
+
+def parse_codex_account(text: str) -> str | None:
+    """The email in codex's ``account/read`` reply (``result.account.email``), or None."""
+    reply = _codex_reply(text, _CODEX_ACCOUNT_ID)
+    result = reply.get("result") if isinstance(reply, dict) else None
+    account = result.get("account") if isinstance(result, dict) else None
+    return clean_email(account.get("email")) if isinstance(account, dict) else None
 
 
 def parse_codex_app_server(
@@ -661,16 +764,25 @@ def probe_codex(
     exe = binary or _probe_binary(engine)
     asked: Report | None = None
     if exe:
-        code, out = _run(
-            [exe, "app-server"],
-            send=_CODEX_APP_SERVER_REQUEST,
-            done=lambda b: _codex_rate_limits_reply(b.decode("utf-8", "replace")) is not None,
-        )
+        code, out = _run([exe, "app-server"], send=_CODEX_APP_SERVER_REQUEST, done=_codex_answered)
         asked = parse_codex_app_server(out, now, engine=engine)
+        asked.email = parse_codex_account(out)
         if asked.windows:
             return asked
         if code not in (0, None) and asked.error == "no rate-limits reply":
             asked.error = _first_line(out) or f"{_binary_name(engine)} app-server exited {code}"
+    if _PROBE_ACCOUNT.get() is not None:
+        # **No rollout fallback for an account** (#2331). Rollouts live in the session store every
+        # account shares, and say nothing about which login wrote them: the newest one could be
+        # another account's figures. A failed account probe keeps its last good figures instead.
+        if asked is None:
+            return Report(
+                engine=engine,
+                source=SOURCE_PLAN,
+                at=now if now is not None else time.time(),
+                error=f"{_binary_name(engine)} not found",
+            )
+        return asked
     recorded = read_codex_rate_limits(home, now=now, engine=engine)
     why = asked.error if asked is not None else f"{_binary_name(engine)} not found"
     # The fallback ALWAYS says the probe failed, figures or not. A rollout is only as fresh as
@@ -1523,6 +1635,61 @@ ACCESS_CHECKS: dict[str, object] = _build_access_checks()
 MANUAL_ONLY: tuple[str, ...] = _manual_only()
 
 
+def account_pools(engines: list[str] | tuple[str, ...] | None = None) -> dict[str, dict]:
+    """engine → its account pool, for every engine whose manifest names an account kind (#2331).
+
+    ``{"recipe", "active", "accounts": [{"id", "label"}]}`` from `agent_account_store.usage_view`;
+    an engine without a kind is absent, and so never reads the account store. Never raises: a pool
+    that cannot be read is absent too, and its engine is the default login only."""
+    from . import agent_account_store
+
+    reg = _registry.current()
+    names = engines if engines is not None else reg.views.get("usage", _roster_view())["engines"]
+    out: dict[str, dict] = {}
+    for engine in names:
+        prov = reg.by_id.get(engine)
+        if prov is None:
+            continue
+        try:
+            view = agent_account_store.usage_view(prov)
+        except Exception:  # noqa: BLE001 — a pool nobody can read is the default login only
+            log.exception("usage: the account pool of %s cannot be read", engine)
+            view = None
+        if view is not None:
+            out[engine] = view
+    return out
+
+
+def _ask_account(engine: str, reporter, pool: dict, account: dict) -> Report:
+    """One account's report. A home `problems()` rejects is never spawned in: the report says
+    which entry is wrong (recipe names only, never a path), and its last good figures stay."""
+    from . import agent_accounts
+
+    rec = pool["recipe"]
+    try:
+        home = agent_accounts.home(engine, account["id"])
+        found = agent_accounts.problems(rec, home, agent_accounts.default_home(rec))
+    except agent_accounts.AccountError as exc:
+        found = [str(exc)]
+    if found:
+        return Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=found[0][:200])
+    with _probe_scope(engine), _account_scope(rec, home):
+        return reporter()  # type: ignore[operator]
+
+
+def _prune_accounts(doc_map: dict, pools: dict[str, dict]) -> dict:
+    """Drop the ``engine@account`` entries of accounts no longer in their pool. Only for engines
+    whose pool was read: an unreadable pool forgets nothing."""
+    out = {}
+    for key, value in doc_map.items():
+        engine, sep, acct = key.partition("@") if isinstance(key, str) else ("", "", "")
+        if sep and engine in pools:
+            if acct not in {a["id"] for a in pools[engine]["accounts"]}:
+                continue
+        out[key] = value
+    return out
+
+
 @_registry.snapshot_scope()
 def refresh(
     *, path: Path | None = None, engines: list[str] | None = None, budgets: dict | None = None
@@ -1551,6 +1718,20 @@ def refresh(
             log.exception("usage probe failed for %s", engine)
             report = Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=str(exc))
         fresh[engine] = report.as_dict()
+
+    # Every added account of an engine that holds several (#2331), after its default login and in
+    # the pool's order. Same reporter, same bounds; only the login it runs on differs.
+    for engine, pool in account_pools(wanted).items():
+        reporter = reporters.get(engine)
+        if reporter is None:
+            continue
+        for account in pool["accounts"]:
+            try:
+                report = _ask_account(engine, reporter, pool, account)
+            except Exception as exc:  # noqa: BLE001 — one account's failure is not the sweep's
+                log.exception("usage probe failed for an account of %s", engine)
+                report = Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=str(exc))
+            fresh[account_key(engine, account["id"])] = report.as_dict()
 
     # Account access (#1167), separately from the figures — an access-only engine (no quota
     # reporter) is asked too, and whatever quota collection did has no bearing on it.
@@ -1613,12 +1794,20 @@ def refresh(
                 old = dict(old)
                 old["error"] = new["error"]
                 old["checked_at"] = new.get("checked_at") or new["at"]
+                if new.get("email"):
+                    old["email"] = new["email"]  # who answered is as true now as the error
                 reports[engine] = old
             else:
                 reports[engine] = new
+        # Read the pools AFTER the probes, like the policy below: the operator can pick another
+        # account for new sessions, or remove one, while the sweep is inside a vendor CLI.
+        pools = account_pools()
+        reports = _prune_accounts(reports, pools)
         doc["reports"] = reports
         now = time.time()
-        doc["history"] = record_history(doc.get("history"), reports, list(fresh), now)
+        doc["history"] = _prune_accounts(
+            record_history(doc.get("history"), reports, list(fresh), now), pools
+        )
         access = doc.get("access")
         access = access if isinstance(access, dict) else {}
         for engine, seen in seen_access.items():
@@ -1627,8 +1816,18 @@ def refresh(
         doc["updated_at"] = now
         # Decided against the reports THIS call is writing, under the same lock, so two sweeps
         # racing can't both see "not yet announced" and each announce the same crossing.
-        rows = build_rows(reports, cfg, now, access, doc["history"])
-        alerts, still = evaluate_alerts(rows, cfg, doc.get("alerted"))
+        rows = build_rows(reports, cfg, now, access, doc["history"], pools)
+        # The accounts new sessions do NOT start on alert nothing, but their delivered episodes are
+        # still theirs: switching the pick away and back is not a reset (Hermes on #2340).
+        idle = [
+            r
+            for acct_rows in build_account_rows(
+                reports, cfg, now, access, doc["history"], pools
+            ).values()
+            for r in acct_rows
+            if not r["active"]
+        ]
+        alerts, still = evaluate_alerts(rows, cfg, doc.get("alerted"), held_only=idle)
         # **Persist the re-arm bookkeeping, NOT the delivery.** Writing a crossing here would
         # consume it before anything reached the operator, so a single transient bell-store
         # failure would be silently permanent: the next sweep would see the key as announced
@@ -1849,12 +2048,17 @@ def build_rows(
     now: float,
     access: dict | None = None,
     history: dict | None = None,
+    pools: dict | None = None,
 ) -> list[dict]:
     """One row per engine from an ALREADY-READ reports dict. Pure: no store, no clock.
 
     `refresh` calls this with the document it is holding the lock over, so the alert decision is
     made against exactly the reports it just wrote — re-reading the file to decide would let a
     concurrent write change the answer between the two.
+
+    **An engine's row is its ACTIVE account's** (#2331): the account new sessions start on, from
+    ``pools`` (`account_pools`), or the default login for an engine without one. So every consumer
+    of this row — the dashboard, the alerts, mission teams, HQ — follows the operator's pick.
 
     **The row is BUILT, not copied-and-patched.** Starting from `dict(stored_report)` and fixing
     up the fields we happened to think of shipped the same defect four times — non-finite
@@ -1863,48 +2067,104 @@ def build_rows(
     normalized, so an unknown or malformed key in a stored document cannot reach `JSONResponse`
     at all. Adding a field to the API means adding it here, which is the point.
     """
+    pools = pools if isinstance(pools, dict) else {}
+    rows = []
+    for engine in _registry.current().views.get("usage", _roster_view())["engines"]:
+        pool = pools.get(engine)
+        account = _account_ref(pool, pool["active"] if pool else DEFAULT_ACCOUNT)
+        rows.append(_build_row(engine, account, reports, budgets, now, access, history))
+    return rows
+
+
+def build_account_rows(
+    reports: dict,
+    budgets: dict,
+    now: float,
+    access: dict | None = None,
+    history: dict | None = None,
+    pools: dict | None = None,
+) -> dict[str, list[dict]]:
+    """engine → one row per account, the default login first, for every engine with a pool
+    (#2331). Built by the same `_build_row` as the engine rows, so an account's meter here and the
+    engine row a dashboard or an alert reads cannot disagree. Each row carries ``active``."""
+    out: dict[str, list[dict]] = {}
+    for engine, pool in (pools if isinstance(pools, dict) else {}).items():
+        ids = [DEFAULT_ACCOUNT, *(a["id"] for a in pool["accounts"])]
+        out[engine] = [
+            {
+                **_build_row(engine, _account_ref(pool, i), reports, budgets, now, access, history),
+                "active": i == pool["active"],
+            }
+            for i in ids
+        ]
+    return out
+
+
+DEFAULT_LABEL = "Default login"
+
+
+def _account_ref(pool: dict | None, account_id: str) -> dict:
+    """``{"id", "label"}`` of one account: the operator's own label, never anything a CLI wrote."""
+    if pool is not None and account_id != DEFAULT_ACCOUNT:
+        for acc in pool["accounts"]:
+            if acc["id"] == account_id:
+                return {"id": account_id, "label": acc["label"]}
+    return {"id": DEFAULT_ACCOUNT, "label": DEFAULT_LABEL}
+
+
+def _build_row(
+    engine: str,
+    account: dict,
+    reports: dict,
+    budgets: dict,
+    now: float,
+    access: dict | None,
+    history: dict | None,
+) -> dict:
     cfg_all = budgets.get("engines") or {}
     stored = reports if isinstance(reports, dict) else {}
     seen = access if isinstance(access, dict) else {}
-    rows = []
-    for engine in _registry.current().views.get("usage", _roster_view())["engines"]:
-        cfg = dict(cfg_all.get(engine) or {})
-        cfg.setdefault("limit_tokens", _int(cfg.get("limit_tokens")))
-        cfg.setdefault("manual_used", _int(cfg.get("manual_used")))
-        rep = stored.get(engine)
-        if not isinstance(rep, dict):
-            # No engine-reported figures. The operator's own counter is the only source left —
-            # and if they haven't set one either, the row says so rather than showing a zero
-            # that would read as "this agent has used nothing".
-            source = SOURCE_MANUAL if (cfg["limit_tokens"] or cfg["manual_used"]) else SOURCE_NONE
-            rep = {"engine": engine, "source": source, "at": 0.0}
+    key = account_key(engine, account["id"])
+    cfg = dict(cfg_all.get(engine) or {})
+    cfg.setdefault("limit_tokens", _int(cfg.get("limit_tokens")))
+    cfg.setdefault("manual_used", _int(cfg.get("manual_used")))
+    rep = stored.get(key)
+    if not isinstance(rep, dict):
+        # No engine-reported figures. The operator's own counter is the only source left —
+        # and if they haven't set one either, the row says so rather than showing a zero
+        # that would read as "this agent has used nothing". An account not yet asked has no
+        # counter of its own: it is "not measured", never the default login's count.
+        counted = key == engine and (cfg["limit_tokens"] or cfg["manual_used"])
+        source = SOURCE_MANUAL if counted else SOURCE_NONE
+        rep = {"engine": engine, "source": source, "at": 0.0}
 
-        source = rep.get("source")
-        source = source if source in (SOURCE_PLAN, SOURCE_TOKENS, SOURCE_MANUAL) else SOURCE_NONE
-        at = _epoch(rep.get("at")) or 0.0
-        # Expiry + normalization applied to what is SERVED and what is ALERTED on, not only to
-        # what a reporter just produced — retained figures pass through here too.
-        windows = live_windows(rep, now) if rep.get("windows") is not None else None
-        row: dict = {
-            "engine": engine,
-            "source": source,
-            "windows": windows,
-            "tokens": clean_tokens(rep.get("tokens")) if rep.get("tokens") is not None else None,
-            "window_days": _int(rep.get("window_days")) or None,
-            "plan": _text(rep.get("plan")),
-            "error": _text(rep.get("error")),
-            "at": at,
-            "checked_at": (_epoch(rep.get("checked_at")) or at) or None,
-            "stale": bool(at) and (now - at) > STALE_AFTER_S,
-            "limit_tokens": cfg["limit_tokens"],
-            "manual_used": cfg["manual_used"],
-            "access": clean_access(seen.get(engine)),
-        }
-        row["used_pct"] = derive_pct(row, cfg)
-        hist = history.get(engine) if isinstance(history, dict) else None
-        row["forecast"] = forecast(row, hist if isinstance(hist, list) else [], now)
-        rows.append(row)
-    return rows
+    source = rep.get("source")
+    source = source if source in (SOURCE_PLAN, SOURCE_TOKENS, SOURCE_MANUAL) else SOURCE_NONE
+    at = _epoch(rep.get("at")) or 0.0
+    # Expiry + normalization applied to what is SERVED and what is ALERTED on, not only to
+    # what a reporter just produced — retained figures pass through here too.
+    windows = live_windows(rep, now) if rep.get("windows") is not None else None
+    row: dict = {
+        "engine": engine,
+        "account": {**account, "email": clean_email(rep.get("email"))},
+        "source": source,
+        "windows": windows,
+        "tokens": clean_tokens(rep.get("tokens")) if rep.get("tokens") is not None else None,
+        "window_days": _int(rep.get("window_days")) or None,
+        "plan": _text(rep.get("plan")),
+        "error": _text(rep.get("error")),
+        "at": at,
+        "checked_at": (_epoch(rep.get("checked_at")) or at) or None,
+        "stale": bool(at) and (now - at) > STALE_AFTER_S,
+        "limit_tokens": cfg["limit_tokens"],
+        "manual_used": cfg["manual_used"],
+        # The access checks ask the default login (#1167); no engine with them holds accounts.
+        "access": clean_access(seen.get(engine)) if key == engine else None,
+    }
+    row["used_pct"] = derive_pct(row, cfg)
+    hist = history.get(key) if isinstance(history, dict) else None
+    row["forecast"] = forecast(row, hist if isinstance(hist, list) else [], now)
+    return row
 
 
 # --- where usage is heading --------------------------------------------------------------------
@@ -2098,18 +2358,28 @@ def snapshot(*, path: Path | None = None, budgets: dict | None = None, now: floa
     Built from the same function the alert evaluation uses, so a panel showing 91% and an alert
     that never fires cannot drift apart.
     """
+    return snapshot_with_accounts(path=path, budgets=budgets, now=now)[0]
+
+
+def snapshot_with_accounts(
+    *, path: Path | None = None, budgets: dict | None = None, now: float | None = None
+) -> tuple[list[dict], dict[str, list[dict]]]:
+    """`snapshot`'s engine rows plus every account's row (#2331), from ONE read of the store and
+    the pools, so the two halves of a response describe the same moment."""
     from . import prefs
 
     if budgets is None:
         budgets = prefs.get_agent_budgets()
     doc = load(path)
-    return build_rows(
+    args = (
         doc.get("reports") or {},
         budgets,
         time.time() if now is None else now,
         doc.get("access") or {},
         doc.get("history") or {},
+        account_pools(),
     )
+    return build_rows(*args), build_account_rows(*args)
 
 
 #: The second announcement level. Fixed, not configurable: "you are out" is not a preference.
@@ -2137,11 +2407,21 @@ def alert_key(engine: str, row: dict, level: float) -> str:
       10M limit says nothing about the same count under a 5M one, and halving a limit can
       create a crossing with no drop-below-the-band transition anywhere for a latch to see.
     """
+    who = _alert_who(engine, row)
     windows = [w for w in row.get("windows") or [] if isinstance(w, dict)]
     if windows:
         worst = max(windows, key=lambda w: w.get("used_pct") or 0)
-        return _window_key(engine, worst, level)
-    return f"{engine}:tokens:{row.get('limit_tokens') or 0}:{level:g}"
+        return _window_key(who, worst, level)
+    return f"{who}:tokens:{row.get('limit_tokens') or 0}:{level:g}"
+
+
+def _alert_who(engine: str, row: dict) -> str:
+    """Whose quota a key is about (#2331): the bare engine for the default login, so every key held
+    before accounts existed still matches; ``engine@account`` for an added account, so moving the
+    new-session pick onto an account that is already over the line is that account's own episode."""
+    acc = row.get("account")
+    acc_id = acc.get("id") if isinstance(acc, dict) else None
+    return account_key(engine, acc_id) if isinstance(acc_id, str) and acc_id else engine
 
 
 def _window_key(engine: str, window: dict, level: float) -> str:
@@ -2176,8 +2456,9 @@ def _live_keys(row: dict, level: float, seen: set[str]) -> set[str]:
         key = alert_key(row["engine"], row, level)
         return {key} if live(row.get("used_pct"), key) else set()
     out = set()
+    who = _alert_who(row["engine"], row)
     for w in windows:
-        key = _window_key(row["engine"], w, level)
+        key = _window_key(who, w, level)
         if live(w.get("used_pct"), key):
             out.add(key)
     return out
@@ -2191,17 +2472,28 @@ def alert_levels(budgets: dict) -> list[float]:
 
 
 def evaluate_alerts(
-    rows: list[dict], budgets: dict, alerted: object
+    rows: list[dict],
+    budgets: dict,
+    alerted: object,
+    held_only: list[dict] | tuple = (),
 ) -> tuple[list[dict], list[str]]:
     """Which crossings are newly worth announcing, and the dedupe state to persist.
 
     Pure: no clock, no store, no notification. The caller decides what to do with the result,
     which is what makes the rule testable without a filesystem.
+
+    ``held_only`` (#2331) are the rows of accounts new sessions do not start on. They announce
+    nothing, but a delivered episode of theirs that is still live against their OWN windows stays
+    held — otherwise moving the pick away and back would re-announce a crossing the operator
+    already had, since choosing an account is not a reset and not a retreat past the band.
     """
     levels = alert_levels(budgets)
     seen = {k for k in (alerted if isinstance(alerted, list) else []) if isinstance(k, str)}
     still: set[str] = set()
     fresh: list[dict] = []
+    for row in held_only:
+        for level in levels:
+            still |= _live_keys(row, level, seen) & seen
     for row in rows:
         pct = row.get("used_pct")
         if not isinstance(pct, int | float):

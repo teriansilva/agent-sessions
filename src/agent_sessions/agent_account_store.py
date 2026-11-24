@@ -212,6 +212,26 @@ def listing(prov) -> dict:
     }
 
 
+def usage_view(prov) -> dict | None:
+    """What the usage sweep needs of one agent's pool (#2331): the recipe, the account new
+    sessions start on, and each account's id and label. None for an agent without an account kind
+    (before any read, as `for_launch`) or when the store cannot be read: the sweep then asks the
+    default login only, exactly as before accounts existed. A pick naming a removed account is
+    the default, as `remove` makes it."""
+    rec = agent_accounts.recipe(getattr(prov.manifest, "accounts_kind", "none"))
+    if rec is None:
+        return None
+    try:
+        pool = _read()["engines"].get(prov.engine_id) or {}
+    except AccountRefused:
+        return None
+    accounts = [{"id": a["id"], "label": a["label"]} for a in pool.get("accounts", [])]
+    active = pool.get("new_sessions", DEFAULT)
+    if active != DEFAULT and active not in {a["id"] for a in accounts}:
+        active = DEFAULT
+    return {"recipe": rec, "active": active, "accounts": accounts}
+
+
 def add(prov, label: object) -> dict:
     """Add an account and build its home. The home is built before the record is written, so a
     record never names a home that does not exist; a home left by a failed record is harmless

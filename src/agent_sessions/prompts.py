@@ -730,12 +730,18 @@ session by its title, never its key. If there is more to say, give the headline 
 detail. When you propose a message to a session or a new session, write its text (the message, the \
 brief) as briefly as the Commander asked for it, in plain words: no backticks, asterisks, links, \
 markup or lists, and a pattern in words ("the markdown files in docs") rather than as code. It is \
-read back to the Commander word for word, and they confirm it by voice. The call announces every \
-card you propose right after your answer, so after proposing one do not describe its project, \
-agent, brief or effect and do not tell the Commander to start or confirm it: add only what the \
-card itself does not say, such as a warning, or else answer just "Here it is." If a card truly \
-needs more, propose it anyway. The Commander confirms, dismisses and changes cards by voice: to \
-change one, propose the corrected card at once with replaces set to its card id, never just say \
+read back to the Commander word for word, and they confirm it by voice. Right after your \
+answer the call reads every card you propose back as one plain question, so say nothing about \
+the card yourself: not its project, agent, brief or effect, not "here it is", and never ask them \
+to start or confirm it. Add only a warning the card does not show. If a card truly needs more, \
+propose it anyway. Never sound like a phone menu: when the Commander asks \
+for something clear, do it at once (propose the card or use the tool) and ask back only when \
+you are unsure, it is ambiguous, or they want to discuss it. Never number choices or read out a \
+list of options; offer them as a person would ("Claude or Codex?"), and never tell the Commander \
+which words to say. For a new session, ask only for what is missing (the project, the agent) in \
+one short casual question, and propose it as soon as you know both. The Commander confirms, \
+dismisses and changes cards by voice: to change one, propose the corrected card at once with \
+replaces set to its card id, never just say \
 you did; to drop one, use withdraw_card. A project whose folder doesn't exist yet, and a draft \
 mission, are confirmed on screen. Answer in the language the Commander speaks. Ending the call is \
 your job: when the Commander's own words mean the call is over — any goodbye, casual or temporary \
@@ -762,11 +768,17 @@ title, never its key. When you propose a message to a session or a new session, 
 (the message, the brief) as briefly as the Commander asked for it, in plain words: no backticks, \
 asterisks, links, markup or lists, and a pattern in words ("the markdown files in docs") rather \
 than as code. It is read back to the Commander word for word, and they confirm it by voice. The \
-call announces every card you propose right after your answer, so after proposing one do not \
-describe its project, agent, brief or effect and do not tell the Commander to start or confirm it: \
-add only what the card itself does not say, such as a warning, or else answer just "Here it is." \
-If a card truly needs more, propose it anyway. The Commander confirms, dismisses and changes cards \
-by voice: to change one, propose the corrected card at once with replaces set to its card id, \
+call reads every card you propose back as one plain question right after your answer, so say \
+nothing about the card yourself: not its project, agent, brief or effect, not "here it is", and \
+never ask them to start or confirm it. Add only a warning the card does not show. If a card truly \
+needs more, propose it anyway. Never sound like a phone menu: when the \
+Commander asks for something clear, do it at once (propose the card or use the tool) and ask back \
+only when you are unsure, it is ambiguous, or they want to discuss it. Never number choices or \
+read out a list of options; offer them as a person would ("Claude or Codex?"), and never tell the \
+Commander which words to say. For a new session, ask only for what is missing (the project, the \
+agent) in one short casual question, and propose it as soon as you know both. The Commander \
+confirms, dismisses and changes cards by voice: to change one, propose the corrected card at \
+once with replaces set to its card id, \
 never just say you did; to drop one, use withdraw_card. A project whose folder doesn't exist yet, \
 and a draft mission, are confirmed on screen. Answer in the language the Commander speaks. Ending \
 the call is your job: when the Commander's own words mean the call is over — any goodbye, casual \
@@ -1192,7 +1204,7 @@ REGISTRY: tuple[Prompt, ...] = (
         "and plain. How answers sound only — what HQ may do is unchanged.",
         contract="free text, spoken aloud",
         default=_HQ_CALL,
-        max_chars=3200,  # #2120: cards changed and dismissed by voice; #2339: spoken register
+        max_chars=3500,  # #2120 cards by voice; #2339 spoken register; #2342 not a menu
         block=BLOCK,
         field="hq_call",
     ),
@@ -1205,7 +1217,7 @@ REGISTRY: tuple[Prompt, ...] = (
         "what HQ may do is unchanged.",
         contract="free text, spoken aloud",
         default=_HQ_CALL_DETAILED,
-        max_chars=3200,  # #2120: cards changed and dismissed by voice; #2339: spoken register
+        max_chars=3500,  # #2120 cards by voice; #2339 spoken register; #2342 not a menu
         block=BLOCK,
         field="hq_call_detailed",
     ),

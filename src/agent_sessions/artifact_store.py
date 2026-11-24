@@ -76,6 +76,8 @@ TOTAL_BYTES_MAX = int(os.environ.get("AGENT_SESSIONS_ARTIFACTS_TOTAL_MAX") or 5 
 #: refused (strictly safer than publishing it unjudged).
 TEXT_CHECK_MAX = 8 * 2**20
 PAGE_MAX = 100
+#: A repository named in a publish: its name (at most 64 characters) or its id.
+REPO_REF_MAX = 64
 _CHUNK = 1024 * 1024
 
 #: An artifact id: four groups of four digits (~52 bits), e.g. ``5449-5592-2107-4372``. It names a
@@ -279,7 +281,9 @@ def content_dir() -> Path:
     )
 
 
-SCHEMA_VERSION = 1
+#: 2: shared artifact repositories (#2347 P1, `repo_store`): their rows live here, beside the
+#: artifacts whose blobs they reference.
+SCHEMA_VERSION = 2
 DDL = """
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,
@@ -332,6 +336,40 @@ CREATE TABLE IF NOT EXISTS artifact_caps (
   revoked_at REAL
 );
 CREATE INDEX IF NOT EXISTS artifact_caps_phys ON artifact_caps(phys_key);
+CREATE TABLE IF NOT EXISTS repositories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  quota_bytes INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS repo_items (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  why TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('file','site')),
+  added_by TEXT NOT NULL,
+  source_artifact TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  latest INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repo_items_repo ON repo_items(repo_id, updated_at);
+CREATE TABLE IF NOT EXISTS repo_item_revisions (
+  item_id TEXT NOT NULL REFERENCES repo_items(id) ON DELETE CASCADE,
+  n INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  files INTEGER NOT NULL,
+  bytes INTEGER NOT NULL,
+  entry TEXT,
+  manifest TEXT NOT NULL,
+  added_by TEXT NOT NULL,
+  source_artifact TEXT,
+  source_rev INTEGER,
+  PRIMARY KEY (item_id, n)
+);
 """
 
 #: One writer at a time in this process (the CLI and the unit run one uvicorn process).
@@ -637,7 +675,20 @@ def _validate(args: object) -> dict:
     aid = args.get("artifact_id")
     if aid is not None:
         aid = validate_id(aid)
-    return {"path": path, "kind": kind, "title": title, "why": why, "artifact_id": aid}
+    repo = args.get("repository")
+    if repo is not None:
+        # A hosted repository's name or id (#2347 P1); `repo_store.lookup` decides which.
+        if not isinstance(repo, str) or not repo.strip() or len(repo) > REPO_REF_MAX:
+            raise ArtifactRefused("bad_request")
+        repo = repo.strip()
+    return {
+        "path": path,
+        "kind": kind,
+        "title": title,
+        "why": why,
+        "artifact_id": aid,
+        "repository": repo,
+    }
 
 
 def _rel_ok(rel: str) -> bool:
@@ -778,17 +829,32 @@ def _judge_staged(tmp: Path, size: int, rel: str) -> None:
         raise ArtifactRefused("credential", rel)
 
 
+#: Every table whose rows name blobs: an artifact's revisions and a repository item's (#2347 P1).
+#: Accounting (`_held`, `TOTAL_BYTES_MAX`) and garbage collection read exactly these, so a blob is
+#: counted once and kept while ANY of them names it.
+_REVISION_TABLES: tuple[str, ...] = ("artifact_revisions", "repo_item_revisions")
+
+
+def _manifests(con: sqlite3.Connection) -> Iterator[dict]:
+    """Every committed revision's manifest: the artifacts' and the repositories' alike."""
+    for table in _REVISION_TABLES:
+        for r in con.execute(f"SELECT manifest FROM {table}"):  # noqa: S608 — a fixed table name
+            yield json.loads(r["manifest"])
+
+
 def _held(con: sqlite3.Connection) -> dict[str, int]:
-    """Every blob a committed revision names, with its size."""
+    """Every blob a committed revision names (an artifact's or a repository item's), with its
+    size."""
     seen: dict[str, int] = {}
-    for r in con.execute("SELECT manifest FROM artifact_revisions"):
-        for meta in json.loads(r["manifest"]).values():
+    for manifest in _manifests(con):
+        for meta in manifest.values():
             seen[meta["sha256"]] = meta["size"]
     return seen
 
 
 def _stored_bytes(con: sqlite3.Connection) -> int:
-    """Bytes the store holds, counted once per distinct blob."""
+    """Bytes the store holds, counted once per distinct blob, whether an artifact or a repository
+    holds it."""
     return sum(_held(con).values())
 
 
@@ -808,6 +874,12 @@ def publish(origin: Origin, args: object, *, private_only: bool = False) -> dict
     that is public by then gets nothing; the content becomes a NEW private artifact in that same
     transaction, and the answer says so (``started_new_private``)."""
     item = _validate(args)
+    repository = None
+    if item["repository"] is not None:
+        from . import repo_store
+
+        # Before anything is read or copied: an unknown repository costs nothing.
+        repository = repo_store.lookup(item["repository"])["id"]
     b = session_boundary(origin.cwd, origin.session_key)
     raw = item["path"]
     path = raw if os.path.isabs(raw) else os.path.join(origin.cwd, raw)
@@ -852,7 +924,9 @@ def publish(origin: Origin, args: object, *, private_only: bool = False) -> dict
         with _con() as con:
             if _stored_bytes(con) + sizes > TOTAL_BYTES_MAX:
                 raise ArtifactRefused("store_full")
-    return _publish_members(origin, item, kind, members, skipped, b, private_only=private_only)
+    return _publish_members(
+        origin, item, kind, members, skipped, b, private_only=private_only, repository=repository
+    )
 
 
 def _publish_members(
@@ -864,12 +938,22 @@ def _publish_members(
     b: mission_shelf.Boundary,
     *,
     private_only: bool = False,
+    repository: str | None = None,
 ) -> dict:
     manifest: dict[str, dict] = {}
     staged: dict[str, Path] = {}
     try:
         return _stage_and_commit(
-            origin, item, kind, members, skipped, b, manifest, staged, private_only=private_only
+            origin,
+            item,
+            kind,
+            members,
+            skipped,
+            b,
+            manifest,
+            staged,
+            private_only=private_only,
+            repository=repository,
         )
     finally:
         for tmp in staged.values():  # placed ones were moved; the rest go now
@@ -888,6 +972,7 @@ def _stage_and_commit(
     staged: dict[str, Path],
     *,
     private_only: bool = False,
+    repository: str | None = None,
 ) -> dict:
     budget = [REVISION_BYTES_MAX]
     for rel, abs_path in members:
@@ -973,14 +1058,35 @@ def _stage_and_commit(
             (aid, n - REVISIONS_MAX),
         )
         row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+        added = None
+        if repository is not None:
+            # Into a hosted repository (#2347 P1), in THIS transaction: an unknown repository
+            # (deleted since the lookup) or one over its quota refuses the whole publish, and the
+            # artifact revision above rolls back with it, so nothing is stored.
+            from . import repo_store
+
+            added = repo_store.add_in_tx(
+                con,
+                repository,
+                source=(aid, n),
+                title=row["title"],
+                why=row["why"],
+                kind=kind,
+                manifest=manifest,
+                entry=entry,
+                added_by=origin.session_key,
+                now=now,
+            )
         # The bytes become blobs only now, under the write lock, as this revision commits.
         _place(staged)
-    if n > REVISIONS_MAX:
+    if n > REVISIONS_MAX or (added is not None and added["pruned"]):
         _collect_garbage()
     out = view(dict(row))
     out["skipped_hidden"] = skipped
     if started_new:
         out["started_new_private"] = True
+    if added is not None:
+        out["repository"] = added["placed"]
     return out
 
 
@@ -1016,14 +1122,16 @@ GC_GRACE_S = 3600.0
 
 
 def _collect_garbage(*, grace: float | None = None) -> None:
-    """Remove every blob no revision names (at once), and staging files older than the grace.
-    Never raises."""
+    """Remove every blob no revision names (at once), and staging files older than the grace. A
+    repository item's revision (#2347 P1) names its blobs exactly as an artifact's does. Never
+    raises."""
     grace = GC_GRACE_S if grace is None else grace
     try:
         with _write_lock, _con() as con:
+            # Every revision that names a blob keeps it: an artifact's or a repository item's.
             live: set[str] = set()
-            for r in con.execute("SELECT manifest FROM artifact_revisions"):
-                live.update(m["sha256"] for m in json.loads(r["manifest"]).values())
+            for manifest in _manifests(con):
+                live.update(m["sha256"] for m in manifest.values())
             blobs = content_dir() / "blobs"
             if blobs.is_dir():
                 for sub in blobs.iterdir():
@@ -1259,12 +1367,17 @@ def resolve(aid: str, rel: str, *, revision: int | None = None) -> Served:
         ).fetchone()
     if rev is None:
         raise NotServed()
-    manifest: dict = json.loads(rev["manifest"])
+    return resolve_in(rev["entry"], json.loads(rev["manifest"]), rel)
+
+
+def resolve_in(entry: str | None, manifest: dict, rel: str) -> Served:
+    """The file ``rel`` names in ONE revision's manifest (an artifact's or a repository item's,
+    #2347 P1), by lookup only. Raises `NotServed` or `Redirect`."""
     rel = rel or ""
     if rel == "":
-        if rev["entry"] is None:
+        if entry is None:
             raise Redirect("index")  # a site without index.html: the generated listing
-        rel = rev["entry"]
+        rel = entry
     elif rel.endswith("/"):
         rel = rel + "index.html"
     meta = manifest.get(rel)

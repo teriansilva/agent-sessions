@@ -22,19 +22,17 @@ ASK = {
 
 def test_a_question_the_answer_already_spoke_is_not_asked_again():
     out = voice_text.card_sentences({"ask": ASK}, said=ASK["question"])
-    assert out == ["One: Home Lab. Two: Web App."]
+    assert out == ["Home Lab or Web App?"]
 
 
 def test_containment_ignores_case_spacing_and_markdown_but_nothing_else():
     said = "Got it.  **which project should the deep  research session go into?**"
-    assert voice_text.card_sentences({"ask": ASK}, said=said) == ["One: Home Lab. Two: Web App."]
+    assert voice_text.card_sentences({"ask": ASK}, said=said) == ["Home Lab or Web App?"]
 
 
 def test_a_paraphrase_is_asked_again_so_nothing_goes_unsaid():
     out = voice_text.card_sentences({"ask": ASK}, said="Where should the research go?")
-    assert out == [
-        "Which project should the deep research session go into? One: Home Lab. " "Two: Web App."
-    ]
+    assert out == ["Which project should the deep research session go into? Home Lab or Web App?"]
 
 
 def test_a_free_text_question_already_spoken_adds_no_line():
@@ -44,7 +42,7 @@ def test_a_free_text_question_already_spoken_adds_no_line():
 
 def test_without_the_spoken_answer_the_question_is_read_as_before():
     out = voice_text.card_sentences({"ask": ASK})
-    assert out[0].startswith("Which project should the deep research session go into? One:")
+    assert out[0].startswith("Which project should the deep research session go into? Home Lab or")
 
 
 # -- HQ is told the call announces its card (#1911) ---------------------------------------------

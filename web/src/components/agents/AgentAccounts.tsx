@@ -2,6 +2,8 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { api, ApiError, type AgentAccount, type AgentAccountPool } from "../../lib/api";
 import { SignInTerminal } from "../plugins/SignInTerminal";
 import { accountSignIn } from "./accountSignIn";
+import { UsageWindows } from "./UsageWindows";
+import type { AgentUsageRow } from "../../types/api";
 import button from "../ui/actionButton.module.css";
 import p from "../plugins/PluginSetup.module.css";
 import s from "./AgentAccounts.module.css";
@@ -22,7 +24,23 @@ function message(e: unknown): string {
   return e instanceof ApiError || e instanceof Error ? e.message : "Something went wrong";
 }
 
-export function AgentAccounts({ engine, label }: { engine: string; label: string }) {
+export function AgentAccounts({
+  engine,
+  label,
+  usage,
+  threshold = 90,
+  onChanged,
+}: {
+  engine: string;
+  label: string;
+  /** Every account's usage row (#2331), from `/api/agents/usage`'s `accounts`. */
+  usage?: AgentUsageRow[];
+  threshold?: number;
+  /** The pool changed (a pick, a removal, a rename, an add): re-read usage, because the agent's
+   *  row may now be another account's — removing the picked account moves new sessions to the
+   *  default login on the server (Hermes on #2340) — and the labels it shows may have changed. */
+  onChanged?: () => void;
+}) {
   const [pool, setPool] = useState<AgentAccountPool | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signed, setSigned] = useState<Record<string, Signed>>({});
@@ -61,6 +79,7 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
     setError(null);
     try {
       setPool(await api.setAgentAccountForNew(engine, account)); // the saved pool, as stored
+      onChanged?.();
     } catch (e) {
       setError(message(e)); // the stored choice shows again below
     } finally {
@@ -75,6 +94,7 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
     try {
       await fn();
       setNonce((n) => n + 1);
+      onChanged?.();
     } catch (e) {
       setError(message(e));
     } finally {
@@ -83,6 +103,9 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
   };
 
   if (!pool) return null;
+  const usageOf = (id: string) => usage?.find((r) => r.account?.id === id);
+  const emailOf = (id: string) => usageOf(id)?.account?.email ?? null;
+  const defaultUsage = usageOf(DEFAULT);
   // The click shows at once; a refused save puts the stored choice back (`choose`).
   const pick = picking ?? pool.new_sessions ?? DEFAULT;
   const max = pool.max_accounts ?? 5;
@@ -114,7 +137,10 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
             checked={pick === DEFAULT}
             onChange={() => void choose(DEFAULT)}
           />
-          <span>Default login</span>
+          <span>
+            Default login
+            {emailOf(DEFAULT) ? <span className={s.email}> · {emailOf(DEFAULT)}</span> : null}
+          </span>
         </label>
         {pool.accounts.map((a) => (
           <label key={a.id} className={p.check}>
@@ -125,17 +151,33 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
               disabled={(a.problems?.length ?? 0) > 0}
               onChange={() => void choose(a.id)}
             />
-            <span>{a.label}</span>
+            <span>
+              {a.label}
+              {emailOf(a.id) && emailOf(a.id) !== a.label ? (
+                <span className={s.email}> · {emailOf(a.id)}</span>
+              ) : null}
+            </span>
           </label>
         ))}
       </fieldset>
 
       <ul className={s.list} aria-label={`${label} accounts`}>
-        <li className={s.row}>
+        <li className={s.row} data-testid="account-default">
           <div className={s.who}>
             <span className={s.name}>Default login</span>
+            {emailOf(DEFAULT) ? (
+              <span className={s.email} data-testid="account-email">
+                {emailOf(DEFAULT)}
+                {defaultUsage?.plan ? ` · ${defaultUsage.plan}` : ""}
+              </span>
+            ) : null}
             <span className={s.meta}>The login {label} already has. BattleLab never changes it.</span>
           </div>
+          {defaultUsage ? (
+            <div className={s.usage}>
+              <UsageWindows row={defaultUsage} threshold={threshold} compact />
+            </div>
+          ) : null}
         </li>
         {pool.accounts.map((a) => (
           <AccountRow
@@ -143,6 +185,8 @@ export function AgentAccounts({ engine, label }: { engine: string; label: string
             engine={engine}
             agentLabel={label}
             account={a}
+            usage={usageOf(a.id)}
+            threshold={threshold}
             signed={signed[a.id]}
             busy={busy}
             signingIn={signingIn === a.id}
@@ -177,6 +221,8 @@ function AccountRow({
   engine,
   agentLabel,
   account,
+  usage,
+  threshold,
   signed,
   busy,
   signingIn,
@@ -190,6 +236,8 @@ function AccountRow({
   engine: string;
   agentLabel: string;
   account: AgentAccount;
+  usage?: AgentUsageRow;
+  threshold: number;
   signed: Signed | undefined;
   busy: boolean;
   signingIn: boolean;
@@ -253,6 +301,12 @@ function AccountRow({
         ) : (
           <span className={s.name}>{account.label}</span>
         )}
+        {usage?.account?.email && usage.account.email !== account.label ? (
+          <span className={s.email} data-testid="account-email">
+            {usage.account.email}
+            {usage.plan ? ` · ${usage.plan}` : ""}
+          </span>
+        ) : null}
         <span className={s.state} role="status">
           <i className={`${s.dot} ${state.tone}`} aria-hidden="true" />
           {state.text}
@@ -292,6 +346,11 @@ function AccountRow({
           )}
         </div>
       )}
+      {usage ? (
+        <div className={s.usage}>
+          <UsageWindows row={usage} threshold={threshold} compact />
+        </div>
+      ) : null}
       {confirming && (
         <p className={p.note} role="status">
           Sessions started on this account will no longer open, and this cannot be undone here:

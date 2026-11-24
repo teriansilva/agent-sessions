@@ -1,0 +1,70 @@
+/* Every quota window of one account (#2331). Status colour is state only (docs/design.md §3): the
+   fills and percentages use --status-* and their -text mixes, never the accent. No radius. */
+.full { display: grid; gap: 2px; min-width: 0; }
+.win {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) 48px;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 4px;
+  min-width: 0;
+}
+.first { outline: 1px dashed var(--status-degraded); outline-offset: 0; }
+.label { display: grid; gap: 1px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.label small { color: var(--text-3); font-size: 11.5px; }
+.meter {
+  display: block;
+  height: 8px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  overflow: hidden;
+  min-width: 0;
+}
+.fill { display: block; height: 100%; background: var(--status-unknown); }
+.m_ok .fill { background: var(--status-up); }
+.m_warn .fill { background: var(--status-degraded); }
+.m_over .fill { background: var(--status-down); }
+.pct { font: 700 13px var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.p_ok { color: var(--ok-text); }
+.p_warn { color: var(--warn-text); }
+.p_over { color: var(--danger-text); }
+.p_none { color: var(--text-muted); }
+.note { margin: 4px 0 0; font-size: 11.5px; color: var(--text-muted); }
+.none { margin: 0; font-size: 12px; color: var(--text-muted); }
+
+.compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 14px;
+  min-width: 0;
+}
+.compact .note { grid-column: 1 / -1; }
+.mini { display: grid; gap: 3px; min-width: 0; }
+.miniLabel { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.miniLabel b { font-weight: 700; }
+.mini .meter { height: 5px; }
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.head b { font-size: 15px; color: var(--text); }
+.plan { color: var(--text-2); font-size: 13px; }
+.tag {
+  font: 600 10px var(--font-mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border: 1px solid var(--accent-soft);
+  color: var(--accent-text);
+}
+
+@media (max-width: 800px) {
+  .win { grid-template-columns: minmax(0, 1fr) 48px; }
+  .win .meter { grid-column: 1 / -1; grid-row: 2; }
+}

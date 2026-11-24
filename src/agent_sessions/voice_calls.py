@@ -276,6 +276,8 @@ from .voice_text import (  # noqa: E402,F401
     is_skip,
     is_stop_all_phrase,
     is_stop_phrase,
+    or_list,
+    ordinal_list,
     pick_option,
     readback,
     readback_screen_only,
@@ -283,6 +285,7 @@ from .voice_text import (  # noqa: E402,F401
     split_speech,
     strip_echo,
     verbatim,
+    which_of,
 )
 
 # --- the call ----------------------------------------------------------------------------------
@@ -1899,7 +1902,7 @@ class Call:
         # browser's `played` — and an interruption, mute, tap or new question, which void it —
         # all meet the real challenge, whatever order the awaits resolve in (#1631 reviews).
         sid = uuid.uuid4().hex[:12]
-        line = readback(cards)
+        line = readback(cards, judged=_judged(cards))
         ch = {"cards": cards, "say_id": sid, "sent": False, "armed_at": None,
               "expires_at": None, "gen": self.generation,
               # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
@@ -2024,10 +2027,11 @@ class Call:
         if got is None:
             # NO verdict: nothing is decided, the card stays, and the words are not a question. Said
             # only while this reply's card is still the one waiting: after a newer reply settled
-            # or replaced it, "it's on your screen" would be false.
+            # or replaced it, "it's still waiting" would be false.
             if self.challenge is ch:
                 await self.void_challenge()
-                await self.say("I couldn't tell. It's on your screen.", kind="outcome")
+                await self.say("Sorry, I didn't catch that. It's still waiting for you.",
+                               kind="outcome")  # fmt: skip
             return
         # Not an answer: the words go on as a new question, as an unmatched reply always did. The
         # challenge is retired WITHOUT an await, so nothing newer can be asked before these words
@@ -2105,22 +2109,27 @@ class Call:
         if verdict == "cancel":
             await self.void_challenge()
             line = (
-                "Okay. They stay on your screen."
+                "Okay, I'll leave them."
                 if ch["queue"] or len(ch["cards"]) > 1
-                else "Okay. It stays on your screen."
+                else "Okay, I'll leave it."
             )
             await self.say(line, kind="outcome")
             return True
         # "all" / "ambiguous" / "broader" / "no_allow": HQ answers, and the challenge waits for
         # THAT line to have played before it arms again — so its own echo can never be taken
         # for a confirmation.
+        which = which_of(len(ch["cards"]))  # a person's question, never a command (#2342)
+        if _judged(ch["cards"]):
+            pick, drop = f"Which one do you mean, {which}?", f"Which one should I drop, {which}?"
+        else:  # the grammar decides (Hermes 8839): the question names the phrase it takes
+            pick, drop = f"Confirm {which}, or cancel?", f"Drop {which}?"
         line = {
-            "all": "I can only confirm one at a time.",
-            "broader": "By voice I can only allow it once. Anything broader stays on"
-            " your screen.",
-            "no_allow": "I can't allow this one by voice. Say refuse it, or skip.",
-            "ambiguous_dismiss": "Which one? Say dismiss and the number.",
-        }.get(verdict, "Which one? Say confirm and the number.")
+            "all": f"I can only do one at a time. {pick}",
+            "broader": "By voice I can only allow it once. For anything more, you'll need to"
+            " tap it.",
+            "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
+            "ambiguous_dismiss": drop,
+        }.get(verdict, pick)
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
         ch.update(say_id=sid, sent=False, armed_at=None, expires_at=None)
@@ -2220,7 +2229,7 @@ class Call:
                 now = None
             if not now or now.get("folder") != s["folder"]:
                 await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
-                await self.say("That card changed, so I did nothing. It's on your screen.",
+                await self.say("That one changed in the meantime, so I left it alone.",
                                kind="outcome")  # fmt: skip
                 return
             method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
@@ -3043,8 +3052,7 @@ def _pick_card(p: dict, folders: list[str]) -> dict | None:
     effect = verbatim(str(p.get("text") or ""))
     if title is None or label is None or effect is None or any(f is None for f in said):
         return None
-    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {f}" for i, f in enumerate(said))
-    line = f"{label}, for {title}: {_sentence(effect)} Which folder? The options are: {listed}."
+    line = f"{label}, for {title}: {_sentence(effect)} {ordinal_list(said)}"
     if len(line) > PERMISSION_TOLD_MAX:
         return None
     return {
@@ -3053,7 +3061,7 @@ def _pick_card(p: dict, folders: list[str]) -> dict | None:
         "verb": "decide",
         "line": line,
         "options": [{"option": i + 1, "label": f, "as": "pick"} for i, f in enumerate(folders)],
-        "ask": "Say the folder's number, or cancel.",
+        "ask": "Which folder?",
     }
 
 
@@ -3116,7 +3124,7 @@ def confirmable_cards(
                     what = f"A new {agent} session" if agent else "A new session"
                 else:
                     what = f"A new {noun}" + (f" with {agent}" if agent else "")
-                line = f"{what} in {title}. Its brief is too long to read out; it is on your screen"
+                line = f"{what} in {title}. The brief's too long to read out; it's in the chat"
             out.append({"id": pid, "kind": "session", "verb": "start it",
                         "line": _sentence(line), "announced": brief is None})  # fmt: skip
         elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
@@ -3208,7 +3216,7 @@ _NUMBER_WORDS = ("one", "two", "three", "four", "five")
 _ICON = re.compile(r"^[^\w\s]{1,2}\s+(?=\w)")  # a tool line's glyph ("# Shell command", "✱ Grep")
 _PROMPT = re.compile(r"^\$\s+")  # a shell prompt mark before a command ("$ mkdir -p …")
 #: Said after an item the call describes but a voice cannot settle.
-_ON_SCREEN = "It's on your screen."
+_ON_SCREEN = "You'll need to look at that one."
 
 
 def _who(row: dict) -> str:
@@ -3259,8 +3267,8 @@ def _permission_words(perm: object) -> str | None:
     line = f"asks permission for {tool}: {_sentence(command)}"
     if said_note:
         line += f" The dialog also says: {_sentence(said_note)}"
-    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
-    line += f" It asks: {_sentence(question)} The options are: {_sentence(listed)}"
+    # Read for what it offers (the reply is "allow it" / "refuse it"), never as a numbered list.
+    line += f" It asks: {_sentence(question)} The choices are {or_list(labels)[:-1]}."
     return line if len(line) <= PERMISSION_TOLD_MAX else None
 
 
@@ -3292,7 +3300,7 @@ def _question_card(row: dict) -> dict | None:
         return None  # the answer that would be sent can't be read back in full: screen only
     line = _sentence(f"{_who(row)} asks a question. The suggested answer is: {answer}")
     return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line,
-            "ask": "Say confirm to send it, skip, or cancel."}  # fmt: skip
+            "ask": "Send it, skip it, or cancel?"}  # fmt: skip
 
 
 def _escalation(row: dict) -> dict | None:
@@ -3334,9 +3342,7 @@ def _permission_card(row: dict) -> dict | None:
         o.get("n") == allow["option"] and o.get("persistent") is not False for o in options
     ):
         allow = None  # only a single-use allow, and only when the dialog SAYS it is one
-    ask = (
-        "Say allow it to allow it once, refuse it, or skip." if allow else "Say refuse it, or skip."
-    )
+    ask = "Allow it once, refuse it, or skip it?" if allow else "Refuse it, or skip it?"
     return {"id": a["id"], "kind": "permission", "verb": "decide", "line": f"{_who(row)} {words}",
             "allow": allow, "deny": deny, "ask": ask}  # fmt: skip
 
@@ -3355,10 +3361,9 @@ def _menu_card(row: dict) -> dict | None:
     options = [_recorded_option(menu["options"], o.get("n"), "pick") for o in menu["options"]]  # type: ignore[index]
     if any(o is None for o in options):
         return None
-    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
-    line = _sentence(f"{_who(row)} asks: {_sentence(question)} The options are: {listed}")
+    line = f"{_sentence(f'{_who(row)} asks: {_sentence(question)}')} {ordinal_list(labels)}"
     return {"id": a["id"], "kind": "menu", "verb": "decide", "line": line, "options": options,
-            "ask": "Say the option's number, or skip."}  # fmt: skip
+            "ask": "Which one, or skip it?"}  # fmt: skip
 
 
 def needs_you_sentence(row: dict) -> str:
@@ -3371,25 +3376,24 @@ def needs_you_sentence(row: dict) -> str:
     if kind in ("choice", "approval") and "permission" in action:
         words = _permission_words(action.get("permission"))
         if words is None:
-            return f"{who} wants a permission I can't read out — it's on your screen."
+            return f"{who} wants a permission I can't read out. You'll need to look at that one."
         return f"{who} {words} {_ON_SCREEN}"
     if kind == "choice":
         menu = _menu_words(row.get("menu"))
         if menu is None:
-            return f"{who} is showing a menu I can't read out — it's on your screen."
+            return f"{who} is showing a menu I can't read out. You'll need to look at that one."
         question, labels = menu
-        listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
-        return _sentence(f"{who} asks: {_sentence(question)} The options are: {listed}") + (
-            f" {_ON_SCREEN}"
+        return (
+            f"{_sentence(f'{who} asks: {_sentence(question)}')} {ordinal_list(labels)} {_ON_SCREEN}"
         )
     if kind == "approval":
-        return f"{who} wants you to confirm something I can't read out — it's on your screen."
+        return f"{who} wants you to confirm something I can't read out. You'll need to look at it."
     if kind == "question":
         if action.get("verb") == "answer" and verbatim(str(action.get("answer") or "")):
             answer = verbatim(str(action.get("answer") or ""))
             line = _sentence(f"{who} asks a question. The suggested answer is: {answer}")
             return f"{line} {_ON_SCREEN}"
-        return f"{who} asks a question — it's on your screen."
+        return f"{who} asks a question. You'll need to look at that one."
     return f"{who}'s screen needs a look — I couldn't read it."
 
 
@@ -3441,7 +3445,7 @@ def settled_ok(card: dict, resp) -> bool:
 def outcome_sentence(card: dict, resp) -> str:
     """What happened, from the route's own status AND result — never model prose."""
     if resp is None:
-        return "That didn't go through. It's still on your screen."
+        return "That didn't go through. It's still waiting."
     if resp.status == 202:
         return "Accepted. It's starting now."  # not finished: `final_sentence` says the end
     if 200 <= resp.status < 300:
@@ -3472,13 +3476,10 @@ def outcome_sentence(card: dict, resp) -> str:
                 "I can't tell whether that reached the session. Check it before " "deciding again."
             )
         if resp.status in (404, 409):
-            return (
-                "Nothing was sent. The session changed, or it was already decided. "
-                "It's on your screen."
-            )
+            return "Nothing was sent. The session changed, or it was already decided."
     if resp.status == 409:
-        return "That card changed, so I didn't send it. It's on your screen."
-    return f"That didn't go through ({resp.status}). It's still on your screen."
+        return "That one changed in the meantime, so I didn't send it."
+    return f"That didn't go through ({resp.status}). It's still waiting."
 
 
 _FINAL = {

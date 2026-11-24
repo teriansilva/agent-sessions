@@ -222,11 +222,18 @@ agents are named there rather than offered; one whose source agent is missing an
 installed here says which agent it needs first. The public catalog is the line under the list; open **Catalog details** for its links, history and the daily check.
 
 An agent's page starts with its status, the one thing to do if any, and a **⋯** menu for reload,
-disable and remove. Below are its usage (a percentage marked *plan* comes from the agent itself;
-the rest count against a token limit you set here), its models, its installation in one line with
+disable and remove. Below are its usage (a percentage marked *plan* comes from the agent itself,
+one meter per quota window with its reset time, the window that runs out first outlined; the rest
+count against a token limit you set here), its models, its installation in one line with
 the verification evidence behind it, and **Technical details** folded away. Kimi Code reports its
 plan quota from version 2.1 on, so a counter you kept for it by hand is no longer used — update
 kimi if its row shows an error instead.
+
+For an agent that holds several accounts (Claude Code, Codex), **Usage** shows the account new
+sessions start on: its name, the email the agent reports for it, and its plan. **Accounts** lists
+every account, the Default login included, with its email and a meter per window; choosing another
+account for new sessions switches **Usage**, the dashboard and the usage alerts to that account.
+Every account is asked on the usual 15-minute sweep, or when you press Refresh.
 
 **Agents › Defaults** holds the default agent, the permission-bypass default, and **Usage
 alerts**: the **Alert at** threshold and whether you are notified.

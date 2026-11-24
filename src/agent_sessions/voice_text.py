@@ -114,6 +114,7 @@ def is_stop_phrase(said: str, languages: frozenset | None = None) -> bool:
 #: line ("Take care, Commander.") is three words, and two common words in a row ("the session")
 #: are not evidence that the microphone heard the speaker.
 ECHO_RUN_WORDS = 3
+_SENTENCE_END = re.compile(r"(?<=[.?!])\s+")
 
 
 def _word(token: str) -> str:
@@ -125,14 +126,26 @@ def strip_echo(heard: str, said: list[str], *, run: int = ECHO_RUN_WORDS) -> str
     one of `said` — HQ's own lines, which the microphone picked up from the speaker (#1807: the
     operator's "Hey, what's up" arrived as "Hey, what's up" plus HQ's line). Words are
     compared without case or punctuation; what is kept is the operator's own text, untouched.
-    An utterance that was nothing but echo comes back empty."""
+    An utterance that was nothing but echo comes back empty.
+
+    A short question HQ asks ("Which folder?", #2342) is under `run` words, so no stretch can
+    catch it: what remains is ALSO dropped when it is, word for word and whole, one QUESTION
+    sentence of a line in `said`. Only the whole remainder: a reply that merely contains it is
+    kept, and a short statement ("Yes.") is never matched this way."""
     tokens = heard.split()
     words = [_word(t) for t in tokens]
     grams: set[tuple[str, ...]] = set()
+    short: set[tuple[str, ...]] = set()
     for line in said:
         w = [x for x in (_word(t) for t in line.split()) if x]
         grams.update(tuple(w[i : i + run]) for i in range(len(w) - run + 1))
-    if not grams:
+        for sentence in _SENTENCE_END.split(line):
+            sw = tuple(x for x in (_word(t) for t in sentence.split()) if x)
+            # Questions only: a short statement ("Yes." inside a message read back word for word)
+            # may be exactly what the Commander answers, a question of HQ's hardly ever is.
+            if 0 < len(sw) < run and sentence.rstrip().endswith("?"):
+                short.add(sw)
+    if not grams and not short:
         return heard
     # Positions of the real words (punctuation-only tokens ride along with their neighbours).
     idx = [i for i, w in enumerate(words) if w]
@@ -143,6 +156,8 @@ def strip_echo(heard: str, said: list[str], *, run: int = ECHO_RUN_WORDS) -> str
             echoed.update(range(span[0], span[-1] + 1))
     kept = [t for i, t in enumerate(tokens) if i not in echoed]
     out = " ".join(kept).strip()
+    if tuple(w for w in (_word(t) for t in kept) if w) in short:
+        return ""  # nothing but one of HQ's short questions, heard back
     return out if any(_word(t) for t in kept) else ""
 
 
@@ -187,7 +202,7 @@ def speakable(text: str) -> str:
     if len(out) > SPOKEN_MAX:
         cut = out[:SPOKEN_MAX]
         end = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
-        out = (cut[: end + 1] if end > 200 else cut) + " The rest is on your screen."
+        out = (cut[: end + 1] if end > 200 else cut) + " The rest is in the chat."
     return out
 
 
@@ -297,7 +312,7 @@ def card_sentences(
     Exact containment only: a paraphrase is asked again, so nothing goes unsaid.
 
     ``reasons``: why a card the call can't confirm by voice stays on screen (#2120), a FIXED
-    sentence by card id, said before "Confirm it on your screen" so HQ is never taken to be
+    sentence by card id, said before "You'll need to tap that one" so HQ is never taken to be
     unable to confirm anything by voice. A card HQ replaced (``replaced_by``) is not announced."""
     out: list[str] = []
     for p in view.get("proposals") or []:
@@ -306,30 +321,33 @@ def card_sentences(
         kind = p.get("kind")
         title = (p.get("title") or "").strip()[:80] or "that session"
         if kind == "nudge":
-            out.append(f"I've drafted a message to {title}. It's on your screen to send.")
+            out.append(
+                f"I've written a message for {title}. That one you'll want to check yourself."
+            )
         elif kind == "session":
-            out.append("I've drafted a new session. It's on your screen to start.")
+            out.append("I've set up a new session. That one you'll want to check yourself.")
         elif kind == "operation":
             label = (p.get("label") or p.get("verb") or "change").strip()[:60]
             why = (reasons or {}).get(p.get("action_id") or "", "")
             why = f" {why}" if why else ""
-            out.append(f"I've drafted this: {label}, for {title}.{why} Confirm it on your screen.")
+            out.append(
+                f"I've got this ready: {label}, for {title}.{why} You'll need to tap that one."
+            )
         elif kind == "message":
             # Reached only when the card is not confirmable by voice (#1833, Hermes 7610/7612): it
             # can't be read out word for word (too long, or not plain speech), so it's sent from the
             # screen.
             to = (p.get("recipient") or "").strip()[:80] or "your recipient"
             out.append(
-                f"I've drafted a message to {to}. It can't be read out word for word; "
-                "tap it on your screen to send it."
+                f"I've written a message to {to}. It's too long to read out word for word, "
+                "so you'll need to tap that one to send it."
             )
     ask = view.get("ask")
     if isinstance(ask, dict) and ask.get("question"):
         opts = [o for o in ask.get("options") or [] if isinstance(o, str)]
         question = str(ask["question"]).strip()
         asked = bool(_same_words(question)) and _same_words(question) in _same_words(said)
-        words = ("One", "Two", "Three", "Four")
-        listed = " ".join(f"{words[i]}: {o}." for i, o in enumerate(opts[:4]))
+        listed = or_list(opts[:4])  # "X, Y or Z?": HQ's own question, answered in any words
         line = " ".join(part for part in ("" if asked else question, listed) if part)
         if line:
             out.append(line)
@@ -461,7 +479,7 @@ def classify_confirmation(
         if rest is not None:
             verdict, i = _which(rest, cards, "dismiss")
             if verdict == "ambiguous":
-                return "ambiguous_dismiss", None  # "Which one? Say dismiss and the number."
+                return "ambiguous_dismiss", None  # "Which one should I drop, …?"
             if verdict != "other":
                 return verdict, i
     if _CANCEL.match(norm) or (not dismiss and words[0] == "dismiss"):
@@ -564,19 +582,81 @@ def classify_decision(said: str, card: dict) -> tuple[str, dict | None]:
 
 
 _ORDINAL_WORDS = ("first", "second", "third", "fourth")
+_MENU_ORDINAL_NAMES = ("first", "second", "third", "fourth", "fifth")
 
 
-def readback(cards: list[dict]) -> str:
-    """The fixed read-back that arms a challenge: what each card does, then how to confirm."""
+#: The question a read-back ends on, by the card's verb (#2342): asked the way a person asks, never
+#: an instruction about which words to say. HQ cards are judged (#1715), so any natural yes counts.
+_ASK_BY_VERB = {
+    "send it": "Want me to send it?",
+    "start it": "Shall I start it?",
+    "save it": "Shall I save it?",
+    "do it": "Shall I go ahead?",
+    "use it": "Shall I use it?",
+}
+
+
+def which_of(n: int) -> str:
+    """ "the first or the second", "the first, the second or the third" (#2342)."""
+    names = [f"the {w}" for w in _ORDINAL_WORDS[: max(0, min(n, len(_ORDINAL_WORDS)))]]
+    if len(names) < 2:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f" or {names[-1]}"
+
+
+def or_list(labels: list[str]) -> str:
+    """ "X or Y?", "X, Y or Z?": choices offered the way a person offers them (#2342)."""
+    items = [str(x).strip().rstrip(".?!") for x in labels if str(x).strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return f"{items[0]}?"
+    return ", ".join(items[:-1]) + f" or {items[-1]}?"
+
+
+def ordinal_list(labels: list[str]) -> str:
+    """ "The first is X, the second is Y and the third is Z.": a list whose reply is still picked
+    by its place (the Needs-you grammar, `classify_decision`), read the way a person reads one
+    out, never "one, X; two, Y" (#2342)."""
+    items = [str(x).strip().rstrip(".") for x in labels if str(x).strip()]
+    parts = [f"the {_MENU_ORDINAL_NAMES[i]} is {x}" for i, x in enumerate(items[:5])]
+    if not parts:
+        return ""
+    text = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    return text[0].upper() + text[1:] + "."
+
+
+#: Verbs that are themselves a confirm phrase of `classify_confirmation`'s grammar.
+_GRAMMAR_VERBS = frozenset({"send it", "start it", "do it"})
+
+
+def grammar_ask(verb: str) -> str:
+    """The question for a card the judge does NOT hear (a connector message, #1833; any batch
+    holding one): it names a phrase the English grammar accepts, since a bare "yes" there is not
+    one (Hermes 8839): "Send it, or cancel?" / "Confirm it, or cancel?"."""
+    phrase = verb if verb in _GRAMMAR_VERBS else "confirm it"
+    return f"{phrase[0].upper()}{phrase[1:]}, or cancel?"
+
+
+def readback(cards: list[dict], *, judged: bool = True) -> str:
+    """The fixed read-back that arms a challenge: what each card does, then ONE plain question
+    (#2342): "Want me to send it?", never "Say confirm to …". ``judged``: whether the reply goes to
+    the judge (#1715, every card of `voice_calls.JUDGED_KINDS`); otherwise the question names a
+    phrase the grammar accepts, so the answer it invites is one the call can take."""
     if not cards:
         return ""
     if len(cards) == 1:
         c = cards[0]
         if c.get("ask"):  # a Needs-you item decided by its own words (#1681 P2)
             return f"{c['line']} {c['ask']}"
-        return f"{c['line']} Say confirm to {c['verb']}, or cancel."
+        verb = c.get("verb") or ""
+        if not judged:
+            return f"{c['line']} {grammar_ask(verb)}"
+        return f"{c['line']} {_ASK_BY_VERB.get(verb, 'Shall I go ahead?')}"
     parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
-    return " ".join(parts) + " Say confirm and the number, or cancel."
+    if not judged:
+        return " ".join(parts) + f" Confirm {which_of(len(cards))}, or cancel?"
+    return " ".join(parts) + f" Which one should I do, {which_of(len(cards))}?"
 
 
 def readback_screen_only(cards: list[dict]) -> str:
@@ -587,4 +667,4 @@ def readback_screen_only(cards: list[dict]) -> str:
     if not cards:
         return ""
     parts = [c["line"] for c in cards]
-    return " ".join(parts) + " Confirm it on your screen."
+    return " ".join(parts) + " You'll need to tap that one."

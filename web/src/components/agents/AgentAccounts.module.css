@@ -28,6 +28,9 @@
 .danger { border-color: var(--status-down); }
 .signin { grid-column: 1 / -1; display: grid; gap: 10px; min-width: 0; }
 .row > :global(p) { grid-column: 1 / -1; margin: 0; }
+/* #2331: the vendor's email for the login, and the account's quota windows under its row. */
+.email { font: var(--fs-micro) var(--font-mono); color: var(--text-2); overflow-wrap: anywhere; }
+.usage { grid-column: 1 / -1; min-width: 0; }
 
 @media (max-width: 800px) {
   .row { grid-template-columns: minmax(0, 1fr); }

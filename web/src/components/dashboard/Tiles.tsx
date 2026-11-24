@@ -9,8 +9,11 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../lib/api";
 import {
+  accountName,
   billable,
+  otherWindows,
   shortTokens,
+  showsAccount,
   quotaReadable,
   stalenessNote,
   usageCaption,
@@ -279,6 +282,7 @@ export function KpiStrip({
         sub={
           plan ? (
             <span className={plan.stale ? d.warnText : undefined}>
+              {plan.account ? `${plan.account} · ` : ""}
               {plan.resets_at ? `resets ${resetsAt(plan.resets_at)} · ` : ""}
               {plan.stale ? "stale · " : ""}
               {plan.at ? `checked ${relTime(plan.at)}` : "not asked yet"}
@@ -709,10 +713,26 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
       : null;
   const stale = stalenessNote(row);
   const fc = forecastLine(row);
+  // #2331: whose quota this is (the account new sessions start on), and the windows the headline
+  // does not name — so "which quota is running out" is answered, not just "how much is left".
+  const who = showsAccount(row) ? accountName(row) : "";
+  const also = w
+    ? otherWindows(row)
+        .map((o) => `${o.label} ${Math.round(Math.max(0, 100 - o.used_pct))}% left`)
+        .join(" · ")
+    : "";
   return (
     <div className={d.q} data-testid="quota-row" data-engine={row.engine}>
       <div className={d.qTop}>
-        <span>{row.engine}</span>
+        <span>
+          {row.engine}
+          {who ? (
+            <span className={d.qAcc} data-testid="quota-account">
+              {" "}
+              · {who}
+            </span>
+          ) : null}
+        </span>
         <span>{headline}</span>
       </div>
       {fill !== null ? (
@@ -724,6 +744,11 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
       ) : (
         <div className={d.barNone} aria-hidden="true" />
       )}
+      {also ? (
+        <div className={d.qSub} data-testid="quota-also">
+          also: {also}
+        </div>
+      ) : null}
       <div className={`${d.qSub} ${stale ? d.warnText : ""}`}>
         {usageCaption(row)}
         {stale ? ` · ${row.error ? "" : "stale — taken "}${stale}` : ""}

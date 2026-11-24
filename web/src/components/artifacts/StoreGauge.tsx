@@ -7,10 +7,13 @@ export function StoreGauge({
   bytes,
   total,
   segments = 20,
+  label = "Artifact storage used",
 }: {
   bytes: number;
   total: number;
   segments?: number;
+  /** The meter's accessible name (a repository's page names its own storage, #2347). */
+  label?: string;
 }) {
   const v = total > 0 ? Math.max(0, Math.min(1, bytes / total)) : 0;
   const on = bytes > 0 ? Math.max(1, Math.round(v * segments)) : 0;
@@ -18,7 +21,7 @@ export function StoreGauge({
     <div
       className={`nj-gauge ${styles.gauge}`}
       role="meter"
-      aria-label="Artifact storage used"
+      aria-label={label}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(v * 100)}

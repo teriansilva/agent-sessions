@@ -107,6 +107,53 @@ export interface ArtifactSettings {
   caps: ArtifactCaps;
 }
 
+/** A shared artifact repository hosted on this BattleLab (#2347 P1), as `GET /api/repos` lists it.
+ *  `bytes` counts each blob its revisions name once; `quota_bytes` is its cap. */
+export interface ArtifactRepo {
+  id: string;
+  name: string;
+  description: string;
+  quota_bytes: number;
+  bytes: number;
+  items: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ArtifactRepoList {
+  repositories: ArtifactRepo[];
+  quota_default: number;
+}
+
+/** Who added an item: the operator, or an agent session on this BattleLab (by its key). */
+export type RepoAddedBy =
+  | { kind: "operator" }
+  | { kind: "session"; session_key: string };
+
+/** One item of a repository; `files`, `bytes` and `entry` are its latest revision's. */
+export interface ArtifactRepoItem {
+  id: string;
+  repository_id: string;
+  title: string;
+  why: string;
+  kind: ArtifactKind;
+  revision: number;
+  added_by: RepoAddedBy;
+  source_artifact: string | null;
+  created_at: number;
+  updated_at: number;
+  files: number;
+  bytes: number;
+  entry: string | null;
+  url: string;
+}
+
+export interface ArtifactRepoItemPage {
+  items: ArtifactRepoItem[];
+  total: number;
+  next_cursor: string | null;
+}
+
 /** `GET /api/artifacts/activation`. `mode` null = nothing set there (it inherits). `effective`
  *  only for a session: what its NEXT launch gets, and where that comes from. */
 export interface ArtifactActivation {

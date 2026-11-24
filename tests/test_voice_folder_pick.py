@@ -38,8 +38,8 @@ def _view(op: str = "project.default_folder", needs=("folder",), **extra) -> dic
 
 
 PICK_LINE = (
-    "Default launch folder, for web: New sessions start in the folder you pick. Which folder? The"
-    " options are: one, /home/op/code/web; two, /home/op/code/web-docs."
+    "Default launch folder, for web: New sessions start in the folder you pick. The first is"
+    " /home/op/code/web and the second is /home/op/code/web-docs."
 )
 
 
@@ -85,7 +85,7 @@ def test_a_folder_is_picked_by_number_and_settled_through_decide(monkeypatch):
 
     async def go():
         await r.ask("Make web-docs the default folder for web")
-        assert r.said_text()[-1] == f"{PICK_LINE} Say the folder's number, or cancel."
+        assert r.said_text()[-1] == f"{PICK_LINE} Which folder?"
         await r.readback_played()
         await r.ask("The second one.")
 
@@ -143,7 +143,7 @@ def test_a_cancel_with_cards_still_queued_says_they_all_stay(monkeypatch):
         await r.ask("Cancel.")
 
     run(go())
-    assert r.said_text()[-1] == "Okay. They stay on your screen."
+    assert r.said_text()[-1] == "Okay, I'll leave them."
     assert r.call.challenge is None
 
 
@@ -169,7 +169,7 @@ def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_stays_
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes)  # the nudge, judged
     said = r.said_text()[-1]
-    assert said.startswith(PICK_LINE) and said.endswith("Confirm it on your screen.")
+    assert said.startswith(PICK_LINE) and said.endswith("You'll need to tap that one.")
     assert r.call.challenge is None  # the pick armed nothing
 
 
@@ -182,7 +182,7 @@ def test_only_picks_on_a_call_in_another_language_are_read_for_the_screen(monkey
 
     run(go())
     assert r.said_text()[-1].startswith(PICK_LINE)
-    assert r.said_text()[-1].endswith("Confirm it on your screen.")
+    assert r.said_text()[-1].endswith("You'll need to tap that one.")
     assert r.call.challenge is None
 
 
@@ -247,8 +247,7 @@ def test_the_real_cards_effect_is_read_before_the_pick(live, ai, action, effect)
     (card,) = voice_calls.confirmable_cards(turn, picks=asyncio.run(voice_calls.folder_picks(turn)))
     label = turn["proposals"][0]["label"]
     assert card["line"] == (
-        f"{label}, for web: {effect} Which folder? The options are: one, /srv/web; two,"
-        " /srv/web-docs."
+        f"{label}, for web: {effect} The first is /srv/web and the second is" " /srv/web-docs."
     )
 
 
@@ -472,7 +471,7 @@ def test_the_existing_folder_is_the_decisions_input(monkeypatch):
     async def go():
         await r.ask("Make a project called web")
         assert r.said_text()[-1].endswith(
-            "I suggest the existing folder /home/op/code/web. Say confirm to use it, or cancel."
+            "I suggest the existing folder /home/op/code/web. Shall I use it?"
         )
         await r.readback_played()
         await r.ask("Confirm.")
@@ -495,7 +494,7 @@ def test_a_suggestion_that_changed_since_it_was_read_does_nothing(now, monkeypat
 
     run(go())
     assert not any(m == "POST" for m, _p, _b in r.routes)
-    assert r.said_text()[-1] == "That card changed, so I did nothing. It's on your screen."
+    assert r.said_text()[-1] == "That one changed in the meantime, so I left it alone."
 
 
 def test_a_folder_another_project_owns_or_an_excluded_one_is_never_suggested(live, ai, root):  # noqa: F811

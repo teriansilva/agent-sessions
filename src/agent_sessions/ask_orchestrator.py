@@ -87,10 +87,10 @@ log = logging.getLogger(__name__)
 #: Added to a staged card's tool result on a call (#1911): the call announces every card itself
 #: (`voice_text.card_sentences` / the read-back), so HQ's own words would say it twice.
 CALL_CARD_NOTE = (
-    "On this call the card is read out to the Commander right after your answer. Answer the rest "
-    'of what they asked as you would anyway. About the card itself say only "Here it is." plus '
-    "what the card does not show, such as a warning: never describe its project, agent, brief or "
-    "effect, and never tell them to start or confirm it."
+    "On this call the card is read back to the Commander as one plain question right after your "
+    "answer. Answer the rest of what they asked as you would anyway. Say nothing about the card "
+    "itself, only a warning it does not show: never describe its project, agent, brief or effect, "
+    'never say "here it is", and never tell them to start or confirm it.'
 )
 #: Messages HQ may send into sessions in one turn (#1960): "nudge every stuck session" is one ask.
 MAX_SENDS_PER_TURN = 10

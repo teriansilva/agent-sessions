@@ -1,6 +1,6 @@
 // What the dashboard's summary numbers MEAN (#1123). Pure, so the rules are tested without a page.
 
-import { quotaReadable, worstWindow } from "../../lib/agentUsage";
+import { accountName, quotaReadable, showsAccount, worstWindow } from "../../lib/agentUsage";
 import type {
   AgentUsageRow,
   DashboardBand,
@@ -21,6 +21,8 @@ import type {
  *  quota: the strip says so rather than inventing a number. */
 export interface PlanSummary {
   engine: string;
+  /** Whose quota (#2331): the account new sessions start on, "" when there is nothing to name. */
+  account: string;
   left: number;
   label: string;
   resets_at: number | null;
@@ -36,6 +38,7 @@ export function lowestPlanLeft(rows: AgentUsageRow[]): PlanSummary | null {
     if (!w || !Number.isFinite(w.used_pct)) continue;
     const cand: PlanSummary = {
       engine: r.engine,
+      account: showsAccount(r) ? accountName(r) : "",
       left: Math.max(0, Math.min(100, 100 - w.used_pct)),
       label: w.label,
       resets_at: w.resets_at,

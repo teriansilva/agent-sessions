@@ -156,20 +156,25 @@ enter that server's key again or remove it.
 ### Acting by voice
 
 When HQ proposes something it can do, such as a new session or an answer to a Needs-you question,
-it **reads the card back** and asks you to confirm:
+it **reads the card back** and asks you, the way a person would:
 
-> "A new session in api: rerun the tests. Say confirm to start it, or cancel."
+> "A new session in api: rerun the tests. Shall I start it?"
+
+Answer in your own words ("yeah, go", "sure", "do it"). HQ never reads you a numbered menu: it
+offers choices as "Claude or Codex?". A question from one of your sessions (a permission, a menu)
+names the words that answer it ("Allow it once, refuse it, or skip it?", "The first is main and
+the second is release. Which one?").
 
 A message you tell HQ to send into one of your sessions is not read back: HQ sends it right away
 and tells you whether it arrived.
 
 - **A long brief is not read out.** If the brief for a new session is longer than a couple of
-  sentences, HQ says what would start and where, and that the brief is on your screen ("A new
-  Claude Code session in api. Its brief is too long to read out; it is on your screen."). You
-  can still say **confirm**: you are then starting a brief you have not heard in full. Messages
+  sentences, HQ says what would start and where, and that the brief is in the chat ("A new
+  Claude Code session in api. The brief's too long to read out; it's in the chat."). You
+  can still say yes: you are then starting a brief you have not heard in full. Messages
   to a session and changes HQ proposes are always read in full, or stay on screen.
-- Say **confirm** within 20 seconds of the read-back finishing. With several cards, say which one
-  ("confirm the second").
+- Answer within 20 seconds of the read-back finishing. With several cards, HQ asks which one;
+  say "the second one" (or "confirm the second").
 - Say **dismiss it** to throw the card away (with several cards, "dismiss the second"). Nothing of
   it runs. This works on HQ's own cards: sessions, changes, Library drafts and messages.
 - Anything else — silence, "cancel", talking over the read-back, or a new question — leaves the card

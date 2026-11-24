@@ -241,7 +241,7 @@
   text-transform: uppercase;
   color: var(--text-1);
 }
-.qTop span:last-child {
+.qTop > span:last-child {
   font-family: var(--font-mono);
   font-size: var(--fs-label);
   font-weight: 400;
@@ -249,6 +249,21 @@
   letter-spacing: 0.04em;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
+}
+/* Whose quota (#2331): the account's email or label after the agent's name. An address is not a
+   heading: lowercase body text, wrapping anywhere so a long one never pushes the row sideways. */
+.qAcc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.qTop > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 /* Not measured: a dashed, empty track — visibly not a 0 % gauge. */
 .barNone {

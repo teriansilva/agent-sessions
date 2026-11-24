@@ -66,6 +66,10 @@ import type {
   ArtifactQuery,
   ArtifactSettings,
   ArtifactShareOptions,
+  ArtifactRepo,
+  ArtifactRepoItem,
+  ArtifactRepoItemPage,
+  ArtifactRepoList,
 } from "../types/artifacts";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
@@ -1946,6 +1950,26 @@ export const api = {
       "/api/artifacts/activation",
       { scope, id, mode },
     ),
+  /** Shared artifact repositories (#2347 P1) hosted on this BattleLab. A refusal is
+   *  `{detail: <words>, code}`, so the dialog shows the server's own words. */
+  artifactRepos: () => getJsonWithDetail<ArtifactRepoList>("/api/repos"),
+  artifactRepo: (id: string) => getJsonWithDetail<ArtifactRepo>(`/api/repos/${enc(id)}`),
+  createArtifactRepo: (name: string, description: string) =>
+    mutateJson<ArtifactRepo>("POST", "/api/repos", { name, description }),
+  deleteArtifactRepo: (id: string) =>
+    mutateJson<{ deleted: string }>("DELETE", `/api/repos/${enc(id)}`),
+  artifactRepoItems: (id: string, cursor?: string) =>
+    getJsonWithDetail<ArtifactRepoItemPage>(
+      `/api/repos/${enc(id)}/items${cursor ? `?cursor=${enc(cursor)}` : ""}`,
+    ),
+  /** An existing artifact (its latest revision) as a new item, or a new revision of `itemId`. */
+  addToArtifactRepo: (id: string, artifactId: string, itemId?: string) =>
+    mutateJson<ArtifactRepoItem>("POST", `/api/repos/${enc(id)}/items`, {
+      artifact_id: artifactId,
+      ...(itemId ? { item_id: itemId } : {}),
+    }),
+  removeFromArtifactRepo: (id: string, itemId: string) =>
+    mutateJson<{ removed: string }>("DELETE", `/api/repos/${enc(id)}/items/${enc(itemId)}`),
   /** Shared project memory (#1441): one notebook per project, read and added to by its agents. */
   memoryProjects: () => getJsonWithDetail<{ projects: MemoryProject[] }>("/api/memory"),
   memory: (pid: string) => getJsonWithDetail<MemoryView>(`/api/memory/${enc(pid)}`),

@@ -212,7 +212,8 @@ async function openDefaults() {
 /** One agent's own page: its usage meter and per-agent limits (#1408). */
 async function openAgent(id: string) {
   renderSettings("dark", "#ffb000", `/settings/agents/${id}`);
-  await screen.findByRole("meter", { name: new RegExp(`${id} usage`, "i") });
+  // A plan agent draws one meter per quota window (#2331); any other agent its one usage meter.
+  await screen.findAllByRole("meter", { name: new RegExp(`${id} usage| used$`, "i") });
 }
 
 beforeEach(() => {
@@ -860,15 +861,15 @@ test("shows what an agent has spent: a glance on its row, the whole caption on i
   await waitFor(() => expect(within(list).getByText(/93%/)).toBeInTheDocument());
   cleanup();
   await openAgent("claude");
-  expect(screen.getByText("93%")).toBeInTheDocument();
-  // The window nearest its limit, not the first one the agent listed.
-  expect(screen.getByText(/week \(all models\)/)).toBeInTheDocument();
-  expect(screen.queryByText("4%")).not.toBeInTheDocument();
-  const meter = screen.getByRole("meter", { name: /claude usage/i });
-  expect(meter).toHaveAttribute("aria-valuenow", "93");
-  // The SOURCE is on the meter's own row: a plan percentage and a counter the operator typed
+  // Every window of the agent's quota, each with its own meter (#2331) — and the one nearest its
+  // limit marked as the one that runs out first, whatever order the agent listed them in.
+  const week = screen.getByRole("meter", { name: "week (all models) used" });
+  expect(week).toHaveAttribute("aria-valuenow", "93");
+  expect(week.closest("[data-window]")).toHaveAttribute("data-first", "true");
+  expect(screen.getAllByRole("meter", { name: / used$/ }).length).toBeGreaterThan(1);
+  // The SOURCE is said beside the figures: a plan percentage and a counter the operator typed
   // are different claims, and a panel that renders them identically is lying by omission.
-  expect(within(meter.parentElement!).getByText("plan")).toBeInTheDocument();
+  expect(screen.getByText(/Plan usage is reported by the agent itself/)).toBeInTheDocument();
 });
 
 test("an agent that reports nothing shows no percentage, not a zero (#839)", async () => {

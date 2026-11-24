@@ -40,8 +40,10 @@ wrong is worse than no count.
   demand; the count is always shown.
 - **Missions**: active and in-review missions, each linking to its console. With none running, it
   offers to start one.
-- **Quota left**: per agent, the plan window nearest its limit and when it resets. Agents that
-  report only token counts show *used of limit*. Under each, a **forecast** from the agent's recent
+- **Quota left**: per agent, the plan window nearest its limit and when it resets, with the other
+  windows on an *also:* line. For an agent with several accounts this is the account new sessions
+  start on, named after the agent; the others are under Settings. Agents that report only token
+  counts show *used of limit*. Under each, a **forecast** from the agent's recent
   pace (the readings of the last day): *runs out in ~9h … before the reset* when that pace outruns
   the quota, otherwise where it lands at the reset. It needs a few readings (about half an hour)
   before it says anything. Only quotas that were actually read are listed: an agent with no quota

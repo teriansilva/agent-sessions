@@ -72,7 +72,7 @@ def test_no_dismiss_it_is_a_dismiss_and_cancel_still_leaves_the_card(monkeypatch
         await r.ask("start that")
         await r.readback_played()
         await r.ask("cancel")
-        assert r.routes == [] and r.said_text()[-1] == "Okay. It stays on your screen."
+        assert r.routes == [] and r.said_text()[-1] == "Okay, I'll leave it."
         await r.ask("start that again")
         await r.readback_played()
         await r.ask("no, dismiss it")
@@ -101,10 +101,13 @@ def test_several_cards_need_the_number_and_all_is_refused(monkeypatch):
         await r.ask("both please")
         await r.readback_played()
         await r.ask("dismiss")
-        assert r.said_text()[-1] == "Which one? Say dismiss and the number."
+        assert r.said_text()[-1] == "Which one should I drop, the first or the second?"
         await r.readback_played()
         await r.ask("dismiss all")
-        assert r.said_text()[-1] == "I can only confirm one at a time."
+        assert (
+            r.said_text()[-1]
+            == "I can only do one at a time. Which one do you mean, the first or the second?"
+        )
         await r.readback_played()
         await r.ask("dismiss the second one")
 
@@ -122,7 +125,7 @@ def test_a_nudge_is_not_dismissed_by_voice(monkeypatch):
         await r.ask("dismiss it")
 
     run(go())
-    assert r.routes == [] and r.said_text()[-1] == "Okay. It stays on your screen."
+    assert r.routes == [] and r.said_text()[-1] == "Okay, I'll leave it."
 
 
 def test_the_judges_dismiss_settles_like_its_confirm(monkeypatch):
@@ -149,7 +152,7 @@ def test_the_judges_dismiss_on_a_nudge_is_a_cancel(monkeypatch):
         await r.ask("schmeiß das weg")
 
     run(go())
-    assert r.routes == [] and r.said_text()[-1] == "Okay. It stays on your screen."
+    assert r.routes == [] and r.said_text()[-1] == "Okay, I'll leave it."
 
 
 def test_a_dismiss_after_the_window_closed_does_nothing(monkeypatch):
@@ -192,8 +195,7 @@ def test_a_card_that_replaced_another_is_read_back_as_a_change(monkeypatch):
 
     run(go())
     assert r.said_text()[-1] == (
-        "Changed: A new session in docs refresh: Refresh the install docs. "
-        "Say confirm to start it, or cancel."
+        "Changed: A new session in docs refresh: Refresh the install docs. " "Shall I start it?"
     )
 
 
@@ -210,8 +212,8 @@ def test_a_project_without_its_folder_says_why_it_is_on_screen():
     view = {"proposals": [card]}
     reasons = voice_calls.screen_reasons(view, suggestions={})
     assert voice_text.card_sentences(view, reasons=reasons) == [
-        "I've drafted this: Create project, for Game Place Promotions. Its folder doesn't exist "
-        "yet, and I can't pick a new one by voice. Confirm it on your screen."
+        "I've got this ready: Create project, for Game Place Promotions. Its folder doesn't exist "
+        "yet, and I can't pick a new one by voice. You'll need to tap that one."
     ]
 
 

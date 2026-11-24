@@ -490,9 +490,7 @@ def test_a_call_asks_hq_and_speaks_the_stored_answer(ready, worker):
         == "Two auth tests fail in api-rebase. I drafted a nudge."
     )
     # P2: a confirmable card is read back (fixed words) instead of a plain "on your screen".
-    assert spoken[1] == (
-        "A message to api-rebase: Rerun the auth tests. Say confirm to send it, or cancel."
-    )
+    assert spoken[1] == ("A message to api-rebase: Rerun the auth tests. Want me to send it?")
     assert any(cap["who"] == "you" and cap["text"] == "How is api rebase?" for cap in captions)
     assert got, "speech audio reaches the client"
 
@@ -530,13 +528,14 @@ def test_a_question_turn_says_its_question_once_through_the_socket(ready, monkey
             ev = json.loads(m["text"])
             if ev.get("t") == "connected":
                 ws.send_bytes(b"\x00" * 640)
-            if ev.get("t") == "caption" and ev.get("who") == "hq" and "One:" in ev.get("text", ""):
+            text = ev.get("text", "")
+            if ev.get("t") == "caption" and ev.get("who") == "hq" and "Battlelab or" in text:
                 heard += 1
                 break
         ws.send_text(json.dumps({"t": "end"}))
     assert heard == 1
     spoken = [s for s in fw.said if not s.startswith("HQ,")]
-    assert spoken == [q, "One: Battlelab. Two: Docs Site."]
+    assert spoken == [q, "Battlelab or Docs Site?"]
 
 
 def test_mute_and_hangup_are_served_while_draft_admission_is_held(ready, monkeypatch):

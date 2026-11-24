@@ -1,0 +1,33 @@
+@import url('../artifact-share-options/base.css');
+/* Shared artifact repositories (agent-sessions issue): Library → Artifacts → Repositories */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);padding:0 12px;overflow-x:auto}
+.tab{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;font:600 11px "Liberation Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--text-2);border-bottom:2px solid transparent;white-space:nowrap}
+.tab.sel{color:var(--accent-text);border-bottom-color:var(--accent)}
+.sect2{padding:10px 16px 14px;display:flex;flex-direction:column;gap:8px}
+.sh2{font:600 10px "Liberation Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--text-2);margin:4px 0 0}
+.rlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center;min-height:44px;padding:8px 12px;border:1px solid var(--line);background:var(--bg-2)}
+.rrow .t{font-weight:600;font-size:13px;min-width:0;overflow-wrap:anywhere}
+.rrow .m{grid-column:1/-1;font:11px "Liberation Mono",monospace;color:var(--text-2);overflow-wrap:anywhere}
+.rrow.off{border-left:3px solid var(--warn-text)}
+.items{width:100%;border-collapse:collapse;font-size:13px}
+.items th{text-align:left;font:600 10px "Liberation Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--text-2);padding:6px 8px;border-bottom:1px solid var(--line)}
+.items td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle;min-width:0;overflow-wrap:anywhere}
+.items td.n{font:11px "Liberation Mono",monospace;color:var(--text-2);white-space:nowrap}
+.kind{font:600 10px "Liberation Mono",monospace;letter-spacing:.12em;padding:2px 5px;border:1px solid var(--line-strong);color:var(--text-2);margin-right:6px}
+.by{font:11px "Liberation Mono",monospace;color:var(--text-2)}
+.by b{color:var(--text-1);font-weight:600}
+.acc{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.arow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px 10px;align-items:center;padding:6px 10px;border:1px solid var(--line);background:var(--bg-2);font-size:13px}
+.arow .x{font:11px "Liberation Mono",monospace;color:var(--text-2)}
+.quota{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 10px;align-items:center;font:11px "Liberation Mono",monospace;color:var(--text-2)}
+.qbar{height:8px;background:var(--surface-3);position:relative}
+.qbar i{position:absolute;inset:0 auto 0 0;background:var(--accent)}
+.untrusted{margin:0;padding:8px 10px;border-left:3px solid var(--warn-text);background:color-mix(in srgb,var(--status-degraded) 8%,transparent);font-size:12px}
+.mobile .items thead{display:none}
+.mobile .items tr{display:grid;grid-template-columns:minmax(0,1fr) auto;border-bottom:1px solid var(--line);padding:6px 0}
+.mobile .items td{border:0;padding:2px 8px}
+.mobile .items td.wide{grid-column:1/-1}
+.mobile .arow{grid-template-columns:minmax(0,1fr) auto}
+.mobile .arow .btn{grid-column:1/-1}
+.mobile .sect2{padding:10px}

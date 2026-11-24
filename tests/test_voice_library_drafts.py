@@ -236,8 +236,7 @@ def test_an_hq_turn_on_a_call_offers_the_draft_with_its_summary(monkeypatch):
         await r.ask("Make me a research brief playbook")
         assert [c["id"] for c in r.call.challenge["cards"]] == ["op-1"]
         assert r.said_text()[-1] == (
-            voice_calls.draft_summary("playbook.create", files)
-            + " Say confirm to save it, or cancel."
+            voice_calls.draft_summary("playbook.create", files) + " Shall I save it?"
         )
         await r.readback_played()
         await r.ask("confirm")

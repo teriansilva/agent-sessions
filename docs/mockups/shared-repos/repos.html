@@ -1,0 +1,124 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Shared artifact repositories</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>Shared artifact repositories</h1>
+<p class="sub">Library → Artifacts gains a REPOSITORIES tab. A repository lives on ONE BattleLab (its host). The host's operator gives paired instances (Settings → Peers) access to read it or to add to it. Every item is an immutable artifact revision, so a copy is what you get, never a live folder. Instance names here are the labels you gave your peers.</p>
+<div class="board">
+
+<div><div class="label">1 · LIBRARY → ARTIFACTS → REPOSITORIES</div>
+<section class="frame">
+ <div class="tabs"><span class="tab">My artifacts</span><span class="tab sel">Repositories</span></div>
+ <div class="sect2">
+  <div class="ctl"><span class="tsum">Hosted here, and the ones paired instances gave you.</span><button class="nj-plate btn primary">New repository</button></div>
+  <p class="sh2">Hosted on this BattleLab</p>
+  <ul class="rlist">
+   <li class="rrow"><span class="t">design-assets</span><span class="chips"><span class="chip">HOST</span></span><span class="m">38 items · 412 MB of 2 GB · shared with 2 instances</span></li>
+   <li class="rrow"><span class="t">release-builds</span><span class="chips"><span class="chip">HOST</span></span><span class="m">6 items · 1.1 GB of 2 GB · not shared yet</span></li>
+  </ul>
+  <p class="sh2">From paired instances</p>
+  <ul class="rlist">
+   <li class="rrow"><span class="t">test-reports</span><span class="chips"><span class="chip live">CONTRIBUTE</span></span><span class="m">hosted by Stephan's lab · connected · 112 items · access until Feb 22</span></li>
+   <li class="rrow off"><span class="t">brand-kit</span><span class="chips"><span class="chip">READ</span><span class="chip warn">HOST OFFLINE</span></span><span class="m">hosted by Office box · last seen 2 h ago · showing the list from 09:14 · 3 items already copied here open as usual</span></li>
+  </ul>
+ </div>
+</section>
+
+<div class="label" style="margin-top:20px">2 · GIVE ACCESS (HOST SIDE)</div>
+<section class="dialog">
+ <span class="dtag">Repository // design-assets</span>
+ <h3>Give a paired instance access to “design-assets”</h3>
+ <div class="opts2">
+  <div class="orow"><span class="k">Instance</span><span class="select">Stephan's lab ▾</span>
+   <p class="d">Only instances you paired in Settings → Peers.</p></div>
+  <div class="orow"><span class="k">Access</span><div class="segs"><span class="seg sel">Read</span><span class="seg">Contribute</span></div>
+   <p class="d">Read: list the items and copy them. Contribute: also add new items and new revisions. A peer never deletes anything; only you do.</p></div>
+  <div class="orow"><span class="k">Until</span><div class="segs"><span class="seg">30 days</span><span class="seg sel">90 days</span><span class="seg">1 year</span><span class="seg">Pick a date…</span></div>
+   <p class="d">Ends Feb 22. You can end it sooner from the repository page.</p></div>
+ </div>
+ <div class="warnbox"><p><b>They can copy every item in this repository, including the ones added later.</b> A copy stays on their machine after their access ends.</p></div>
+ <div class="dfoot"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Give access</button></div>
+</section></div>
+
+<div><div class="label">3 · ONE REPOSITORY (HOST SIDE)</div>
+<section class="frame">
+ <div class="mhead"><b>design-assets</b><span class="mstate">HOSTED HERE</span></div>
+ <div class="sect2">
+  <div class="quota"><span>STORAGE</span><span class="qbar"><i style="width:21%"></i></span><span>412 MB of 2 GB</span></div>
+  <table class="items">
+   <thead><tr><th>Item</th><th>Added by</th><th>Size</th><th>Rev</th></tr></thead>
+   <tbody>
+    <tr><td class="wide"><span class="kind">SITE</span>Onboarding screens v4</td><td><span class="by"><b>this BattleLab</b> · claude session</span></td><td class="n">18.4 MB</td><td class="n">r4</td></tr>
+    <tr><td class="wide"><span class="kind">PNG</span>Pricing hero, dark</td><td><span class="by"><b>Stephan's lab</b> · peer</span></td><td class="n">2.1 MB</td><td class="n">r1</td></tr>
+    <tr><td class="wide"><span class="kind">PDF</span>Brand guidelines 2027</td><td><span class="by"><b>this BattleLab</b> · you</span></td><td class="n">7.9 MB</td><td class="n">r2</td></tr>
+   </tbody>
+  </table>
+  <div class="ctl"><button class="nj-plate btn ghost">Open</button><button class="nj-plate btn ghost">Add an artifact…</button><button class="nj-plate btn danger">Remove item</button></div>
+  <p class="sh2">Who has access</p>
+  <ul class="acc">
+   <li class="arow"><span>Stephan's lab</span><span class="chip live">CONTRIBUTE</span><button class="nj-plate btn ghost">End access</button><span class="x" style="grid-column:1/-1">until Feb 22 · added 1 item · last read 5 min ago</span></li>
+   <li class="arow"><span>Office box</span><span class="chip">READ</span><button class="nj-plate btn ghost">End access</button><span class="x" style="grid-column:1/-1">until Dec 24 · last read 3 days ago</span></li>
+  </ul>
+  <div class="ctl"><button class="nj-plate btn primary">Give access…</button></div>
+ </div>
+</section>
+
+<div class="label" style="margin-top:20px">4 · A REPOSITORY FROM A PEER (RECEIVER SIDE)</div>
+<section class="frame">
+ <div class="mhead"><b>test-reports</b><span class="mstate">STEPHAN'S LAB</span></div>
+ <div class="sect2">
+  <p class="tsum">Hosted by Stephan's lab. You may add items until Feb 22. Opening an item copies it here first, then shows it sandboxed like your own artifacts.</p>
+  <table class="items">
+   <thead><tr><th>Item</th><th>Added by</th><th>Size</th><th>Here</th></tr></thead>
+   <tbody>
+    <tr><td class="wide"><span class="kind">MD</span>Nightly e2e summary</td><td><span class="by"><b>Stephan's lab</b></span></td><td class="n">48 KB</td><td class="n">copied r12</td></tr>
+    <tr><td class="wide"><span class="kind">SITE</span>Load test, 2k users</td><td><span class="by"><b>this BattleLab</b></span></td><td class="n">31 MB</td><td class="n">copying 62%</td></tr>
+   </tbody>
+  </table>
+  <div class="ctl"><button class="nj-plate btn ghost">Open</button><button class="nj-plate btn primary">Add one of my artifacts…</button></div>
+  <p class="untrusted">Files from another instance are untrusted. An agent gets them only through its repository tool, into a new folder, and nothing runs them automatically; sites open in the sandbox.</p>
+ </div>
+</section></div>
+
+<div><div class="label">5 · GIVE ACCESS WITH CONTRIBUTE: SHORTER EXPIRY CHOICES</div>
+<section class="dialog">
+ <span class="dtag">Repository // design-assets</span>
+ <h3>Give a paired instance access to “design-assets”</h3>
+ <div class="opts2">
+  <div class="orow"><span class="k">Instance</span><span class="select">Stephan's lab ▾</span></div>
+  <div class="orow"><span class="k">Access</span><div class="segs"><span class="seg">Read</span><span class="seg sel">Contribute</span></div>
+   <p class="d">They can also add items and new revisions. This BattleLab checks every file they send (size, hidden and key files, secrets) before it stores anything.</p></div>
+  <div class="orow"><span class="k">Until</span><div class="segs"><span class="seg">7 days</span><span class="seg sel">30 days</span><span class="seg">90 days</span><span class="seg">Pick a date…</span></div>
+   <p class="d">Contribute lasts at most 90 days. Switching back to Read keeps this end date unless you pick another.</p></div>
+ </div>
+ <div class="warnbox"><p><b>Their additions use this repository's storage: 1.6 GB left of 2 GB.</b> They can copy every item, and a copy stays on their machine after their access ends.</p></div>
+ <div class="dfoot"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Give access</button></div>
+</section></div>
+
+<div><div class="label">6 · EMPTY AND REFUSED STATES</div>
+<section class="frame">
+ <div class="tabs"><span class="tab">My artifacts</span><span class="tab sel">Repositories</span></div>
+ <div class="sect2">
+  <p class="sh2">Nothing yet</p>
+  <p class="tsum">No repositories here yet. Create one to keep files that several BattleLabs use. Paired instances can also give you access to theirs (Settings → Peers).</p>
+  <div class="ctl"><button class="nj-plate btn primary">New repository</button></div>
+ </div>
+</section>
+<section class="frame" style="margin-top:12px">
+ <div class="mhead"><b>test-reports</b><span class="mstate">STEPHAN'S LAB</span></div>
+ <div class="sect2">
+  <table class="items"><tbody>
+   <tr><td class="wide"><span class="kind">SITE</span>Load test, 2k users</td><td class="n">31 MB</td><td class="n"><span class="chip warn">COPY FAILED</span></td></tr>
+  </tbody></table>
+  <p class="untrusted">A file did not match its checksum, so nothing was stored. Try again; if it keeps failing, ask the host's operator to check the item.</p>
+  <div class="ctl"><button class="nj-plate btn primary">Try again</button></div>
+  <table class="items"><tbody>
+   <tr><td class="wide"><span class="kind">PDF</span>Supplier contract draft</td><td class="n">your offer</td><td class="n"><span class="chip warn">REFUSED</span></td></tr>
+  </tbody></table>
+  <p class="tsum">The host refused this addition: a file looks like it holds a secret. Nothing was stored there.</p>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

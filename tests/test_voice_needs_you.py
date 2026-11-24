@@ -213,18 +213,16 @@ def _one(card, pending, screen, monkeypatch) -> str:
     return row["what"]
 
 
-OFFER_PERMISSION = "Say allow it to allow it once, refuse it, or skip."
+OFFER_PERMISSION = "Allow it once, refuse it, or skip it?"
 #: The WHOLE claude Bash capture as said (Hermes 7021): request, note, question, every option.
 BASH_SAID = (
     "asks permission for Bash command: mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt."
     " The dialog also says: Create probe-dir-1213 directory and f.txt file inside it. It asks: Do"
-    " you want to proceed? The options are: one, Yes; two, Yes, and don't ask again for mkdir -p"
+    " you want to proceed? The choices are Yes, Yes, and don't ask again for mkdir -p"
     " probe-dir-1213 and touch probe-dir-1213/f.txt commands in"
-    " /home/operator-01/agentwork/agent-sessions/1213-notes/perm-1213-f5z9ahiu; three, No."
+    " /home/operator-01/agentwork/agent-sessions/1213-notes/perm-1213-f5z9ahiu or No."
 )
-OC_OPTIONS = (
-    " It asks: Allow this? The options are: one, Allow once; two, Allow always; three, Reject."
-)
+OC_OPTIONS = " It asks: Allow this? The choices are Allow once, Allow always or Reject."
 
 
 CONFIRM = {"prompt_class": "confirm", "menu": None}
@@ -243,7 +241,8 @@ CONFIRM = {"prompt_class": "confirm", "menu": None}
             # command a call can read, so the dialog is screen-only (review of 4da35757)
             "claude_permission_write.raw",
             "claude",
-            "api-rebase in web wants a permission I can't read out — it's on your screen.",
+            "api-rebase in web wants a permission I can't read out."
+            " You'll need to look at that one.",
         ),
         (
             "opencode_permission_shell.raw",
@@ -260,7 +259,8 @@ CONFIRM = {"prompt_class": "confirm", "menu": None}
         (
             "opencode_permission_always_stage.raw",
             "opencode",
-            "api-rebase in web wants a permission I can't read out — it's on your screen.",
+            "api-rebase in web wants a permission I can't read out."
+            " You'll need to look at that one.",
         ),
     ],
 )
@@ -298,7 +298,7 @@ def test_a_dialog_that_cannot_be_read_as_a_whole_is_screen_only(spoil, monkeypat
     spoil(rec)
     esc = _escalation(sid, 500.0, permission=rec)
     assert _one(_card(sid, "api-rebase"), [esc], CONFIRM, monkeypatch) == (
-        "api-rebase in web wants a permission I can't read out — it's on your screen."
+        "api-rebase in web wants a permission I can't read out. You'll need to look at that one."
     )
 
 
@@ -307,7 +307,7 @@ def test_a_recorded_dialog_the_projection_refused_is_still_told_as_a_permission(
     esc = _escalation(sid, 500.0, permission={"title": "Bash command"})  # not a parsed dialog
     esc["rationale"] = "It wants to run the tests."  # never read as the request
     assert _one(_card(sid, "api-rebase"), [esc], CONFIRM, monkeypatch) == (
-        "api-rebase in web wants a permission I can't read out — it's on your screen."
+        "api-rebase in web wants a permission I can't read out. You'll need to look at that one."
     )
 
 
@@ -327,8 +327,8 @@ def test_a_menu_reads_its_question_and_every_option(monkeypatch):
     esc["observed_prompt"]["prompt_class"] = "choice"
     said = _one(_card(sid, "docs"), [esc], {"prompt_class": "choice", "menu": MENU}, monkeypatch)
     assert said == (
-        "docs in web asks: Which branch should I rebase onto? The options are: one, main; two,"
-        " release 2.0. Say the option's number, or skip."
+        "docs in web asks: Which branch should I rebase onto? The first is main and the"
+        " second is release 2.0. Which one, or skip it?"
     )
 
 
@@ -347,7 +347,9 @@ def test_a_menu_that_cannot_be_read_in_full_is_screen_only(menu, monkeypatch):
     sid = "codex:m1"
     esc = _escalation(sid, 500.0, menu=menu)
     said = _one(_card(sid, "docs"), [esc], {"prompt_class": "choice", "menu": menu}, monkeypatch)
-    assert said == "docs in web is showing a menu I can't read out — it's on your screen."
+    assert (
+        said == "docs in web is showing a menu I can't read out. You'll need to look at that one."
+    )
 
 
 def _answer(sid: str, answer: str, **kw) -> dict:
@@ -376,15 +378,15 @@ def test_a_question_with_a_readable_answer_is_offered_and_read_back(monkeypatch)
     assert said[-2] == "Here is what waits on you."
     assert said[-1] == (
         "api-rebase in web asks a question. The suggested answer is: Use main."
-        " Say confirm to send it, skip, or cancel."
+        " Send it, skip it, or cancel?"
     )
 
 
 @pytest.mark.parametrize(
     "answer, expected",
     [
-        ("Run `make test`.", "api-rebase in web asks a question — it's on your screen."),
-        ("", "api-rebase in web asks a question — it's on your screen."),
+        ("Run `make test`.", "api-rebase in web asks a question. You'll need to look at that one."),
+        ("", "api-rebase in web asks a question. You'll need to look at that one."),
     ],
 )
 def test_a_question_whose_answer_cannot_be_read_is_screen_only(answer, expected, monkeypatch):
@@ -441,8 +443,8 @@ def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(mon
         {"what": f"deploy in infra {BASH_SAID}", "decision": f"act-{p}"},
         {"what": "api-rebase in web asks a question. The suggested answer is: Use main.",
          "decision": f"ans-{q}"},
-        {"what": "docs in web asks: Which branch should I rebase onto? The options are: one, main;"
-                 " two, release 2.0.", "decision": "act-menu"},
+        {"what": "docs in web asks: Which branch should I rebase onto? The first is main and the"
+                 " second is release 2.0.", "decision": "act-menu"},
         {"what": "nightly in web's screen needs a look — I couldn't read it."},
     ]  # fmt: skip
     r = Rig(monkeypatch, {"answer": "Three wait on you.", "offers": [f"act-{p}", f"ans-{q}"]})

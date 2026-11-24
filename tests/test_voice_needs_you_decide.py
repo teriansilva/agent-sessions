@@ -44,7 +44,7 @@ from test_permission_answer import CL_SID, GEOM, OC_SID, _escalate, _paint
 from test_voice_confirm import NEEDS_YOU_ANSWER, Rig, run
 from test_voice_needs_you import BASH_SAID, CONFIRM, MENU, _card, _escalation, _perm, _rows, _tool
 
-SCREEN_ONLY = "wants a permission I can't read out — it's on your screen."
+SCREEN_ONLY = "wants a permission I can't read out. You'll need to look at that one."
 
 
 def _told(body: dict, monkeypatch) -> list[str]:
@@ -184,9 +184,9 @@ def test_a_permission_is_read_back_and_allowed_once_through_choose(monkeypatch):
         # it" can settle (Hermes 7021): in the read-back that arms, after HQ's answer (#2137)
         assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert r.said_text()[-1] == (
-            f"deploy in infra {BASH_SAID} Say allow it to allow it once, refuse it, or skip."
+            f"deploy in infra {BASH_SAID} Allow it once, refuse it, or skip it?"
         )
-        assert "two, Yes, and don't ask again for mkdir" in r.said_text()[-1]
+        assert "Yes, Yes, and don't ask again for mkdir" in r.said_text()[-1]
         await r.readback_played()
         await r.ask("Allow it.")
 
@@ -222,10 +222,10 @@ def test_without_a_single_use_allow_only_refuse_is_offered(monkeypatch):
 
     async def go():
         await r.ask("What needs me?")
-        assert r.said_text()[-1].endswith("Say refuse it, or skip.")
+        assert r.said_text()[-1].endswith("Refuse it, or skip it?")
         await r.readback_played()
         await r.ask("Allow it.")  # not on offer: HQ says so, and nothing is chosen
-        assert r.said_text()[-1] == ("I can't allow this one by voice. Say refuse it, or skip.")
+        assert r.said_text()[-1] == ("I can't allow this one by voice. Refuse it, or skip it?")
         assert r.call.challenge["armed_at"] is None  # re-arms only once that line has played
         await r.readback_played()
         await r.ask("Refuse it.")
@@ -277,7 +277,7 @@ def test_a_route_refusal_is_read_as_the_route_gave_it(monkeypatch):
     run(go())
     # a FIXED sentence: the route's detail can quote the agent's own label (#1683 review)
     assert r.said_text()[-1] == (
-        "Nothing was sent. The session changed, or it was already decided. It's on" " your screen."
+        "Nothing was sent. The session changed, or it was already decided."
     )
     settled = [m for m in r.to_client if isinstance(m, dict) and m.get("t") == "settled"]
     assert settled[-1]["ok"] is False
@@ -306,8 +306,8 @@ def test_a_menu_option_is_chosen_by_its_number(monkeypatch):
     async def go():
         await r.ask("What needs me?")
         assert r.said_text()[-1] == (
-            "docs in web asks: Which branch should I rebase onto? The options are: one, main;"
-            " two, release 2.0. Say the option's number, or skip."
+            "docs in web asks: Which branch should I rebase onto? The first is main and the"
+            " second is release 2.0. Which one, or skip it?"
         )
         await r.readback_played()
         await r.ask("The second one.")
@@ -380,8 +380,8 @@ def test_skip_moves_on_and_a_settled_row_moves_on(monkeypatch):
         assert r.said_text()[-2] == "Chosen: release 2.0."
         assert [c["id"] for c in r.call.challenge["cards"]] == ["ans-q"]
         assert r.said_text()[-1] == (
-            "api-rebase in web asks a question. The suggested answer is: Use main. Say confirm to"
-            " send it, skip, or cancel."
+            "api-rebase in web asks a question. The suggested answer is: Use main."
+            " Send it, skip it, or cancel?"
         )
         await r.readback_played()
         await r.ask("Skip.")
@@ -614,8 +614,8 @@ def test_a_menu_row_that_recorded_a_permission_is_never_a_menu_card():
     row["kind"] = "choice"
     assert voice_calls._menu_card(row) is None
     assert voice_calls._permission_card(row) is None
-    assert voice_calls.needs_you_sentence(row).endswith("a permission I can't read out — it's on"
-                                                        " your screen.")  # fmt: skip
+    assert voice_calls.needs_you_sentence(row).endswith("a permission I can't read out. You'll need"
+                                                        " to look at that one.")  # fmt: skip
 
 
 def test_a_delivered_choice_is_reported_settled_to_the_screen(monkeypatch):
@@ -655,7 +655,7 @@ def test_a_broader_grant_is_said_back_as_screen_only_and_decides_nothing(monkeyp
         await r.readback_played()
         await r.ask("Allow it always.")
         assert r.said_text()[-1] == (
-            "By voice I can only allow it once. Anything broader stays on your screen."
+            "By voice I can only allow it once. For anything more, you'll need to tap it."
         )
 
     run(go())
@@ -737,8 +737,8 @@ def test_every_item_was_told_in_full_however_the_first_offer_ends(how, monkeypat
     told = " ".join(_told(_three(), monkeypatch))
     for content in (
         "mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt",
-        "The options are: one, Yes; two, Yes, and don't ask again",
-        "Which branch should I rebase onto? The options are: one, main; two, release 2.0.",
+        "The choices are Yes, Yes, and don't ask again",
+        "Which branch should I rebase onto? The first is main and the second is release 2.0.",
         "The suggested answer is: Use main.",
     ):
         assert content in told

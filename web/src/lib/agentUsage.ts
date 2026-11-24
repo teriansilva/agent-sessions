@@ -117,3 +117,42 @@ export function quotaReadable(row: AgentUsageRow): boolean {
       return false;
   }
 }
+
+/** Who a row's figures belong to, in one short phrase (#2331): the vendor's email for the login
+ *  when it reports one, else the operator's label. "" for a row without an account — an older
+ *  server, or an agent with no login to name — so a caller can leave the slot out. */
+export function accountName(row: AgentUsageRow): string {
+  const a = row.account;
+  if (!a) return "";
+  return a.email || a.label || "";
+}
+
+/** Whether naming the account adds anything: an agent that holds several accounts always names
+ *  it; one on its only login names it when the vendor said who that is. */
+export function showsAccount(row: AgentUsageRow): boolean {
+  return Boolean(row.account && (row.account.id !== "default" || row.account.email));
+}
+
+/** The plan windows other than the one the row is judged on, for an "also:" line. */
+export function otherWindows(row: AgentUsageRow) {
+  const worst = worstWindow(row);
+  return (row.windows || []).filter((w) => w !== worst);
+}
+
+/** A reset time as the settings rows say it: weekday and time, the viewer's zone. */
+export function resetText(epoch: number | null): string {
+  if (!epoch) return "";
+  return new Date(epoch * 1000).toLocaleString(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** The window that runs out first (#2331): the forecast's window when it says one runs out before
+ *  its reset (or already has), otherwise the fullest. */
+export function firstToRunOut(row: AgentUsageRow): string | null {
+  const f = row.forecast;
+  if (f && f.window && (f.state === "out" || f.state === "exhausts")) return f.window;
+  return worstWindow(row)?.label ?? null;
+}

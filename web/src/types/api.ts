@@ -2662,8 +2662,22 @@ export interface AgentUsageWindow {
   resets_at: number | null;
 }
 
+/** Whose figures a usage row is (#2331): an account of the agent, `default` for the login its CLI
+ *  already has. `label` is the operator's own; `email` is what the vendor's CLI reports for the
+ *  login, or null when it reports none. */
+export interface AgentUsageAccount {
+  id: string;
+  label: string;
+  email: string | null;
+}
+
 export interface AgentUsageRow {
   engine: string;
+  /** Whose figures these are. An agent's row is the account its NEW sessions start on. Optional:
+   *  an older server does not send it. */
+  account?: AgentUsageAccount | null;
+  /** On a row of `AgentUsageResponse.accounts`: whether new sessions start on this account. */
+  active?: boolean;
   source: "plan" | "tokens" | "manual" | "none";
   windows?: AgentUsageWindow[];
   tokens?: {
@@ -2725,6 +2739,9 @@ export interface AgentBudgets {
 
 export interface AgentUsageResponse {
   agents: AgentUsageRow[];
+  /** One row per account, the default login first, for every agent that holds several (#2331).
+   *  Optional: an older server does not send it. */
+  accounts?: Record<string, AgentUsageRow[]>;
   budgets: AgentBudgets;
   refreshing?: boolean;
 }
