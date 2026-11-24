@@ -200,6 +200,9 @@ def test_presets_fit_the_last_delivery_shape_and_an_unknown_sender_gets_none():
     assert "review_submitted" in ids
     pr_preset = webhook_events.presets(webhooks.shape_of(PR))[0]["when"]
     assert not webhook_events.matches(pr_preset, review)  # a review is not a push
+    # A push matches in both spellings: Forgejo's webhook and the CI re-send.
+    for push in ("synchronized", "synchronize"):
+        assert webhook_events.matches(pr_preset, {**PR, "action": push})
     assert webhook_events.presets(webhooks.shape_of({"ref": "main", "commits": []})) == []
     assert webhook_events.presets([]) == []
 

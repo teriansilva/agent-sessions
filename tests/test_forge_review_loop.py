@@ -261,8 +261,12 @@ def _action(**over) -> dict:
     return model.validate_action(_config(**over)["action"])
 
 
-def test_classify_starts_a_review_for_a_pushed_open_pr_keyed_by_its_revision():
-    d = review_loop.classify(_action(), forge_hook.parse(json.dumps(_pr()).encode()))
+@pytest.mark.parametrize("push", ["synchronized", "synchronize"])
+def test_classify_starts_a_review_for_a_pushed_open_pr_keyed_by_its_revision(push):
+    # Forgejo's own webhook says "synchronized"; the Actions event a CI step re-sends says
+    # "synchronize". Both are a push and both start the review.
+    payload = _pr(action=push)
+    d = review_loop.classify(_action(), forge_hook.parse(json.dumps(payload).encode()))
     assert (d.kind, d.slot, d.item, d.revision) == (
         "review",
         f"review:{REPO}:pr:41:{SHA_A}",

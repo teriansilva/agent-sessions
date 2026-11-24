@@ -29,8 +29,10 @@ ROUNDS_MIN = 1
 ROUNDS_MAX = 10
 ROUNDS_DEFAULT = {"pr": 4, "issue": 5}
 
-#: The PR actions that put a new revision up for review. ``synchronized`` is a push.
-PR_REVIEW_ACTIONS = frozenset({"opened", "reopened", "synchronized"})
+#: The PR actions that put a new revision up for review. A push is ``synchronized`` in Forgejo's
+#: own webhook, but ``synchronize`` (GitHub's spelling) in the Actions event a CI step re-sends,
+#: so both are accepted.
+PR_REVIEW_ACTIONS = frozenset({"opened", "reopened", "synchronized", "synchronize"})
 ISSUE_REVIEW_ACTIONS = frozenset({"opened", "reopened", "edited"})
 
 

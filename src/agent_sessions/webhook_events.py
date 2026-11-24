@@ -309,7 +309,12 @@ _CATALOGUE = (
         "PR opened or pushed (drafts skipped)",
         {"action", "pull_request.draft"},
         [
-            {"path": "action", "op": "one_of", "value": ["opened", "reopened", "synchronized"]},
+            # A push is ``synchronized`` from Forgejo itself, ``synchronize`` when CI re-sends it.
+            {
+                "path": "action",
+                "op": "one_of",
+                "value": ["opened", "reopened", "synchronized", "synchronize"],
+            },
             {"path": "pull_request.draft", "op": "is_false"},
             {"path": "review", "op": "missing"},
         ],
