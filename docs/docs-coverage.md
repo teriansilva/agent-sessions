@@ -61,7 +61,7 @@ Sessions (sidebar, row menu, pane)                            ->  guide/sessions
 New session and projects                                      ->  guide/engines, guide/projects
 Missions                                                      ->  guide/missions
 Decisions, Needs you, notifications, Recent work, dashboard   ->  guide/dashboard, guide/hq, guide/notifications
-Settings                                                      ->  guide/settings
+Settings                                                      ->  guide/settings, guide/federation
 Library                                                       ->  guide/templates, guide/playbooks, guide/specialists, guide/automations, guide/memory, guide/mcp-servers
 Files and git (Files drawer)                                  ->  guide/files-and-git
 Help and the manual                                           ->  guide/hq

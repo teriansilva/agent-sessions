@@ -178,6 +178,7 @@ export default defineConfig({
           { text: "Calling HQ", link: "/guide/calls" },
           { text: "Notifications", link: "/guide/notifications" },
           { text: "Home Free", link: "/guide/home-free" },
+          { text: "Working with another BattleLab", link: "/guide/federation" },
           { text: "Settings", link: "/guide/settings" },
         ],
       },

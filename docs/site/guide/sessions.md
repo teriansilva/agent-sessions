@@ -201,7 +201,7 @@ past a cutoff.
 ### One session menu, wherever you open it
 
 A session's actions are one list: **Session brief**, **Hand off…**, **Share** (**Public…** and
-**Peer…**), its mission entry, **Artifacts…**, the AI-review entries where AI review is set up,
+**Peer…**; for Peer… see [Sharing a session](/guide/federation#sharing-a-session)), its mission entry, **Artifacts…**, the AI-review entries where AI review is set up,
 **Favorite**, **Rename**, **Set tag…**, **Move to project…**, **Move to cluster…** and
 **Archive**. You reach it from the **⋯** on a sidebar row (or a right-click), from a chip or a
 window on the map, and from the session itself: the **…** at the end of the session header, or
@@ -237,6 +237,9 @@ are not listed under Active or Archived.
   shared with you right now. It goes away when you leave it.
 - An owner shares a session from that session's **Share → Peer…**.
 
+Pairing, the three levels of access, what the other instance sees and what you can do in a
+shared session are in [Working with another BattleLab](/guide/federation).
+
 #### Leaving a share
 
 A share can be ended from both sides. The instance that shares a session revokes it (**Share →
@@ -260,7 +263,8 @@ Leaving needs the other instance, because the share ends there:
   its end date). It is still in your list; press Leave again if you still want to end it.
 
 A session is never hidden only on your side: while the other instance still shares it, it stays
-in your list.
+in your list. Why the app does not simply try again is in
+[When the app says it could not confirm](/guide/federation#when-the-app-says-it-could-not-confirm).
 
 ::: info Verified against
 Commit `218cf3a` — `docs/session-handling.md`; `docs/reference.md § Runtime / storage`; `src/agent_sessions/sessionlock.py`; `src/agent_sessions/runtime_cleanup.py`.

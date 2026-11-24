@@ -68,7 +68,15 @@ a question*, *Stopped — take a look*). That text is fixed and never written by
 whole thing off in Settings → Session review → *Notify me when a session needs me*. Doing so takes
 back any that are open. Sessions inside a mission are announced by mission control, as before.
 
-## A paired instance suggests a message
+## A paired instance: shares, requests and notes
+
+Sharing sessions with another BattleLab adds a few bell entries on each side: a session was
+shared with you or stopped being shared, a decision you may give is waiting, a note arrived,
+the other side asks for more access. Each names the other instance and the session's title and
+never carries what was written. The full list is in
+[Working with another BattleLab](/guide/federation#notifications). Two of them in detail:
+
+### A paired instance suggests a message
 
 When another BattleLab you paired with suggests a message for a session you share with it, the
 bell gets one entry and your subscribed devices one push. It names that instance as you named it,
@@ -76,7 +84,7 @@ the session and a link. It never contains the suggested message: you read that o
 itself, where you approve or reject it. The entry goes away once you decide, the other side takes
 the suggestion back, or the share ends.
 
-## A paired instance left a share
+### A paired instance left a share
 
 When an instance you shared a session with leaves that share, the bell gets one entry and your
 subscribed devices one push: its name as you named it, and the session's title. The share has

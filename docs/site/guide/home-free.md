@@ -52,6 +52,13 @@ Anyone with the console name and access key has what an SSH session would give t
 it is ever shared, pasted somewhere it should not be, or typed on a machine you do not trust.
 :::
 
+## Pairing with another BattleLab through the relay
+
+An instance that is reachable only through Home Free can still pair with another BattleLab and
+share sessions with it. That connection has its own end-to-end encryption between the two
+BattleLab processes; the relay and the Home Free agents pass it along unread. See
+[How two instances reach each other](/guide/federation#how-two-instances-reach-each-other).
+
 ## Running your own relay
 
 Nothing here depends on the public instance. `AGENT_SESSIONS_RELAY_URL` and

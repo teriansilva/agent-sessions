@@ -248,6 +248,14 @@ your password — and **Account**, with **Sign out**. With login off
 (`AGENT_SESSIONS_AUTH_MODE=none`, as in Home Free) there is nothing to manage, and the page explains
 that instead. See [First login](/start/first-login).
 
+### Peers · `peers`
+
+Pair this BattleLab with another one and see the instances it is paired with: **Create invite**
+or **Accept an invite**, compare the six-digit code on both screens, then rename a peer, see
+whether it is connected, and revoke it. Under each peer are the sessions you share with it
+(**Revoke**) and the sessions it shares with you (**Leave**). Pairing shares nothing by itself.
+See [Working with another BattleLab](/guide/federation).
+
 ### Updates · `updates`
 
 The running version, **Automatic updates** — on by default: BattleLab and the agents you installed
