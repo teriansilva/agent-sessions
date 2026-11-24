@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 log = logging.getLogger("agent_sessions.voice_judge")
 
@@ -32,6 +33,10 @@ log = logging.getLogger("agent_sessions.voice_judge")
 JUDGE_TIMEOUT_S = 4.0
 #: Room for a reasoning model's thinking before the one token (as for #1668's judge).
 JUDGE_MAX_TOKENS = 1024
+#: How long the call waits for the interjection verdict (#2354). Its own budget: the live HQ
+#: model took 4.4-5.2 s for "No hurry" (1.5 s for "What are you doing?"), so `JUDGE_TIMEOUT_S`
+#: left most asides with no verdict, and they were queued and answered a whole turn later.
+INTERJECT_TIMEOUT_S = 8.0
 
 _CARD_VERDICT = re.compile(r"(confirm|dismiss|cancel|all|other)(?: ([1-9]))?")
 
@@ -151,9 +156,14 @@ def _interject_message(question: str, doing: str, said: str) -> str:
 
 async def judge_interjection(question: str, doing: str, said: str) -> tuple[str, str] | None:
     """Ask the HQ model how to answer `said`, heard while HQ works on `question` and is `doing`
-    something. ``(do, say)`` or ``None`` — no verdict, the caller falls back. Never acts."""
+    something. ``(do, say)`` or ``None`` — no verdict, the caller falls back. Never acts.
+    Each judgement logs its verdict class, or why there was none, and how long it took (#2354):
+    never the words, nor the line it says."""
     from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
 
+    started = time.monotonic()
+    verdict: tuple[str, str] | None = None
+    reason = "error"
     try:
         cfg = review._require_config()
         body = {
@@ -167,17 +177,31 @@ async def judge_interjection(question: str, doing: str, said: str) -> tuple[str,
             "max_tokens": JUDGE_MAX_TOKENS,
         }
         with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
-            r = await asyncio.wait_for(review.post_chat_response(cfg, body), JUDGE_TIMEOUT_S)
+            r = await asyncio.wait_for(review.post_chat_response(cfg, body), INTERJECT_TIMEOUT_S)
         if r.status_code != 200:
+            reason = f"http_{int(r.status_code)}"
             return None
         choice = r.json()["choices"][0]
         message = choice["message"]
         if choice.get("finish_reason") != "stop" or message.get("refusal"):
+            reason = "refusal" if message.get("refusal") else "finish"
             return None
-        content = message.get("content")
-        return parse_interjection(content)
+        verdict = parse_interjection(message.get("content"))
+        reason = "ok" if verdict is not None else "parse"
+        return verdict
     except asyncio.CancelledError:
+        reason = "cancelled"
         raise
+    except TimeoutError:
+        reason = "timeout"
+        return None
     except Exception:  # noqa: BLE001 — no verdict: the words wait, as before
         log.info("interjection judgement gave no verdict", exc_info=True)
         return None
+    finally:
+        log.info(
+            "interjection verdict=%s reason=%s ms=%d",
+            verdict[0] if verdict is not None else "none",
+            reason,
+            round((time.monotonic() - started) * 1000),
+        )

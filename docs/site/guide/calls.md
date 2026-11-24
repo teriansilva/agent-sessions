@@ -98,7 +98,10 @@ enter that server's key again or remove it.
   it a hint ("it's issue 2059") and it uses it in what it is doing. Ask something else and it
   says it will finish this first, answers, then takes your new question. Say "forget that, do X"
   and it drops what it was doing and does X. If HQ cannot tell what you meant it says "One sec,
-  I'll finish this first." and your words wait their turn.
+  I'll finish this first." and your words wait their turn. When words that waited get their
+  turn, HQ knows you said them a while ago: it says what it is answering ("About your question
+  on staging earlier: …"), or says nothing if they no longer need an answer (a "no hurry", or a
+  question its last answer already settled). The thread then shows "Nothing to add".
 - **Say "stop" to stop what HQ is doing.** While HQ works on an answer the call screen shows
   what it is doing and a **Stop** button above the call controls. Tapping it, or saying nothing
   but "stop" ("cancel that", "never mind"; in German "stopp" or "abbrechen"), stops that answer;

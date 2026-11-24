@@ -476,10 +476,13 @@ def test_state_at_the_exact_serialized_limit_reads_back(signer, monkeypatch, ove
 
 # ---- the agents-only catalog key (#2082) ---------------------------------------------------------
 
-#: The reviewed catalog keys, exactly as listed in the shipped `catalog-signers`. EMPTY until the
-#: operator's approval is recorded on #2082 and the key exists (battlelab-cloud#98): adding the key
-#: is one deliberate line here, beside the one line in the signers file.
-CATALOG_KEYS: list[str] = []
+#: The reviewed catalog keys, exactly as listed in the shipped `catalog-signers`: the relay signer's
+#: key (battlelab-cloud#98), approved on #2082. Changing it is one deliberate line here, beside the
+#: one line in the signers file.
+CATALOG_KEYS: list[str] = [
+    'catalog@battlelab namespaces="battlelab-plugins" ssh-ed25519 '
+    "AAAAC3NzaC1lZDI1NTE5AAAAIAepryiQbXYi+Y2df0rKb1y9a9HLek5uujOJPMIPGYPj"
+]
 SHIPPED_CATALOG_SIGNERS = feed.CATALOG_SIGNERS
 
 
@@ -552,14 +555,18 @@ def test_a_catalog_signed_cut_is_accepted_and_reads_back_after_a_restart(catalog
     assert storage.read(storage.root() / "feed-floor.json")["sequence"] == 1
 
 
-@pytest.mark.parametrize("client", ["shipped", "absent"])
+@pytest.mark.parametrize("client", ["empty", "absent"])
 def test_an_older_client_refuses_a_catalog_cut_and_keeps_every_record(
     catalog, signer, monkeypatch, tmp_path, client
 ):
+    """A client from before the key shipped: its `catalog-signers` is empty or missing."""
     old = feed.canonical(document(1))
     feed.accept(old, signer(old), now=NOW)
     before = _state()
-    path = SHIPPED_CATALOG_SIGNERS if client == "shipped" else tmp_path / "absent"
+    path = tmp_path / "absent"
+    if client == "empty":
+        path = tmp_path / "empty-catalog-signers"
+        path.write_text("# no keys\n")
     monkeypatch.setattr(feed, "CATALOG_SIGNERS", path)
     calls = []
     original = runner.run
@@ -570,6 +577,20 @@ def test_an_older_client_refuses_a_catalog_cut_and_keeps_every_record(
     assert len(calls) == 1  # an empty catalog-signers spawns no second check
     assert _state() == before
     assert feed.current(now=NOW).digest == hashlib.sha256(old).hexdigest()
+
+
+def test_the_shipped_catalog_signers_refuses_any_other_catalog_key(signer, tmp_path, monkeypatch):
+    """The shipped file trusts the relay's key only: a cut from another catalog@battlelab key
+    is refused, and nothing is recorded."""
+    monkeypatch.setattr(feed, "CATALOG_SIGNERS", SHIPPED_CATALOG_SIGNERS)
+    old = feed.canonical(document(1))
+    feed.accept(old, signer(old), now=NOW)
+    before = _state()
+    other = _keypair(tmp_path, "other-catalog")
+    new = feed.canonical(document(2))
+    with pytest.raises(feed.FeedError, match="not from a trusted plugin-feed signer"):
+        feed.accept(new, _sign_with(other, new), now=NOW)
+    assert _state() == before
 
 
 def test_both_signers_share_one_sequence_floor(catalog, signer):

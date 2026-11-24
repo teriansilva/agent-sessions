@@ -374,6 +374,9 @@ class Call:
     #: "turn_id"}``. More words join it and are judged again; only the newest judgement acts.
     interjection: dict | None = None
     interject_seq: int = 0
+    #: When the first words a turn took as a steer were heard (#2354), by turn id: words it never
+    #: used come back (`take_unconsumed`) and are asked as said that long ago.
+    steer_since: dict = field(default_factory=dict, repr=False)
     #: The `ask_operator` question the Commander can answer by voice: one HQ asked on this call, or
     #: one a typed turn on its conversation put on screen (`on_typed_settled`)…
     ask: dict | None = None
@@ -1169,6 +1172,8 @@ class Call:
         Their heard records are linked as queued (#2137). ``after``: admitted only once that
         (stopped) turn has settled."""
         heard = heard if heard is not None else self._heard_now()
+        # Words that wait were said while HQ worked (#2354): stamped once, at their first wait.
+        heard = {**heard, "busy_since": heard.get("busy_since", time.monotonic())}
         for hid in heard.get("ids", []):
             self._link(hid, "queued")
         self.admitting += 1  # until the conversation's queue has it (`_ask_behind`)
@@ -1191,6 +1196,10 @@ class Call:
         conversation's queue."""
         waiting = [*ask_orchestrator.queued(self.cid), *([""] * self.admitting)]
         return waiting or None
+
+    def _steered(self, since: float | None) -> dict | None:
+        """What steer words a turn never used were heard after (#2354): now, said at `since`."""
+        return None if since is None else {**self._heard_now(), "busy_since": since}
 
     def _heard_now(self) -> dict:
         return {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
@@ -1215,12 +1224,15 @@ class Call:
         judgement's verdict is a no-op from now on. `_start_interjection` judges them once
         their caption is out — unless Stop, mute or the end took them back meanwhile."""
         pending = self.interjection
+        # Said while HQ works (#2354): HQ is told how long ago, whenever the words are asked.
+        heard = {**heard, "busy_since": time.monotonic()}
         if pending is not None:
             text = f"{pending['text']} {text}"[: ask_orchestrator.QUERY_MAX]
             heard = {
                 **heard,
                 "began": pending["heard"]["began"],
                 "replying_to": pending["heard"]["replying_to"],
+                "busy_since": pending["heard"].get("busy_since", heard["busy_since"]),
             }
         assert self.call_turn is not None  # `_interjectable` said so; nothing awaited since
         turn_id, question = self.call_turn
@@ -1288,11 +1300,14 @@ class Call:
         do = verdict[0] if verdict is not None and say else None
         if do == "steer" and not ask_orchestrator.steer(self.cid, turn_id, text):
             do = "later"  # it could not take them any more: they wait instead
+        elif do == "steer":
+            self.steer_since.setdefault(turn_id, heard.get("busy_since", time.monotonic()))
         if do == "switch":
             if self.stop_turn(announce=False):
                 # Asked once the stopped turn has settled (as before #2103): admitted then, so
                 # they run in the freed slot, or behind what already waited in the queue.
-                self._ask_later(text, heard, after=turn_id)
+                # The Commander's newest intent, asked at once: never told it was said earlier.
+                self._ask_later(text, {**heard, "busy_since": None}, after=turn_id)
                 await self._interject_say(say or INTERJECT_FALLBACK)
                 return
             do = "later"
@@ -1585,7 +1600,13 @@ class Call:
                 await asyncio.wait_for(self._records.join(), RECORDS_BEFORE_ASK_S)
         try:
             view = await self._run_turn(
-                turn_id, text, answers, option, replying_to=replying_to, draft=d
+                turn_id,
+                text,
+                answers,
+                option,
+                replying_to=replying_to,
+                draft=d,
+                waited_since=heard.get("busy_since"),
             )
         except _DraftDropped:
             return  # nothing of it was stored, shown or said; the words went on elsewhere
@@ -1615,9 +1636,10 @@ class Call:
         # exactly once. A stopped turn hands none back (the
         # orchestrator drops them at its settle; checked here too).
         left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        since = self.steer_since.pop(turn_id, None)
         if left and self.state != "ended" and view.get("status") != "stopped":
             # (#2103: they join the conversation's queue, behind anything already waiting.)
-            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], None)
+            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], self._steered(since))
         if self.state == "ended" or (d is not None and d.dropped):
             return
         await self._present(view, gen, heard, now)
@@ -1648,6 +1670,7 @@ class Call:
                 replying_to=heard.get("replying_to"),
                 operator=self.operator,
                 app=self.app,
+                waited_since=heard.get("busy_since"),  # said while HQ worked (#2354)
             )
         except ask_orchestrator.TurnError as e:
             self.admitting = max(0, self.admitting - 1)
@@ -1703,8 +1726,9 @@ class Call:
                 self.call_turn = None
         self._link_asked(heard, turn_id)
         left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        since = self.steer_since.pop(turn_id, None)
         if left and self.state != "ended" and view.get("status") != "stopped":
-            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], None)
+            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], self._steered(since))
         if self.state == "ended":
             return
         await self._present(view, gen, heard, now)
@@ -1757,7 +1781,8 @@ class Call:
             # are waiting on (#2103): it is on screen, and HQ only says that it has it, in a
             # fixed line and never over its own voice. Asked for, HQ answers it from the
             # conversation.
-            if view.get("status") == "done" and self.state != "speaking":
+            # A quiet answer (#2354) has nothing to be ready with: nothing is said.
+            if view.get("status") == "done" and self.state != "speaking" and not view.get("quiet"):
                 await self.say(ANSWER_READY_LINE, kind="status", turn_id=view.get("turn_id"))
         elif view.get("status") == "done":
             ask = view.get("ask")
@@ -1766,7 +1791,9 @@ class Call:
             else:
                 # A newer answer: an older question is no longer what a reply answers.
                 self.ask = None
-            words = speakable(view.get("answer") or "")
+            # Words said while HQ worked that no longer need an answer (#2354): the thread shows
+            # the quiet line, the call says nothing. Its cards are still offered below.
+            words = "" if view.get("quiet") is True else speakable(view.get("answer") or "")
             # offered by voice; any more are screen-only
             cards = confirmable_cards(
                 view, summaries=summaries, picks=picks, suggestions=suggestions
@@ -2423,6 +2450,7 @@ class Call:
         *,
         replying_to: str | None = None,
         draft: _CallDraft | None = None,
+        waited_since: float | None = None,
     ) -> dict:
         from . import actuator  # the same snapshot the HQ route takes
 
@@ -2441,6 +2469,7 @@ class Call:
             operator=self.operator,
             app=self.app,
             draft=draft is not None,
+            waited_since=waited_since,  # said while HQ worked (#2354)
         )
         if task is None:
             if (view or {}).get("status") != "queued":

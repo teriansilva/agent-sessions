@@ -628,6 +628,9 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 }
             )
         out["mission_matches"] = mission_matches
+        if rec.get("quiet") is True:
+            # A waited call question HQ chose not to answer (#2354): the call says nothing.
+            out["quiet"] = True
     elif kind == "update":
         # A followed session changed (#1443 Phase 4): an AUTHORED line, never model text.
         key, ukind = rec.get("key"), rec.get("kind")

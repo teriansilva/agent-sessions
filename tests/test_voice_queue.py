@@ -43,6 +43,8 @@ def _asked(script) -> list[str]:
     """What HQ's turns were asked: the last message of each turn request (the call-end
     judgement's own requests, which quote the exchange, are not turns)."""
     last = [str(b["messages"][-1]["content"]) for b in script.bodies]
+    # A question that waited behind running work carries the waited note first (#2354).
+    last = [m.split("\n\n", 1)[-1] if m.startswith("[Said about ") else m for m in last]
     return [m.split("\n")[0] for m in last if not m.startswith("The Commander said:")]
 
 

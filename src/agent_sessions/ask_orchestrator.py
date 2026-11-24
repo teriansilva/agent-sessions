@@ -142,6 +142,21 @@ FAILED_TURN_NOTE = "[No answer: this request failed before HQ could reply.]"
 #: What a STOPPED turn's question is replayed with (#2076): the Commander ended it, so "continue"
 #: in the next message has something to continue.
 STOPPED_TURN_NOTE = "[Stopped by the Commander before HQ answered.]"
+#: Prefixed to a call question said while HQ was still working (#2354): by the time it runs the
+#: Commander may no longer remember saying it. HQ either says what it is answering, or answers
+#: `NO_REPLY` and says nothing. Neutral on purpose: the earlier request settled, but it may have
+#: been stopped or failed, and its answer may still be playing.
+WAITED_NOTE = (
+    "[Said about {ago} ago on the call, while you were still working on an earlier request, so "
+    "the Commander may no longer have these words in mind. If you answer, first say which of "
+    "their words you are answering, unless they were said only seconds ago. If they need no "
+    "answer any more (an acknowledgement, or a question the conversation has settled since), "
+    "reply with exactly {no_reply}.]"
+)
+#: The whole answer that says nothing on the call (#2354): honoured only on a waited call turn.
+NO_REPLY = "NO_REPLY"
+#: What a quiet answer stores and shows in the thread (#2354); the call says nothing for it.
+QUIET_ANSWER = "Nothing to add: said while HQ was busy, and settled since."
 
 #: No-effect tool records a turn stores one by one (#2076). The work is not capped: steps past
 #: this still run and still reach the model; they are counted, and one `steps_more` record says
@@ -519,6 +534,10 @@ class _Turn:
     #: On a call, the HQ line the operator answers when it was no question card (#1668: "Are you
     #: still there?"). Memory only: it gives the model the context, never the store.
     replying_to: str | None = None
+    #: On a call, how long ago these words were said while HQ was still working, measured when
+    #: the turn starts (#2354; the call stamps the words, `begin(waited_since=…)`). None for
+    #: words said while nothing ran. Memory only.
+    waited_s: float | None = None
     #: The question this turn ends on, once `ask_operator` has been called.
     asked: dict | None = None
     #: The project and agent lists THIS turn's tools returned (#1443 Phase 3a): what an index in
@@ -5712,7 +5731,7 @@ async def _no_tools_turn(turn: _Turn, history: list[dict], switched: bool, cfg: 
             records = await _stoppable(turn, _fallback_find(turn, history))
     except review.ReviewError as e:
         return [_status(turn, "failed", str(e))]
-    if _judges_call_end(turn):
+    if _judges_call_end(turn) and not records[0].get("quiet"):
         turn.end_call = await _stoppable(turn, _call_is_over(turn, cfg, records[0]["text"]))
     return records
 
@@ -5753,7 +5772,21 @@ async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:
     return [_assistant(turn, str(result.get("answer") or "")), _status(turn, "done")]
 
 
+def _quiet(turn: _Turn, text: object) -> bool:
+    """A waited call question HQ chose not to answer (#2354): the WHOLE answer is `NO_REPLY`."""
+    return turn.waited_s is not None and isinstance(text, str) and text.strip() == NO_REPLY
+
+
 def _assistant(turn: _Turn, text: str) -> dict:
+    if _quiet(turn, text):
+        return {
+            "type": "assistant",
+            "turn_id": turn.turn_id,
+            "text": QUIET_ANSWER,
+            "quiet": True,
+            "matches": _answer_matches(turn),
+            "mission_matches": [],
+        }
     return {
         "type": "assistant",
         "turn_id": turn.turn_id,
@@ -5899,12 +5932,22 @@ def _emit(turn: _Turn, ev: dict) -> None:
     _broadcast(turn.cid, ev)
 
 
+def _waited_note(waited_s: float) -> str:
+    """`WAITED_NOTE` with the wait in whole seconds, or minutes past two of them. Server numbers
+    only: nothing the Commander said goes into it."""
+    secs = max(1, round(waited_s))
+    ago = f"{secs} seconds" if secs < 120 else f"{round(secs / 60)} minutes"
+    return WAITED_NOTE.format(ago=ago, no_reply=NO_REPLY)
+
+
 def _user_content(turn: _Turn, shown: frozenset[str] = frozenset()) -> str:
     base = turn.question
     if turn.answering is not None:
         base = f'Answering your question "{turn.answering["question"]}": {turn.question}'
     elif turn.replying_to:
         base = f'Answering your question "{turn.replying_to}": {turn.question}'
+    if turn.waited_s is not None:
+        base = f"{_waited_note(turn.waited_s)}\n\n{base}"
     if turn.dropped_foreign:
         base = f"{FOREIGN_NOTE}\n\n{base}"
     # Files shared with this question (#1707): every name and byte goes through the fail-closed
@@ -6631,7 +6674,7 @@ async def _run_turn(turn: _Turn) -> list[dict]:
             )
         if not isinstance(content, str) or not content.strip():
             return fail("the endpoint returned an empty answer")
-        if round_no == 0 and _judges_call_end(turn):
+        if round_no == 0 and not _quiet(turn, content) and _judges_call_end(turn):
             # Small talk on a call where HQ did not hang up itself: the AI judges, once more and
             # focused, whether the Commander's words mean the call is over (#1668).
             turn.end_call = await _stoppable(turn, _call_is_over(turn, cfg, content.strip()))
@@ -6893,6 +6936,8 @@ class _Queued:
     descriptors: list[dict]
     operator: object | None
     app: object | None
+    #: When the call heard these words while HQ worked (#2354, `time.monotonic()`), or None.
+    waited_since: float | None = None
     #: Resolved once: the turn's task when it starts, or None when it never will.
     started: asyncio.Future = field(
         default_factory=lambda: asyncio.get_running_loop().create_future()
@@ -7035,6 +7080,8 @@ def turn_views(records: list[dict]) -> list[dict]:
             continue
         if kind == "assistant":
             t["answer"] = r.get("text") or ""
+            if r.get("quiet") is True:
+                t["quiet"] = True  # #2354: shown in the thread, never spoken on a call
             t["matches"] = r.get("matches") or []
             t["mission_matches"] = r.get("mission_matches") or []
         elif kind == "status":
@@ -7574,6 +7621,7 @@ async def _start_next(cid: str, lock_fd: int) -> bool:
                     descriptors=q.descriptors,
                     operator=q.operator,
                     app=q.app,
+                    waited_s=_waited(q.via, q.waited_since),
                 )
             except Exception as e:  # noqa: BLE001 — one that cannot start never blocks the rest
                 log.warning("a queued HQ turn could not start (%s)", type(e).__name__)
@@ -7593,6 +7641,13 @@ async def _start_next(cid: str, lock_fd: int) -> bool:
             _drop_queue(cid)
             # Nothing runs and nothing waits: Stop all has nothing left to hold back.
             _NO_SUCCESSOR.discard(cid)
+
+
+def _waited(via: str | None, since: object) -> float | None:
+    """How long ago a call's words were said while HQ worked (#2354), as the turn starts."""
+    if via != "call" or not isinstance(since, int | float) or isinstance(since, bool):
+        return None
+    return max(0.0, time.monotonic() - float(since))
 
 
 def _fresh_keys(q: _Queued, which: str) -> set[str]:
@@ -7623,6 +7678,7 @@ async def _new_turn(
     app,
     draft: _Draft | None = None,
     continues_missions: tuple[str, ...] = (),
+    waited_s: float | None = None,
 ) -> _Turn:
     turn = _Turn(
         cid=cid,
@@ -7645,6 +7701,7 @@ async def _new_turn(
         app=app,
         draft=draft,
         continues_missions=tuple(dict.fromkeys(continues_missions)) if via == "card" else (),
+        waited_s=waited_s if via == "call" else None,
     )
     turn.progress = lambda ev: _emit(turn, ev)
     return turn
@@ -7948,6 +8005,7 @@ async def begin(
     after_turn: str | None = None,
     mission: str = "",
     steps_key: str = "",
+    waited_since: float | None = None,
 ) -> tuple[asyncio.Task | None, dict | None]:
     """Start a turn, or find the one this ``turn_id`` already names.
 
@@ -8020,6 +8078,7 @@ async def begin(
                 replying_to=replying_to,
                 operator=operator,
                 app=app,
+                waited_since=waited_since,
             )
             return None, view
         if cid in _RUNNING or any(t["status"] == "pending" for t in turn_views(records)):
@@ -8116,6 +8175,7 @@ async def begin(
                 app=app,
                 draft=_Draft(head) if draft else None,
                 continues_missions=continues_missions,
+                waited_s=_waited(via, waited_since),
             )
         except BaseException:
             with contextlib.suppress(OSError):

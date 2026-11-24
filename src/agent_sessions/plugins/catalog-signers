@@ -11,6 +11,8 @@
 # that hosts install and update on their own. Removing it revokes that for every build shipped
 # afterwards. Held by the relay's signer (battlelab-cloud#98). Public key material only.
 #
-# Ships EMPTY of keys until the operator's approval is recorded on #2082 and the key exists; until
-# then only release-signed cuts verify, exactly as before #2082. Recovery and rollout:
-# docs/invariants/agent-catalog.md.
+# One key since #2082 activation: the operator approved the grant on #2082 (comment 139389,
+# 2026-11-24) and the key was generated on the relay VM the same day, root-only behind the signer's
+# own identity (SHA256:AihNywtlvKDeA8qgFy/DIaB+nwtL4As0GpksFVwNwS8; custody in
+# docs/release-signing.md). Recovery and rollout: docs/invariants/agent-catalog.md.
+catalog@battlelab namespaces="battlelab-plugins" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAepryiQbXYi+Y2df0rKb1y9a9HLek5uujOJPMIPGYPj

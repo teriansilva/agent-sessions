@@ -258,8 +258,9 @@ def parse(data: bytes, *, now: int | None = None, _historical: bool = False) -> 
 
 
 def _lists_a_key(path: Path) -> bool:
-    """Whether an allowed_signers file holds any entry. The shipped `catalog-signers` is empty
-    (#2082), so the catalog check is skipped rather than spawned to fail."""
+    """Whether an allowed_signers file holds any entry. A client from before the catalog key
+    shipped (#2082) has an empty or missing `catalog-signers`; its catalog check is skipped
+    rather than spawned to fail."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):

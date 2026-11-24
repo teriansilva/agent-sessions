@@ -86,9 +86,11 @@ expiry in release notes before replacing the compatibility pair.
   recipes, unlock primary, sign/verify the pair, update release assets, and verify deployed refresh.
   Record the next concrete deadline with the successful cut. **Superseded by #2082 once it is
   live:** an agents-only catalog key (`plugins/catalog-signers`, held by the relay's unattended
-  signer, battlelab-cloud#98) then cuts and renews agents cuts from `main`'s recipes. Until that
-  key exists the file ships empty and this manual procedure is the only path; it remains the
-  recovery path afterwards (a release-signed cut at a higher sequence).
+  signer, battlelab-cloud#98) then cuts and renews agents cuts from `main`'s recipes. The key
+  exists since 2026-11-24 and ships in `catalog-signers`; the relay publishes with it once the
+  first release carrying it has been `releases/latest` for 7 days (the cutter checks that
+  itself). This manual procedure stays the recovery path (a release-signed cut at a higher
+  sequence).
 - **The GitHub pair is mirrored, not hand-uploaded (#2082 P3).** An hourly catalog mirror job
   copies the relay's current, verified cut onto the latest GitHub release: it never lowers the
   mirror, refuses to overwrite a different cut at the same sequence, and reads the pair back the
