@@ -1,9 +1,10 @@
 /** Project → Memory & equipment (#2143): the project's memory switch (the same switch and endpoint
  *  as Library → Memory, through ONE shared store — `projectMemoryStore`), and read-only lists of
- *  what the project is equipped with: the secrets bound to it and the automations that target it.
+ *  what the project is equipped with: the secrets bound to it, its MCP servers (#2163 P2) and the
+ *  automations that target it.
  *  Those are edited where they live; each list links out. Every list reads on its own and fails in
  *  place while the rest keeps working. */
-import { ArrowRight, Braces, KeyRound } from "lucide-react";
+import { ArrowRight, Braces, KeyRound, Plug } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { Switch } from "../../components/hud/Controls";
@@ -12,7 +13,8 @@ import { Led } from "../../components/hud/Meters";
 import { StateWord } from "../../components/automations/AutomationBits";
 import { api, ApiError } from "../../lib/api";
 import { setProjectMemory, useProjectMemory } from "../../lib/projectMemoryStore";
-import { AUTOMATIONS_PATH, automationPath, MEMORY_PATH, VARIABLES_PATH } from "../../lib/routes";
+import { AUTOMATIONS_PATH, automationPath, MCP_PATH, MEMORY_PATH, mcpServerPath, VARIABLES_PATH } from "../../lib/routes";
+import { projectRowView, serversForProject } from "../../components/mcp/mcpModel";
 import type { ProjectEntity } from "../../types/api";
 import type { Automation } from "../../types/automations";
 import type { SharedVariable } from "../../types/variables";
@@ -41,8 +43,9 @@ export function ProjectMemory({ entity }: { entity: ProjectEntity }) {
       <MemoryPanel entity={entity} />
       <div className={styles.cols}>
         <VariablesPanel entity={entity} />
-        <AutomationsPanel entity={entity} />
+        <McpServersPanel entity={entity} />
       </div>
+      <AutomationsPanel entity={entity} />
     </div>
   );
 }
@@ -178,6 +181,62 @@ function VariablesPanel({ entity }: { entity: ProjectEntity }) {
       )}
       <Link to={VARIABLES_PATH} className={styles.link}>
         Manage in Library → Variables <ArrowRight size={13} aria-hidden="true" />
+      </Link>
+    </Panel>
+  );
+}
+
+/** The project's MCP servers (#2163 P2): read-only, one row per server chosen for this project, with
+ *  where its credentials come from and whether a new session here gets its tools. Enabling,
+ *  credentials and checks are edited on the server's own Library page — one editor, no copies. */
+function McpServersPanel({ entity }: { entity: ProjectEntity }) {
+  const read = useRead<ReturnType<typeof serversForProject>>(
+    useCallback(() => api.mcpServers(entity.id).then((d) => serversForProject(d.servers, entity.id)), [entity.id]),
+    "The MCP server registry didn’t answer.",
+  );
+  const list = read.data ?? [];
+  const on = list.filter((s) => s.project.enabled).length;
+  return (
+    <Panel tone="quiet" className={styles.panel} aria-labelledby="mcp-h">
+      <Callsign as="h2" id="mcp-h" title="MCP servers" value={read.data ? `${on} enabled` : undefined} />
+      <p className={styles.text}>Read only here. A new session in this project gets a server’s tools once its check passes.</p>
+      {read.data === null && read.error ? (
+        <ReadFailed
+          title="Couldn’t load MCP servers"
+          detail={`${read.error}. Nothing was changed, and sessions keep the servers they started with.`}
+          onRetry={read.retry}
+          testId="mcp-read-failed"
+        />
+      ) : read.data === null ? (
+        <p className={styles.quiet}>Loading…</p>
+      ) : list.length === 0 ? (
+        <p className={styles.quiet}>No MCP server is enabled for this project.</p>
+      ) : (
+        <ul className={styles.rows} aria-label={`MCP servers for ${entity.name}`}>
+          {list.map((s) => {
+            const v = projectRowView(s, s.project);
+            return (
+              <li key={s.id} data-testid={`project-mcp-${s.name}`}>
+                <span className={styles.rowMain}>
+                  <b>
+                    <Plug size={13} aria-hidden="true" />
+                    <Link to={mcpServerPath(s.id)} className={styles.rowLink} aria-label={`Open MCP server ${s.name}`}>
+                      {s.name}
+                    </Link>
+                    {v.credential && <span className="nj-stamp">{v.credential}</span>}
+                  </b>
+                  <span>{v.sub}</span>
+                </span>
+                <span className={styles.ledWord} data-tone={v.tone}>
+                  <Led tone={v.tone} /> {v.words}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <Link to={MCP_PATH} className={styles.link}>
+        Manage in Library → MCP servers <ArrowRight size={13} aria-hidden="true" />
       </Link>
     </Panel>
   );

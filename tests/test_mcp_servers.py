@@ -795,6 +795,52 @@ def test_the_routes_are_authenticated_guarded_and_never_return_a_value(env, http
     assert history[0]["outcome"] == "failed"
 
 
+def test_a_project_page_reads_its_own_row_from_the_list(env, http_server, auth_cfg):
+    """#2163 P2: ``GET /api/mcp/servers?project=<pid>`` carries each server's status row for that
+    one project — the same row the server page shows — and an unknown project is a 404."""
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    _library_secret()
+    _bind_shared(env["beta"])
+    rec = _remote(http_server["url"])
+    assert _check(rec["id"], env["beta"])["outcome"] == "passed"
+    mcp_registry.set_projects(rec["id"], [env["beta"]], mcp_registry.get(rec["id"])["updated_at"])
+    client = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    assert client.get(f"/api/mcp/servers?project={env['beta']}").status_code == 401
+    client.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    beta = client.get(f"/api/mcp/servers?project={env['beta']}")
+    assert beta.status_code == 200 and "no-store" in beta.headers["cache-control"]
+    row = beta.json()["servers"][0]["project"]
+    assert row["project_id"] == env["beta"]
+    assert (row["enabled"], row["credentials"], row["check"], row["delivered"]) == (
+        True,
+        "shared",
+        "passed",
+        True,
+    )
+    detail = client.get(f"/api/mcp/servers/{rec['id']}").json()["status"]["projects"]
+    assert row == next(r for r in detail if r["project_id"] == env["beta"])
+    atlas = client.get(f"/api/mcp/servers?project={env['atlas']}").json()["servers"][0]["project"]
+    assert (atlas["enabled"], atlas["credentials"], atlas["missing"], atlas["delivered"]) == (
+        False,
+        "missing",
+        ["api_key"],
+        False,
+    )
+    assert "project" not in client.get("/api/mcp/servers").json()["servers"][0]
+    unknown = client.get("/api/mcp/servers?project=p-nope")
+    assert unknown.status_code == 404 and unknown.json()["detail"] == "No such project."
+    for r in (beta, unknown):
+        assert LIB_KEY not in r.text
+
+
 # ---- a real package (network; opt-in, never in CI) ----------------------------------------------
 
 

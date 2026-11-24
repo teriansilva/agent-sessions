@@ -831,6 +831,16 @@
   font-size: var(--fs-meta);
   color: var(--text-2);
 }
+/* An MCP server's name opens its Library page (#2163 P2): the name stays the row's ink. */
+.rowLink {
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.rowLink:hover,
+.rowLink:focus-visible {
+  text-decoration: underline;
+}
 
 /* ------------------------------------------------------------------ Playbook (#1949) */
 .pbCols {

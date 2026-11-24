@@ -48,6 +48,8 @@ export interface McpServerSummary {
   enabled_projects: string[];
   project_count: number;
   state: { kind: McpStateKind; projects?: string[] };
+  /** Only on a project page's read (`GET /api/mcp/servers?project=<id>`): that project's row. */
+  project?: McpProjectStatus;
 }
 
 export type McpCredentialSource = "none_needed" | "own" | "shared" | "missing";

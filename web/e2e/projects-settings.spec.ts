@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { projectPicker, launchFolder } from "./newSessionForm";
-import { MEMORY_PATH, NEW_SESSION_PATH, PROJECTS_PATH, projectPath } from "../src/lib/routes";
+import { MCP_PATH, MEMORY_PATH, NEW_SESSION_PATH, PROJECTS_PATH, mcpServerPath, projectPath } from "../src/lib/routes";
 import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser check of HQ → Projects (#2143; it was Settings → Projects, #361/#448): the index (one
@@ -65,6 +65,7 @@ async function mockCommon(page: Page) {
   await page.route(/\/api\/playbooks$/, (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
   await page.route(/\/api\/artifacts\/activation/, (r) => r.fulfill({ json: { mode: null } }));
   await page.route(/\/api\/variables$/, (r) => r.fulfill({ json: { variables: [], collections: [] } }));
+  await page.route(/\/api\/mcp\/servers(\?.*)?$/, (r) => r.fulfill({ json: { servers: [] } }));
   await page.route(/\/api\/automations$/, (r) =>
     r.fulfill({ json: { automations: [], loop: { enabled: true, owner: true }, limits: {} } }),
   );
@@ -416,5 +417,103 @@ test.describe("New-session Project → Folder (#448)", () => {
     await page.goto(NEW_SESSION_PATH);
     await expect(projectPicker(page).radio("p-1")).toBeChecked(); // SampleProject is default
     await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/sampleproject"); // its default folder
+  });
+});
+
+/** `GET /api/mcp/servers?project=<pid>` as the server answers it (#2163 P2): each summary carries
+ *  that project's own status row. */
+function mcpServer(name: string, over: Record<string, unknown>, row: Record<string, unknown>) {
+  return {
+    id: `0123456789abcde${name.length}`,
+    name,
+    label: "",
+    source: { kind: "npm", package: `${name}-mcp-server`, version: "0.14.2" },
+    transport: "stdio",
+    args: [],
+    settings: [],
+    project_settings: {},
+    projects: "all",
+    probe: null,
+    enabled: true,
+    rev: 1,
+    installed: null,
+    created_at: 0,
+    updated_at: 0,
+    tool_count: 0,
+    enabled_projects: ["p-1"],
+    project_count: 2,
+    state: { kind: "ready" },
+    project: { project_id: "p-1", enabled: true, credentials: "shared", missing: [], check: "passed", checked_at: null, delivered: true, ...row },
+    ...over,
+  };
+}
+
+test.describe("MCP servers on the project page (#2163 P2)", () => {
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    await mockMemory(page);
+    await projectsRoute(page, [SAMPLEPROJECT, OTHER]);
+  });
+
+  test("lists the project's servers read-only beside Variables, each name opening its Library page", async ({ page, isMobile }) => {
+    const asked: string[] = [];
+    const nextcloud = mcpServer("nextcloud", { tool_count: 38 }, {});
+    await page.route(/\/api\/mcp\/servers(\?.*)?$/, (r) => {
+      asked.push(new URL(r.request().url()).search);
+      return r.fulfill({
+        json: {
+          servers: [
+            nextcloud,
+            mcpServer("sentry", { projects: ["p-1"], source: { kind: "remote", url: "https://mcp.sentry.dev/mcp" } }, { credentials: "own", check: "stale", delivered: false }),
+            mcpServer("linear", {}, { credentials: "missing", missing: ["linear_key"], check: "needs_credentials", delivered: false }),
+            mcpServer("other", { projects: ["p-2"] }, { enabled: false, delivered: false }),
+          ],
+        },
+      });
+    });
+    await page.goto(projectPath("p-1", "memory"));
+    const list = page.getByRole("list", { name: "MCP servers for SampleProject" });
+    await expect(list.getByRole("listitem")).toHaveCount(3);
+    expect(asked).toContain("?project=p-1");
+    await expect(page.getByTestId("project-mcp-nextcloud")).toContainText("npm · nextcloud-mcp-server 0.14.2 · 38 tools");
+    await expect(page.getByTestId("project-mcp-nextcloud")).toContainText("Passed");
+    await expect(page.getByTestId("project-mcp-sentry")).toContainText("Credentials changed — check again");
+    await expect(page.getByTestId("project-mcp-linear")).toContainText("Needs linear_key");
+    await expect(list.getByRole("switch")).toHaveCount(0);
+    await expect(list.getByRole("button")).toHaveCount(0);
+    // The mockup's layout: MCP servers beside Variables on a desktop, Automations on its own row
+    // below both; one column on a phone, nothing overflowing it.
+    const box = async (id: string) => (await page.locator(`[aria-labelledby="${id}"]`).boundingBox())!;
+    const vars = await box("variables-h");
+    const mcp = await box("mcp-h");
+    const autos = await box("automations-h");
+    if (isMobile) {
+      expect(mcp.y).toBeGreaterThan(vars.y + vars.height - 1);
+      expect(mcp.x + mcp.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    } else {
+      expect(Math.abs(mcp.y - vars.y)).toBeLessThan(2);
+      expect(mcp.x).toBeGreaterThan(vars.x + vars.width - 1);
+    }
+    expect(autos.y).toBeGreaterThan(Math.max(vars.y + vars.height, mcp.y + mcp.height) - 1);
+    await expect(page.getByRole("link", { name: /Manage in Library → MCP servers/ })).toHaveAttribute("href", MCP_PATH);
+    await page.getByRole("link", { name: "Open MCP server nextcloud" }).click();
+    await expect(page).toHaveURL(new RegExp(`${mcpServerPath(nextcloud.id)}$`));
+  });
+
+  test("an unreadable registry is red with Retry, never the empty line, and Retry recovers", async ({ page }) => {
+    let fail = true;
+    await page.route(/\/api\/mcp\/servers(\?.*)?$/, (r) =>
+      fail ? r.fulfill({ status: 503, json: { detail: "Service unavailable" } }) : r.fulfill({ json: { servers: [] } }),
+    );
+    await page.goto(projectPath("p-1", "memory"));
+    const failed = page.getByTestId("mcp-read-failed");
+    await expect(failed).toContainText("sessions keep the servers they started with");
+    await expect(page.getByText("No MCP server is enabled for this project.")).toHaveCount(0);
+    // The rest of the tab still works.
+    await expect(page.getByRole("switch", { name: "Shared memory for SampleProject" })).toBeVisible();
+    fail = false;
+    await failed.getByRole("button", { name: /Retry/ }).click();
+    await expect(page.getByText("No MCP server is enabled for this project.")).toBeVisible();
+    await expect(failed).toHaveCount(0);
   });
 });

@@ -2,7 +2,7 @@
  *  tabs. Ported from Settings → Projects' manager tests (the same calls, a new home), plus the
  *  states #2143 adds: a failed read is never an empty list, a partial defaults save says which half
  *  landed, and the memory switch reads one shared store. */
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -11,6 +11,7 @@ import { api, ApiError } from "../../lib/api";
 import { resetProjectMemoryStore } from "../../lib/projectMemoryStore";
 import { NEW_PROJECT_PATH, PROJECTS_PATH } from "../../lib/routes";
 import type { AppConfig, ProjectArchiveReport, ProjectEntity } from "../../types/api";
+import type { McpProjectStatus, McpServerSummary } from "../../types/mcp";
 import ProjectPage from "./ProjectPage";
 import ProjectsIndex from "./ProjectsIndex";
 
@@ -34,6 +35,7 @@ vi.mock("../../lib/api", async (orig) => {
       setArtifactActivation: vi.fn(),
       variables: vi.fn(),
       automations: vi.fn(),
+      mcpServers: vi.fn(),
     },
   };
 });
@@ -107,6 +109,7 @@ beforeEach(() => {
   vi.mocked(api.artifactActivation).mockResolvedValue({ mode: null } as never);
   vi.mocked(api.variables).mockResolvedValue({ variables: [], collections: [] } as never);
   vi.mocked(api.automations).mockResolvedValue({ automations: [] } as never);
+  vi.mocked(api.mcpServers).mockResolvedValue({ servers: [] });
 });
 
 afterEach(() => {
@@ -426,6 +429,77 @@ test("bound secrets and targeting automations are listed read-only, each list fa
   expect(within(vars).queryByText("OTHER")).toBeNull();
   expect(await screen.findByTestId("automations-read-failed")).toBeInTheDocument();
   // The rest still works.
+  expect(screen.getByRole("switch", { name: "Shared memory for SampleProject" })).toBeInTheDocument();
+  await act(async () => {});
+});
+
+/** A server as `GET /api/mcp/servers?project=p-1` answers it: the summary plus p-1's own row. */
+function mcp(name: string, over: Partial<McpServerSummary> = {}, row: Partial<McpProjectStatus> = {}): McpServerSummary {
+  return {
+    id: `id-${name}`,
+    name,
+    label: "",
+    source: { kind: "npm", package: `${name}-mcp`, version: "1.2.3" },
+    transport: "stdio",
+    args: [],
+    settings: [],
+    project_settings: {},
+    projects: "all",
+    probe: null,
+    enabled: true,
+    rev: 1,
+    installed: null,
+    created_at: 0,
+    updated_at: 0,
+    tool_count: 0,
+    enabled_projects: [],
+    project_count: 1,
+    state: { kind: "ready" },
+    project: { project_id: "p-1", enabled: true, credentials: "shared", missing: [], check: "passed", checked_at: null, delivered: true, ...row },
+    ...over,
+  };
+}
+
+test("the project's MCP servers are listed read-only, each linking to its Library page (#2163 P2)", async () => {
+  vi.mocked(api.mcpServers).mockResolvedValue({
+    servers: [
+      mcp("nextcloud", { tool_count: 38 }),
+      mcp("sentry", { projects: ["p-1"], source: { kind: "remote", url: "https://mcp.sentry.dev/mcp" } }, { credentials: "own", check: "stale", delivered: false }),
+      mcp("linear", {}, { credentials: "missing", missing: ["linear_key"], check: "needs_credentials", delivered: false }),
+      mcp("paused", { enabled: false, projects: ["p-1"] }, { enabled: false, delivered: false }),
+      mcp("elsewhere", { projects: ["p-9"] }, { enabled: false, credentials: "none_needed", check: "not_run", delivered: false }),
+    ],
+  });
+  renderAt("/projects/p-1?tab=memory");
+  const list = await screen.findByRole("list", { name: "MCP servers for SampleProject" });
+  expect(api.mcpServers).toHaveBeenCalledWith("p-1");
+  expect(within(list).getAllByRole("listitem")).toHaveLength(4);
+  expect(within(list).queryByText("elsewhere")).toBeNull();
+  const nc = within(list).getByTestId("project-mcp-nextcloud");
+  expect(within(nc).getByRole("link", { name: "Open MCP server nextcloud" })).toHaveAttribute("href", "/library/mcp/id-nextcloud");
+  expect(nc).toHaveTextContent("Shared");
+  expect(nc).toHaveTextContent("npm · nextcloud-mcp 1.2.3 · 38 tools");
+  expect(nc).toHaveTextContent("Passed");
+  expect(within(list).getByTestId("project-mcp-sentry")).toHaveTextContent(/remote · mcp\.sentry\.dev.*Credentials changed — check again/);
+  expect(within(list).getByTestId("project-mcp-linear")).toHaveTextContent("Needs linear_key");
+  expect(within(list).getByTestId("project-mcp-paused")).toHaveTextContent("Disabled");
+  // Three are on for the project; the disabled one is listed but not counted.
+  expect(screen.getByText("3 enabled")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Manage in Library → MCP servers/ })).toHaveAttribute("href", "/library/mcp");
+  // Read-only: no switch or button inside the section.
+  expect(within(list).queryByRole("switch")).toBeNull();
+  expect(within(list).queryByRole("button")).toBeNull();
+});
+
+test("no MCP server reads as empty; an unreadable registry fails in place, never as the empty line", async () => {
+  renderAt("/projects/p-1?tab=memory");
+  expect(await screen.findByText("No MCP server is enabled for this project.")).toBeInTheDocument();
+  cleanup();
+  vi.mocked(api.mcpServers).mockRejectedValue(new ApiError(503, "Service unavailable"));
+  renderAt("/projects/p-1?tab=memory");
+  expect(await screen.findByTestId("mcp-read-failed")).toHaveTextContent(/sessions keep the servers they started with/);
+  expect(screen.queryByText("No MCP server is enabled for this project.")).toBeNull();
+  // The rest of the tab still works.
   expect(screen.getByRole("switch", { name: "Shared memory for SampleProject" })).toBeInTheDocument();
   await act(async () => {});
 });

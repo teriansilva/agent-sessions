@@ -137,6 +137,41 @@ export function checkView(
   }
 }
 
+/** A project page's MCP servers section (#2163 P2): the servers chosen for that project — every
+ *  project, or this one by name — including a disabled one, which says so. Needs the list read
+ *  with `?project=`, so each server carries this project's row; one without it is left out. */
+export function serversForProject(
+  servers: McpServerSummary[],
+  projectId: string,
+): (McpServerSummary & { project: McpProjectStatus })[] {
+  return servers.filter(
+    (s): s is McpServerSummary & { project: McpProjectStatus } =>
+      s.project?.project_id === projectId && (s.projects === "all" || s.projects.includes(projectId)),
+  );
+}
+
+/** One row of that section: what the source is, and whether a new session here gets the tools.
+ *  Amber whenever it is on for the project but not delivered (credentials missing, no check yet, a
+ *  stale one) — it needs the operator, nothing broke; red only for a check that failed. */
+export function projectRowView(
+  server: Pick<McpServerSummary, "enabled" | "source" | "settings" | "tool_count">,
+  row: McpProjectStatus,
+  now?: Date,
+): { tone: Tone; words: string; sub: string; credential: string | null } {
+  const src = sourceLine(server);
+  const sub = [src.kind, src.main, server.tool_count > 0 ? plural(server.tool_count, "tool") : ""]
+    .filter(Boolean)
+    .join(" · ");
+  const credential =
+    row.credentials === "own" || row.credentials === "shared" ? credentialWords(row.credentials) : null;
+  if (!server.enabled) return { tone: "idle", words: "Disabled", sub, credential };
+  if (row.credentials === "missing")
+    return { tone: "att", words: `Needs ${row.missing.join(", ") || "credentials"}`, sub, credential };
+  if (row.check === "not_run" || row.check === "needs_credentials")
+    return { tone: "att", words: "Needs a check", sub, credential };
+  return { ...checkView(row.check, row.checked_at, now), sub, credential };
+}
+
 const STEP_LABELS: Record<string, string> = {
   settings: "Settings",
   installed: "Installed",

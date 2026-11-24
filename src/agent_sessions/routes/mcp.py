@@ -42,11 +42,20 @@ def _project_ids() -> list[str]:
     return [pid for pid, p in projects.load().items() if not getattr(p, "archived", False)]
 
 
-def _summary(rec: dict) -> dict:
-    """An index row: the record plus what the list shows (tools, projects, state)."""
+def _summary(rec: dict, project: str | None = None) -> dict:
+    """An index row: the record plus what the list shows (tools, projects, state).
+
+    With ``project`` (a project page's read, #2163 P2) the row also carries ``project``: that one
+    project's status row, computed by the same ``mcp_registry.status`` as the server page's."""
     ids = _project_ids()
     st = mcp_registry.status(rec, ids)
     rows = st["projects"]
+    extra: dict = {}
+    if project is not None:
+        mine = next((r for r in rows if r["project_id"] == project), None)
+        if mine is None:  # an archived project: not in the live set, still has a page
+            mine = mcp_registry.status(rec, [project])["projects"][0]
+        extra["project"] = mine
     enabled = [r for r in rows if r["enabled"]]
     tools = 0
     for c in reversed(mcp_registry.checks(rec["id"])):
@@ -78,6 +87,7 @@ def _summary(rec: dict) -> dict:
         "enabled_projects": [r["project_id"] for r in enabled],
         "project_count": len(ids),
         "state": state,
+        **extra,
     }
 
 
@@ -92,9 +102,11 @@ def _detail(sid: str) -> dict:
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.get("/api/mcp/servers")
-    async def list_servers(_user: str = Depends(logged_in)):
+    async def list_servers(project: str | None = None, _user: str = Depends(logged_in)):
         def run():
-            return {"servers": [_summary(r) for r in mcp_registry.list_servers()]}
+            if project is not None and project not in projects.load():
+                raise mcp_registry.NotFound("No such project.")
+            return {"servers": [_summary(r, project) for r in mcp_registry.list_servers()]}
 
         result = await _run(run)
         return result if isinstance(result, Response) else _json(result)

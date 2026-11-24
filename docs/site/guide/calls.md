@@ -163,7 +163,9 @@ it **reads the card back** and asks you, the way a person would:
 Answer in your own words ("yeah, go", "sure", "do it"). HQ never reads you a numbered menu: it
 offers choices as "Claude or Codex?". A question from one of your sessions (a permission, a menu)
 names the words that answer it ("Allow it once, refuse it, or skip it?", "The first is main and
-the second is release. Which one?").
+the second is release. Which one?"). So does a message HQ would send through a messenger
+connector, alone or with other cards: "Send it, or cancel?" there wants "send it", not a bare
+"yes".
 
 A message you tell HQ to send into one of your sessions is not read back: HQ sends it right away
 and tells you whether it arrived.

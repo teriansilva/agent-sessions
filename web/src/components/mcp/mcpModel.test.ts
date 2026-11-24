@@ -11,8 +11,10 @@ import {
   finalProjects,
   argsFromText,
   nameError,
+  projectRowView,
   projectsSummary,
   rowsFromSettings,
+  serversForProject,
   settingsFromRows,
   sourceLine,
   stateView,
@@ -241,5 +243,74 @@ describe("enabling", () => {
     expect(toggledProjects(["a", "b"], ["a", "b", "c"], "a", false)).toEqual(["b"]);
     expect(toggledProjects("all", ["a", "b", "c"], "b", false)).toEqual(["a", "c"]);
     expect(toggledProjects("all", ["a", "b"], "b", true)).toBe("all");
+  });
+});
+
+describe("a project page's section (#2163 P2)", () => {
+  const npm = { source: { kind: "npm" as const, package: "nextcloud-mcp-server", version: "0.14.2" }, settings: [] };
+  const server = (p: Partial<McpServerSummary>): McpServerSummary =>
+    ({
+      id: "s1",
+      name: "nextcloud",
+      label: "",
+      transport: "stdio",
+      args: [],
+      project_settings: {},
+      projects: "all",
+      probe: null,
+      enabled: true,
+      rev: 1,
+      installed: null,
+      created_at: 1,
+      updated_at: 1,
+      tool_count: 0,
+      enabled_projects: [],
+      project_count: 2,
+      state: { kind: "ready" },
+      ...npm,
+      ...p,
+    }) as McpServerSummary;
+
+  test("lists the servers chosen for the project, a disabled one too, and nothing without its row", () => {
+    const mine = row({ project_id: "p1" });
+    const list = [
+      server({ id: "all", projects: "all", project: mine }),
+      server({ id: "named", projects: ["p1"], project: mine }),
+      server({ id: "off", projects: ["p1"], enabled: false, project: mine }),
+      server({ id: "other", projects: ["p2"], project: mine }),
+      server({ id: "unread", projects: "all" }),
+      server({ id: "wrong-row", projects: "all", project: row({ project_id: "p2" }) }),
+    ];
+    expect(serversForProject(list, "p1").map((s) => s.id)).toEqual(["all", "named", "off"]);
+  });
+
+  test("the source line and the credential tag", () => {
+    const v = projectRowView({ ...npm, enabled: true, tool_count: 38 }, row({ project_id: "p1", check: "passed" }));
+    expect(v.sub).toBe("npm · nextcloud-mcp-server 0.14.2 · 38 tools");
+    expect(v.credential).toBe("Shared");
+    expect(projectRowView({ ...npm, enabled: true, tool_count: 1 }, row({ project_id: "p1", credentials: "own" })).sub).toMatch(
+      / · 1 tool$/,
+    );
+    expect(projectRowView({ ...npm, enabled: true, tool_count: 0 }, row({ project_id: "p1" })).sub).toBe(
+      "npm · nextcloud-mcp-server 0.14.2",
+    );
+    for (const c of ["none_needed", "missing"] as const)
+      expect(projectRowView({ ...npm, enabled: true, tool_count: 0 }, row({ project_id: "p1", credentials: c })).credential).toBeNull();
+  });
+
+  test("amber whenever it is on but not delivered; red only for a failed check; grey when disabled", () => {
+    const now = new Date(2026, 10, 24, 15, 0);
+    const at = new Date(2026, 10, 24, 14, 2).getTime() / 1000;
+    const v = (enabled: boolean, r: Partial<McpProjectStatus>) =>
+      projectRowView({ ...npm, enabled, tool_count: 0 }, row({ project_id: "p1", ...r }), now);
+    expect(v(true, { check: "passed", checked_at: at })).toMatchObject({ tone: "up", words: "Passed · today 14:02" });
+    expect(v(true, { check: "failed", checked_at: at })).toMatchObject({ tone: "down", words: "Check failed · today 14:02" });
+    expect(v(true, { check: "stale" })).toMatchObject({ tone: "att", words: "Credentials changed — check again" });
+    expect(v(true, { check: "not_run" })).toMatchObject({ tone: "att", words: "Needs a check" });
+    expect(v(true, { credentials: "missing", missing: ["api_key"], check: "needs_credentials" })).toMatchObject({
+      tone: "att",
+      words: "Needs api_key",
+    });
+    expect(v(false, { check: "passed", checked_at: at })).toMatchObject({ tone: "idle", words: "Disabled" });
   });
 });

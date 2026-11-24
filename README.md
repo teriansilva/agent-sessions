@@ -5,7 +5,7 @@
 <p align="center"><a href="https://battlelabos.com">battlelabos.com</a> · <a href="https://docs.battlelabos.com">docs</a></p>
 
 <p align="center">
-  <img src="docs/banner.webp" alt="General Ileana Lupu of BattleLab HQ greets you: “Welcome, Commander. This is BattleLab — your command deck for AI coding agents. Claude Code, Codex, opencode, Gemini, Kimi… they all report to you here. Sessions survive reboots. I tell you who needs you. Missions (beta) run your objectives. You command it all — even from your phone. Miss me already? One line to deploy.”" width="900">
+  <img src="docs/banner.webp" alt="General Ileana Lupu of BattleLab HQ greets you: “Welcome, Commander. This is BattleLab — the command center for your AI agents. All of them, alive on one deck. They survive reboots and buzz you when they need you. Talk to me, typed or on a call. Hand me a whole job: your team runs it, a judge checks it, you make the call. Miss me already? One line to deploy.”" width="900">
 </p>
 
 **Welcome, Commander.** BattleLab puts Claude Code, Codex, opencode, Gemini, Antigravity, Kimi Code

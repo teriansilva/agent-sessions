@@ -38,8 +38,11 @@ A project's own page (`/projects/<id>`) has four tabs:
   written; **Apply reviewed changes to this project** is then its own step. An archived project can't take a playbook: verify and
   remove still work. A refusal from the server is shown in its own words.
 - **Memory & equipment**: the project's memory switch (the same switch as Library → Memory), the
-  secrets bound to the project and the automations that target it. Secrets and automations are
-  listed read-only, with links to where you edit them.
+  secrets bound to the project, its [MCP servers](mcp-servers.md) and the automations that target
+  it. Secrets, MCP servers and automations are listed read-only, with links to where you edit them.
+  An MCP server row shows where its credentials come from (**Shared** or **Own**) and whether a
+  new session here gets its tools: **Passed**, or what it still needs (credentials, a check, a new
+  check after a change). A disabled server is listed and says so.
 
 A list that cannot be read says so where it would be, with **Retry**; it is never shown as empty.
 

@@ -2001,7 +2001,11 @@ export const api = {
   variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
   /** Library → MCP servers (#2163). Every mutation carries the CSRF header (`mutateJson`); no
    *  answer ever holds a credential value. */
-  mcpServers: () => getJsonWithDetail<{ servers: McpServerSummary[] }>("/api/mcp/servers"),
+  /** With `project`, each server also carries that project's status row (a project page's read). */
+  mcpServers: (project?: string) =>
+    getJsonWithDetail<{ servers: McpServerSummary[] }>(
+      project === undefined ? "/api/mcp/servers" : `/api/mcp/servers?project=${enc(project)}`,
+    ),
   mcpServer: (id: string) => getJsonWithDetail<McpServerDetail>(`/api/mcp/servers/${enc(id)}`),
   createMcpServer: (input: McpServerInput) =>
     mutateJson<McpServerSummary>("POST", "/api/mcp/servers", input),

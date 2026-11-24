@@ -82,6 +82,10 @@ leaves a registered server where it is; you can continue on its page.
   Changing the version of a package means reviewing and installing again.
 - **Activity**: every check, newest first, with its steps.
 
+Each project's page (HQ → Projects → **Memory & equipment**) lists the servers chosen for that
+project, read-only, with the same credential source and check state as this tab. Its links lead
+back here; nothing is edited there.
+
 The **⋯** menu disables, enables again, or removes the server. **Remove** deletes its settings,
 install and check history. Its credentials stay in Variables.
 
