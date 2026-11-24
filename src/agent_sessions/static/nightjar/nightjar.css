@@ -580,7 +580,10 @@ button.nj-chip:hover {
 .nj-chip[aria-pressed="true"],
 .nj-chip[aria-checked="true"] {
   --nj-face: color-mix(in srgb, var(--hud) 22%, var(--bg-1));
-  color: var(--hud-text);
+  /* The tint carries selection; the label reads body ink. `--hud-text` measures 4.18:1 on this
+     face in the light theme (under AA); `--text-1` holds ≥8:1 for every accent preset in both
+     themes (#2255, contrast.test.ts). */
+  color: var(--text-1);
 }
 .nj-chip .nj-n {
   color: var(--text-1);

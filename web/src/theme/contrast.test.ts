@@ -504,6 +504,109 @@ test("dark: --hud is the accent itself and --hud-text is --accent-text (AA via i
   expect(bare).toMatch(/--hud-text:\s*var\(--accent-text\)/);
 });
 
+// ------------------------------------------------------- the pressed Chip's mixed face (#2255)
+//
+// The Chip's selected state is a tinted face (`--nj-face` = `--hud` 22% over `--bg-1`) with its
+// label in the primitive's ink. The old ink `--hud-text` measured 4.18:1 on the tint in the light
+// theme, under AA. The face is a color-mix, so the assertion must resolve the SHIPPED declaration
+// rather than test ink against plain --bg-1 (the mistake the Library override papered over). The
+// check runs for every accent preset, because --hud is the accent line per mode, and for the
+// hover/focus cascade: button.nj-chip:hover brightens the WHOLE plate, and focus repaints neither
+// ink nor face.
+
+const CHIP_CSS = readFileSync(
+  resolve(process.cwd(), "src/components/hud/nightjar.css"),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "");
+
+const PRESSED_SELECTORS = [
+  ".nj-chip.is-on",
+  '.nj-chip[aria-pressed="true"]',
+  '.nj-chip[aria-checked="true"]',
+];
+
+function chipPressedRule(): string {
+  const m = CHIP_CSS.match(
+    /\.nj-chip\.is-on,\s*\.nj-chip\[aria-pressed="true"\],\s*\.nj-chip\[aria-checked="true"\]\s*\{([^}]*)\}/,
+  );
+  expect(
+    m,
+    "the pressed chip rule is declared for .is-on, aria-pressed and aria-checked",
+  ).not.toBeNull();
+  return (m as RegExpMatchArray)[1];
+}
+
+test("the pressed chip's ink and tint are the shipped declarations", () => {
+  const body = chipPressedRule();
+  for (const sel of PRESSED_SELECTORS) {
+    expect(CHIP_CSS, `${sel} is in the pressed selector list`).toContain(sel);
+  }
+  // The tint carries selection; the label uses the body ink, not the chrome's accent ink.
+  expect(body).toMatch(/--nj-face:\s*color-mix\(in srgb,\s*var\(--hud\)\s*22%,\s*var\(--bg-1\)\)/);
+  expect(body).toMatch(/color:\s*var\(--text-1\)/);
+});
+
+test("a chip's hover brightens the whole plate and focus repaints neither ink nor face", () => {
+  const hover = CHIP_CSS.match(/button\.nj-chip:hover\s*\{([^}]*)\}/);
+  expect(hover, "the chip:hover rule is declared").not.toBeNull();
+  expect((hover as RegExpMatchArray)[1]).toMatch(/filter:\s*brightness\(([\d.]+)\)/);
+  // Focus must keep the same pair: a focus rule may add an outline, never swap the label ink.
+  const focus = CHIP_CSS.match(/\.nj-chip[^{]*:focus-visible[^{]*\{([^}]*)\}/);
+  expect(focus?.[1] ?? "", "chip focus does not repaint the label or tint").not.toMatch(
+    /(^|[;\s])(color|--nj-face)\s*:/,
+  );
+});
+
+/** `filter: brightness()` multiplies each sRGB channel and clamps at 255. */
+function brighten(hex: string, factor: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) =>
+    Math.min(255, Math.round(v * factor)),
+  );
+  return `#${ch.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+for (const [name, selector] of Object.entries(THEMES)) {
+  test(`${name}: the pressed chip's label holds AA on its tint for all 16 presets, hover included`, () => {
+    const mode = name === "light" ? "light" : "dark";
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => rawToken(themed.includes(`--${n}:`) ? themed : root, n);
+    const lookup = (n: string) => {
+      const v = pick(n);
+      return v.startsWith("#") ? v : resolveMix(v, lookup);
+    };
+    const bg = lookup("bg-1");
+    const body = chipPressedRule();
+    const inkToken = body.match(/color:\s*var\(--([a-z0-9-]+)\)/)?.[1];
+    expect(inkToken, "the pressed chip declares its label ink as a token").toBeTruthy();
+    const ink = lookup(inkToken!);
+    const pct = Number(body.match(/var\(--hud\)\s*(\d+)%/)?.[1] ?? "");
+    expect(pct, "the pressed tint's --hud share is declared").toBeGreaterThan(0);
+    const hoverFactor = Number(
+      CHIP_CSS.match(/button\.nj-chip:hover\s*\{[^}]*brightness\(([\d.]+)\)/)?.[1] ?? "",
+    );
+    expect(hoverFactor, "the chip hover brightness factor is declared").toBeGreaterThan(1);
+
+    for (const preset of ACCENT_PRESETS) {
+      // --hud is the accent line for the mode (applyAccent writes it inline for a custom
+      // accent), so the rendered tint follows hudLineFor, not the raw preset hex.
+      const hud = hudLineFor(preset.hex, mode);
+      const face = mix(hud, bg, pct / 100);
+      expect(
+        ratio(ink, face),
+        `${name} ${preset.label}: ink on tint(${hud})`,
+      ).toBeGreaterThanOrEqual(4.5);
+      // Hover is `filter: brightness()` on the button: it lifts BOTH the face and its label, so
+      // the pair must be re-measured, not assumed from the resting values.
+      expect(
+        ratio(brighten(ink, hoverFactor), brighten(face, hoverFactor)),
+        `${name} ${preset.label}: ink on tint(${hud}) under hover`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+}
+
 for (const [name, selector] of Object.entries(THEMES)) {
   test(`${name}: --on-danger on a filled --status-down meets AA (a destructive confirm)`, () => {
     const b = block(selector);

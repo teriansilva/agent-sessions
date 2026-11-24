@@ -89,12 +89,6 @@
   flex-wrap: wrap;
   gap: var(--sp-2);
 }
-/* The pressed chip keeps the chrome tint as its selection; its ink is --text-1, because the
- * primitive's --hud-text on that tint measures 4.2:1 in the light theme (under AA). Library-local
- * until the primitive is fixed (#2255); remove this rule with that fix. */
-.chips :global(.nj-chip[aria-pressed="true"]) {
-  color: var(--text-1);
-}
 .count {
   margin-left: auto;
   font: 400 var(--fs-label) / 1 var(--font-mono);

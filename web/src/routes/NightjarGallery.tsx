@@ -153,6 +153,7 @@ export default function NightjarGallery() {
                 </Chip>
                 <Chip>Static</Chip>
               </div>
+              <p className={g.prose}>Selected: the chrome tint carries the pick; the label reads body ink.</p>
               <Callsign title="Segmented" />
               <Seg
                 label="Scope"
