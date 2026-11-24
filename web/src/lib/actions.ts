@@ -91,18 +91,13 @@ export function usedByWords(n: number | null): string {
 }
 
 /** What the wizard offers for a trigger: the actions whose manifest says that trigger starts them,
- *  in the gallery's order. A review loop's own legacy webhook starts only its review loop. */
+ *  in the gallery's order. */
 export function offeredActions(
   actions: ActionEntry[],
   trigger: string,
-  legacy: boolean,
   known: readonly string[],
 ): ActionEntry[] {
-  return actions.filter(
-    (a) =>
-      known.includes(a.id) &&
-      (legacy ? a.id === "forge_review_loop" : a.triggers.includes(trigger)),
-  );
+  return actions.filter((a) => known.includes(a.id) && a.triggers.includes(trigger));
 }
 
 /** What the action gallery's state holds the wizard's What step for, or `null` when it is ready.

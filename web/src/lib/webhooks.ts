@@ -43,7 +43,7 @@ export function usedByWords(n: number): string {
   return `used by ${n} ${n === 1 ? "automation" : "automations"}`;
 }
 
-/** The review loop a legacy webhook belongs to, by name (its id when the name is not known). */
+/** The retired review loop a legacy webhook belongs to, by name (its id when the name is not known). */
 export function legacyOwner(
   w: Pick<Webhook, "legacy_automation" | "used_by">,
 ): string {
@@ -89,7 +89,7 @@ export function deleteBlock(
   w: Pick<Webhook, "legacy_automation" | "used_by">,
 ): string {
   if (w.legacy_automation)
-    return `It is the review loop “${legacyOwner(w)}”’s own address: it goes when that automation moves to a webhook from the list.`;
+    return `It is the retired review loop “${legacyOwner(w)}”’s old address: it goes when you delete that automation.`;
   const n = w.used_by.length;
   if (n > 0)
     return `It is ${usedByWords(n)}. Pick another webhook in ${n === 1 ? "it" : "them"}, or delete ${n === 1 ? "it" : "them"}, first.`;

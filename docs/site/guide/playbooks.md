@@ -20,8 +20,7 @@ implementation for up to four rounds. Choose the reviewer account the review pos
 existing Hermes bot, and describe the CI/webhook trigger you already operate. The template installs neither the reviewer nor its
 trigger. A separate operator check before merge confirms that the requested reviewer approved
 the exact head and every required check is present. To have every issue and pull request reviewed
-automatically, with the verdict sent back to the session that opened it, set up a
-[review loop](/guide/review-loop).
+automatically, have a [webhook](/guide/webhooks) start an API session that reviews each one.
 
 **Research brief** describes agreeing on a question, drafting with citations and uncertainty,
 independent review with up to three revisions, and explicit operator acceptance. It has no

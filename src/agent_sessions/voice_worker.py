@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from fastapi import FastAPI, WebSocket
@@ -80,6 +81,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
 from . import speech_endpoints as se
+from .voice_cues import CUE_MAX_S, REFERENCE_MAX_S, CueBank, is_sentence
 from .voice_synth import Pace, SpeechOrder, Synths, paced, speech_pieces
 from .voice_text import call_language
 from .voice_turns import Turns, ended_unfinished, stop_instant, stt_language_fields
@@ -97,6 +99,9 @@ LOOKAHEAD = 1
 #: sends a sentence only once it is finished. Not on one that streams (`Pace`): there a reply is
 #: voiced in whole sentences, because cut pieces change voice (`voice_text.WHOLE_WORDS`).
 FIRST_WORDS = 7
+#: A cue take is rendered only once this long has passed since the last say arrived (#2339): a
+#: say's first sentence may still be on its way to the TTS server.
+IDLE_AFTER_SAY_S = 1.0
 
 
 class Bus:
@@ -235,6 +240,9 @@ class _Synth:
             await before.wait()  # the sentence before it asks first (`SpeechOrder`)
         if tts.plain:  # the server refused an optional field once this call: none are sent
             p = SayParams(p.voice, None, None, None)
+        # A whole sentence's audio is how the cue bank learns this voice's pitch (#2339).
+        ref = bytearray() if tts.cues is not None and is_sentence(text) else None
+        cap = int(REFERENCE_MAX_S * tts.sample_rate) * 2
         try:
             # aclosing: an interrupted say (cancelled mid-stream) closes its HTTP stream now, not
             # whenever the abandoned generator is collected. `p`: its say's parameters, taken
@@ -247,8 +255,12 @@ class _Synth:
             )) as chunks:  # fmt: skip
                 async for chunk in paced(chunks, tts.pace, tts.sample_rate, time.monotonic):
                     started.set()
+                    if ref is not None and len(ref) < cap:
+                        ref += chunk[: cap - len(ref)]
                     await self.queue.put(chunk)
             await self.queue.put(None)
+            if ref:
+                tts.note_sentence(p.voice, text, bytes(ref))
         except se.SpeechError as e:
             await self.queue.put(e)
         except asyncio.CancelledError:
@@ -283,9 +295,52 @@ class EndpointTTS(TTSService):
         #: Set once the server refused a say carrying speed/language/style (#1635 review): from
         #: then on this call sends none of them, rather than failing every sentence.
         self.plain = False
+        #: The call's thinking cues (#2339), set by `run_call`; cued audio waiting to be played,
+        #: in order: ``(text, pcm)``, taken by `run_tts` for the say piece with that text.
+        self.cues: CueBank | None = None
+        self.cue_audio: deque[tuple[str, bytes]] = deque()
+        self._noting: set[asyncio.Task] = set()
+
+    def note_sentence(self, voice: str, text: str, pcm: bytes) -> None:
+        if self.cues is None:
+            return
+        t = asyncio.create_task(self.cues.note_sentence(voice, text, pcm))
+        self._noting.add(t)
+        t.add_done_callback(self._noted)
+
+    def _noted(self, done: asyncio.Task) -> None:
+        self._noting.discard(done)
+        if not done.cancelled():
+            done.exception()  # retrieved: a failed measurement is only a missing reference
+
+    async def render_cue(self, text: str, voice: str, language: str | None) -> bytes:
+        """One take of a cue line, spoken as a say of this call would be (its speed and style),
+        whole; bounded, since a runaway render is no cue."""
+        p = (
+            SayParams(voice, None, None, None)
+            if self.plain
+            else SayParams(voice, language, self.speed, self.style)
+        )
+        cap = int((CUE_MAX_S + 0.5) * self.sample_rate) * 2
+        pcm = bytearray()
+        async with contextlib.aclosing(se.synthesize(
+            self._ep, text, voice=p.voice, out_rate=self.sample_rate, speed=p.speed,
+            language=p.language, extra={"style": p.style} if p.style else None,
+            plain_fallback=self.go_plain,
+        )) as chunks:  # fmt: skip
+            async for chunk in chunks:
+                pcm += chunk
+                if len(pcm) > cap:
+                    break
+        return bytes(pcm)
 
     def go_plain(self) -> None:
         self.plain = True
+
+    @property
+    def default_voice(self) -> str:
+        """The contact's voice: what a say without a voice of its own is spoken in."""
+        return self._voice
 
     def can_generate_metrics(self) -> bool:
         return False
@@ -300,10 +355,22 @@ class EndpointTTS(TTSService):
     def drop_prefetch(self) -> None:
         """Barge-in: the sentence playing and the look-ahead stop synthesizing now."""
         self._synths.drop()
+        self.cue_audio.clear()
+
+    def busy(self) -> bool:
+        """A sentence is being synthesized or waits synthesized ahead."""
+        return self._synths.active is not None or bool(self._synths.ahead)
 
     async def run_tts(self, text: str, context_id: str):
-        synth = self._synths.begin(text, self.params())
         step = self.sample_rate // 5 * 2  # 200 ms per frame
+        if self.cue_audio and self.cue_audio[0][0] == text:
+            # A thinking cue (#2339): its take was rendered and checked ahead, so no request.
+            _, pcm = self.cue_audio.popleft()
+            for i in range(0, len(pcm), step):
+                piece = pcm[i : i + step]
+                yield TTSAudioRawFrame(piece, self.sample_rate, 1, context_id=context_id)
+            return
+        synth = self._synths.begin(text, self.params())
         try:
             async with contextlib.aclosing(self._frames(synth, step, context_id)) as frames:
                 async for frame in frames:
@@ -351,6 +418,16 @@ class Bridge(FrameProcessor):
         self._turn = 0
         #: When the voice detector last ended a segment (this process's monotonic clock).
         self._vad_stopped_at: float | None = None
+        #: What the cue bank's idle test reads (#2339): the Commander or HQ speaking, and when a
+        #: say last arrived.
+        self.user_speaking = False
+        self.bot_speaking = False
+        self.said_at = 0.0
+
+    def idle(self) -> bool:
+        """Nothing to say or hear right now: the only time a cue take is rendered (#2339)."""
+        return (not self.user_speaking and not self.bot_speaking and not self._tts.busy()
+                and time.monotonic() - self.said_at >= IDLE_AFTER_SAY_S)  # fmt: skip
 
     async def _flush(self, target: int, turn: int) -> None:
         text = self._bus.turns.flush(target, turn)
@@ -427,9 +504,13 @@ class Bridge(FrameProcessor):
             await self._transcribed(frame.text, lang)
             return  # transcripts go to the app, not to TTS
         if isinstance(frame, UserStartedSpeakingFrame):
+            self.user_speaking = True
+            if self._tts.cues is not None:
+                self._tts.cues.interrupt()
             self._turn += 1
             await self._bus.send({"t": "user_started", "turn": self._turn})
         elif isinstance(frame, UserStoppedSpeakingFrame):
+            self.user_speaking = False
             # Its turn and its own instant (#1845): the app times HQ's commit pause from HERE, not
             # from the transcript, which can trail it by the grace.
             # `at`: when the voice detector ended the turn's last segment, which is earlier than
@@ -448,8 +529,10 @@ class Bridge(FrameProcessor):
             self._tts.drop_prefetch()
             await self._bus.send({"t": "interrupt"})
         elif isinstance(frame, BotStartedSpeakingFrame):
+            self.bot_speaking = True
             await self._bus.send({"t": "bot_started"})
         elif isinstance(frame, BotStoppedSpeakingFrame):
+            self.bot_speaking = False
             await self._bus.send({"t": "bot_stopped"})
         elif isinstance(frame, InputTransportMessageFrame):
             await self._on_app(frame.message)
@@ -458,11 +541,34 @@ class Bridge(FrameProcessor):
 
     async def _on_app(self, msg: dict) -> None:
         t = msg.get("t")
+        if t == "cues":
+            # The thinking-cue lines the app may ask for in a voice (#2339): FIXED app lines.
+            if self._tts.cues is not None:
+                v = msg.get("voice")
+                voice = v if isinstance(v, str) and 0 < len(v) <= 120 else self._tts.default_voice
+                self._tts.cues.want(voice, msg.get("texts"), msg.get("language"))
+            return
         if t == "say":
+            self.said_at = time.monotonic()
+            if self._tts.cues is not None:
+                self._tts.cues.interrupt()  # real speech first: a cue take in flight stops
             lang = msg.get("language")
             self._tts.language = lang if isinstance(lang, str) and len(lang) == 2 else None
             v = msg.get("voice")
             self._tts.say_voice = v if isinstance(v, str) and 0 < len(v) <= 120 else None
+            if msg.get("cue"):
+                # Played from its checked take, or not at all; `said` either way, so the app
+                # never waits on a cue that has no audio.
+                text = str(msg.get("text") or "")
+                bank = self._tts.cues
+                pcm = bank.take(self._tts.params().voice, text) if bank is not None else None
+                if pcm:
+                    self._tts.cue_audio.append((text, pcm))
+                    await self.push_frame(TTSSpeakFrame(text))
+                await self.push_frame(
+                    OutputTransportMessageFrame(message={"t": "said", "id": msg.get("id")})
+                )
+                return
             chunks = speech_pieces(str(msg.get("text") or ""), self._tts.pace, FIRST_WORDS)
             self._tts.prefetch(chunks)
             for c in chunks:
@@ -475,6 +581,8 @@ class Bridge(FrameProcessor):
             )
         elif t == "mute":
             self.muted = bool(msg.get("on"))
+            if self.muted and self._tts.cues is not None:
+                self._tts.cues.interrupt()
         elif t == "stop":
             await self.push_frame(EndFrame())
 
@@ -551,6 +659,8 @@ async def run_call(websocket) -> None:
     features_task.add_done_callback(lambda t: t.cancelled() or t.exception())
     tts.language = bus.language_hint if cfg.get("tts_language_ok") else None
     bridge = Bridge(bus, tts)
+    tts.cues = CueBank(tts.render_cue, bus.send, bridge.idle, out_rate)
+    tts.cues.start()
     pipeline = Pipeline([transport.input(), vad, stt, turns, bridge, tts, transport.output()])
     task = PipelineWorker(
         pipeline,
@@ -570,7 +680,10 @@ async def run_call(websocket) -> None:
 
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(task)
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        await tts.cues.stop()
 
 
 def main(argv: list[str] | None = None) -> int:

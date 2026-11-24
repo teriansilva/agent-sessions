@@ -19,6 +19,7 @@ import type {
   Session,
   SessionClusterFacet,
   SessionMissionFacet,
+  SessionsPage,
   SessionsQuery,
 } from "../types/api";
 
@@ -106,6 +107,10 @@ export function useSessionsList() {
   const [missionFilterUnavailable, setMissionFilterUnavailable] = useState(false);
   /** The same for the cluster filter (#1997). */
   const [clusterFilterUnavailable, setClusterFilterUnavailable] = useState(false);
+  /** Subagents needing the operator whose main session the active filter dropped (#2325). */
+  const [attentionOutside, setAttentionOutside] = useState<
+    SessionsPage["attention_outside"] | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
@@ -212,6 +217,7 @@ export function useSessionsList() {
         setFacets(page.facets);
         setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
         setClusterFilterUnavailable(Boolean(page.cluster_filter_unavailable));
+        if (offset === 0) setAttentionOutside(page.attention_outside ?? null);
       } catch (e) {
         if (gen !== reqId.current) return;
         // Background failure → keep existing rows, no flicker. `keepOnError` is a VISIBLE read
@@ -540,6 +546,7 @@ export function useSessionsList() {
     counts,
     missionFilterUnavailable,
     clusterFilterUnavailable,
+    attentionOutside,
     facets,
     filters,
     loading,

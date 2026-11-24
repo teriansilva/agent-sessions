@@ -19,7 +19,6 @@ import {
   eventsWords,
   formFromAutomation,
   formProblems,
-  legacyTrigger,
   limitsWords,
   mappableFields,
   stepProblems,
@@ -59,7 +58,7 @@ const SHAPE = [
 /** A webhook-started session with a template, everything else filled in. */
 function hookForm(over: Partial<EditorForm> = {}): EditorForm {
   return {
-    ...withTrigger(blankForm("UTC"), "webhook", 3),
+    ...withTrigger(blankForm("UTC"), "webhook"),
     name: "Review every PR",
     webhookId: HOOK,
     engine: API.id,
@@ -149,15 +148,6 @@ describe("which events: conditions (#2221 P2)", () => {
       when: Array.from({ length: 9 }, () => ({ path: "action", op: "exists" as const, values: [{ text: "", type: "text" as const }] })),
     });
     expect(stepProblems(many).events).toEqual(["At most 8 conditions"]);
-  });
-
-  test("a review loop takes no conditions: none are sent, and none hold its step", () => {
-    const f = {
-      ...hookForm({ when: [{ path: "", op: "is", values: [{ text: "", type: "text" }] }] }),
-      actionKind: "forge_review_loop" as const,
-    };
-    expect(stepProblems(f).events).toEqual([]);
-    expect(bodyFromForm(f).trigger).toEqual({ kind: "webhook", webhook_id: HOOK });
   });
 
   test("a schedule or Run now skips step 2, and never sends conditions", () => {
@@ -407,50 +397,6 @@ describe("what the last delivery's shape says", () => {
 });
 
 describe("the pairing and the steps", () => {
-  test("a review loop's own webhook restricts the action only while it IS the trigger", () => {
-    const legacy = formFromAutomation(
-      {
-        id: "rv1",
-        name: "Loop",
-        trigger: { kind: "webhook", scheme: "forgejo" },
-        action: {
-          kind: "forge_review_loop",
-          project_id: "p1",
-          repo: "example-org/shop",
-          reviewer: { specialist_id: "s", version: 3 },
-          reviewer_login: "bot",
-          legs: { issues: true, pulls: true },
-          max_rounds: { issue: 5, pr: 4 },
-          return_to_origin: true,
-        },
-        policy: null,
-      } as unknown as Automation,
-      "UTC",
-    );
-    expect(legacyTrigger(legacy)).toBe(true);
-    for (const kind of ["manual", "schedule"] as const) {
-      const moved = withTrigger(legacy, kind, 3);
-      // The identity is kept, for a switch back; it restricts nothing now.
-      expect(moved.legacyHook).toBe(true);
-      expect(legacyTrigger(moved)).toBe(false);
-      expect(moved.actionKind).toBe("start_mission");
-      const session = withAction(moved, "start_session", 3);
-      expect(session.triggerKind).toBe(kind);
-      expect(session.actionKind).toBe("start_session");
-      expect(stepProblems({ ...session, engine: API.id, folder: "/repo", text: "go" }).what).toEqual([]);
-      expect(stepProblems({ ...moved, projectId: "p1", text: "go" }).what).toEqual([]);
-      // Back to the webhook: its own again, with its loop.
-      const back = withTrigger(session, "webhook", 3);
-      expect(legacyTrigger(back)).toBe(true);
-      expect(back.actionKind).toBe("forge_review_loop");
-      expect(bodyFromForm(back).trigger).toEqual({ kind: "webhook", scheme: "forgejo" });
-    }
-    // On its own webhook, anything but the loop is still refused.
-    expect(stepProblems({ ...legacy, actionKind: "start_session" }).what).toContain(
-      "A review loop’s own webhook starts only that review loop",
-    );
-  });
-
   test("a webhook starts or messages an API session only", () => {
     setRoster(ENGINES);
     expect(stepProblems(hookForm({ engine: CONSOLE.id })).what).toContain(
@@ -492,16 +438,16 @@ describe("Tell HQ (#2221)", () => {
   /** A webhook automation that tells HQ, with a template whose `pr_number` comes from the delivery. */
   function tellForm(over: Partial<EditorForm> = {}): EditorForm {
     return {
-      ...withAction(hookForm({ engine: "", folder: "" }), "tell_hq", 3),
+      ...withAction(hookForm({ engine: "", folder: "" }), "tell_hq"),
       fromDelivery: { pr_number: { path: "number", type: "number", choices: [] } },
       ...over,
     };
   }
 
   test("a webhook may start it, and so may a schedule, a once and Run now", () => {
-    expect(withAction(hookForm(), "tell_hq", 3).triggerKind).toBe("webhook");
+    expect(withAction(hookForm(), "tell_hq").triggerKind).toBe("webhook");
     for (const kind of ["schedule", "once", "manual"] as const) {
-      const f = withAction(withTrigger(blankForm("UTC"), kind, 3), "tell_hq", 3);
+      const f = withAction(withTrigger(blankForm("UTC"), kind), "tell_hq");
       expect(f.triggerKind).toBe(kind);
       expect(f.actionKind).toBe("tell_hq");
     }

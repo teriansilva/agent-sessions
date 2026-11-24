@@ -7,7 +7,8 @@
 
 import type { WebhookCondition } from "./automations";
 
-/** An automation that picked this webhook (or, for a legacy one, the review loop that owns it). */
+/** An automation that picked this webhook (or, for a legacy one, the retired review loop that owns
+ *  it). */
 export interface WebhookUser {
   id: string;
   name: string;
@@ -18,11 +19,13 @@ export interface Webhook {
   name: string;
   /** Fences a rename (`PATCH` with a stale revision is a 409). */
   revision: number;
-  /** Root-relative: `/hooks/w/<id>`, or `/hooks/a/<automation>` for a legacy one. */
+  /** Root-relative: `/hooks/w/<id>`, or `/hooks/a/<automation>` for a legacy one (#2202; that
+   *  address answers nothing since #2222). */
   path: string;
   /** On a Home Free box: the webhook's public address on the BattleLab relay, or `null`. */
   relay_url?: string | null;
-  /** A #2202 review loop's own webhook: its automation's id. `null` for a webhook from the list. */
+  /** A retired #2202 review loop's own webhook: its automation's id. `null` for a webhook from the
+   *  list. */
   legacy_automation: string | null;
   /** Whether an automation may pick it. A legacy webhook never is. */
   pickable: boolean;

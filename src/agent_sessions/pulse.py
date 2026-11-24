@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 
-from . import engines, metadata, prefs, projects
+from . import engines, lineage, metadata, prefs, projects
 
 # 1–3 days, default 1 (#1086) — the same numbers as `prefs.PULSE_WINDOW_*`, which own the rule.
 WINDOW_DAYS_DEFAULT = 1
@@ -71,6 +71,7 @@ def build_cards(
     strict: bool = False,
     scanned: list | None = None,
     checked: tuple | None = None,
+    main_only: bool = False,
 ) -> list[dict]:
     """Curate the in-window, non-archived sessions into ranked cards. Pure FS + metadata, no
     network — safe to run under ``asyncio.to_thread``.
@@ -92,6 +93,11 @@ def build_cards(
     :func:`checked_scan`, so two calls in one decision share one walk). Every other caller keeps
     the fail-soft read. ``checked``: a `metadata.load_checked` snapshot the caller already holds,
     so the cards are curated through the SAME metadata and aliases the caller joins with (#1882).
+
+    ``main_only`` (#2325) drops children — sessions whose recorded parent is another non-archived
+    session — for the callers that work at main-session scale: HQ's find catalog and the Pulse
+    overview. The needs-you list and its notifications never pass it: a child that needs the
+    operator must still reach them (`docs/invariants/session-lineage.md`, attention guarantee).
     """
     now = time.time() if now is None else now
     working = working_keys or set()
@@ -114,11 +120,14 @@ def build_cards(
     use_ai_title = prefs.renames_sessions()
 
     cards: list[dict] = []
+    present: set[str] = set()
     for s in sessions:
         key = engines.session_key(s)
         phys = engines.physical_key(key, aliases)
         m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
         archived = m.archived if m.archived is not None else s.archived
+        if not archived:
+            present.add(key)
         if archived or m.review_excluded:
             continue
         if cutoff is not None and s.last_mtime < cutoff:
@@ -152,6 +161,9 @@ def build_cards(
                 "_review_failed_at": m.review_failed_at,
             }
         )
+    if main_only:
+        children = lineage.child_keys_of(present)
+        cards = [c for c in cards if c["id"] not in children]
     cards.sort(key=lambda c: (_STATE_ORDER[c["state"]], -c["last_activity"]))
     return cards
 
@@ -175,5 +187,5 @@ def overview(
     """
     now = time.time() if now is None else now
     window_days = coerce_window_days(window_days)
-    cards = build_cards(window_days=window_days, now=now, working_keys=working_keys)
+    cards = build_cards(window_days=window_days, now=now, working_keys=working_keys, main_only=True)
     return {"generated_at": now, "window_days": window_days, "cards": public_cards(cards)}

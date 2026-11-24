@@ -18,6 +18,9 @@ Delivery outcomes (the issue's failure table):
   its acceptance completes the handoff (`reconcile_successor`);
 * ``uncertain`` (a lost answer, a 5xx, a delivery the worker could not confirm) → settled and never
   resent;
+* ``withheld`` (a guarded brief, ``guard_secrets``, that now carries a known secret) → dropped
+  unsent before the submit, on every attempt, a retry included: fail closed, and the session is
+  not left behind a fence for a brief nothing may send;
 * ``sent`` → provenance published and, when asked, the source archived; ``queued`` → provenance
   only (it may still end ``not_sent``, so the source is not archived behind it).
 
@@ -35,7 +38,7 @@ import asyncio
 import contextlib
 import logging
 
-from . import handoff, structured_runtime
+from . import handoff, structured_runtime, template_secrets
 
 log = logging.getLogger("agent_sessions.handoff_api")
 
@@ -62,6 +65,15 @@ async def _recorded(key: str, turn_id: str) -> bool | None:
     return turn_id in _turn_ids(snap)
 
 
+def _holds_no_secret(text: str) -> bool:
+    """A guarded brief is checked against the secrets known NOW, at every delivery attempt (a
+    console seed is, when it is typed: ``webterm._deliver_seed``). Fails closed."""
+    try:
+        return template_secrets.redact_text(text) == text
+    except template_secrets.RedactionUnavailable:
+        return False
+
+
 async def deliver(key: str) -> str | None:
     """Send the bound brief as ``key``'s first turn, once. Returns the binding's delivery state
     afterwards (``None`` = still bound, retryable)."""
@@ -69,7 +81,11 @@ async def deliver(key: str) -> str | None:
     if claimed is None:
         binding = handoff.api_binding(key)
         return binding["delivery"] if binding else None
-    text, turn_id = claimed
+    text, turn_id, guarded = claimed
+    if guarded and not await asyncio.to_thread(_holds_no_secret, text):
+        handoff.api_settle(key, "withheld")
+        log.warning("handoff %s: brief withheld: it carries a known secret", key)
+        return "withheld"
     try:
         sent = await structured_runtime.submit_turn(key, operation_id=turn_id, text=text)
     except structured_runtime.StructuredError as exc:
@@ -135,11 +151,12 @@ async def commit(handle: str, seed: str | None, *, bypass: bool, archive_source:
     The create is idempotent by its operation id (the session id), so a retry after a failed or
     lost create reuses it. The answer's ``delivery``: ``sent`` / ``queued`` / ``not_sent`` /
     ``uncertain``, ``pending_start`` (a skip target, waiting for the operator's Start), or
-    ``None`` with ``detail`` (not admitted yet: commit again)."""
+    ``None`` with ``detail`` (not admitted yet: commit again), ``withheld`` with ``detail`` (a
+    guarded brief that now carries a known secret: dropped unsent)."""
     view = handoff.commit_api(handle, seed, bypass=bypass, archive_source=archive_source)
     key = view["id"]
     if view["delivery"] in handoff.API_SETTLED:
-        return view  # a replay of a settled handoff: nothing more to do
+        return _explained(view)  # a replay of a settled handoff: nothing more to do
     try:
         snap = await structured_runtime.create_session(
             view["engine"],
@@ -157,10 +174,14 @@ async def commit(handle: str, seed: str | None, *, bypass: bool, archive_source:
             handoff.api_settle(key, "released")
             return {**view, "delivery": "released"}
         return {**view, "delivery": "pending_start"}
-    delivery = await deliver(key)
-    out = {**view, "delivery": delivery}
-    if delivery is None:
+    return _explained({**view, "delivery": await deliver(key)})
+
+
+def _explained(out: dict) -> dict:
+    if out["delivery"] is None:
         out["detail"] = "the new session did not take the brief yet; hand off again to retry"
+    elif out["delivery"] == "withheld":
+        out["detail"] = "the brief now holds a known secret, so it was not sent"
     return out
 
 

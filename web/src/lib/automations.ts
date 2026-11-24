@@ -31,7 +31,6 @@ import type {
   DeliveryMapping,
   MappedType,
   ResultClass,
-  ReviewLoopAction,
   RunSummary,
   StripDay,
   Trigger,
@@ -136,9 +135,9 @@ export function outcomeWord(
     case "partial":
       // Something may be sitting unsubmitted in front of the agent: an active failure to look at.
       return { word: "Typed, not sent", tone: "down" };
-    // The review loop (#2202). `ignored` is a delivery deliberately not acted on (grey, like a
-    // skip); `capped` is the item's last review used up, which the operator is told about (amber);
-    // `undelivered` is a verdict that never reached its session (counted as failed on the strip).
+    // Written only by the retired review loop (#2202, removed in #2222): its old runs still read.
+    // `ignored` is a delivery deliberately not acted on (grey, like a skip); `capped` is an item's
+    // last review used up (amber); `undelivered` a verdict that never reached its session (red).
     case "ignored":
       return { word: "Ignored", tone: "idle" };
     case "capped":
@@ -239,12 +238,6 @@ export function onceWords(at: string): string {
   return `${wd} ${d} ${mon} ${y} ${hm}`;
 }
 
-/** A #2202 review loop's own webhook (`scheme`), not one picked from Library → Webhooks (#2221).
- *  It lives on at its old address; the UI never converts it, and the server refuses a new one. */
-export function isLegacyHook(t: Trigger | null | undefined): boolean {
-  return t?.kind === "webhook" && !("webhook_id" in t);
-}
-
 export function triggerWords(t: Trigger | null): {
   label: string;
   detail: string;
@@ -255,9 +248,7 @@ export function triggerWords(t: Trigger | null): {
   if (t.kind === "once")
     return { label: "Once", detail: `${onceWords(t.at)} · ${t.tz}` };
   if (t.kind === "webhook")
-    return isLegacyHook(t)
-      ? { label: "Forgejo webhook", detail: "when Forgejo delivers a signed event" }
-      : { label: "Webhook", detail: "when its webhook delivers a signed event" };
+    return { label: "Webhook", detail: "when its webhook delivers a signed event" };
   return { label: "Schedule", detail: `${cadenceWords(t.cadence)} · ${t.tz}` };
 }
 
@@ -292,7 +283,6 @@ export function actionLabel(
   if (kind === "start_mission") return "Start mission";
   if (kind === "start_session") return "Start session";
   if (kind === "send_to_session") return "Send to session";
-  if (kind === "forge_review_loop") return "Review loop";
   if (kind === "tell_hq") return "Tell HQ";
   return "Unreadable";
 }
@@ -318,8 +308,6 @@ export function targetWords(
   if (!action) return "";
   if (action.kind === "start_mission") return projectName(action.project_id);
   if (action.kind === "start_session") return baseName(action.folder);
-  if (action.kind === "forge_review_loop")
-    return projectName(action.project_id);
   if (action.kind === "tell_hq") return "your notifications";
   if (action.kind === "plugin") return pluginTargetWords(action);
   return action.session_key;
@@ -462,9 +450,7 @@ export function nextRunWords(
       if (a.trigger?.kind === "webhook")
         return {
           main: "On delivery",
-          sub: isLegacyHook(a.trigger)
-            ? "when Forgejo sends an event"
-            : "when its webhook delivers an event",
+          sub: "when its webhook delivers an event",
         };
       return a.trigger?.kind === "manual"
         ? { main: "On Run now", sub: "no schedule" }
@@ -500,7 +486,7 @@ function capital(s: string): string {
 /** Whether Run now can be offered, and why not. The server refuses the same cases (409); this only
  *  keeps the button honest. */
 export function runNowBlock(a: Automation, loopEnabled: boolean): string {
-  // A review loop has no Run now (#2202): only a delivery names the item to review.
+  // A webhook automation has no Run now: only a delivery fills its values.
   if (a.trigger?.kind === "webhook")
     return "It runs only when its webhook delivers an event";
   if (!loopEnabled) return "Automations are switched off on this server";
@@ -541,74 +527,10 @@ export function stepWords(step: string): string {
 
 export function runTriggerWords(r: RunSummary | AutomationRun): string {
   if (r.trigger === "manual") return "Run now (you)";
-  if (r.trigger === "webhook") {
-    const facts = "inputs" in r ? loopFacts(r) : null;
-    if (facts?.item)
-      return facts.revision
-        ? `${facts.item} at ${shortRev(facts.revision)}`
-        : facts.item;
-    return "Forgejo delivery";
-  }
+  if (r.trigger === "webhook") return "webhook delivery";
   if (r.catch_up)
     return `catch-up · covered ${r.covered} missed ${r.covered === 1 ? "slot" : "slots"}`;
   return r.trigger === "once" ? "once" : "scheduled";
-}
-
-// ---- the review loop's runs (#2202) ---------------------------------------------------------------
-
-/** What a review-loop run shows about itself, read from the server's recorded `inputs`. `event` and
- *  `delivery` come from UNSIGNED headers: shown, always marked "recorded, untrusted". */
-export interface LoopFacts {
-  /** `review` starts the reviewer; `return` sends its verdict back. */
-  leg: "review" | "return";
-  /** "review 2 / 4", "4 / 4 reviews", "review 2", or null when the run carries no round. */
-  round: string | null;
-  item: string;
-  revision: string;
-  verdict: string;
-  event: string;
-  delivery: string;
-}
-
-function str(v: unknown): string {
-  return typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
-}
-function int(v: unknown): number | null {
-  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
-}
-
-/** A commit sha as people read it (7 characters); an issue's 16-hex digest likewise. */
-export function shortRev(rev: string): string {
-  return /^[0-9a-f]{12,}$/i.test(rev) ? rev.slice(0, 7) : rev;
-}
-
-/** Only for a webhook run; `null` for any other trigger. A verdict that never reached the
- *  acceptance (a malformed marker) carries no `leg` but is still the return leg: its event is a
- *  review or a comment, never an item change. */
-export function loopFacts(r: AutomationRun): LoopFacts | null {
-  if (r.trigger !== "webhook") return null;
-  const i = r.inputs ?? {};
-  const leg =
-    i.leg === "return" || i.kind === "pr_review" || i.kind === "issue_comment"
-      ? "return"
-      : "review";
-  const round = int(i.round);
-  const cap = int(i.cap);
-  const reviews = int(i.reviews);
-  let roundWords: string | null = null;
-  if (r.outcome === "capped" && cap)
-    roundWords = `${reviews ?? cap} / ${cap} reviews`;
-  else if (round && cap) roundWords = `review ${round} / ${cap}`;
-  else if (round) roundWords = `review ${round}`;
-  return {
-    leg,
-    round: roundWords,
-    item: str(i.item),
-    revision: str(i.revision),
-    verdict: str(i.verdict),
-    event: str(i.event),
-    delivery: str(i.delivery),
-  };
 }
 
 // ---- the editor's form ---------------------------------------------------------------------------
@@ -642,21 +564,8 @@ export interface EditorForm {
   maxRunsPerDay: number;
   pauseAfterFailures: number;
   expiresAt: number | null;
-  // The review loop (#2202). `projectId` is shared with a mission.
-  repo: string;
-  reviewerId: string;
-  /** The specialist version pinned: its CURRENT version when it was chosen. */
-  reviewerVersion: number | null;
-  reviewerLogin: string;
-  reviewIssues: boolean;
-  reviewPulls: boolean;
-  roundsIssue: number;
-  roundsPr: number;
-  returnToOrigin: boolean;
   /** The webhook picked from Library → Webhooks (#2221), or "" while none is. */
   webhookId: string;
-  /** A stored #2202 review loop's own webhook: saved back as it was, never converted. */
-  legacyHook: boolean;
   /** Which deliveries it acts on (#2221 P2): all must hold; empty = every signed delivery. */
   when: ConditionDraft[];
   /** Template fields filled from the delivery, by field name (#2221 P2). */
@@ -760,10 +669,6 @@ export interface MappingDraft {
   choices: string[];
 }
 
-/** The server's round bounds (`review_loop.ROUNDS_*`). */
-export const ROUNDS_MIN = 1;
-export const ROUNDS_MAX = 10;
-
 export function blankForm(tz: string): EditorForm {
   return {
     name: "",
@@ -792,17 +697,7 @@ export function blankForm(tz: string): EditorForm {
     maxRunsPerDay: 48,
     pauseAfterFailures: 3,
     expiresAt: null,
-    repo: "",
-    reviewerId: "",
-    reviewerVersion: null,
-    reviewerLogin: "",
-    reviewIssues: true,
-    reviewPulls: true,
-    roundsIssue: 5,
-    roundsPr: 4,
-    returnToOrigin: true,
     webhookId: "",
-    legacyHook: false,
     when: [],
     fromDelivery: {},
     connector: "",
@@ -826,72 +721,38 @@ export function blankForm(tz: string): EditorForm {
 
 /** What a trigger may start (#2221 P2, mirroring `automations.validate_config`):
  *
- *  - a review loop is started only by a webhook, and takes no conditions (it reads its own events);
- *  - a webhook from the list starts a review loop, a session, a message to a session or a message
- *    to HQ (`tell_hq`) — never a mission (that is a later phase);
- *  - a #2202 review loop's own webhook (`legacyHook`) starts only that review loop;
+ *  - a webhook from the list starts a session, a message to a session, a message to HQ
+ *    (`tell_hq`) or a plugin that allows it — never a mission (that is a later phase);
  *  - conditions and values from the delivery go only with a webhook from the list.
  *
  *  Choosing a side that the other can't pair with moves the other to the nearest choice that can,
- *  so the form never holds a pairing the server refuses. A review loop's deliveries come in bursts
- *  (a push and an edit), so it defaults to running them side by side, as the server does. */
+ *  so the form never holds a pairing the server refuses. */
 export function withTrigger(
   f: EditorForm,
   kind: EditorForm["triggerKind"],
-  maxConcurrent: number,
 ): EditorForm {
   if (kind === f.triggerKind) return f;
   if (kind === "webhook") {
     const next: EditorForm = { ...f, triggerKind: kind };
-    if (f.legacyHook) return intoLoop(next, maxConcurrent);
     // A webhook never starts a mission: a session is the nearest it can start.
     if (f.actionKind === "start_mission") next.actionKind = "start_session";
     return next;
   }
-  const next: EditorForm = { ...f, triggerKind: kind, when: [], fromDelivery: {} };
-  if (f.actionKind === "forge_review_loop") return outOfLoop(next, "trigger");
-  return next;
+  return { ...f, triggerKind: kind, when: [], fromDelivery: {} };
 }
 
 export function withAction(
   f: EditorForm,
   kind: EditorForm["actionKind"],
-  maxConcurrent: number,
 ): EditorForm {
   if (kind === f.actionKind) return f;
-  if (kind === "forge_review_loop")
-    return intoLoop({ ...f, actionKind: kind }, maxConcurrent);
   let next: EditorForm = { ...f, actionKind: kind };
-  if (f.actionKind === "forge_review_loop") next = outOfLoop(next, "action");
-  // A mission, or anything but the loop on a review loop's own webhook, can't be webhook-started.
-  if (next.triggerKind === "webhook" && (kind === "start_mission" || legacyTrigger(next))) {
+  // A mission can't be webhook-started.
+  if (next.triggerKind === "webhook" && kind === "start_mission") {
     const blank = blankForm(f.tz);
     next = { ...next, triggerKind: blank.triggerKind, when: [], fromDelivery: {} };
   }
   return next;
-}
-
-function intoLoop(f: EditorForm, maxConcurrent: number): EditorForm {
-  return {
-    ...f,
-    triggerKind: "webhook",
-    actionKind: "forge_review_loop",
-    // A review loop picks its own events; it takes no conditions and no values.
-    when: [],
-    fromDelivery: {},
-    concurrency: "allow",
-    maxConcurrent: Math.max(2, maxConcurrent),
-  };
-}
-
-function outOfLoop(f: EditorForm, chose: "trigger" | "action"): EditorForm {
-  const blank = blankForm(f.tz);
-  return {
-    ...f,
-    actionKind: chose === "action" ? f.actionKind : blank.actionKind,
-    concurrency: blank.concurrency,
-    maxConcurrent: blank.maxConcurrent,
-  };
 }
 
 /** A stored automation as the editor's form. Fields the stored action does not carry keep the
@@ -906,10 +767,8 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.onceAt = t.at;
       f.tz = t.tz;
     } else if (t.kind === "webhook") {
-      if ("webhook_id" in t) {
-        f.webhookId = t.webhook_id;
-        f.when = (t.when ?? []).map(conditionDraft);
-      } else f.legacyHook = true; // #2202's own webhook: kept as it is, never converted here
+      f.webhookId = t.webhook_id;
+      f.when = (t.when ?? []).map(conditionDraft);
     } else if (t.kind === "schedule") {
       f.tz = t.tz;
       const c = t.cadence;
@@ -925,19 +784,7 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     }
   }
   const act = a.action;
-  if (act?.kind === "forge_review_loop") {
-    f.actionKind = act.kind;
-    f.projectId = act.project_id;
-    f.repo = act.repo;
-    f.reviewerId = act.reviewer.specialist_id;
-    f.reviewerVersion = act.reviewer.version;
-    f.reviewerLogin = act.reviewer_login;
-    f.reviewIssues = act.legs.issues;
-    f.reviewPulls = act.legs.pulls;
-    f.roundsIssue = act.max_rounds.issue;
-    f.roundsPr = act.max_rounds.pr;
-    f.returnToOrigin = act.return_to_origin;
-  } else if (act?.kind === "plugin") {
+  if (act?.kind === "plugin") {
     f.actionKind = act.plugin;
     const i = act.inputs;
     if (act.plugin === "send_message") {
@@ -1048,15 +895,9 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
   return f;
 }
 
-/** Whether the trigger IS a #2202 review loop's own webhook right now. `legacyHook` alone is the
- *  stored identity, kept while the operator tries another trigger so switching back restores it. */
-export function legacyTrigger(f: EditorForm): boolean {
-  return f.triggerKind === "webhook" && f.legacyHook;
-}
-
 /** Whether this form takes values and conditions from a delivery: a webhook from the list. */
 export function fromListHook(f: EditorForm): boolean {
-  return f.triggerKind === "webhook" && !f.legacyHook;
+  return f.triggerKind === "webhook";
 }
 
 function formMessage(f: EditorForm): AutomationMessage {
@@ -1075,10 +916,8 @@ function formMessage(f: EditorForm): AutomationMessage {
 export function formTrigger(f: EditorForm): Trigger {
   if (f.triggerKind === "manual") return { kind: "manual" };
   if (f.triggerKind === "webhook") {
-    if (f.legacyHook) return { kind: "webhook", scheme: "forgejo" };
-    // A review loop picks its own events; the key is omitted when there are none.
-    const when =
-      f.actionKind === "forge_review_loop" ? [] : f.when.map(conditionBody);
+    // The key is omitted when there are no conditions.
+    const when = f.when.map(conditionBody);
     return when.length
       ? { kind: "webhook", webhook_id: f.webhookId, when }
       : { kind: "webhook", webhook_id: f.webhookId };
@@ -1222,7 +1061,6 @@ function runLocalProblems(f: EditorForm): string[] {
 }
 
 export function formAction(f: EditorForm): AutomationAction {
-  if (f.actionKind === "forge_review_loop") return formReviewLoop(f);
   if (isPluginId(f.actionKind)) return formPlugin(f, f.actionKind);
   const message = formMessage(f);
   if (f.actionKind === "start_mission")
@@ -1246,24 +1084,6 @@ export function formAction(f: EditorForm): AutomationAction {
   if (f.actionKind === "tell_hq") return { kind: "tell_hq", message };
   return { kind: "send_to_session", session_key: f.sessionKey, message };
 }
-
-/** A review loop's action, exactly the fields the server's strict validator accepts. */
-function formReviewLoop(f: EditorForm): ReviewLoopAction {
-  return {
-    kind: "forge_review_loop",
-    project_id: f.projectId,
-    repo: f.repo.trim(),
-    reviewer: { specialist_id: f.reviewerId, version: f.reviewerVersion ?? 0 },
-    reviewer_login: f.reviewerLogin.trim(),
-    legs: { issues: f.reviewIssues, pulls: f.reviewPulls },
-    max_rounds: { issue: f.roundsIssue, pr: f.roundsPr },
-    return_to_origin: f.returnToOrigin,
-  };
-}
-
-/** The server's own alphabets for a repository and a login (`automations._REPO_RE`, `_LOGIN_RE`). */
-export const REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
-export const LOGIN_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /** The whole create/patch body. The policy is sent in full, so what the operator sees in the
  *  Limits section is what is stored. */
@@ -1316,7 +1136,7 @@ function whenProblems(f: EditorForm): string[] {
 }
 
 function eventsProblems(f: EditorForm): string[] {
-  if (!fromListHook(f) || f.actionKind === "forge_review_loop") return [];
+  if (!fromListHook(f)) return [];
   const out: string[] = [];
   if (f.when.length > CONDITIONS_MAX)
     out.push(`At most ${CONDITIONS_MAX} conditions`);
@@ -1359,10 +1179,6 @@ function whatProblems(f: EditorForm): string[] {
   const hook = f.triggerKind === "webhook";
   if (hook && f.actionKind === "start_mission")
     out.push("A webhook can’t start a mission; start or message a session, or tell HQ");
-  if (legacyTrigger(f) && f.actionKind !== "forge_review_loop")
-    out.push("A review loop’s own webhook starts only that review loop");
-  if (!hook && f.actionKind === "forge_review_loop")
-    out.push("A review loop starts from a webhook: pick one in step 1");
   if (f.actionKind === "start_mission" && !f.projectId)
     out.push("Choose a project");
   if (f.actionKind === "start_session" && !f.engine)
@@ -1415,23 +1231,6 @@ function whatProblems(f: EditorForm): string[] {
   }
   if (fromListHook(f) && !apiTarget(f))
     out.push("A webhook starts or messages an API session only; pick an API agent");
-  if (f.actionKind === "forge_review_loop") {
-    if (!f.projectId) out.push("Choose a project");
-    if (!REPO_RE.test(f.repo.trim()))
-      out.push("Name the repository as owner/name");
-    if (!f.reviewerId || !f.reviewerVersion)
-      out.push("Choose a reviewer specialist");
-    if (!LOGIN_RE.test(f.reviewerLogin.trim()))
-      out.push("Name the reviewer’s forge account");
-    if (!f.reviewIssues && !f.reviewPulls)
-      out.push("Review issues, pull requests or both");
-    for (const n of [f.roundsIssue, f.roundsPr])
-      if (!Number.isInteger(n) || n < ROUNDS_MIN || n > ROUNDS_MAX) {
-        out.push(`Reviews per item: ${ROUNDS_MIN} to ${ROUNDS_MAX}`);
-        break;
-      }
-    return out; // a review loop's briefs are BattleLab's own text: there is no message to write
-  }
   if (f.messageMode === "text" && !f.text.trim())
     out.push(
       f.actionKind === "start_mission"
@@ -1705,8 +1504,7 @@ export function deliveryChecks(
   };
   if (!fromListHook(f) || !shape || !shape.length) return out;
   const types = new Map(shape.map((x) => [x.path, String(x.type)]));
-  if (f.actionKind !== "forge_review_loop")
-    f.when.forEach((c, i) => {
+  f.when.forEach((c, i) => {
       if (!validPath(c.path)) return;
       const t = types.get(c.path);
       if (t === undefined) {
@@ -1724,7 +1522,7 @@ export function deliveryChecks(
       if (c.op === "contains" && t !== "text" && t !== "empty")
         out.events.problems.push(`${what}: ${c.path} is ${shapeWord(t)}; “contains” needs a text field.`);
     });
-  if (f.messageMode === "template" && f.actionKind !== "forge_review_loop")
+  if (f.messageMode === "template")
     for (const [field, m] of Object.entries(f.fromDelivery)) {
       if (!validPath(m.path) || m.path.includes("[]")) continue;
       const t = types.get(m.path);
@@ -1768,10 +1566,7 @@ export function eventsWords(
   f: EditorForm,
   presets: readonly WebhookPreset[],
 ): string {
-  if (!fromListHook(f) && f.triggerKind === "webhook")
-    return "the review loop’s own events";
   if (f.triggerKind !== "webhook") return "";
-  if (f.actionKind === "forge_review_loop") return "the review loop picks its own events";
   const p = chosenPreset(f, presets);
   if (p === "") return "every signed delivery";
   if (p) return presets.find((x) => x.id === p)?.label ?? p;
@@ -1983,7 +1778,7 @@ export function sessionPicker(sessions: readonly Session[], keep: readonly strin
   return sessions.filter((s) => isApiAgent(s.engine) || keep.includes(s.id));
 }
 
-// ---- the review loop's reviewer (#2202) ----------------------------------------------------------
+// ---- a specialist an automation may start ---------------------------------------------------------
 
 export interface ReviewerOption {
   id: string;
@@ -1994,7 +1789,7 @@ export interface ReviewerOption {
   blocked: string;
 }
 
-/** The specialists a review loop may start: only those on an API client (the roster's runtime —
+/** The specialists an automation may start: only those on an API client (the roster's runtime —
  *  nothing unattended drives a terminal), never an archived one. One the server reports it can't
  *  start unattended (`engines[].ok`) is offered disabled with its reason; the server checks again
  *  at save and at every launch. `engineLabel` is passed in so this stays a pure function. */
@@ -2026,16 +1821,3 @@ export function reviewerOptions(
       };
     });
 }
-
-/** The Forgejo events the loop reads: item changes (review leg) and the reviewer's verdicts
- *  (return leg). Anything else the forge sends is chatter and only updates "Last delivery".
- *  "Pull request synchronized" is its OWN checkbox on Forgejo (`pull_request_sync`, gated apart
- *  from "Pull request"): without it a push to an open PR never starts the next review, which is
- *  the loop's whole point (#2202, Hermes on #2214). Pinned by its tests. */
-export const FORGE_EVENTS = [
-  "Issues",
-  "Issue comment",
-  "Pull request",
-  "Pull request synchronized",
-  "Pull request reviewed",
-];

@@ -84,9 +84,16 @@ enter that server's key again or remove it.
 - **Trail off and HQ waits.** If you stop in the middle of a thought, HQ gives you about three
   seconds before it answers on Natural and Patient; a finished sentence is answered after the
   setting's pause. Quick answers at once either way.
+- **HQ answers like a person.** Right after you ask, it usually says a short "Hmm, let me see."
+  (German: "Hm, Moment mal.") while it works on the answer, so you know it heard you. It talks
+  the way people talk on the phone: "Okay, so…", contractions, now and then an "uh" or a quick
+  correction. Card texts and anything it reads back for you to confirm stay word for word. The
+  "Hmm" is recorded once in each voice early in the call, so the very first question of a call
+  (or of a new language) may come without it.
 - **HQ thinks out loud while it works.** On a longer question it says what it is doing in its own
-  short words ("Let me look in Forgejo for that." … "Hm, not there, trying the issue list.")
-  instead of a stock "Still on it". If the model writes nothing, the stock lines stay.
+  words as it goes ("Okay, I'm pulling up the issue list in Forgejo." … "Hm, it's not in the open
+  ones. Let me try the closed issues.") instead of a stock "Still on it". If the model writes
+  nothing, the stock lines stay.
 - **Talk to HQ while it works.** Ask "what are you doing?" and it tells you and carries on. Give
   it a hint ("it's issue 2059") and it uses it in what it is doing. Ask something else and it
   says it will finish this first, answers, then takes your new question. Say "forget that, do X"

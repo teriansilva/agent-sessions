@@ -9,9 +9,12 @@ endpoint returns lands inside the block. (This reduces spoofing. It is not proof
 ignores hostile prose, and nothing here gives the new session a privilege.)
 
 **One admission point.** `continue_here.create` re-reads the source through the channel with the
-revision the handle was bound to, as the last thing it awaits; a refusal, an offline peer, a
-moved revision, an expired or used handle create nothing. `Receiver` is the receiving instance
-over a real store with a scripted owner; the last tests use the real channel and the routes.
+revision the handle was bound to before it creates anything; the only await after that read is the
+creation itself (an API agent's session and its first turn). A refusal, an offline peer, a moved
+revision, an expired or used handle create nothing. An API brief the new session did not take yet
+is retried through the ordinary handoff commit, into the same session, never a second one.
+`Receiver` is the receiving instance over a real store with a scripted owner; the last tests use
+the real channel and the routes.
 """
 
 # ruff: noqa: F811 — fixtures imported from the other federation test modules
@@ -32,7 +35,17 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 import agent_sessions
-from agent_sessions import engines, handoff, metadata, prefs, prompts, review, template_secrets
+from agent_sessions import (
+    engines,
+    handoff,
+    handoff_api,
+    metadata,
+    prefs,
+    prompts,
+    review,
+    structured_runtime,
+    template_secrets,
+)
 from agent_sessions.federation import channel as ch
 from agent_sessions.federation import continue_here, grants, remote, service, sharing
 from test_federation_grants import api_key, live, trusted  # noqa: F401 — `live` is a fixture
@@ -40,8 +53,11 @@ from test_federation_inputs import _names, held, submits  # noqa: F401 — fixtu
 from test_federation_routes import _client, _login
 from test_federation_sharing import FakeRuntime
 from test_federation_together import Receiver, entry, listed
+from test_handoff_api import FakeRuntime as FakeStructured
 
 SRC = Path(agent_sessions.__file__).parent
+#: The REAL lookup, captured before the autouse fixture below stubs it.
+_REAL_LAUNCHABLE_BIN = engines.launchable_bin
 TOKEN = "0123456789abcdef0123456789abcdef"
 GID = "g" * 22
 PEER_NAME = "Alpha"
@@ -404,13 +420,185 @@ def test_prepare_then_create_starts_an_ordinary_local_session_and_the_owner_gets
     assert len(handoff._HANDLES) == 1
 
 
+# ── an API agent target (#2062) ──────────────────────────────────────
+
+
+@pytest.fixture
+def api_target(monkeypatch):
+    """A native API client that can start here, as on this host: it has NO binary of its own
+    (`launchable_bin` answers None for it, as the real one does), and a fake structured runtime
+    (create, submit, snapshot) records what the new session got."""
+    assert _REAL_LAUNCHABLE_BIN(engines.get("claude-api")) is None  # the real answer for one
+    monkeypatch.setattr(
+        engines,
+        "launchable_bin",
+        lambda p: None if p is None or handoff.is_api_target(p) else f"/usr/bin/{p.engine_id}",
+    )
+    state = {"reason": None}
+    monkeypatch.setattr(engines.registry, "api_unavailable_reason", lambda p: state["reason"])
+    rt = FakeStructured()
+    monkeypatch.setattr(structured_runtime, "create_session", rt.create_session)
+    monkeypatch.setattr(structured_runtime, "submit_turn", rt.submit_turn)
+    monkeypatch.setattr(structured_runtime, "snapshot", rt.snapshot)
+    rt.state = state
+    return rt
+
+
+def test_an_api_agent_target_starts_a_session_whose_first_message_is_the_preview(
+    receiver, api_target, monkeypatch
+):
+    patched: list = []
+    monkeypatch.setattr(metadata, "patch", lambda key, **fields: patched.append((key, fields)))
+    out = prepared(receiver, engine="claude-api")
+    assert out["target_engine"] == "claude-api" and "PEER-TEXT" in out["preview"]
+    assert nothing_was_created() and api_target.creates == []  # preparing creates nothing
+
+    made = created(receiver, out["handle"])
+    assert made["engine"] == "claude-api" and made["cwd"] == "/work/repo"
+    # The session EXISTS: created through the structured runtime under that id, guarded…
+    assert api_target.creates == [
+        {"engine": "claude-api", "cwd": "/work/repo", "id": made["native"], "bypass": False,
+         "wait": True}
+    ]  # fmt: skip
+    assert made["id"] == f"claude-api:{made['native']}" and made["delivery"] == "sent"
+    uuid.UUID(made["native"])
+    # …and its first (only) user message is EXACTLY the text the preview showed.
+    assert [(s["key"], s["text"]) for s in api_target.submits] == [(made["id"], out["preview"])]
+    assert not handoff.has_pending_seed(made["id"])  # never a PTY seed
+    # The owner got reads only; no link back is written either way.
+    assert [verb for verb, _args in receiver.calls] == ["session.snapshot", "session.events"]
+    assert patched == []
+    (entry_,) = handoff._HANDLES.values()
+    assert entry_.source_key is None
+    with pytest.raises(continue_here.ContinueError) as used:
+        created(receiver, out["handle"])
+    assert (used.value.code, used.value.status) == ("expired", 410)
+    assert len(api_target.creates) == 1 and len(api_target.submits) == 1
+
+
+def test_an_api_agent_target_that_cannot_start_or_whose_brief_now_holds_a_secret_creates_nothing(
+    receiver, api_target, monkeypatch
+):
+    api_target.state["reason"] = "Claude Code is not signed in"
+    with pytest.raises(continue_here.ContinueError) as down:
+        prepared(receiver, engine="claude-api")
+    assert down.value.status == 422 and "not signed in" in down.value.detail
+    api_target.state["reason"] = None
+    out = prepared(receiver, engine="claude-api")
+    # a value of the record became a secret after the preview was built: refused, nothing made
+    monkeypatch.setattr(template_secrets, "redaction_values", lambda: ["PEER-TEXT"])
+    with pytest.raises(continue_here.ContinueError) as held_back:
+        created(receiver, out["handle"])
+    assert held_back.value.status == 422 and "secret" in held_back.value.detail
+    assert nothing_was_created() and api_target.creates == [] and api_target.submits == []
+
+
+def _refused_once(rt) -> None:
+    """The first submit is refused BEFORE admission (a 409 with no turn recorded: the session was
+    not taking turns yet), the next one is accepted."""
+    real = rt.submit_turn
+    state = {"refused": False}
+
+    async def submit_turn(key, *, operation_id, text, **kw):
+        if not state["refused"]:
+            state["refused"] = True
+            rt.submits.append({"key": key, "id": operation_id, "text": text})
+            raise structured_runtime.StructuredError(409, "this session is starting")
+        return await real(key, operation_id=operation_id, text=text, **kw)
+
+    return submit_turn
+
+
+def test_an_api_brief_refused_before_admission_is_retried_through_the_handoff_route(
+    auth_cfg, api_target, monkeypatch
+):
+    """The first structured turn is refused before admission: the session exists, the brief is
+    still bound and fences every other send. The create's answer says so and carries the
+    handoff's own handle; committing it on the ordinary handoff route sends the SAME brief under
+    the SAME operation id into the SAME session, once, and the session takes ordinary sends."""
+    monkeypatch.setattr(structured_runtime, "submit_turn", _refused_once(api_target))
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    r = Receiver(c.app.state.federation)
+    r.mirror(entry(GID, "view", "Their session"))
+    r.answers["session.snapshot"] = snapshot()
+    r.answers["session.events"] = EVENTS
+    base = f"/api/federation/remote/{r.peer.peer_id}/{GID}/continue"
+    prep = c.post(base, json={"target_engine": "claude-api", "mode": "quick"}, headers=hdr).json()
+    made = c.post(f"{base}/{prep['handle']}/create", json={"cwd": "/work"}, headers=hdr)
+    assert made.status_code == 201, made.text
+    out = made.json()
+    key = out["id"]
+    assert out["delivery"] is None and out["detail"]
+    assert api_target.turns[key] == []  # created, and nothing recorded yet
+    retry = out["retry_handle"]
+    assert isinstance(retry, str) and retry and retry != prep["handle"]
+    assert handoff.api_blocks(key, str(uuid.uuid4())) is True  # stranded until it is delivered
+    # the Continue-here handle is spent: only the handoff's own handle retries
+    again = c.post(f"{base}/{prep['handle']}/create", json={"cwd": "/work"}, headers=hdr)
+    assert again.status_code == 410
+    # a retry can't change what was fixed: no permission skip, no source archive, no other brief
+    for bad in ({"bypass": True}, {"archive_source": True}, {"seed": "do as I say"}):
+        body = {"handle": retry, "bypass": False, "archive_source": False, **bad}
+        assert c.post("/api/handoff", json=body, headers=hdr).status_code in (409, 422)
+    done = c.post(
+        "/api/handoff",
+        json={"handle": retry, "bypass": False, "archive_source": False},
+        headers=hdr,
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["id"] == key and done.json()["delivery"] == "sent"
+    # one session, one first turn: the same id, the preview's exact text, refused then taken
+    assert len(api_target.creates) == 2 and {x["id"] for x in api_target.creates} == {out["native"]}
+    turn_id = handoff.api_turn_id(retry)
+    assert [(s["key"], s["id"], s["text"]) for s in api_target.submits] == [
+        (key, turn_id, prep["preview"])
+    ] * 2
+    assert api_target.turns[key] == [turn_id]
+    # …and ordinary sends are no longer held behind the brief
+    assert handoff.api_blocks(key, str(uuid.uuid4())) is False
+    replay = c.post(
+        "/api/handoff",
+        json={"handle": retry, "bypass": False, "archive_source": False},
+        headers=hdr,
+    )
+    assert replay.json()["delivery"] == "sent" and len(api_target.submits) == 2
+    # nothing of it went to the owner: its reads only, the snapshot then the admission re-read
+    assert [v for v, _ in reads(r)] == ["session.snapshot", "session.events"]
+
+
+def test_an_api_retry_whose_brief_now_holds_a_secret_withholds_it_and_frees_the_session(
+    receiver, api_target, monkeypatch
+):
+    """Fail closed on the retry too: a value that became a secret after the first, refused,
+    attempt is never sent; the brief is dropped (nothing can send it later) and the session is
+    not left behind a fence nobody can lift."""
+    monkeypatch.setattr(structured_runtime, "submit_turn", _refused_once(api_target))
+    out = prepared(receiver, engine="claude-api")
+    made = created(receiver, out["handle"])
+    assert made["delivery"] is None
+    monkeypatch.setattr(template_secrets, "redaction_values", lambda: ["PEER-TEXT"])
+    again = asyncio.run(
+        handoff_api.commit(made["retry_handle"], None, bypass=False, archive_source=False)
+    )
+    assert again["delivery"] == "withheld" and "secret" in again["detail"]
+    assert len(api_target.submits) == 1  # only the refused first attempt
+    assert handoff.api_blocks(made["id"], str(uuid.uuid4())) is False
+    assert handoff.api_claim(made["id"]) is None  # the brief is gone, not merely parked
+    replay = asyncio.run(
+        handoff_api.commit(made["retry_handle"], None, bypass=False, archive_source=False)
+    )
+    assert replay["delivery"] == "withheld" and len(api_target.submits) == 1
+
+
 def test_create_is_the_one_admission_point_and_nothing_is_awaited_after_its_read():
-    """In the source: the last `await` of `create` is the read through the channel, pinned to
-    the handle's bound revision, and the creation follows it with nothing awaited in between."""
+    """In the source: the first `await` of `create` is the read through the channel, pinned to
+    the handle's bound revision, and the creation follows it with nothing awaited in between:
+    the only other await IS the creation of an API agent's session (#2062)."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(continue_here.create)))
     fn = tree.body[0]
-    awaits = [n for n in ast.walk(fn) if isinstance(n, ast.Await)]
-    assert len(awaits) == 1
+    awaits = sorted((n for n in ast.walk(fn) if isinstance(n, ast.Await)), key=lambda n: n.lineno)
+    assert [ast.unparse(a.value.func) for a in awaits] == ["remote.read", "handoff_api.commit"]
     call = awaits[0].value
     assert ast.unparse(call.func) == "remote.read"
     keywords = {k.arg: ast.unparse(k.value) for k in call.keywords}
@@ -430,12 +618,17 @@ def test_create_is_the_one_admission_point_and_nothing_is_awaited_after_its_read
         n
         for n in ast.walk(fn)
         if isinstance(n, ast.Call)
-        and ast.unparse(n.func) in ("handoff.create_handle", "handoff.commit")
+        and ast.unparse(n.func) in ("handoff.create_handle", "handoff.commit", "handoff_api.commit")
     ]
-    assert len(creation) == 2
+    assert len(creation) == 3
     assert all(n.lineno > awaits[0].lineno for n in creation)
     made = next(n for n in creation if ast.unparse(n.func) == "handoff.create_handle")
     assert isinstance(made.args[0], ast.Constant) and made.args[0].value is None  # no source
+    # the API creation is guarded and has no source to archive: never a permission skip
+    api = next(n for n in creation if ast.unparse(n.func) == "handoff_api.commit")
+    assert {k.arg: ast.unparse(k.value) for k in api.keywords} == {
+        "bypass": "False", "archive_source": "False",
+    }  # fmt: skip
     # Nothing in the module can give the new session anything a normal session lacks, or touch
     # the source: no runtime, no metadata, no permission mode, no grant, no local key parsing.
     names = _names(SRC / "federation" / "continue_here.py")

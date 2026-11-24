@@ -16,9 +16,9 @@ HMAC-SHA256 of its raw body under the webhook's secret, in any of the common hea
 
 **#2202's review loops** became webhooks in the v2 → v3 migration: same id as their automation,
 same secret envelopes (with their original AAD, so they still decrypt), ``legacy_automation`` set.
-Their address `/hooks/a/{id}` keeps routing to THAT automation only, their configuration is not
-touched (no re-approval), and a legacy webhook cannot be picked by another automation — #2222
-moves them over explicitly, with fresh consent.
+The review loop was retired (#2222): its address `/hooks/a/{id}` answers the uniform 404, its
+automation loads unreadable and runs nothing, and its legacy webhook stays in the list, readable
+and never pickable, until that automation is deleted (which deletes it too).
 """
 
 from __future__ import annotations
@@ -250,16 +250,10 @@ def secrets(wid: str, *, now: float | None = None) -> list[str]:
     return out
 
 
-def legacy_for(aid: str) -> str | None:
-    """The #2202 webhook that belongs to automation ``aid`` (its own address), or None."""
-    with store._read() as con:
-        r = con.execute("SELECT id FROM webhooks WHERE legacy_automation=?", (aid,)).fetchone()
-    return r["id"] if r else None
-
-
 def consumers(wid: str, *, include_disabled: bool = False) -> list[str]:
-    """The automations a delivery to ``wid`` reaches: those whose trigger picked it, or — for a
-    legacy webhook — its own automation only. Enabled ones unless ``include_disabled``."""
+    """The automations whose trigger picked ``wid``, or — for a legacy webhook (#2202) — its own
+    automation only (its "used by"; no delivery reaches it any more). Enabled ones unless
+    ``include_disabled``."""
     with store._read() as con:
         r = con.execute("SELECT legacy_automation FROM webhooks WHERE id=?", (wid,)).fetchone()
     if r is None:

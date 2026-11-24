@@ -271,7 +271,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto(NEW_SESSION_PATH);
     await expect(agentPicker(page).radio("claude-api")).toBeChecked();
     // Nothing in the agent section overflows the viewport sideways, in either theme.
-    const group = (await page.getByRole("radiogroup", { name: "Agent" }).boundingBox())!;
+    const group = (await page.getByRole("radiogroup", { name: "Agent", exact: true }).boundingBox())!;
     expect(group.x + group.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
     await page.screenshot({ path: info.outputPath(`api-first-${theme}.png`), fullPage: true });
     await agentPicker(page).selectOption("claude");

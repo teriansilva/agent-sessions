@@ -158,8 +158,6 @@ function whatWords(form: EditorForm, projectName: (id: string) => string): strin
         .join(" · ");
     case "send_to_session":
       return form.sessionKey ? `${label} · ${form.sessionKey}` : label;
-    case "forge_review_loop":
-      return form.repo.trim() ? `${label} on ${form.repo.trim()}` : label;
     case "tell_hq":
       return `${label} · a message in your notifications`;
     case "send_message":

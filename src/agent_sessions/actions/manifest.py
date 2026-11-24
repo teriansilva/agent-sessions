@@ -42,7 +42,6 @@ MANIFEST_MAX_BYTES = 16 * 1024
 CATEGORIES: dict[str, str] = {
     "battlelab": "BattleLab",
     "messaging": "Messaging",
-    "forge": "Forge",
     "files": "Files",
     "run_locally": "Run locally",
     "web": "Web",
@@ -64,8 +63,6 @@ REQUIREMENTS: dict[str, str] = {
     "api_agent": "an API agent that can start unattended",
     "project": "a project",
     "running_session": "a running API session to message",
-    "forge": "a Forgejo set up in Settings → Forge",
-    "reviewer": "a reviewer specialist",
     # #2248 P2
     "messenger": "a messenger (Telegram, Matrix or mail) that can send",
     "artifacts": "artifacts switched on in Settings",
@@ -96,11 +93,9 @@ INPUT_TYPES = frozenset(
         "file",
         "recipient",
         "folder",
-        "forge_login",
         "message",
         "number",
         "project",
-        "repo",
         "session",
         "specialist",
         "text",

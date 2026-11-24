@@ -119,8 +119,9 @@ def _plugin_executor(pid: str) -> Executor:
     )
 
 
-#: The five actions automations had before the registry (their own stored kinds).
-BUILTIN = ("start_mission", "start_session", "send_to_session", "forge_review_loop", "tell_hq")
+#: The actions automations had before the registry (their own stored kinds). The review loop
+#: (`forge_review_loop`, #2202) was one of them until it was retired (#2222).
+BUILTIN = ("start_mission", "start_session", "send_to_session", "tell_hq")
 
 
 def _table() -> dict[str, Executor]:
@@ -132,5 +133,5 @@ def _table() -> dict[str, Executor]:
     }
 
 
-#: The table, in the order the gallery and the wizard list it: the five, then the plugins.
+#: The table, in the order the gallery and the wizard list it: the built-in ones, then the plugins.
 EXECUTORS: dict[str, Executor] = _table()

@@ -538,3 +538,26 @@ input.editInput {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Subagents (#2325). The disclosure chip's slot is always visible (unlike the hover-revealed ⋯):
+ * it carries the subagent count and their rolled-up state. */
+.subSlot {
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+  flex: none;
+}
+/* A subagent row shown out of tree order (an attention row, a filtered-out main's subagent) or
+ * an orphan: where it hangs, in the meta voice. */
+.crumb {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rowWrap[data-depth] .title {
+  font-size: var(--fs-meta);
+}

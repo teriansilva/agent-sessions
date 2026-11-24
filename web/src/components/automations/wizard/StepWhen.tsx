@@ -1,7 +1,6 @@
 /** Step 1 — When (#2221 P2b): on a schedule (or once), only when you press Run now, or when a
  *  webhook PICKED from Library → Webhooks delivers ("+ New webhook…" hands the draft to the create
- *  flow and comes back with it picked). A #2202 review loop's own webhook is kept as it is. */
-import { WebhookPanel } from "../WebhookPanel";
+ *  flow and comes back with it picked). */
 import { SharedWebhookPanel } from "../../webhooks/WebhookBits";
 import { WebhookPicker } from "../../webhooks/WebhookPicker";
 import {
@@ -11,7 +10,7 @@ import {
   withTrigger,
   type EditorForm,
 } from "../../../lib/automations";
-import type { Automation, AutomationList, AutomationWebhook, Weekday } from "../../../types/automations";
+import type { Automation, AutomationList, Weekday } from "../../../types/automations";
 import type { Webhook } from "../../../types/webhooks";
 import styles from "../automations.module.css";
 import { Cards, TzField, type StepProps } from "./bits";
@@ -39,7 +38,6 @@ export function StepWhen({
   nowS,
   saved,
   onNewWebhook,
-  onSavedWebhook,
 }: StepProps & {
   list: AutomationList;
   zones: string[] | null;
@@ -47,9 +45,7 @@ export function StepWhen({
   nowS: number;
   saved: Automation | null;
   onNewWebhook: () => void;
-  onSavedWebhook: (w: AutomationWebhook) => void;
 }) {
-  const maxConcurrent = list.limits.max_concurrent_max;
   const when: When = form.triggerKind === "once" ? "schedule" : form.triggerKind;
   const draftTrigger = triggerWords(formTrigger(form));
   const picked = pickedWebhook(form.webhookId, webhooks.list, saved);
@@ -64,7 +60,7 @@ export function StepWhen({
       <Cards<When>
         label="When it runs"
         value={when}
-        onChange={(v) => update((x) => withTrigger(x, v, maxConcurrent))}
+        onChange={(v) => update((x) => withTrigger(x, v))}
         testId="trigger-kind"
         options={[
           { value: "schedule", title: "On a schedule", sub: "once, or every day, week, hour…" },
@@ -85,9 +81,9 @@ export function StepWhen({
               value={cadence}
               onChange={(e) => {
                 const v = e.target.value;
-                if (v === "once") return update((x) => withTrigger(x, "once", maxConcurrent));
+                if (v === "once") return update((x) => withTrigger(x, "once"));
                 update((x) => {
-                  const s = withTrigger(x, "schedule", maxConcurrent);
+                  const s = withTrigger(x, "schedule");
                   if (!v.startsWith("interval-"))
                     return { ...s, cadenceKind: v as EditorForm["cadenceKind"] };
                   const hours = v === "interval-hours";
@@ -196,29 +192,21 @@ export function StepWhen({
         </div>
       )}
 
-      {when === "webhook" &&
-        (form.legacyHook ? (
-          <p className={styles.hint} data-testid="trigger-webhook-legacy">
-            It keeps its own Forgejo webhook from before webhooks were a list: the same address and
-            secret, below. Editing it here does not move it.
-          </p>
-        ) : (
-          <WebhookPicker
-            id={f("webhook")}
-            value={form.webhookId}
-            list={webhooks.list}
-            error={webhooks.error}
-            nowS={nowS}
-            onPick={(v) => set("webhookId", v)}
-            onNew={onNewWebhook}
-          />
-        ))}
+      {when === "webhook" && (
+        <WebhookPicker
+          id={f("webhook")}
+          value={form.webhookId}
+          list={webhooks.list}
+          error={webhooks.error}
+          nowS={nowS}
+          onPick={(v) => set("webhookId", v)}
+          onNew={onNewWebhook}
+        />
+      )}
 
       <p className={styles.callout} data-testid="trigger-callout">
         {when === "webhook"
-          ? form.legacyHook
-            ? "It runs when Forgejo delivers a signed event for the repository, and only starts its review loop. Connect the forge below: the payload URL, a secret shown once, and the events to tick. There is no Run now: only a delivery names the item to review."
-            : "It runs when the picked webhook delivers a signed event. Next, choose which of its events start it. There is no Run now: only a delivery starts it."
+          ? "It runs when the picked webhook delivers a signed event. Next, choose which of its events start it. There is no Run now: only a delivery starts it."
           : when === "manual"
             ? "It runs only when you press Run now."
             : `${draftTrigger.detail}. Every ${list.limits.interval_min_minutes} minutes is the shortest schedule. A time skipped by a clock change runs once, at the next valid minute. Runs missed while BattleLab was down collapse into one catch-up run.`}
@@ -231,23 +219,13 @@ export function StepWhen({
       )}
 
       {when === "webhook" &&
-        (saved?.webhook && form.legacyHook ? (
-          <WebhookPanel
-            automationId={saved.id}
-            webhook={saved.webhook}
-            nowS={nowS}
-            onWebhook={onSavedWebhook}
-          />
+        (picked ? (
+          <SharedWebhookPanel {...picked} nowS={nowS} />
         ) : (
-          !form.legacyHook &&
-          (picked ? (
-            <SharedWebhookPanel {...picked} nowS={nowS} />
-          ) : (
-            <p className={styles.hint} data-testid="webhook-pick-hint">
-              Pick a webhook: its address and last delivery show here. Its secret is on its own page
-              in Library → Webhooks.
-            </p>
-          ))
+          <p className={styles.hint} data-testid="webhook-pick-hint">
+            Pick a webhook: its address and last delivery show here. Its secret is on its own page
+            in Library → Webhooks.
+          </p>
         ))}
     </>
   );
@@ -268,7 +246,7 @@ function pickedWebhook(
   return {
     id: webhookId,
     name: src.name ?? webhookId,
-    path: src.path,
+    path: src.path ?? `/hooks/w/${webhookId}`,
     lastDeliveryAt: src.last_delivery_at,
     lastEvent: src.last_event,
     lastNote: src.last_note,

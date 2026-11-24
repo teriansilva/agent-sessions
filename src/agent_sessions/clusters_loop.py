@@ -35,6 +35,7 @@ from . import (
     ai_providers,
     aitasks,
     engines,
+    lineage,
     metadata,
     missions,
     prefs,
@@ -141,6 +142,12 @@ def collect() -> Fleet:
                     last_mtime=float(s.last_mtime or 0),
                 )
             )
+    # Main sessions only (#2325): the model groups main sessions; a child goes where its main
+    # session goes in the list, under it.
+    children = lineage.child_keys_of(set(out.live))
+    if children:
+        for pid in list(out.candidates):
+            out.candidates[pid] = [c for c in out.candidates[pid] if c.key not in children]
     for rows in out.candidates.values():
         rows.sort(key=lambda c: (-c.last_mtime, c.key))
     return out

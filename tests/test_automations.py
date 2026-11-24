@@ -235,11 +235,12 @@ def test_cadence_vocabulary_is_closed():
         model.validate_trigger({"kind": "schedule", "cadence": {"kind": "*/5 * * * *"}})
     with pytest.raises(model.AutomationError, match="not available yet"):
         model.validate_trigger({"kind": "loop"})
-    # The webhook trigger landed narrowed (#2202): Forgejo's scheme only.
-    with pytest.raises(model.AutomationError, match="needs scheme"):
+    # A webhook trigger names a webhook from the list (#2221); the retired review loop's own
+    # `scheme` form (#2202, #2222) is no longer accepted.
+    with pytest.raises(model.AutomationError, match="needs webhook_id"):
         model.validate_trigger({"kind": "webhook"})
-    with pytest.raises(model.AutomationError, match="scheme must be one of"):
-        model.validate_trigger({"kind": "webhook", "scheme": "github"})
+    with pytest.raises(model.AutomationError, match="does not take scheme"):
+        model.validate_trigger({"kind": "webhook", "scheme": "forgejo"})
     with pytest.raises(model.AutomationError, match="IANA"):
         model.validate_trigger(
             {"kind": "schedule", "cadence": {"kind": "daily", "time": "03:00"}, "tz": "Mars/Base"}
@@ -1670,9 +1671,9 @@ def test_no_automation_route_exposes_a_parameter_as_request_input(auth_cfg):
         ]
         assert exposed == [], (route.path, exposed)
         assert {p.name for p in flat.path_params} <= {"aid", "run_id"}, route.path
-    # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs, webhook-secret,
-    # destination-secret (#2248 P2)
-    assert seen == 15
+    # list, create, origins, run, get, patch, delete, enable, 3 verbs, run, runs, destination-secret
+    # (#2248 P2). The review loop's webhook-secret route went with it (#2222).
+    assert seen == 14
 
 
 def test_a_repointed_session_folder_is_refused_and_needs_reapproval(session_env):

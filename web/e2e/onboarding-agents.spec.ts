@@ -256,7 +256,7 @@ test("setup installs and enables a catalog agent inline, through the guarded ope
 test("Launch preselects a ready API client and creates its session through the structured create (#1739)", async ({ page }) => {
   const m = await mockApp(page, { startable: ["claude", "codex-api"], readyApi: ["codex-api"] });
   const dialog = await toLaunch(page);
-  const picker = dialog.getByRole("radiogroup", { name: "Agent" });
+  const picker = dialog.getByRole("radiogroup", { name: "Agent", exact: true });
   await expect(picker.getByRole("radio", { name: /codex — api/i })).toBeChecked();
   // The stored default skips: said before Launch (no prompts AND no sandbox), as New session does.
   await expect(dialog.getByTestId("setup-api-bypass-warning")).toContainText("without its sandbox");

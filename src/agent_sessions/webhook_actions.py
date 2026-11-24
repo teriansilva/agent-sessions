@@ -1,15 +1,13 @@
 """A verified webhook delivery, handed to one automation (#2221 P2).
 
 `routes/hooks.py` verifies the signature once and hands the delivery to each automation that
-picked the webhook; this module decides for ONE of them, alone:
-
-* a review loop (#2202) reads its own events: `review_loop_runner.handle`;
-* any other action (start a session, message a session, tell HQ) acts on the events its
-  conditions choose (`webhook_events.matches`), with the template values its mapping takes from
-  the delivery, typed (`webhook_events.extract`). A value that fails its type refuses the
-  delivery and nothing starts. The admission (`automations_store.begin_delivery`) is one
-  transaction bound to the configuration the delivery was matched against and to the webhook it
-  came through, and the body's fingerprint is the claim, so a redelivered body never runs twice.
+picked the webhook; this module decides for ONE of them, alone. Its action (start a session,
+message a session, tell HQ, or a plugin that allows it) acts on the events its conditions choose
+(`webhook_events.matches`), with the template values its mapping takes from the delivery, typed
+(`webhook_events.extract`). A value that fails its type refuses the delivery and nothing starts.
+The admission (`automations_store.begin_delivery`) is one transaction bound to the configuration
+the delivery was matched against and to the webhook it came through, and the body's fingerprint is
+the claim, so a redelivered body never runs twice.
 
 Delivery values are data: they fill typed template fields and nothing else. The payload never
 chooses the folder, the session, the agent, the template or the permissions.
@@ -25,7 +23,7 @@ import logging
 from . import automation_runner as runner
 from . import automations as model
 from . import automations_store as store
-from . import forge_hook, review_loop_runner, webhook_events
+from . import forge_hook, webhook_events
 
 log = logging.getLogger("agent_sessions.webhook_actions")
 
@@ -46,11 +44,6 @@ async def handle(
 ) -> None:
     """Act on one VERIFIED delivery that came through webhook ``source``. Never raises."""
     try:
-        row = await asyncio.to_thread(store.get, aid)
-        kind = ((row.get("config") or {}).get("action") or {}).get("kind")
-        if kind == "forge_review_loop":
-            await review_loop_runner.handle(aid, body, headers, registry=registry, source=source)
-            return
         if source is None:
             return  # only a webhook from the list feeds a generic action
         for _attempt in range(2):

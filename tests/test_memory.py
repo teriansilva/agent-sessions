@@ -636,6 +636,12 @@ def test_the_terminal_route_binds_memory_on_launch_and_never_on_attach(
     assert connect("/ws/term/claude:11111111-1111-1111-1111-111111111111") == 1000
     assert len(captured) == 3 and len(asked) == 2 and len(agent_argvs) == 2
     off, launched, attached = captured
+    # Every LAUNCH also carries its own session key, which a session it starts inherits (#2325);
+    # the attach starts nothing and carries nothing.
+    from agent_sessions.lineage_attribution import ENV_SESSION
+
+    assert off.pop(ENV_SESSION).startswith("claude:")
+    assert launched.pop(ENV_SESSION).startswith("claude:")
     assert off == {}
     assert Path(launched[memory.ENV_READ]).parent.name == pid
     assert set(launched) == set(memory.ENV_KEYS)  # claude takes the tool by flag, not env

@@ -1,7 +1,7 @@
 """Webhooks as a list (#2221 P1): the store, the migration of #2202's review-loop webhooks, the
 recorded shape (names and types, never values), the signature forms and the API.
 
-Delivery routing (`/hooks/w`, `/hooks/a`) is covered in `tests/test_forge_review_loop.py`.
+Delivery routing (`/hooks/w`, and the retired `/hooks/a`) is covered in `tests/test_hooks_route.py`.
 """
 
 from __future__ import annotations
@@ -93,28 +93,30 @@ def test_names_are_checked(name):
 def test_a_review_loops_webhook_is_adopted_unchanged(monkeypatch, tmp_path):
     """#2202's per-automation webhook moves into the list as it was: same id, the same envelope
     (still decrypting under its original AAD), the same counters — and a re-run changes nothing."""
-    monkeypatch.setattr(
-        model, "resolve_mission_cwd", lambda _p: model.folder_identity(str(tmp_path))
-    )
-    monkeypatch.setattr(
-        model,
-        "specialist_pin",
-        lambda r: {"id": r["specialist_id"], "version": r["version"], "engine": "x-api"},
-    )
-    cfg = model.validate_config(
+    # The review loop's config can no longer be validated (#2222 retired it), so it is stored the
+    # way an install from before then holds it: a generic automation's row, its config rewritten.
+    ok = model.validate_config(
         {
             "name": "old loop",
-            "trigger": {"kind": "webhook", "scheme": "forgejo"},
-            "action": {
-                "kind": "forge_review_loop",
-                "project_id": "shop",
-                "repo": "example-org/shop",
-                "reviewer": {"specialist_id": "rev", "version": 1},
-                "reviewer_login": "bot",
-            },
+            "trigger": {"kind": "manual"},
+            "action": {"kind": "tell_hq", "message": {"text": "x"}},
         }
     )
-    aid = store.create(cfg, model.compute_pins(cfg))["id"]
+    aid = store.create(ok, model.compute_pins(ok))["id"]
+    old = {
+        "name": "old loop",
+        "trigger": {"kind": "webhook", "scheme": "forgejo"},
+        "action": {
+            "kind": "forge_review_loop",
+            "project_id": "shop",
+            "repo": "example-org/shop",
+            "reviewer": {"specialist_id": "rev", "version": 1},
+            "reviewer_login": "bot",
+        },
+        "policy": ok["policy"],
+    }
+    with store._tx() as con:
+        con.execute("UPDATE automations SET config=? WHERE id=?", (json.dumps(old), aid))
     env = template_secrets.encrypt(f"automation-webhook:{aid}:1", "old-secret-value")
     with store._tx() as con:
         con.execute(

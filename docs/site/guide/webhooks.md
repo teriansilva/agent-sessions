@@ -45,8 +45,7 @@ these names. **The values themselves are not kept.**
 ## Choose which events, and fill values from them
 
 You do this in the [automation wizard](/guide/automations), steps 2 and 3. A webhook can start a
-review loop, start a session, send a message to a session, or tell HQ (a message in your
-notifications). Sessions must be API sessions. When a webhook tells HQ, HQ learns only that a
+session, send a message to a session, or tell HQ (a message in your notifications). Sessions must be API sessions. When a webhook tells HQ, HQ learns only that a
 message arrived, never what the delivery said.
 
 - **Which events.** If the webhook has received an event, BattleLab offers presets for common
@@ -90,6 +89,7 @@ login (for example an `auth_request`), let `/hooks/` through without it.
 
 ## Review loops from before webhooks were a list
 
-A review loop set up before this change keeps its own address (`/hooks/a/…`) and secret. It
-appears in the list as "old address", and only that review loop uses it. Nothing about it changes
-until you move it over.
+The Forgejo review loop was retired. One set up before webhooks were a list still appears in
+Library → Webhooks as "old address", but that address (`/hooks/a/…`) no longer accepts deliveries,
+and its automation can't run or be changed: delete it, and its old address goes with it. To review
+pull requests now, pick a webhook from the list and have it start an API session.

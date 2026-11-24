@@ -55,6 +55,8 @@ from .. import (
     handoff,
     hq_report_broker,
     launchtiming,
+    lineage,
+    lineage_attribution,
     mcp_registry,
     memory,
     metadata,
@@ -1209,6 +1211,9 @@ def register(
                     argv, scope_unit = await asyncio.to_thread(_launch_command)
                     if scope_unit is not None:
                         log.info("launching %s in scope %s", phys_key, scope_unit)
+                        # The exact unit → key record lineage attribution reads (#2325): the
+                        # unit name itself only carries an 8-character id prefix.
+                        await asyncio.to_thread(lineage.bind_scope, scope_unit, transcript_key)
                     launchtiming.mark("command")
             except ptybridge.PtyBridgeError as e:
                 # A pinned-id new session persisted a record above; the launch argv was rejected,
@@ -1315,7 +1320,17 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
-                    launch_env={**memory_env, **mcp.env},
+                    launch_env={
+                        **memory_env,
+                        **mcp.env,
+                        # A LAUNCH carries its own key, which a session it starts inherits
+                        # (#2325); an attach starts nothing and carries no environment.
+                        **(
+                            {lineage_attribution.ENV_SESSION: transcript_key}
+                            if action == sessions.LAUNCH
+                            else {}
+                        ),
+                    },
                     account=account_launch,
                     have=have,
                     fp=fp,
@@ -1380,7 +1395,17 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
-                    launch_env={**memory_env, **mcp.env},
+                    launch_env={
+                        **memory_env,
+                        **mcp.env,
+                        # A LAUNCH carries its own key, which a session it starts inherits
+                        # (#2325); an attach starts nothing and carries no environment.
+                        **(
+                            {lineage_attribution.ENV_SESSION: transcript_key}
+                            if action == sessions.LAUNCH
+                            else {}
+                        ),
+                    },
                     account=account_launch,
                     have=have,
                     read_only_gate=read_only_gate,

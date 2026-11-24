@@ -147,7 +147,6 @@ class Scheduler:
         ids = await asyncio.to_thread(store.recover_interrupted, now=now)
         if ids:
             log.warning("automations: %d interrupted run(s) recorded, none replayed", len(ids))
-            await asyncio.to_thread(_announce_interrupted_returns, ids)
         await runner.retry_unsettled()
         await self._sync_missions()
         fired: list[dict] = []
@@ -367,13 +366,3 @@ async def stop() -> None:
         await sched.shutdown()
     else:
         await runner.drain()
-
-
-def _announce_interrupted_returns(ids: list[str]) -> None:
-    """A review loop's verdict whose delivery was cut off and found by orphan recovery (#2202):
-    announced once (`runner.announce_interrupted_return`, which the cancellation path uses too)."""
-    for rid in ids:
-        try:
-            runner.announce_interrupted_return(rid)
-        except Exception:  # noqa: BLE001 — recorded already; the bell is best-effort
-            log.warning("automations: announcing interrupted run %s failed", rid, exc_info=True)

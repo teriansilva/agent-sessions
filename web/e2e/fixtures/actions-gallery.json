@@ -153,95 +153,6 @@
       "used_by": 1
     },
     {
-      "id": "forge_review_loop",
-      "label": "Review loop",
-      "category": "forge",
-      "description": "A specialist reviews each issue and PR on a Forgejo repository, round by round, until it is approved or out of rounds.",
-      "effect": "write-battlelab",
-      "executor": "forge_review_loop",
-      "triggers": [
-        "webhook"
-      ],
-      "inputs": [
-        {
-          "name": "project_id",
-          "type": "project",
-          "label": "Project",
-          "required": true
-        },
-        {
-          "name": "repo",
-          "type": "repo",
-          "label": "Repository",
-          "required": true
-        },
-        {
-          "name": "reviewer",
-          "type": "specialist",
-          "label": "Reviewer",
-          "required": true
-        },
-        {
-          "name": "reviewer_login",
-          "type": "forge_login",
-          "label": "The reviewer's forge login",
-          "required": true
-        },
-        {
-          "name": "legs",
-          "type": "choice",
-          "label": "What it reviews",
-          "required": false,
-          "choices": [
-            "issues",
-            "pulls"
-          ],
-          "many": true
-        },
-        {
-          "name": "max_rounds",
-          "type": "number",
-          "label": "Rounds at most",
-          "required": false
-        },
-        {
-          "name": "return_to_origin",
-          "type": "yes_no",
-          "label": "Return the verdict to its session",
-          "required": false
-        }
-      ],
-      "outputs": [
-        {
-          "name": "review",
-          "type": "session",
-          "label": "The reviewer's session"
-        }
-      ],
-      "requires": [
-        {
-          "id": "project",
-          "words": "a project",
-          "ok": null,
-          "detail": ""
-        },
-        {
-          "id": "forge",
-          "words": "a Forgejo set up in Settings → Forge",
-          "ok": true,
-          "detail": "Forgejo is set up"
-        },
-        {
-          "id": "reviewer",
-          "words": "a reviewer specialist",
-          "ok": null,
-          "detail": ""
-        }
-      ],
-      "available": true,
-      "used_by": 2
-    },
-    {
       "id": "tell_hq",
       "label": "Tell HQ",
       "category": "battlelab",
@@ -653,10 +564,6 @@
     {
       "id": "messaging",
       "label": "Messaging"
-    },
-    {
-      "id": "forge",
-      "label": "Forge"
     },
     {
       "id": "files",

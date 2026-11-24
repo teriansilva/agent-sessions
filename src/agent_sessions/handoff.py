@@ -1018,8 +1018,9 @@ def bind_target(handle: str, target_key: str) -> None:
 #: Namespace for the first turn's operation id (`uuid5(namespace, handle)`): a stable UUID, which
 #: the shared operation-id boundary requires (`structured_runtime._operation_id`).
 API_TURN_NAMESPACE = uuid.UUID("6a1f2c4e-2141-4b7e-9d3a-0f5c8e7b2141")
-#: Delivery outcomes after which the binding sends nothing more.
-API_SETTLED = frozenset({"sent", "queued", "not_sent", "uncertain", "released"})
+#: Delivery outcomes after which the binding sends nothing more. ``withheld``: a guarded brief
+#: (``guard_secrets``) now carries a known secret, so it was dropped unsent.
+API_SETTLED = frozenset({"sent", "queued", "not_sent", "uncertain", "released", "withheld"})
 
 
 def api_turn_id(handle: str) -> str:
@@ -1103,16 +1104,17 @@ def api_touch(target_key: str) -> None:
             h.created_at = time.monotonic()
 
 
-def api_claim(target_key: str) -> tuple[str, str] | None:
-    """``(seed, operation_id)`` for the ONE delivery attempt allowed now, or None (nothing bound,
-    already settled, or another attempt is outstanding)."""
+def api_claim(target_key: str) -> tuple[str, str, bool] | None:
+    """``(seed, operation_id, guard_secrets)`` for the ONE delivery attempt allowed now, or None
+    (nothing bound, already settled, or another attempt is outstanding). The policy is read in the
+    same critical section as the text, as :func:`claim_seed_guarded` does."""
     with _lock:
         _sweep_locked()
         h = _entry_locked(target_key)
         if h is None or h.api_turn_id is None or h.seed is None or h.api_delivery is not None:
             return None
         h.api_delivery = "sending"
-        return h.seed, h.api_turn_id
+        return h.seed, h.api_turn_id, h.guard_secrets
 
 
 def api_settle(target_key: str, outcome: str) -> None:

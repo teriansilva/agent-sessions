@@ -142,7 +142,8 @@ def build_catalog(*, now: float | None = None, working_keys: set[str] | None = N
     pipeline as the sidebar/Pulse, and the output IS the Pulse-card shape the frontend
     renders — result assembly is a field-strip away. Pure FS + metadata; run under
     ``asyncio.to_thread``."""
-    return pulse.build_cards(window_days=None, now=now, working_keys=working_keys)
+    # Main sessions only (#2325): keeps the catalog's prefilter and ranking at main-session scale.
+    return pulse.build_cards(window_days=None, now=now, working_keys=working_keys, main_only=True)
 
 
 def build_mission_catalog() -> list[dict]:

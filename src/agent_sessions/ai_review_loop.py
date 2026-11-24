@@ -39,7 +39,7 @@ import logging
 import os
 import time
 
-from . import aitasks, metadata, prefs, review
+from . import aitasks, lineage, metadata, prefs, review
 
 log = logging.getLogger("agent_sessions.ai_review_loop")
 
@@ -244,6 +244,25 @@ def _rank(terminal_keys: list) -> tuple[list[tuple[str, object]], set[str], dict
         ):
             continue
         out.append((key, meta))
+    # Main sessions only (#2325): a child is reviewed when the operator asks for it ("Review now"
+    # on its row), never by this sweep. Children are decided against the non-archived sessions
+    # (sidecar override first, as the list does); an unreadable ledger keeps everything.
+    from . import engines
+
+    present = set()
+    try:
+        walk = engines.scan_all_cached()
+    except Exception:  # a walk that fails leaves the sweep as it was: everything reviewed
+        log.debug("ai-review: session walk failed — no lineage filter this sweep", exc_info=True)
+        walk = []
+    for s in walk:
+        k = engines.session_key(s)
+        m = index.get(k)
+        if not (m.archived if m is not None and m.archived is not None else s.archived):
+            present.add(k)
+    children = lineage.child_keys_of(present)
+    if children:
+        out = [(k, m) for k, m in out if engines.logical_key(k, aliases) not in children]
     out.sort(key=lambda km: _sort_key(km[0], km[1]))
     return out, live, aliases
 

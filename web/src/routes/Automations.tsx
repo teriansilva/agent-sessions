@@ -571,11 +571,9 @@ function Row({
         ? `${act.engine} · default model`
         : act?.kind === "send_to_session"
           ? act.session_key
-          : act?.kind === "forge_review_loop"
-            ? `${act.repo} · reviewer ${act.reviewer.specialist_id} v${act.reviewer.version}`
-            : act?.kind === "tell_hq"
-              ? "in your notifications; HQ may comment"
-              : "";
+          : act?.kind === "tell_hq"
+            ? "in your notifications; HQ may comment"
+            : "";
   return (
     <div className={styles.tr} role="listitem" data-testid="automation-row" data-id={a.id}>
       <div className={styles.cell}>

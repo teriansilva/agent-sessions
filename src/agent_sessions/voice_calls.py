@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import secrets
 import shutil
@@ -46,6 +47,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts, voice_setup
+from .voice_cues import CUE_LINES
+from .voice_text import WHOLE_MIN_WORDS
 
 log = logging.getLogger(__name__)
 
@@ -153,10 +156,22 @@ STALL_S = 90.0
 STALL_EVERY_S = 45.0
 PROGRESS_TICK_S = 1.0
 #: HQ thinking out loud (#2113 P2): its own aside about what it is doing replaces the fixed line
-#: when the model wrote one. Said once HQ has been quiet this long within the turn…
-ASIDE_QUIET_S = 4.0
-#: …and never sooner than this after the previous status line, so it does not chatter.
-ASIDE_GAP_S = 8.0
+#: when the model wrote one. Said once HQ has been quiet this long within the turn (#2339: as it
+#: arrives, like a person searching aloud, not 4 s later)…
+ASIDE_QUIET_S = 1.0
+#: …and never sooner than this after the previous status line, so it does not chatter (#2339:
+#: 8 s blocked a search's second aside until after its answer).
+ASIDE_GAP_S = 3.0
+#: An aside shorter than this many words is not said (#2339): VoxCPM2 voices a line of one to
+#: five words outside its voice now and then (#1996); a whole sentence keeps it.
+ASIDE_MIN_WORDS = WHOLE_MIN_WORDS
+#: HQ's thinking cue (#2339): this long after the Commander's words were committed, a turn they
+#: just asked that has said nothing yet gets ONE short fixed line ("Hmm, let me see."), played
+#: from a take the worker rendered and checked ahead (`voice_cues`), so it costs the answer no TTS
+#: time. The operator's decision on #2339 replaces #1827's "no stock acknowledgement".
+CUE_AFTER_S = 0.4
+#: A share of turns get no cue, so it never becomes a tic.
+CUE_SKIP = 0.25
 #: `pulse_chat`'s sub-steps (the find pipeline, also the no-tools fallback): looking through
 #: sessions.
 FIND_STEPS = frozenset({"catalog", "content"})
@@ -427,6 +442,12 @@ class Call:
     #: When HQ's last line will have had time to play (sent + `speech_seconds`): the quiet the
     #: progress lines are counted from.
     hq_quiet_at: float = 0.0
+    #: Thinking cues (#2339): the (say voice field, language) pairs the worker was asked to get
+    #: ready ("" for the contact's default), the (EFFECTIVE voice, line) pairs it reported ready,
+    #: and the line said last (never twice in a row).
+    cues_asked: set = field(default_factory=set)
+    cues_ready: set = field(default_factory=set)
+    last_cue: str | None = None
     #: The Commander is mid-utterance (`user_started` … `user_stopped`): no status line over them.
     user_speaking: bool = False
     _ended: asyncio.Event = field(default_factory=asyncio.Event)
@@ -486,9 +507,11 @@ class Call:
         turn_id: str | None = None,
         sid: str | None = None,
         heard: bool = True,
+        cue: bool = False,
     ) -> str | None:
         """`heard=False`: its `played` ack is no sign of the operator (#1702 status lines — HQ
-        talking while it waits proves nobody is listening)."""
+        talking while it waits proves nobody is listening). `cue`: a thinking-cue line (#2339),
+        played from the worker's checked take or not at all."""
         text = text.strip()
         if not text or self.state == "ended":
             return None
@@ -512,11 +535,19 @@ class Call:
                 rec["turn_id"] = turn_id
             self._record(rec)
         lang = self.language if self.tts_takes_language else None
-        # A voice per language (#1397 P3): the contact's voice for the call's language, if set.
-        voice = (self.profile or {}).get("language_voices", {}).get(self.language or "")
-        await self.worker(
-            {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
-        )  # fmt: skip
+        voice = self._say_voice()
+        # The first say in a voice and language asks the worker to get that language's thinking
+        # cues ready (#2339): it renders them while the call is idle, measured against this very
+        # voice's sentences.
+        cue_lang = self.language or "en"
+        if cue_lang in CUE_LINES and (voice or "", cue_lang) not in self.cues_asked:
+            self.cues_asked.add((voice or "", cue_lang))
+            await self.worker({"t": "cues", "voice": voice, "language": lang,
+                               "texts": list(CUE_LINES[cue_lang])})  # fmt: skip
+        msg = {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
+        if cue:
+            msg["cue"] = True
+        await self.worker(msg)
         return sid
 
     # -- events from the worker -----------------------------------------------------------------
@@ -595,6 +626,12 @@ class Call:
                 # Back to what HQ is doing: a turn still running is still `thinking`, so its status
                 # lines (#1702) carry on after a barge-in over the ack or a status line.
                 await self.set_state("thinking" if self._turn_running() else "listening")
+        elif t == "cue_ready":
+            # A thinking-cue line the worker has a checked take of (#2339), in the EFFECTIVE voice
+            # it rendered it in. Only the app's own FIXED lines count.
+            v, text = ev.get("voice"), ev.get("text")
+            if isinstance(v, str) and v and any(text in lines for lines in CUE_LINES.values()):
+                self.cues_ready.add((v, text))
         elif t == "bot_started":
             self._log_answer_clock()
             self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
@@ -1539,7 +1576,7 @@ class Call:
         now = time.monotonic()
         work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
         self.work = work
-        progress = asyncio.create_task(self._report_progress(d))
+        progress = asyncio.create_task(self._report_progress(d, cue=True))
         self.call_turn = (turn_id, text)
         if self._queue() is not None:
             # What the call heard before these words is written before HQ reads the conversation
@@ -2243,15 +2280,20 @@ class Call:
                 out.append(by_id[i])
         return out[:OFFERS_MAX]
 
-    async def _report_progress(self, d: _CallDraft | None = None) -> None:
+    async def _report_progress(self, d: _CallDraft | None = None, *, cue: bool = False) -> None:
         """While HQ's turn runs: a fixed status line whenever HQ has been quiet too long (#1702),
         so a slow model never reads as a dropped call. Cancelled as the turn settles. A draft's
-        turn shows nothing until it is committed (#1845): then HQ is thinking, from now."""
+        turn shows nothing until it is committed (#1845): then HQ is thinking, from now. `cue`:
+        the Commander's own words just started this turn, so it may open with a thinking cue
+        (#2339)."""
         if d is not None:
             await d.committed.wait()
             await self.set_state("thinking")
             if self.work is not None:
                 self.work["since"] = time.monotonic()
+        if cue and self.cues_ready:  # none ready: nothing to wait for, the cadence is unchanged
+            await asyncio.sleep(CUE_AFTER_S)
+            await self.cue_tick()
         while self.state != "ended":
             await asyncio.sleep(PROGRESS_TICK_S)
             await self.progress_tick()
@@ -2266,7 +2308,11 @@ class Call:
             # text boundary: the newest waits to be said, an older unsaid one is dropped.
             text = ev.get("text")
             if isinstance(text, str) and text.strip():
-                work["aside"] = work["last_aside"] = text.strip()
+                work["last_aside"] = text.strip()
+                # The newest aside replaces any older one still waiting, even one too short to say
+                # in the voice (#2339): that one is still what HQ is doing (the interjection judge
+                # reads it) and outdates the older line, but is not spoken itself.
+                work["aside"] = work["last_aside"] if len(text.split()) >= ASIDE_MIN_WORDS else None
             return
         step = ev.get("step")
         now = time.monotonic()
@@ -2313,6 +2359,47 @@ class Call:
         work["stalled"] = work["phase"] == "model" and now - work["phase_since"] >= STALL_S
         work["updates"] += 1  # counted first: `progress_line` reads this line's number
         await self._say_status(work, progress_line(work, now), now, counted=True)
+
+    def _say_voice(self) -> str | None:
+        """A voice per language (#1397 P3): the contact's voice for the call's language, if set;
+        None means the contact's own voice (`self.voice`, the worker's default)."""
+        return (self.profile or {}).get("language_voices", {}).get(self.language or "")
+
+    def pick_cue(self) -> str | None:
+        """A thinking-cue line for the call's language whose take the worker has ready in the
+        voice a say would use now, never the line said last; None when there is none."""
+        lang = self.language or "en"
+        voice = self._say_voice() or self.voice  # the EFFECTIVE voice, as the worker names it
+        ready = [
+            t for t in CUE_LINES.get(lang, ())
+            if (voice, t) in self.cues_ready and t != self.last_cue
+        ]  # fmt: skip
+        return random.choice(ready) if ready else None  # noqa: S311 — variety, not security
+
+    async def cue_tick(self) -> None:
+        """ONE thinking cue for the turn the Commander's words just started (#2339), if HQ is
+        still thinking and has said nothing in it, nothing of HQ's is playing or waiting, and the
+        Commander isn't speaking again. A cue counts for the aside gap (`said_at`), never for the
+        fixed lines' cadence. A skipped share keeps it from becoming a tic."""
+        work = self.work
+        if work is None or self.state != "thinking" or self.user_speaking:
+            return
+        if work.get("unsaid") or work["updates"] or "said_at" in work:
+            return
+        now = time.monotonic()
+        if self.hq_quiet_at > now:
+            return  # HQ's own audio may still be playing
+        if random.random() < CUE_SKIP:  # noqa: S311 — variety, not security
+            return
+        text = self.pick_cue()
+        if text is None:
+            return
+        self.last_cue = text
+        work["said_at"] = now
+        sid = uuid.uuid4().hex[:12]
+        work["unsaid"] = sid  # BEFORE the send, as `_say_status`
+        if await self.say(text, kind="progress", sid=sid, heard=False, cue=True) is None:
+            work["unsaid"] = None
 
     async def _say_status(
         self, work: dict, text: str, now: float, *, counted: bool = False

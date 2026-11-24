@@ -48,6 +48,8 @@ KIND_HOOKS = (
     "bind_session",
     "on_new_session",
     "on_new_session_failed",
+    "session_pids",
+    "lineage",
 )
 
 #: layout kind → reader(provider) -> list[Session]. Built-in code only; see module docstring.

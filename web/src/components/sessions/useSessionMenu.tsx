@@ -38,6 +38,7 @@ import rowStyles from "../sidebar/SessionList.module.css";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { AdoptToMissionModal } from "./AdoptToMissionModal";
+import { ArchiveSubagentsDialog } from "./ArchiveSubagentsDialog";
 import { engineLabel, isAgent, runtimeHint, useEngineRoster } from "../../app/engineRoster";
 import { SharePeerModal } from "../federation/SharePeerModal";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
@@ -128,6 +129,10 @@ export function useSessionMenu(
   const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(null);
   // "Adopt to mission" (#948 P5) — the same picker the pane header opens.
   const [adopting, setAdopting] = useState(false);
+  // "Archive only this / with N subagents" (#2325): a main session with subagents asks first.
+  const [archivingTree, setArchivingTree] = useState<{ returnFocus: HTMLElement | null } | null>(
+    null,
+  );
   const [adoptReturnFocus, setAdoptReturnFocus] = useState<HTMLElement | null>(null);
   // Session brief (Recap) + Hand off, mirrored from the terminal header (#597 follow-up).
   const [recapOpen, setRecapOpen] = useState(false);
@@ -442,12 +447,26 @@ export function useSessionMenu(
       ariaLabel: s.archived ? "Unarchive session" : "Archive session",
       icon: s.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />,
       disabled: busy,
-      onSelect: () => void runBusy(() => h.onToggleArchive(s.id, s.archived)),
+      onSelect: () => {
+        if (!s.archived && (s.descendant_count ?? 0) > 0) {
+          setArchivingTree({ returnFocus: document.activeElement as HTMLElement | null });
+          return;
+        }
+        void runBusy(() => h.onToggleArchive(s.id, s.archived));
+      },
     },
   ]);
 
   const dialogs = (
     <>
+      {archivingTree && (
+        <ArchiveSubagentsDialog
+          s={s}
+          onArchiveOnly={() => runBusy(() => h.onToggleArchive(s.id, false))}
+          onClose={() => setArchivingTree(null)}
+          returnFocusTo={archivingTree.returnFocus}
+        />
+      )}
       {adopting && (
         <AdoptToMissionModal
           session={s}
@@ -546,6 +565,7 @@ export function useSessionMenu(
     items,
     dialogs,
     dialogOpen:
+      archivingTree !== null ||
       adopting ||
       moving ||
       clustering ||

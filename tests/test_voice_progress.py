@@ -591,15 +591,51 @@ def test_an_aside_is_said_in_place_of_the_fixed_line(monkeypatch):
     run(go())
 
 
+def test_a_short_aside_is_not_said_but_still_says_what_hq_is_doing(monkeypatch):
+    """#2339: an aside under ASIDE_MIN_WORDS is not voiced (a short line leaves the voice), yet
+    it is still HQ's newest word on what it is doing, for the interjection judge."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    work = thinking(r, clock)
+
+    async def go():
+        _aside(r, "Ah, there it is.")
+        assert work.get("aside") is None and work["last_aside"] == "Ah, there it is."
+        clock.now += voice_calls.ASIDE_QUIET_S + 1
+        await r.call.progress_tick()
+        assert progress_says(r) == []
+        _aside(r, "Hm, not in the open ones. Trying the closed issues.")
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == [
+            "Hm, not in the open ones. Trying the closed issues."
+        ]
+
+    run(go())
+
+
+def test_a_dropped_short_aside_never_starves_the_fixed_line(monkeypatch):
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock, phase="tool", tool="session_status")
+
+    async def go():
+        _aside(r, "Let me look.")
+        clock.now += voice_calls.FIRST_PROGRESS_S
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == [voice_calls.LOOKING]
+
+    run(go())
+
+
 def test_an_aside_does_not_change_what_the_turn_is_doing(monkeypatch):
     """The aside is words to say, not a step: the phase and tool the fixed lines read stay."""
     clock = Clock(monkeypatch)
     r = Rig(monkeypatch)
     work = thinking(r, clock, phase="tool", tool="session_status")
-    _aside(r, "Checking that session.")
+    _aside(r, "Okay, I'm checking that session for you.")
     assert (work["phase"], work["tool"]) == ("tool", "session_status")
     _aside(r, "   ")  # nothing to say: ignored
-    assert work["aside"] == "Checking that session."
+    assert work["aside"] == "Okay, I'm checking that session for you."
 
 
 def test_asides_never_come_closer_together_than_the_gap(monkeypatch):
@@ -608,7 +644,7 @@ def test_asides_never_come_closer_together_than_the_gap(monkeypatch):
     thinking(r, clock)
 
     async def go():
-        _aside(r, "Let me look.")
+        _aside(r, "Let me look in Forgejo for that.")
         clock.now += voice_calls.ASIDE_QUIET_S
         await r.call.progress_tick()
         (first,) = progress_says(r)
@@ -621,7 +657,7 @@ def test_asides_never_come_closer_together_than_the_gap(monkeypatch):
         clock.now += voice_calls.ASIDE_GAP_S - voice_calls.ASIDE_QUIET_S
         await r.call.progress_tick()
         assert [s["text"] for s in progress_says(r)] == [
-            "Let me look.",
+            "Let me look in Forgejo for that.",
             "Hm, not there. Trying the issue list.",
         ]
 
@@ -634,7 +670,7 @@ def test_only_the_newest_unsaid_aside_is_said(monkeypatch):
     thinking(r, clock)
 
     async def go():
-        _aside(r, "Let me look in Forgejo.")
+        _aside(r, "Let me look in Forgejo for it.")
         _aside(r, "Not there, trying the epic list.")
         clock.now += voice_calls.ASIDE_QUIET_S
         await r.call.progress_tick()
@@ -650,7 +686,7 @@ def test_after_an_aside_the_fixed_lines_carry_on_at_their_pace(monkeypatch):
     thinking(r, clock)
 
     async def go():
-        _aside(r, "Let me look.")
+        _aside(r, "Let me look in Forgejo for that.")
         clock.now += voice_calls.ASIDE_QUIET_S
         await r.call.progress_tick()
         (first,) = progress_says(r)
@@ -672,13 +708,34 @@ def test_an_aside_waits_while_the_commander_speaks(monkeypatch):
     thinking(r, clock)
 
     async def go():
-        _aside(r, "Let me look.")
+        _aside(r, "Let me look in Forgejo for that.")
         r.call.user_speaking = True
         clock.now += voice_calls.ASIDE_QUIET_S + 5
         await r.call.progress_tick()
         assert progress_says(r) == []
         r.call.user_speaking = False
         await r.call.progress_tick()
-        assert [s["text"] for s in progress_says(r)] == ["Let me look."]
+        assert [s["text"] for s in progress_says(r)] == ["Let me look in Forgejo for that."]
+
+    run(go())
+
+
+def test_a_newer_short_aside_retires_the_older_long_one(monkeypatch):
+    """Hermes 8831: "Okay, I'm pulling up the open issues now." then "Found it." before the next
+    tick: the outdated long line is not said, and the fixed lines stay eligible."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    work = thinking(r, clock, phase="tool", tool="session_status")
+
+    async def go():
+        _aside(r, "Okay, I'm pulling up the open issues now.")
+        _aside(r, "Found it.")
+        assert work["aside"] is None and work["last_aside"] == "Found it."
+        clock.now += voice_calls.ASIDE_QUIET_S + 1
+        await r.call.progress_tick()
+        assert progress_says(r) == []
+        clock.now += voice_calls.FIRST_PROGRESS_S
+        await r.call.progress_tick()
+        assert [s["text"] for s in progress_says(r)] == [voice_calls.LOOKING]
 
     run(go())

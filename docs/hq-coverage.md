@@ -35,6 +35,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | One session's state, summary, screen, pending decision | GET /api/sessions/{sid}, scrollback | have (`session_status`) |
 | Session brief / recap; older scrollback (history) | GET /api/sessions/{sid}, GET …/history | P1 R |
 | Review now (AI summary) | POST /api/sessions/{sid}/review | P1 W (external: AI endpoint) |
+| Subagents (#2325): a main session's subagents; the ones that need you; archive with its subagents | GET …/children, GET …/attention, POST …/archive-with-subagents | P1 R/W |
 | Exclude / include in AI review | POST …/review-exclude | P1 W |
 | Exclude / include in orchestration | POST …/orchestrator-exclude | P1 W |
 | Favourite / unfavourite | POST …/favorite, …/unfavorite | P1 W |
@@ -245,7 +246,6 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Actions (#2248): the gallery — every action automations can take, what it needs and how many use it (read-only) | GET /api/actions | P4 R (HQ's action tools are #2248 P4) |
-| Automations: a review loop's webhook secret (make or rotate, shown once) (#2202) | POST /api/automations/{aid}/webhook-secret | **never** (a credential) |
 | Automations: a "Call a webhook" action's signing secret (make a new one, shown once) (#2248 P2) | POST /api/automations/{aid}/destination-secret | **never** (a credential) |
 | Webhooks (#2221): list, read (field names and types), rename, delete an unused one | GET/PATCH/DELETE /api/webhooks* | P7 R/W |
 | Webhooks (#2221): create, rotate (the secret is shown once) | POST /api/webhooks, POST /api/webhooks/{wid}/rotate | **never** (a credential) |
@@ -377,7 +377,6 @@ POST   /api/automations/{aid}/enable                                            
 POST   /api/automations/{aid}/pause                                               P4
 POST   /api/automations/{aid}/resume                                              P4
 POST   /api/automations/{aid}/run                                                 P4
-POST   /api/automations/{aid}/webhook-secret                                      never  # a credential, shown once (#2202)
 POST   /api/automations/{aid}/destination-secret                                  never  # a credential, shown once (#2248 P2)
 GET    /api/automations/{aid}/runs                                                P4
 POST   /api/chat/new                                                              P7
@@ -654,6 +653,9 @@ GET    /api/sessions/capacity                                                   
 POST   /api/sessions/archive-older                                                P1
 GET    /api/sessions/{sid}                                                        P1
 POST   /api/sessions/{sid}/archive                                                P1
+POST   /api/sessions/{sid}/archive-with-subagents                                 P1  # archive a main session with its subagents (#2325)
+GET    /api/sessions/{sid}/attention                                              P1  # the subagents that need you, any depth (#2325)
+GET    /api/sessions/{sid}/children                                               P1  # a main session's subagents, lazily (#2325)
 PUT    /api/sessions/{sid}/cluster                                                P2  # move to a cluster / back to HQ's choice, on a card (#1997 P5)
 POST   /api/sessions/{sid}/color                                                  P1
 GET    /api/sessions/{sid}/draft                                                  P7  # drafts
@@ -736,7 +738,7 @@ GET    /api/version                                                             
 GET    /change-password                                                           never  # identity
 POST   /change-password                                                           never  # identity
 GET    /healthz                                                                   n/a  # diagnostics
-POST   /hooks/a/{aid}                                                             n/a  # the forge's signed webhook, not an operator action (#2202)
+POST   /hooks/a/{aid}                                                             n/a  # the retired review loop's address: the uniform 404 for every id (#2202, #2222)
 POST   /hooks/w/{wid}                                                             n/a  # a list webhook's signed delivery, not an operator action (#2221)
 GET    /link/approve                                                              never  # identity
 POST   /link/approve                                                              never  # identity

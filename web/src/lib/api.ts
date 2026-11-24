@@ -92,7 +92,6 @@ import type {
   AutomationOrigin,
   AutomationRun,
   DestinationState,
-  WebhookSecret,
 } from "../types/automations";
 import type { ActionGallery, ActionScripts } from "../types/actions";
 import type {
@@ -185,6 +184,8 @@ import type {
   PulseOverview,
   PushSubscriptionInfo,
   Session,
+  SessionLineagePage,
+  ArchiveSubagentResult,
   SessionDraft,
   SessionsPage,
   SessionsQuery,
@@ -737,6 +738,14 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   if (q.cluster) p.set("cluster", q.cluster);
   if (q.snapshot) p.set("snapshot", q.snapshot);
   return `/api/sessions?${p.toString()}`;
+}
+
+function lineageQuery(q: { offset?: number; limit?: number; archived?: boolean }): string {
+  const p = new URLSearchParams();
+  p.set("offset", String(q.offset ?? 0));
+  p.set("limit", String(q.limit ?? 50));
+  p.set("archived", q.archived ? "1" : "0");
+  return p.toString();
 }
 
 const enc = encodeURIComponent;
@@ -1325,8 +1334,11 @@ export const api = {
       body,
       signal,
     ),
+  /** An API agent's session answers as the handoff commit does (`delivery`, `detail`); when its
+   *  first turn was not taken yet it also carries `retry_handle`, the handoff's own handle, to
+   *  commit again with `commitHandoff` (the same brief, the same session). */
   createFederationContinue: (peerId: string, grantId: string, handle: string, cwd: string) =>
-    mutateJson<{ id: string; engine: string; native: string; cwd: string }>(
+    mutateJson<HandoffCommitted & { retry_handle?: string }>(
       "POST",
       `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/continue/${enc(handle)}/create`,
       { cwd },
@@ -2369,6 +2381,30 @@ export const api = {
    *  list's pagination, filters, archived tab and visibility scope, so a deep-linked or
    *  hidden session can still name its project and folder. 404 when nothing has that id. */
   session: (id: string) => getJson<Session>(`/api/sessions/${enc(id)}`),
+  /** One level of a main session's subagents, lazily, paged (#2325). */
+  sessionChildren: (
+    id: string,
+    q: { offset?: number; limit?: number; archived?: boolean } = {},
+  ) =>
+    getJson<SessionLineagePage>(
+      `/api/sessions/${enc(id)}/children?${lineageQuery(q)}`,
+    ),
+  /** Every descendant that needs the operator, any depth, each with its `path` (#2325). */
+  sessionAttention: (
+    id: string,
+    q: { offset?: number; limit?: number; archived?: boolean } = {},
+  ) =>
+    getJson<SessionLineagePage>(
+      `/api/sessions/${enc(id)}/attention?${lineageQuery(q)}`,
+    ),
+  /** Archive a main session, then the subagents the operator confirmed (#2325). CSRF-guarded;
+   *  per-key results, never a partial raise. */
+  archiveWithSubagents: (id: string, subagents: string[]) =>
+    mutateJson<{ id: string; results: ArchiveSubagentResult[] }>(
+      "POST",
+      `/api/sessions/${enc(id)}/archive-with-subagents`,
+      { subagents },
+    ),
   rename: (id: string, title: string) =>
     mutateJson<{ id: string; title: string }>("POST", `/api/sessions/${enc(id)}/rename`, {
       title,
@@ -3476,10 +3512,6 @@ export const api = {
   ) => mutateJson<Automation>("POST", `${autoPath(id)}/enable`, body),
   automationVerb: (id: string, verb: "disable" | "pause" | "resume") =>
     mutateJson<Automation>("POST", `${autoPath(id)}/${verb}`),
-  /** Makes (or rotates) a review loop's webhook secret (#2202). The plaintext is in THIS answer
-   *  only; a rotated-out secret keeps working for 24 h. Never cached, never re-read. */
-  newWebhookSecret: (id: string) =>
-    mutateJson<WebhookSecret>("POST", `${autoPath(id)}/webhook-secret`),
   /** "Call a webhook" (#2248 P2): a NEW signing secret for its destination, in THIS answer only;
    *  the previous one stops signing at once. Never cached, never re-read. */
   newDestinationSecret: (id: string) =>

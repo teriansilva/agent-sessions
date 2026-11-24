@@ -1,4 +1,4 @@
-/** Step 3 — What (#2221 P2b): start a session, message a session, a review loop, or tell HQ — and,
+/** Step 3 — What (#2221 P2b): start a session, message a session, or tell HQ — and,
  *  on a schedule or Run now, start a mission, as before. A webhook starts or messages an API session
  *  only. "Tell HQ" puts the message in the operator's notifications; HQ is told only that a message
  *  from this automation arrived (never what it says) and never acts on it.
@@ -23,9 +23,7 @@ import {
   agentPicker,
   fromListHook,
   type messengers as messengersOf,
-  legacyTrigger,
   mappableFields,
-  reviewerOptions,
   sessionEngine,
   sessionPicker,
   withAction,
@@ -45,7 +43,6 @@ import { PublishArtifactFields } from "../../actions/PublishArtifactFields";
 import { RunLocalFields } from "../../actions/RunLocalFields";
 import type { ReactNode } from "react";
 import { Fold, Seg, StepIssues, type StepProps } from "./bits";
-import { ReviewLoopFields } from "./ReviewLoopFields";
 import w from "./wizard.module.css";
 
 type Kind = EditorForm["actionKind"];
@@ -57,7 +54,6 @@ const KNOWN: readonly Kind[] = Object.keys({
   start_mission: 1,
   start_session: 1,
   send_to_session: 1,
-  forge_review_loop: 1,
   tell_hq: 1,
   send_message: 1,
   call_webhook: 1,
@@ -80,9 +76,6 @@ export function StepWhat({
   sessions,
   templates,
   variables,
-  reviewers,
-  reviewerChosen,
-  specialistsLoaded,
   switchButton,
   onPickFolder,
   shape,
@@ -110,9 +103,6 @@ export function StepWhat({
   sessions: Session[] | null;
   templates: Template[] | null;
   variables: TemplateVariable[];
-  reviewers: ReturnType<typeof reviewerOptions>;
-  reviewerChosen: ReturnType<typeof reviewerOptions>[number] | null;
-  specialistsLoaded: boolean;
   /** "Switch to API client" for the SAVED automation, when it has one to switch to. */
   switchButton: Parameters<typeof SwitchToApiButton>[0] | null;
   onPickFolder: (opener: HTMLElement) => void;
@@ -123,18 +113,13 @@ export function StepWhat({
   // The model (fixed for now) and permission bypass are folded away; bypass on keeps them open.
   const [moreOpen, setMoreOpen] = useState<boolean | null>(null);
   const engines = list.engines ?? [];
-  const maxConcurrent = list.limits.max_concurrent_max;
   const hook = form.triggerKind === "webhook";
   const listHook = fromListHook(form);
-  // A review loop's own webhook starts only its loop — while it IS the trigger. On a schedule or Run
-  // now the stored identity waits, for a switch back, and offers what those triggers can start.
-  const legacy = legacyTrigger(form);
   // What it does comes from the action gallery (#2248 P1): the actions whose manifest says this
   // trigger starts them, in the gallery's order. The server's check at save is the authority.
   const offered = actions.gallery
-    ? offeredActions(actions.gallery.actions, form.triggerKind, legacy, KNOWN)
+    ? offeredActions(actions.gallery.actions, form.triggerKind, KNOWN)
     : [];
-  const loop = form.actionKind === "forge_review_loop";
   const template = templates?.find((t) => t.id === form.templateId) ?? null;
   const mappable = listHook ? mappableFields(template) : [];
   // API first (#2244): the pickers offer API agents and API sessions; what the automation already
@@ -185,7 +170,7 @@ export function StepWhat({
           gallery={actions.gallery}
           offered={offered}
           value={form.actionKind}
-          onChange={(v) => update((x) => withAction(x, v as Kind, maxConcurrent))}
+          onChange={(v) => update((x) => withAction(x, v as Kind))}
           testId="action-kind"
         />
       ) : (
@@ -196,24 +181,10 @@ export function StepWhat({
         )
       )}
       <p className={styles.hint} data-testid="action-why">
-        {legacy
-          ? "Its own Forgejo webhook starts only its review loop."
-          : hook
-            ? "A webhook starts or messages an API session, runs a review loop, or tells HQ. Starting a mission from a webhook comes in a later release."
-            : "A review loop starts from a webhook: choose “When a webhook delivers” in step 1."}
+        {hook
+          ? "A webhook starts or messages an API session, or tells HQ. Starting a mission from a webhook comes in a later release."
+          : "On a schedule or Run now it can also start a mission, which a webhook can’t."}
       </p>
-
-      {loop && (
-        <ReviewLoopFields
-          form={form}
-          set={set}
-          f={f}
-          projects={projects}
-          reviewers={reviewers}
-          reviewerChosen={reviewerChosen}
-          specialistsLoaded={specialistsLoaded}
-        />
-      )}
 
       {form.actionKind === "start_mission" && (
         <div className={styles.fields}>
@@ -576,8 +547,7 @@ export function StepWhat({
         </div>
       )}
 
-      {!loop &&
-        form.actionKind !== "call_webhook" &&
+      {form.actionKind !== "call_webhook" &&
         form.actionKind !== "publish_artifact" &&
         form.actionKind !== "run_command" &&
         form.actionKind !== "run_script" && (

@@ -367,7 +367,7 @@ async def automation_start(
     """An automation's new API session: one structured create and one guarded first turn, the
     same facts `headless_dispatch.dispatch` returns.
 
-    A review loop's reviewer (#2202) names its ``specialist`` ``(id, version)`` with that version's
+    A caller that names a ``specialist`` ``(id, version)`` passes that version's
     ``model`` and ``effort``: the create reserves the specialist's capacity and bundles its skills
     exactly as a mission step's does (`specialist_launch.check_api`).
 

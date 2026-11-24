@@ -215,13 +215,13 @@ export async function startAiStub(summary: Record<string, unknown>): Promise<AiS
 }
 
 /** Point the instance `page` is on at `stub`, as Settings → AI saves an endpoint: the app's real
- *  `PATCH /api/prefs`, with the operator's acknowledgement that session text goes to it. The
+ *  `POST /api/prefs`, with the operator's acknowledgement that session text goes to it. The
  *  Settings page itself is not what these specs are about. */
 export async function useAiStub(page: Page, stub: AiStub): Promise<void> {
   const saved = await page.evaluate(async (base_url) => {
     const config = (await (await fetch("/api/config")).json()) as { csrf: string };
     const r = await fetch("/api/prefs", {
-      method: "PATCH",
+      method: "POST",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": config.csrf },
       body: JSON.stringify({
         ai_review: { egress_acknowledged: true, base_url, api_key: "stub-key", model: "stub-model" },

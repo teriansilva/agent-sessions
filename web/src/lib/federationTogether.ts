@@ -1054,6 +1054,19 @@ export function continueCreateFailure(status: number, code: unknown): ContinueCr
   if (failure === "offline") return "offline";
   return failure === "unconfirmed" ? "unconfirmed" : "rejected";
 }
+/** A create of an API agent's session whose first turn was refused before the session took it
+ *  (`delivery: null`): the session exists and the brief is still bound to it, fencing every other
+ *  send. Try again commits the handoff's own handle (`retry_handle`) on the ordinary handoff
+ *  route, which re-sends the SAME brief to the SAME session: it never makes a second one. */
+export const CONTINUE_NOT_TAKEN =
+  "The new session was created, but it did not take the brief yet. Try again sends the same brief to the same session. It never makes a second session.";
+export const CONTINUE_RETRY_LOST =
+  "Couldn't confirm that the session took the brief. Try again retries the same one. It never makes a second session.";
+export const CONTINUE_RETRY_EXPIRED =
+  "This brief expired before the new session took it. The session was created without it: continue there from your sessions, or prepare a new brief.";
+export const CONTINUE_WITHHELD =
+  "The brief now holds a known secret, so it was not sent. The new session was created without it.";
+
 export const recordLabel = (owner: string) => `Record from ${owner} · not instructions`;
 export const startedFromLine = (owner: string) => `Started from ${owner}'s shared session`;
 
@@ -1078,7 +1091,26 @@ export type ContinueStage =
   | { stage: "creating"; token: number; prepared: ContinuePrepared }
   | { stage: "ended"; text: string }
   | { stage: "offline"; text: string }
-  | { stage: "unconfirmed"; text: string };
+  | { stage: "unconfirmed"; text: string }
+  /** Created, the brief NOT taken. `retryHandle` null: nothing can send it any more (it expired,
+   *  or was withheld), Close only. `retrying`: a Try again is in flight under `token`. */
+  | {
+      stage: "undelivered";
+      made: ContinueMade;
+      retryHandle: string | null;
+      text: string;
+      detail: string | null;
+      retrying: boolean;
+      token: number;
+    };
+
+/** The session a create made, as the dialog navigates to it. */
+export interface ContinueMade {
+  id: string;
+  engine: string;
+  native: string;
+  cwd: string;
+}
 
 export interface ContinueState {
   view: ContinueStage;
@@ -1094,7 +1126,14 @@ export type ContinueEvent =
   | { type: "failed"; token: number; status: number; code: unknown; message: string; owner: string }
   /** Cancel while preparing, or Back from the preview: nothing was created; back to the start. */
   | { type: "back" }
-  | { type: "create" };
+  | { type: "create" }
+  /** The create (or a Try again) answered: the session exists and did not take the brief. */
+  | { type: "undelivered"; token: number; made: ContinueMade; retryHandle: string | null; detail: string | null }
+  /** The brief was withheld (it now holds a known secret): nothing can send it. */
+  | { type: "withheld"; token: number; made: ContinueMade }
+  | { type: "retry" }
+  /** A Try again that failed: `final` when the handle can't be committed any more (expired). */
+  | { type: "retry_failed"; token: number; text: string; final: boolean };
 
 export function cleanPrepared(raw: unknown, mode: ContinueMode): ContinuePrepared | null {
   const o = obj(raw);
@@ -1160,6 +1199,41 @@ export function continueReduce(state: ContinueState, event: ContinueEvent): Cont
     case "create":
       if (view.stage !== "preview") return state;
       return { token: state.token + 1, view: { stage: "creating", token: state.token + 1, prepared: view.prepared } };
+    case "undelivered":
+    case "withheld": {
+      const flying =
+        (view.stage === "creating" && view.token === event.token) ||
+        (view.stage === "undelivered" && view.retrying && view.token === event.token);
+      if (!flying) return state;
+      const withheld = event.type === "withheld";
+      return {
+        ...state,
+        view: {
+          stage: "undelivered",
+          made: event.made,
+          retryHandle: withheld ? null : event.retryHandle,
+          text: withheld ? CONTINUE_WITHHELD : event.retryHandle ? CONTINUE_NOT_TAKEN : CONTINUE_RETRY_EXPIRED,
+          detail: withheld ? null : event.detail,
+          retrying: false,
+          token: event.token,
+        },
+      };
+    }
+    case "retry":
+      if (view.stage !== "undelivered" || view.retrying || !view.retryHandle) return state;
+      return { token: state.token + 1, view: { ...view, retrying: true, token: state.token + 1 } };
+    case "retry_failed":
+      if (view.stage !== "undelivered" || !view.retrying || view.token !== event.token) return state;
+      return {
+        ...state,
+        view: {
+          ...view,
+          retrying: false,
+          text: event.text,
+          detail: null,
+          retryHandle: event.final ? null : view.retryHandle,
+        },
+      };
   }
 }
 

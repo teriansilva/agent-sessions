@@ -1,8 +1,8 @@
 /** Step 2 — Which events (#2221 P2b). The presets the server recognises from the webhook's last
  *  delivery; "Advanced" holds the operator's own conditions on its fields (all must hold, a closed
  *  set of operators, no expressions). An unknown sender gets Advanced only; a webhook with no
- *  delivery yet says to send a test first and still allows Advanced. A review loop picks its own
- *  events and takes no conditions. A schedule or Run now never reaches this step. */
+ *  delivery yet says to send a test first and still allows Advanced. A schedule or Run now never
+ *  reaches this step. */
 import { useState } from "react";
 
 import {
@@ -48,14 +48,6 @@ export function StepEvents({
   // until the operator opens or closes it themselves.
   const [userOpen, setOpen] = useState<boolean | null>(null);
   const open = userOpen ?? (chosen === null || presets.length === 0);
-
-  if (form.actionKind === "forge_review_loop")
-    return (
-      <p className={styles.callout} data-testid="events-loop">
-        A review loop picks its own events: issues and pull requests, as you set them in step 3.
-        It takes no conditions.
-      </p>
-    );
 
   const setWhen = (when: ConditionDraft[]) => update((x) => ({ ...x, when }));
   const edit = (i: number, patch: Partial<ConditionDraft>) =>

@@ -81,29 +81,6 @@ export function scopeLines(config: Json): string[] {
         : "Permission bypass: off",
     );
     lines.push(messageLine("Message", action.message as Json));
-  } else if (action.kind === "forge_review_loop") {
-    // `automations._review_loop_lines` (#2202), for the configs the review-loop spec uses.
-    const legs = action.legs as Json;
-    const caps = action.max_rounds as Json;
-    const rv = action.reviewer as Json;
-    const what = [
-      legs.issues ? "issues (opened, reopened, edited)" : "",
-      legs.pulls ? "pull requests (opened, reopened, pushed; drafts skipped)" : "",
-    ].filter(Boolean);
-    lines.push(`Reviews ${what.join(" and ") || "nothing"} in ${action.repo}`);
-    lines.push(
-      `Starts Shop Reviewer (${rv.specialist_id} v${rv.version}) as an API session in project ${action.project_id}, in /repo`,
-    );
-    lines.push(
-      `Trusts verdicts only from ${action.reviewer_login}, and only for a review it started, once, for the revision it reviewed`,
-    );
-    lines.push(
-      action.return_to_origin
-        ? `Sends the verdict to the API session that opened the item, if it is in project ${action.project_id} (and on the pull request's branch); a terminal session gets nothing and you are notified`
-        : "Does not send verdicts to any session",
-    );
-    lines.push(`At most ${caps.pr} rounds per pull request and ${caps.issue} per issue; then one notification`);
-    lines.push("Never posts, merges or labels anything on the forge");
   } else if (action.kind === "plugin") {
     // `automations.describe` for a plugin action (#2248 P2): its action line, then its own lines.
     const inputs = action.inputs as Json;
@@ -233,9 +210,11 @@ export function automation(over: Json = {}): Json {
   };
   const out = { ...base, ...over };
   out.scope_lines = over.scope_lines ?? scopeLines(out);
-  // A webhook automation carries its delivery facts (#2202); any other has `webhook: null`.
-  if (!("webhook" in over))
-    out.webhook = (out.trigger as Json).kind === "webhook" ? hookState(String(out.id)) : null;
+  // A webhook automation carries its picked webhook's facts (#2221); any other has `webhook: null`.
+  if (!("webhook" in over)) {
+    const t = out.trigger as Json;
+    out.webhook = t.kind === "webhook" ? hookState(String(t.webhook_id ?? out.id)) : null;
+  }
   // The strip FOLLOWS the stats, as the server's does: a fixture with no runs has fourteen empty
   // days, and one with failures has failed days. A fixed strip painted impossible rows ("never
   // enabled" beside a full strip) and let "paint an empty day green" pass.
@@ -243,10 +222,12 @@ export function automation(over: Json = {}): Json {
   return out;
 }
 
-/** `routes/automations.public()["webhook"]` before any secret or delivery (#2202). */
-export function hookState(id: string, over: Json = {}): Json {
+/** `routes/automations.public()["webhook"]` for a picked webhook before any secret or delivery
+ *  (#2221): `automations_store.hook_state`, the webhook's public view plus its id. */
+export function hookState(wid: string, over: Json = {}): Json {
   return {
-    path: `/hooks/a/${id}`,
+    webhook_id: wid,
+    path: `/hooks/w/${wid}`,
     secret_set: false,
     secret_created_at: null,
     previous_valid_until: null,
@@ -556,26 +537,9 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
       if (!dest) return json(409, { detail: "this automation does not call a webhook" });
       return json(201, { secret: NEW_SIGNING_SECRET, destination: dest });
     }
-    if (verb === "webhook-secret" && method === "POST") {
-      // `automations_store.new_hook_secret` (#2202): a fresh 64-hex secret, shown in THIS answer
-      // only; a rotation keeps the previous one valid for 24 h.
-      if ((a.trigger as Json).kind !== "webhook")
-        return json(409, { detail: "only a webhook automation has a webhook secret" });
-      const t = Math.floor(Date.now() / 1000);
-      const prev = (a.webhook ?? hookState(String(a.id))) as Json;
-      seq += 1;
-      const secret = `${String(seq).padStart(4, "0")}${"5ec7e7".repeat(10)}`.slice(0, 64);
-      a.webhook = {
-        ...prev,
-        secret_set: true,
-        secret_created_at: t,
-        previous_valid_until: prev.secret_set ? t + DAY : prev.previous_valid_until,
-      };
-      return json(201, { secret, webhook: a.webhook });
-    }
     if (verb === "run" && method === "POST" && (a.trigger as Json).kind === "webhook")
-      // `automation_runner.run_now` refuses a review loop: only a delivery names an item.
-      return json(409, { detail: "a review loop runs only when its webhook delivers an event" });
+      // `automation_runner.run_now` refuses a webhook automation: only a delivery fills its values.
+      return json(409, { detail: "a webhook automation runs only when its webhook delivers an event" });
     if (verb === "run" && method === "POST" && legacy.has(a.id as string)) {
       Object.assign(a, {
         needs_reapproval: true,

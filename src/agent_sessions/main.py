@@ -46,6 +46,7 @@ from . import (
     hq_dispatch,
     hq_report_broker,
     hq_tasks,
+    lineage_attribution,
     memory,
     memory_broker,
     memory_capture,
@@ -432,6 +433,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # HQ's session clustering (#1997): same reaper pattern, gated on the `clusters` prefs and
         # a configured endpoint, re-read per sweep.
         clusters_task = asyncio.create_task(clusters_loop.run())
+        # Session lineage (#2325): proves which session started which, off the request path.
+        lineage_task = asyncio.create_task(lineage_attribution.run())
         # No Pulse scan loop: the session scan was retired (#2179). `GET /api/pulse` builds its
         # cards live, and nothing else read the scan's cache.
         # Periodic Pulse orchestrator pass (#726 Phase 1): same reaper pattern, gated on the
@@ -643,6 +646,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 review_task,
                 autosort_task,
                 clusters_task,
+                lineage_task,
                 orchestrator_task,
                 supervisor_task,
                 update_task,
@@ -918,7 +922,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     )
     # Library → Actions (#2248 P1): the action gallery, read-only, same login as automations.
     actions_routes.register(app, logged_in=_logged_in)
-    # The review loop's Forgejo webhook (#2202): NO cookie, CSRF or Origin — it authenticates
+    # The webhook addresses (#2221): NO cookie, CSRF or Origin — each delivery authenticates
     # itself by the delivery's HMAC signature and answers one uniform 404 otherwise.
     hooks_routes.register(app, registry=registry)
     # The webhook list (#2221): same auth surface as the rest of the Library.

@@ -3,8 +3,8 @@
  *  shows its last delivery (LED + time), who uses it, what arrived last and refused unsigned
  *  deliveries; the whole row opens its page. "New webhook" asks for a name only.
  *
- *  A #2202 review loop's own webhook is listed too ("old address · used by …"): it belongs to that
- *  automation alone and is never offered as a pick. A failed read says so and offers Retry; it never
+ *  A retired #2202 review loop's own webhook is listed too ("old address · used by …"): it receives
+ *  nothing any more (#2222), belongs to that automation alone and is never offered as a pick. A failed read says so and offers Retry; it never
  *  shows the empty state. */
 import { Link } from "react-router-dom";
 import { ChevronRight, Plus, RefreshCw } from "lucide-react";

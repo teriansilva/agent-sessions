@@ -16,11 +16,15 @@ import {
   continueInit,
   continueReduce,
   continueWarning,
+  CONTINUE_RETRY_EXPIRED,
+  CONTINUE_RETRY_LOST,
   recordLabel,
   seedParts,
   startedFrom,
+  type ContinueMade,
   type ContinueMode,
 } from "../../lib/federationTogether";
+import type { HandoffCommitted } from "../../types/api";
 import { FolderPickerModal } from "../FolderPickerModal";
 import dlg from "../HudDialog.module.css";
 import { Led } from "../hud/Meters";
@@ -107,7 +111,7 @@ export function ContinueHereDialog({
   const cwd = pickedCwd ?? (config?.default_project || config?.project_roots?.[0] || "");
 
   const view = state.view;
-  const busy = view.stage === "creating";
+  const busy = view.stage === "creating" || (view.stage === "undelivered" && view.retrying);
   useEffect(() => {
     closeRef.current?.focus();
   }, []);
@@ -151,6 +155,28 @@ export function ContinueHereDialog({
     flight.current?.abort();
     dispatch({ type: "back" });
   };
+  const open = (made: ContinueMade) => {
+    navigate(`/s/${encodeURIComponent(made.engine)}/${encodeURIComponent(made.native)}`, {
+      state: { fresh: { cwd: made.cwd, bypass: false } },
+    });
+    onClose();
+  };
+  /** An API agent's session answers with its brief's delivery (#2141): only a brief the session
+   *  took (or one its pane owns from here, `not_sent` / `uncertain`) opens it. Not taken yet
+   *  (`null`) keeps the dialog, with Try again; withheld says so. A console session has no
+   *  `delivery`: its brief is typed at launch, as before. */
+  const settle = (made: HandoffCommitted, token: number, retryHandle: string | null) => {
+    const where = { id: made.id, engine: made.engine, native: made.native, cwd: made.cwd };
+    if (made.api && (made.delivery === null || made.delivery === undefined)) {
+      dispatch({ type: "undelivered", token, made: where, retryHandle, detail: made.detail ?? null });
+      return;
+    }
+    if (made.delivery === "withheld") {
+      dispatch({ type: "withheld", token, made: where });
+      return;
+    }
+    open(where);
+  };
   /** THE one place a session is created: Start session, in the preview. */
   const create = async () => {
     if (view.stage !== "preview" || !cwd) return;
@@ -163,10 +189,7 @@ export function ContinueHereDialog({
       // Remembered in this tab only: the new session's strip. The server keeps no link back.
       startedFrom.set(made.id, owner);
       if (!current()) return;
-      navigate(`/s/${encodeURIComponent(made.engine)}/${encodeURIComponent(made.native)}`, {
-        state: { fresh: { cwd: made.cwd, bypass: false } },
-      });
-      onClose();
+      settle(made, token, made.retry_handle || null);
     } catch (e) {
       // The real outcome, shown once: a failed create is never sent again from here. One that
       // got no usable answer may have created the session: the dialog says so and offers no
@@ -181,6 +204,38 @@ export function ContinueHereDialog({
         owner,
       });
     }
+  };
+
+  /** Try again: the handoff's own commit, for the SAME binding (the server replays it: the same
+   *  session, the same brief under the same operation id). Never a new create, never a second
+   *  session; its options are the ones the create fixed. */
+  const retry = async () => {
+    if (view.stage !== "undelivered" || view.retrying || !view.retryHandle) return;
+    const token = state.token + 1;
+    const handle = view.retryHandle;
+    const current = ticket();
+    dispatch({ type: "retry" });
+    let made: HandoffCommitted;
+    try {
+      made = await api.commitHandoff(handle, undefined, { bypass: false, archive_source: false });
+    } catch (e) {
+      if (!current()) return;
+      const status = statusOf(e);
+      dispatch({
+        type: "retry_failed",
+        token,
+        final: status === 404,
+        text:
+          status === 404
+            ? CONTINUE_RETRY_EXPIRED
+            : e instanceof ApiError && status < 500
+              ? `${e.message} Nothing was sent.`
+              : CONTINUE_RETRY_LOST,
+      });
+      return;
+    }
+    if (!current()) return;
+    settle(made, token, handle);
   };
 
   const titleId = "continue-here-title";
@@ -364,6 +419,22 @@ export function ContinueHereDialog({
               <p className={styles.warningText}>{view.text}</p>
             </div>
           )}
+          {view.stage === "undelivered" && (
+            <div className={styles.unavailable} role="alert" data-testid="continue-undelivered">
+              <p className={styles.unavailableWord}>
+                <Led tone="att" />
+                Not sent
+              </p>
+              <p className={styles.warningText} data-testid="continue-undelivered-text">
+                {view.text}
+              </p>
+              {view.detail && (
+                <p className={`${styles.help} ${styles.helpFirst}`} data-testid="continue-undelivered-detail">
+                  {view.detail}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className={`${dlg.actions} ${share.actions}`}>
@@ -404,9 +475,23 @@ export function ContinueHereDialog({
               </button>
             </>
           )}
-          {(view.stage === "ended" || view.stage === "offline" || view.stage === "unconfirmed") && (
-            <button type="button" className={dlg.cancel} data-testid="continue-close" onClick={onClose}>
+          {(view.stage === "ended" ||
+            view.stage === "offline" ||
+            view.stage === "unconfirmed" ||
+            view.stage === "undelivered") && (
+            <button type="button" className={dlg.cancel} data-testid="continue-close" disabled={busy} onClick={onClose}>
               Close
+            </button>
+          )}
+          {view.stage === "undelivered" && view.retryHandle && (
+            <button
+              type="button"
+              className={dlg.go}
+              disabled={view.retrying}
+              data-testid="continue-retry"
+              onClick={() => void retry()}
+            >
+              {view.retrying ? "Sending…" : "Try again"}
             </button>
           )}
         </div>

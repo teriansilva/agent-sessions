@@ -34,6 +34,7 @@ const api = vi.hoisted(() => ({
   federationGrants: vi.fn(),
   prepareFederationContinue: vi.fn(),
   createFederationContinue: vi.fn(),
+  commitHandoff: vi.fn(),
 }));
 vi.mock("../../lib/api", async (orig) => ({
   ...(await orig<typeof import("../../lib/api")>()),
@@ -1085,6 +1086,95 @@ test.each(Object.keys(UNKNOWN) as (keyof typeof UNKNOWN)[])(
     expect(api.prepareFederationContinue).toHaveBeenCalledTimes(1);
   },
 );
+
+// ---- an API agent's first turn not taken yet: Try again, never a second session (#2062) -------
+
+const MADE = { id: "claude-api:5b0f6a52-1111-4222-8333-444455556666", engine: "claude-api", native: "5b0f6a52-1111-4222-8333-444455556666", cwd: "/work", api: true, bypass: false };
+
+async function startUndelivered(onClose = vi.fn()) {
+  api.prepareFederationContinue.mockResolvedValue({ handle: "handle-1", preview: "seed", meta: { mode: "quick" } });
+  api.createFederationContinue.mockResolvedValue({
+    ...MADE,
+    delivery: null,
+    detail: "the new session did not take the brief yet; hand off again to retry",
+    retry_handle: "handoff-handle-9",
+  });
+  render(
+    <StrictMode>
+      <ConfigCtx.Provider value={CONFIG}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route
+              path="/"
+              element={<ContinueHereDialog peerId={GPU} grantId={GRANT} owner="gpu-box" title="Tune" onClose={onClose} />}
+            />
+            <Route path="/s/:engine/:native" element={<p data-testid="opened">opened</p>} />
+          </Routes>
+        </MemoryRouter>
+      </ConfigCtx.Provider>
+    </StrictMode>,
+  );
+  const dialog = screen.getByTestId("continue-here");
+  await userEvent.click(screen.getByTestId("continue-prepare"));
+  await userEvent.click(await screen.findByTestId("continue-start"));
+  await waitFor(() => expect(dialog).toHaveAttribute("data-stage", "undelivered"));
+  return dialog;
+}
+
+test("a Continue-here create whose brief was not taken yet stays, says so, and Try again re-commits the same handoff", async () => {
+  const onClose = vi.fn();
+  await startUndelivered(onClose);
+  expect(screen.getByTestId("continue-undelivered-text")).toHaveTextContent("did not take the brief yet");
+  expect(screen.getByTestId("continue-undelivered-detail")).toHaveTextContent(
+    "the new session did not take the brief yet; hand off again to retry",
+  );
+  // not opened: the session is still waiting for its brief
+  expect(screen.queryByTestId("opened")).toBeNull();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("continue-start")).toBeNull();
+  api.commitHandoff.mockResolvedValue({ ...MADE, delivery: "sent" });
+  await userEvent.click(screen.getByTestId("continue-retry"));
+  expect(await screen.findByTestId("opened")).toBeInTheDocument();
+  // the handoff's own handle, no edited brief, the create's own options: never a second create
+  expect(api.commitHandoff).toHaveBeenCalledTimes(1);
+  expect(api.commitHandoff).toHaveBeenCalledWith("handoff-handle-9", undefined, { bypass: false, archive_source: false });
+  expect(api.createFederationContinue).toHaveBeenCalledTimes(1);
+  expect(onClose).toHaveBeenCalled();
+});
+
+test("a Try again that is not taken again, lost, or expired keeps saying so and never makes a second session", async () => {
+  const dialog = await startUndelivered();
+  // still not taken: the same handle stays on offer
+  api.commitHandoff.mockResolvedValueOnce({ ...MADE, delivery: null, detail: "still starting" });
+  await userEvent.click(screen.getByTestId("continue-retry"));
+  expect(await screen.findByTestId("continue-undelivered-detail")).toHaveTextContent("still starting");
+  // a lost answer: retryable, the same handle
+  api.commitHandoff.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  await userEvent.click(screen.getByTestId("continue-retry"));
+  await waitFor(() =>
+    expect(screen.getByTestId("continue-undelivered-text")).toHaveTextContent("Couldn't confirm that the session took the brief."),
+  );
+  expect(screen.getByTestId("continue-retry")).toBeEnabled();
+  // expired: nothing left to commit, Close only
+  api.commitHandoff.mockRejectedValueOnce(new ApiError(404, "unknown or expired handoff handle"));
+  await userEvent.click(screen.getByTestId("continue-retry"));
+  await waitFor(() => expect(screen.getByTestId("continue-undelivered-text")).toHaveTextContent("This brief expired"));
+  expect(screen.queryByTestId("continue-retry")).toBeNull();
+  expect(screen.getByTestId("continue-close")).toBeEnabled();
+  expect(api.commitHandoff.mock.calls.map((c) => c[0])).toEqual(["handoff-handle-9", "handoff-handle-9", "handoff-handle-9"]);
+  expect(api.createFederationContinue).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("opened")).toBeNull();
+  expect(dialog).toHaveAttribute("data-stage", "undelivered");
+});
+
+test("a brief withheld for a known secret is said so, not opened, and offers no Try again", async () => {
+  await startUndelivered();
+  api.commitHandoff.mockResolvedValue({ ...MADE, delivery: "withheld", detail: "the brief now holds a known secret" });
+  await userEvent.click(screen.getByTestId("continue-retry"));
+  await waitFor(() => expect(screen.getByTestId("continue-undelivered-text")).toHaveTextContent("known secret, so it was not sent"));
+  expect(screen.queryByTestId("continue-retry")).toBeNull();
+  expect(screen.queryByTestId("opened")).toBeNull();
+});
 
 /** A parent that holds the notes state, as the panes do. */
 function Thread({ side, grantId }: { side: "owner" | "peer"; grantId: string }) {

@@ -278,10 +278,6 @@ def check_save(config: dict) -> None:
         cwd = getattr(row, "cwd", None) if row is not None else None
         if cwd and not scope_ok(cwd):
             raise model.AutomationError("that session is outside your project folders")
-    elif action["kind"] == "forge_review_loop":
-        from . import review_loop_runner
-
-        review_loop_runner.check_save(config)
     elif action["kind"] == "plugin":
         # #2248 P2: the plugin's own world checks (connector, destination, folder, memory).
         from .actions import plugins
@@ -826,8 +822,8 @@ async def _send_structured(
             )
         except RunRefused as e:
             return "refused", e.detail
-        # Recorded BEFORE the turn. A caller's journal (`keep_inputs`, a review loop's accepted
-        # verdict, #2202) is kept beside it: recovery reads those facts after a crash mid-send.
+        # Recorded BEFORE the turn. A caller's journal (`keep_inputs`) is kept beside it: recovery
+        # reads those facts after a crash mid-send.
         await asyncio.to_thread(store.set_inputs, rid, {**(keep_inputs or {}), **inputs})
         stop = await asyncio.to_thread(_authority_outcome, run)
         if stop:
@@ -953,13 +949,6 @@ def _tell_hq_sync(run: dict, config: dict, pins: dict) -> tuple[str, str]:
         return _DELIVERED[rid]
 
 
-async def _review_loop(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
-    # At call time: the review loop's runtime imports this module (#2202).
-    from . import review_loop_runner
-
-    return await review_loop_runner.launch_review(run, config, pins, registry=registry)
-
-
 async def _plugin(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
     """A plugin action (#2248 P2): the whole effect on one worker thread under the effect lock,
     joined on cancellation (`actions.plugins.run`)."""
@@ -972,7 +961,6 @@ _ACTIONS = {
     "start_mission": _start_mission,
     "start_session": _start_session,
     "send_to_session": _send_to_session,
-    "forge_review_loop": _review_loop,
     "tell_hq": _tell_hq,
     "plugin": _plugin,
 }
@@ -1045,11 +1033,6 @@ async def execute(run: dict, *, registry) -> dict:
         outcome, reason = done or ("interrupted", store.INTERRUPTED_REASON)
         with contextlib.suppress(Exception):
             await asyncio.shield(asyncio.to_thread(store.finish_run, rid, outcome, reason))
-        if outcome == "interrupted":
-            # Settled HERE, so orphan recovery never sees it: a review loop's cut-off verdict is
-            # announced now (#2202). Synchronous and best-effort — we are being cancelled.
-            with contextlib.suppress(Exception):
-                announce_interrupted_return(rid)
         raise
     except Exception as e:  # noqa: BLE001 — a crash in one run must not take the loop down
         done = _DELIVERED.get(rid)
@@ -1156,8 +1139,8 @@ async def run_now(aid: str, *, registry) -> dict:
         row = await asyncio.to_thread(store.get, aid)
         kind = ((row.get("config") or {}).get("trigger") or {}).get("kind")
     if kind == "webhook":
-        # It acts on a delivery (a review loop on an item's revision, #2202; a session on the
-        # values a delivery fills, #2221): Run now has none.
+        # It acts on a delivery (a session on the values a delivery fills, #2221): Run now has
+        # none.
         raise RunRefused(409, "a webhook automation runs only when its webhook delivers an event")
     res = await asyncio.to_thread(
         store.begin_run, aid, trigger="manual", slot=f"manual:{uuid.uuid4().hex}", fire_at=None
@@ -1207,10 +1190,6 @@ def _lost_ack(res: dict, rid: str) -> dict:
         out["episode"] = ("open", key)
     if run.get("outcome") == "partial" and not _in_bell(f"{key}:partial"):
         out["alert"] = f"{key}:partial"
-    if run.get("outcome") == "undelivered" and not _in_bell(f"{key}:undelivered"):
-        # A review loop's verdict that did not reach its session (#2202): it opens no failure
-        # episode, so this row is the operator's only notice — owed again after a lost ack.
-        out["alert"] = f"{key}:undelivered"
     return out
 
 
@@ -1256,14 +1235,7 @@ def notify(result: dict) -> None:
     run = result.get("run") or {}
     name = auto.get("name") or "automation"
     alert = result.get("alert")
-    if alert and run.get("outcome") == "undelivered":
-        # A review loop's verdict that did not reach its session (#2202): one row of its own,
-        # never counted as a failure — the review itself worked.
-        try:
-            _announce(f"Review verdict not delivered: {name}", run.get("reason") or "", alert)
-        except Exception:  # noqa: BLE001
-            log.warning("automation notification for %s failed", alert, exc_info=True)
-    elif alert:
+    if alert:
         # A PARTIAL send: one notification of its own. The automation is already paused.
         try:
             _announce(f"Automation typed but did not submit: {name}", store.PARTIAL_REASON, alert)
@@ -1293,27 +1265,6 @@ def notify(result: dict) -> None:
             notifications.dismiss_for_action(key)
     except Exception:  # noqa: BLE001 — the run is recorded; the bell must not undo that
         log.warning("automation notification for %s failed", key, exc_info=True)
-
-
-def announce_interrupted_return(rid: str) -> bool:
-    """One bell row for a review loop's verdict whose delivery was cut off (#2202): accepted and
-    counted before the send, never resent. ``True`` when it announced. The key is per run, so the
-    cancellation path and orphan recovery can never announce the same run twice."""
-    run = store.get_run(rid)
-    inputs = run.get("inputs") or {}
-    if inputs.get("leg") != "return" or run.get("outcome") != "interrupted":
-        return False
-    key = f"automation:{run['automation_id']}:{rid}:interrupted"
-    if _in_bell(key):
-        return False
-    auto = store.get(run["automation_id"])
-    _announce(
-        f"Review verdict may not have been delivered: {auto['name']}",
-        f"the app stopped while sending the verdict on {inputs.get('item')}; it is never "
-        "resent — check the session that opened it",
-        key,
-    )
-    return True
 
 
 def retract(key: str) -> None:

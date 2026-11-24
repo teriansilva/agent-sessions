@@ -10,9 +10,8 @@
  *  A failure notification links here (`automationPath`), and `?run=<id>` opens one run. A failed
  *  reload keeps the runs already shown and says when they were loaded.
  *
- *  A review loop (#2202) shows its "Connect Forgejo" panel here too, and each of its runs says its
- *  leg (review / return), its round ("review 2 / 4"), the item and revision, and the delivery's
- *  unsigned headers as "recorded, untrusted". It has no Run now: only a delivery names an item. */
+ *  A webhook automation shows the webhook it picked (read-only, linking to its page) and has no
+ *  Run now: only a delivery fills its values. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -25,7 +24,6 @@ import {
 } from "../components/automations/AutomationBits";
 import { useAutomations, useNowS } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
-import { WebhookPanel } from "../components/automations/WebhookPanel";
 import { SharedWebhookPanel } from "../components/webhooks/WebhookBits";
 import { useRunPages } from "../components/automations/useRunPages";
 import { refreshOrigins } from "../app/automationOrigins";
@@ -33,8 +31,6 @@ import { api } from "../lib/api";
 import {
   errorWords,
   inFlightNote,
-  isLegacyHook,
-  loopFacts,
   runNowBlock,
   runTriggerWords,
   stepWords,
@@ -45,7 +41,6 @@ import { sessionPathFromKey } from "../lib/format";
 import { missionLink } from "../lib/missionLink";
 import { AUTOMATIONS_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Automation, AutomationRun, RunStep } from "../types/automations";
-import type { LoopFacts } from "../lib/automations";
 import styles from "../components/automations/automations.module.css";
 
 /** A run still starting (or a mission still running) is re-read at this pace while it is open… */
@@ -272,7 +267,7 @@ function RunsPage({ id }: { id: string }) {
                     {a.paused ? "Resume" : "Pause"}
                   </button>
                 )}
-                {/* A review loop has no Run now (#2202): the reason is said below instead. */}
+                {/* A webhook automation has no Run now: the reason is said below instead. */}
                 {!hooked && (
                   <button
                     type="button"
@@ -331,24 +326,17 @@ function RunsPage({ id }: { id: string }) {
           {a?.webhook && (
             <div className={styles.more}>
               {/* A webhook picked from the list (#2221) is shared: read-only here, with a link to its
-                  page; only a #2202 review loop's own webhook keeps its secret controls. */}
-              {a.trigger?.kind === "webhook" && !isLegacyHook(a.trigger) && a.webhook.webhook_id ? (
+                  page, where its secret is. */}
+              {a.webhook.webhook_id && (
                 <SharedWebhookPanel
                   id={a.webhook.webhook_id}
                   name={a.webhook.name ?? a.webhook.webhook_id}
-                  path={a.webhook.path}
+                  path={a.webhook.path ?? `/hooks/w/${a.webhook.webhook_id}`}
                   lastDeliveryAt={a.webhook.last_delivery_at}
                   lastEvent={a.webhook.last_event}
                   lastNote={a.webhook.last_note}
                   unsigned24h={a.webhook.unsigned_24h}
                   nowS={nowS}
-                />
-              ) : (
-                <WebhookPanel
-                  automationId={a.id}
-                  webhook={a.webhook}
-                  nowS={nowS}
-                  onWebhook={(w) => applyRow({ ...a, webhook: w })}
                 />
               )}
             </div>
@@ -362,7 +350,7 @@ function RunsPage({ id }: { id: string }) {
                   <strong>No runs yet</strong>
                   <span className={styles.lede}>
                     {hooked
-                      ? "Every signed delivery about an issue or pull request becomes a run, with its reason. Chatter (a human’s comment, a label change) only updates Last delivery."
+                      ? "Every signed delivery that its conditions choose becomes a run, with its reason. Any other delivery only updates the webhook’s last delivery."
                       : a?.next_run
                       ? `The first one is due ${whenWords(a.next_run.at, nowS)}.`
                       : a && !a.enabled
@@ -373,9 +361,7 @@ function RunsPage({ id }: { id: string }) {
               )}
               {runs && runs.length > 0 && (
                 <ul className={styles.runList} aria-label="Runs" data-testid="runs-list">
-                  {runs.map((r, i) => {
-                    const loop = loopFacts(r);
-                    return (
+                  {runs.map((r, i) => (
                     <li key={r.id}>
                       <button
                         type="button"
@@ -389,7 +375,6 @@ function RunsPage({ id }: { id: string }) {
                           <span>
                             {whenWords(r.created_at, nowS)} · {runTriggerWords(r)}
                           </span>
-                          {loop && <LoopTags facts={loop} />}
                           <span className={styles.sub}>{r.reason || "—"}</span>
                         </span>
                         <span className={styles.runOutcome}>
@@ -397,8 +382,7 @@ function RunsPage({ id }: { id: string }) {
                         </span>
                       </button>
                     </li>
-                    );
-                  })}
+                  ))}
                 </ul>
               )}
               {runs && runs.length < total && (
@@ -430,62 +414,6 @@ function RunsPage({ id }: { id: string }) {
       </div>
       {enable.dialog}
     </div>
-  );
-}
-
-/** A review-loop run's leg and round, beside its time in the list: neutral stamps. */
-function LoopTags({ facts }: { facts: LoopFacts }) {
-  return (
-    <span className={styles.loopTags} data-testid="run-loop-tags">
-      <span className={styles.loopTag} data-testid="run-leg">
-        {facts.leg}
-      </span>
-      {facts.round && (
-        <span className={styles.loopTag} data-testid="run-round">
-          {facts.round}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/** A review-loop run's facts in the detail. The event and delivery come from UNSIGNED headers:
- *  shown for matching against the forge's delivery log, never trusted for anything. */
-function LoopDetail({ facts }: { facts: LoopFacts }) {
-  return (
-    <>
-      <dt>Leg</dt>
-      <dd data-testid="run-detail-leg">
-        {facts.leg === "return" ? "Return — the reviewer’s verdict, back to the session that opened it" : "Review — starts the reviewer"}
-        {facts.round ? ` · ${facts.round}` : ""}
-      </dd>
-      {facts.item && (
-        <>
-          <dt>Item</dt>
-          <dd className={styles.mono} data-testid="run-detail-item">
-            {facts.item}
-            {facts.revision ? ` at ${facts.revision}` : ""}
-          </dd>
-        </>
-      )}
-      {facts.verdict && (
-        <>
-          <dt>Verdict</dt>
-          <dd>{facts.verdict}</dd>
-        </>
-      )}
-      {(facts.event || facts.delivery) && (
-        <>
-          <dt>Delivery</dt>
-          <dd data-testid="run-detail-delivery">
-            <span className={styles.mono}>
-              {[facts.event, facts.delivery && `delivery ${facts.delivery}`].filter(Boolean).join(" · ")}
-            </span>{" "}
-            <span className={styles.untrusted}>(recorded, untrusted)</span>
-          </dd>
-        </>
-      )}
-    </>
   );
 }
 
@@ -525,7 +453,6 @@ function RunDetail({
     );
   const sessionHref = run.session_key ? sessionPathFromKey(run.session_key) : null;
   const inputs = run.inputs && Object.keys(run.inputs).length ? inputsText(run.inputs) : "";
-  const loop = loopFacts(run);
   const steps: RunStep[] = run.steps ?? [];
   return (
     <section className={styles.panel} aria-labelledby="run-detail-title" data-testid="run-detail">
@@ -542,11 +469,10 @@ function RunDetail({
         <dd>
           {run.trigger === "manual"
             ? "Run now, by you"
-            : loop
-              ? "A signed Forgejo delivery"
+            : run.trigger === "webhook"
+              ? "A signed webhook delivery"
               : `${run.catch_up ? "Catch-up" : "Scheduled"} slot ${run.slot}${run.covered > 1 ? ` · covered ${run.covered} missed slots` : ""}`}
         </dd>
-        {loop && <LoopDetail facts={loop} />}
         <dt>Started</dt>
         <dd>{new Date(run.created_at * 1000).toLocaleString("en-GB")}</dd>
         {run.reason && (

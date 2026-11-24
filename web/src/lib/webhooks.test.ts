@@ -131,7 +131,7 @@ describe("a webhook's page (frame 2)", () => {
           used_by: [{ id: "rv1", name: "Loop" }],
         }),
       ),
-    ).toMatch(/review loop “Loop”’s own address/);
+    ).toMatch(/retired review loop “Loop”’s old address: it goes when you delete that automation/);
   });
 
   test("a name the server would refuse", () => {

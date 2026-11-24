@@ -39,6 +39,7 @@ from typing import NamedTuple
 from . import (
     engines,
     headless_dispatch,
+    lineage,
     missions,
     session_input,
 )
@@ -612,6 +613,13 @@ async def run(
         # second write to fail on its own (#894 review 4, carry-forward). The best-effort call that
         # used to live here could leave a dispatch naming a session and a reservation that did not.
         minted = key
+        # A spawned sub-agent is a child of the session it was started alongside (#2325). Best
+        # effort: a lineage write never fails a launch; the session then lists as a main session.
+        if plan.get("spawn_parent"):
+            try:
+                lineage.link(key, str(plan["spawn_parent"]), "launch")
+            except (lineage.LineageError, lineage.LineageUnreadable, OSError):
+                log.warning("lineage link for %s could not be recorded", key, exc_info=True)
 
     # AN API CLIENT IS DISPATCHED STRUCTURED (#1898): a create and one guarded brief turn through
     # `mission_structured`, never dtach or a seed, and it is the only kind left (#1902). Its

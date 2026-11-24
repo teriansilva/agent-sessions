@@ -381,7 +381,8 @@ def test_a_voice_per_language(monkeypatch):
         await call.say("Gut, Kommandant.")
 
     asyncio.run(go())
-    assert sent[-2]["voice"] is None and sent[-1]["voice"] == "kerstin"
+    says = [m for m in sent if isinstance(m, dict) and m.get("t") == "say"]  # not #2339's `cues`
+    assert says[-2]["voice"] is None and says[-1]["voice"] == "kerstin"
 
 
 @pytest.mark.parametrize(

@@ -2,8 +2,7 @@
 
 An **automation** does one thing for you without you starting it: on a schedule, when you press
 **Run now**, or when a [webhook](/guide/webhooks) delivers an event. It can start a session, send a
-message to a session, start a [review loop](/guide/review-loop), tell HQ, or (on a schedule or Run
-now) start a mission.
+message to a session, tell HQ, or (on a schedule or Run now) start a mission.
 
 You find them in **Library → Automations**. Every automation is created and changed in the same
 **wizard**: five short steps, each one screen on a phone. Advanced options are folded away until
@@ -44,8 +43,6 @@ If the webhook has had **no delivery yet**, BattleLab can't offer presets. Send 
 from your service and choose **Check again**, or set your own conditions under Advanced. A sender
 BattleLab doesn't recognise gets Advanced only.
 
-A **review loop** picks its own events (issues and pull requests), so this step only says so.
-
 Conditions read the delivery's signed body, never its headers. A field that wasn't in the last
 delivery is flagged in amber: the condition may never match.
 
@@ -59,7 +56,6 @@ trigger from step 1 can start:
   **Permission bypass** is under *Model and permissions*; turning it on asks for your consent again.
 - **Message a session**: types into a session that is already running. If it isn't running then,
   the run is refused and recorded.
-- **Review loop**: only from a webhook. See [Review loop with Forgejo](/guide/review-loop).
 - **Start a mission**: only on a schedule or Run now. HQ drafts the mission in the project you
   choose.
 - **Tell HQ**: puts a message in your notifications (the bell), from any trigger. HQ sees that a

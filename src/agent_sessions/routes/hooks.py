@@ -1,15 +1,14 @@
-"""The webhook addresses (#2202, #2221): ``POST /hooks/w/{webhook_id}`` for a webhook from the list,
-and ``POST /hooks/a/{automation_id}`` for a #2202 review loop's own webhook (routed to that
-automation only). Read `docs/invariants/webhooks.md`.
+"""The webhook address (#2221): ``POST /hooks/w/{webhook_id}`` for a webhook from the list. Read
+`docs/invariants/webhooks.md`. The retired review loop's own address (``/hooks/a/…``, #2202,
+removed in #2222) answers the uniform 404 for every id.
 
 **The state-changing routes with no session cookie, no CSRF token and no Origin check**, so they
 authenticate themselves: an HMAC-SHA256 of the raw body under the webhook's secret, in any common
 header form (`webhooks.signature_header`). No provider is configured or needed.
 
-* **Uniform 404.** An unknown or malformed id, a legacy address whose automation is not an enabled,
-  approved webhook automation, a webhook with no secret, and a missing or bad signature all answer
-  the same body, each after one HMAC: nothing can be enumerated. A bad signature for an existing
-  webhook is counted on it.
+* **Uniform 404.** An unknown or malformed id, a webhook with no secret, and a missing or bad
+  signature all answer the same body, each after one HMAC: nothing can be enumerated. A bad
+  signature for an existing webhook is counted on it.
 * **Bounded.** The body is read incrementally and refused (413) past `forge_hook.BODY_MAX`; a global
   rate limit runs before anything is looked up (429), a per-webhook one after the signature.
 * **Recorded once, decided per automation.** A verified delivery updates the webhook's last delivery
@@ -39,7 +38,8 @@ from .. import automations_store as store
 
 log = logging.getLogger("agent_sessions.routes.hooks")
 
-PREFIX = "/hooks/a/"
+#: The retired review loop's per-automation address (#2202): every id is the uniform 404 now.
+RETIRED_PREFIX = "/hooks/a/"
 LIST_PREFIX = "/hooks/w/"
 _ID_RE = re.compile(r"^[a-z0-9]{1,64}$")
 #: Deliveries a minute: per automation (after the signature) and across all of them (before).
@@ -96,30 +96,6 @@ async def _read_capped(request: Request) -> bytes | None:
             return None
         chunks.append(chunk)
     return b"".join(chunks)
-
-
-def _legacy_target(aid: str) -> str | None:
-    """The #2202 webhook behind `/hooks/a/{aid}` — only while its automation is an enabled,
-    approved, runnable webhook automation (its old behaviour). BLOCKING."""
-    if not _ID_RE.match(aid):
-        return None
-    try:
-        row = store.get(aid)
-    except store.StoreError:
-        return None
-    config = row.get("config")
-    if (
-        config is None
-        or config["trigger"]["kind"] != "webhook"
-        or not row["enabled"]
-        or row["consented_at"] is None
-        or row["needs_reapproval"]
-    ):
-        return None
-    try:
-        return webhooks.legacy_for(aid)
-    except store.StoreError:
-        return None
 
 
 def _secrets(wid: str | None) -> list[str]:
@@ -188,11 +164,11 @@ def register(app: FastAPI, *, registry=None) -> None:
             task.add_done_callback(_TASKS.discard)
         return JSONResponse({"accepted": True}, status_code=202, headers=_NO_STORE)
 
-    @app.post(PREFIX + "{aid}")
-    async def forgejo_hook(aid: str, request: Request) -> JSONResponse:
-        # #2202's address: the review loop's own webhook, routed to THAT automation only.
-        wid = await asyncio.to_thread(_legacy_target, aid)
-        return await _deliver(request, wid, lambda: [aid] if wid else [])
+    @app.post(RETIRED_PREFIX + "{aid}")
+    async def retired_hook(aid: str) -> JSONResponse:
+        # #2202's per-automation address, retired with the review loop (#2222): nothing is
+        # routed, nothing is read, and the answer is the one an unknown webhook gets.
+        return _not_found()
 
     @app.post(LIST_PREFIX + "{wid}")
     async def list_hook(wid: str, request: Request) -> JSONResponse:

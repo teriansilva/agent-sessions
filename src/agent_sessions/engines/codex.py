@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -223,6 +224,36 @@ class CodexProvider:
         """Kind-level presence is the STORE only. Whether the binary is there is the owning
         provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
         return self.store_present()
+
+    def session_pids(self, native_ids: list[str]) -> dict[str, list[int]] | None:
+        """Live pids of these sessions, for lineage attribution (#2325): the processes holding the
+        session's rollout file open, read from ``/proc/<pid>/fd``. ``None`` when ``/proc`` cannot
+        be listed (attribution retries)."""
+        want = set(native_ids)
+        root = str(base._codex_sessions_dir())
+        out: dict[str, list[int]] = {}
+        try:
+            pids = [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        except OSError:
+            return None
+        for pid in pids:
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue  # gone, or not ours to read
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if not target.startswith(root) or not target.endswith(".jsonl"):
+                    continue
+                m = _CODEX_ROLLOUT_RE.search(target)
+                if m and m.group(1) in want:
+                    out.setdefault(m.group(1), []).append(pid)
+                    break
+        return out
 
     def _meta(self, path: Path, *, checked: bool = False) -> tuple[str, str] | None:
         """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort.

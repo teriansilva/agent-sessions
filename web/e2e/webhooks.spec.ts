@@ -4,9 +4,10 @@
  *  address, the "shown once" warning) and it is gone after leaving — never in storage, router state
  *  or a later read. A webhook's page shows the address, the secret's status, the last delivery as
  *  field NAMES and TYPES only, who uses it; Rotate shows a new secret once and says the old one works
- *  24 h more; Delete is off, with its reason, while an automation uses it. A review loop picks a
+ *  24 h more; Delete is off, with its reason, while an automation uses it. An automation picks a
  *  webhook from the list and saves `webhook_id`; "+ New webhook…" makes one and comes back with the
- *  draft intact. Every control holds 44 px and nothing clips at 390 px. The API is the stateful
+ *  draft intact. A retired review loop's own webhook (#2202, #2222) is listed, readable, never
+ *  pickable and never deleted on its own. Every control holds 44 px and nothing clips at 390 px. The API is the stateful
  *  fakes in `./automations.ts` and `./webhooks.ts`; what the page SENT is asserted. */
 import { expect, test, type Page } from "@playwright/test";
 
@@ -52,33 +53,11 @@ const LEGACY = webhook({
   last_event: "pull_request_review_approved",
 });
 
-const SPECIALISTS = [
-  {
-    id: "shop-reviewer",
-    revision: 1,
-    archived: false,
-    current: { version: 3, title: "Shop Reviewer", summary: "", skills: [], engine: API, model: "m", effort: "high", capacity: 2, created_at: 1 },
-    grade: "strong",
-    live: 0,
-    skills_missing: [],
-    skills_outdated: [],
-  },
-];
-const LOOP_ACTION = {
-  kind: "forge_review_loop",
-  project_id: "p1",
-  repo: "example-org/shop",
-  reviewer: { specialist_id: "shop-reviewer", version: 3 },
-  reviewer_login: "shop-reviewer-bot",
-  legs: { issues: true, pulls: true },
-  max_rounds: { issue: 5, pr: 4 },
-  return_to_origin: true,
-};
+const TELL_ACTION = { kind: "tell_hq", message: { text: "a pull request arrived" } };
 
 async function setup(page: Page, hooks: FakeHook[] = [], automations: Record<string, unknown>[] = []) {
   const fake = await mockAutomations(page, { engines: [{ id: API, ok: true, reason: "" }], automations });
   await mockRoster(page);
-  await page.route("**/api/specialists", (r) => r.fulfill({ json: { specialists: SPECIALISTS, templates: [] } }));
   const hooksFake = await mockWebhooks(page, hooks);
   return { fake, hooks: hooksFake };
 }
@@ -127,7 +106,7 @@ async function secretKept(page: Page, secret: string) {
   }, secret);
 }
 
-test("the list: name, last delivery, who uses it, last event, unsigned count; a legacy one names its loop (#2221)", async ({ page }) => {
+test("the list: name, last delivery, who uses it, last event, unsigned count; a legacy one names its retired loop (#2221, #2222)", async ({ page }) => {
   await setup(page, [SHOP, DEPLOYS, STATUS, LEGACY]);
   await page.goto(WEBHOOKS_PATH);
   await expect(page.getByRole("heading", { level: 1, name: "Webhooks" })).toBeVisible();
@@ -257,19 +236,20 @@ test("an unused webhook deletes after a confirm; no delivery yet says so (#2221)
   expect(hooks.requests.filter((r) => r.method === "DELETE").map((r) => r.path)).toEqual([`/${STATUS.id}`]);
 });
 
-test("a legacy webhook: its old address and its loop, rotate allowed, never deleted (#2221)", async ({ page }) => {
+test("a legacy webhook: its old address and its retired loop, never deleted on its own (#2221, #2222)", async ({ page }) => {
   await setup(page, [LEGACY]);
   await page.goto(webhookPath(LEGACY.id));
   await expect(page.getByTestId("webhook-status")).toHaveText("old address");
   await expect(page.getByTestId("webhook-legacy")).toContainText("Review loop · example-org/shop");
+  await expect(page.getByTestId("webhook-legacy")).toContainText("receives nothing any more");
   const origin = new URL(page.url()).origin;
   await expect(page.getByTestId("webhook-url")).toHaveText(`${origin}/hooks/a/rv1`);
   await expect(page.getByTestId("webhook-rotate")).toBeEnabled();
   await expect(page.getByTestId("webhook-delete")).toBeDisabled();
-  await expect(page.getByTestId("webhook-delete-why")).toContainText("own address");
+  await expect(page.getByTestId("webhook-delete-why")).toContainText("goes when you delete that automation");
 });
 
-test("a review loop picks a webhook from the list and saves webhook_id; + New webhook… comes back with the draft (#2221)", async ({ page }) => {
+test("an automation picks a webhook from the list and saves webhook_id; + New webhook… comes back with the draft (#2221)", async ({ page }) => {
   const { fake, hooks } = await setup(page, [SHOP, LEGACY]);
   await page.goto(AUTOMATION_NEW_PATH);
   await page.getByTestId("trigger-kind-webhook").click();
@@ -281,13 +261,10 @@ test("a review loop picks a webhook from the list and saves webhook_id; + New we
   await expect(page.getByTestId("webhook-pick-hint")).toBeVisible();
   await pick.selectOption(SHOP.id);
 
-  // Step 3: the review loop's fields, filled before the handoff.
+  // Step 3: what it does, filled before the handoff.
   await toStep(page, "What does it do?");
-  await page.getByTestId("action-kind-forge_review_loop").click();
-  await page.getByTestId("loop-project").selectOption("p1");
-  await page.getByTestId("loop-repo").fill("example-org/shop");
-  await page.getByTestId("loop-reviewer").selectOption("shop-reviewer");
-  await page.getByTestId("loop-login").fill("shop-reviewer-bot");
+  await page.getByTestId("action-kind-tell_hq").click();
+  await page.getByTestId("message-text").fill(TELL_ACTION.message.text);
   await backTo(page, "When does it run?");
 
   // + New webhook… → the create flow, then back with the draft intact and the new one picked.
@@ -316,10 +293,10 @@ test("a review loop picks a webhook from the list and saves webhook_id; + New we
     expect(box!.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await toStep(page, "What does it do?");
-  await expect(page.getByTestId("loop-repo")).toHaveValue("example-org/shop");
-  await expect(page.getByTestId("loop-login")).toHaveValue("shop-reviewer-bot");
+  await expect(page.getByTestId("action-kind-tell_hq")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("message-text")).toHaveValue(TELL_ACTION.message.text);
 
-  // Save: the body names the webhook, never the legacy scheme.
+  // Save: the body names the webhook.
   await toReview(page);
   await page.getByTestId("automation-name").fill("Review every PR · shop");
   await expect(page.getByTestId("editor-problems")).toHaveCount(0);
@@ -329,11 +306,11 @@ test("a review loop picks a webhook from the list and saves webhook_id; + New we
   expect(create.body).toMatchObject({
     name: "Review every PR · shop",
     trigger: { kind: "webhook", webhook_id: SHOP.id },
-    action: LOOP_ACTION,
+    action: TELL_ACTION,
   });
 });
 
-test("run history of a loop on a picked webhook: the webhook's name, address, last delivery and link; no secret controls (#2221)", async ({ page }) => {
+test("run history of an automation on a picked webhook: the webhook's name, address, last delivery and link; no secret controls (#2221)", async ({ page }) => {
   await setup(
     page,
     [SHOP],
@@ -342,7 +319,7 @@ test("run history of a loop on a picked webhook: the webhook's name, address, la
         id: "rv2",
         name: "Review every PR",
         trigger: { kind: "webhook", webhook_id: SHOP.id },
-        action: LOOP_ACTION,
+        action: TELL_ACTION,
         policy: { concurrency: "allow", max_concurrent: 3, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
         next_run: null,
         webhook: { ...SHOP, last_shape: undefined, webhook_id: SHOP.id },

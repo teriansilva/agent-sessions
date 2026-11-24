@@ -88,6 +88,8 @@ from . import (
     engines,
     handoff,
     launch_binding,
+    lineage,
+    lineage_attribution,
     mcp_registry,
     model_choice,
     opencode_admission,
@@ -837,6 +839,7 @@ async def dispatch(
         argv, scope_unit = scopedspawn.wrap(argv, engine=engine, session_id=native)
         if scope_unit is not None:
             log.info("dispatching %s in scope %s", key, scope_unit)
+            lineage.bind_scope(scope_unit, key)  # exact unit → key (#2325)
         # Where the engine's own argv starts inside the wrapped one: the memory tool (#1506) is
         # added to THAT, inside the launch fence, once memory has bound this launch's paths.
         agent_at = len(argv) - len(launch)
@@ -1191,6 +1194,8 @@ async def dispatch(
                                 **capability,
                                 **mcp.env,
                                 **hq_report_broker.master_env(hq_env),
+                                # Its own key, which a session it starts inherits (#2325).
+                                lineage_attribution.ENV_SESSION: key,
                                 **forced,  # last: the agent's isolation is never overridden
                             }
                             may_have_inherited = True

@@ -49,6 +49,40 @@ class ClaudeProvider:
         row = scanner.lookup(native_id)
         return row if row is not None and row.engine == self.engine_id else None
 
+    def session_pids(self, native_ids: list[str]) -> dict[str, list[int]] | None:
+        """Live pids of these sessions, for lineage attribution (#2325): claude's own live-session
+        registry (``~/.claude/sessions/<pid>.json``), each entry's pid confirmed by its recorded
+        process start time so a recycled pid never answers. ``None`` when the registry cannot be
+        read at all (attribution retries); a session with no live entry maps to nothing."""
+        from .. import start_evidence
+
+        want = set(native_ids)
+        d = start_evidence.sessions_dir()
+        try:
+            entries = sorted(
+                (p for p in d.iterdir() if p.suffix == ".json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[: start_evidence.MAX_ENTRIES]
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            return None
+        out: dict[str, list[int]] = {}
+        for p in entries:
+            entry = start_evidence._read_entry(p)
+            if not entry:
+                continue
+            sid = str(entry.get("sessionId") or "")
+            pid = entry.get("pid")
+            if sid not in want or not isinstance(pid, int) or isinstance(pid, bool):
+                continue
+            state, started = start_evidence.proc_start_state(pid)
+            if state != start_evidence.PROC_LIVE or str(entry.get("procStart")) != started:
+                continue
+            out.setdefault(sid, []).append(pid)
+        return out
+
     def archive_state(self, native_id: str) -> str:
         """`archived` · `not-archived` · `unreadable` (#896 review 24, finding 1).
 

@@ -1,10 +1,10 @@
 /** Library → Actions and the wizard's action picker (#2248 P1), in a real browser on the desktop and
  *  mobile projects, both themes.
  *
- *  The gallery: the five actions as cards (category, effect pips, name, line, requirement, used by),
+ *  The gallery: the built-in actions as cards (category, effect pips, name, line, requirement, used by),
  *  search and category chips that filter them, a requirement not met in its own words, a failed read
  *  that says so, 44 px targets under a finger, one frame per card and nothing past the edge at 390
- *  px. The wizard's What step: the same list as a compact searchable picker; each of the five can be
+ *  px. The wizard's What step: the same list as a compact searchable picker; each built-in one can be
  *  picked under the trigger that starts it, and what it saves is what the fixed cards saved. The
  *  gallery is the server's own answer (`fixtures/actions-gallery.json`, pinned by pytest). */
 import { expect, test, type Page } from "@playwright/test";
@@ -13,7 +13,7 @@ import { ACTIONS_PATH, AUTOMATIONS_PATH, AUTOMATION_NEW_PATH, automationEditPath
 import { ACTIONS_API } from "../src/lib/apiPaths";
 import type { ActionGallery } from "../src/types/actions";
 import type { Route } from "@playwright/test";
-// The five (#2248 P1); the plugin actions have their own spec (`action-plugins.spec.ts`).
+// The built-in ones (#2248 P1); the plugin actions have their own spec (`action-plugins.spec.ts`).
 import { BUILTIN_GALLERY as ACTION_GALLERY, mockActions } from "./actions";
 import {
   PROJECT,
@@ -64,14 +64,14 @@ async function oneFrame(page: Page, root: string) {
   expect(nested, "a frame inside a frame").toBe(0);
 }
 
-test("the gallery lists the five as cards with their facts, and search and chips filter them", async ({ page }, info) => {
+test("the gallery lists the built-in ones as cards with their facts, and search and chips filter them", async ({ page }, info) => {
   const mobile = info.project.name === "mobile";
   await phoneWidth(page, mobile);
   await setup(page);
   await page.goto(ACTIONS_PATH);
   await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
   // Library is the section, Actions the entry (`sections.ts`).
-  await expect(cards(page)).toHaveCount(5);
+  await expect(cards(page)).toHaveCount(4);
   expect(await ids(page)).toEqual(ACTION_GALLERY.actions.map((a) => a.id));
 
   const session = cards(page).filter({ hasText: "Start a session" });
@@ -105,13 +105,13 @@ test("the gallery lists the five as cards with their facts, and search and chips
 
   // Chips: All and the categories that have an action. The rest are named as coming later.
   const chips = page.getByRole("group", { name: "Show" }).getByRole("button");
-  await expect(chips).toHaveText([/^All\s*5$/, /^BattleLab\s*4$/, /^Forge\s*1$/]);
+  await expect(chips).toHaveText([/^All\s*4$/, /^BattleLab\s*4$/]);
   await expect(page.getByTestId("actions-coming")).toContainText(
     "More come in later releases: messaging, files, run locally, web.",
   );
-  await chips.filter({ hasText: "Forge" }).click();
-  await expect(chips.filter({ hasText: "Forge" })).toHaveAttribute("aria-pressed", "true");
-  expect(await ids(page)).toEqual(["forge_review_loop"]);
+  await chips.filter({ hasText: "BattleLab" }).click();
+  await expect(chips.filter({ hasText: "BattleLab" })).toHaveAttribute("aria-pressed", "true");
+  expect(await ids(page)).toEqual(ACTION_GALLERY.actions.map((a) => a.id));
   await chips.filter({ hasText: "All" }).click();
 
   const search = page.getByRole("searchbox", { name: "Search actions" });
@@ -123,7 +123,7 @@ test("the gallery lists the five as cards with their facts, and search and chips
   await expect(cards(page)).toHaveCount(0);
   await expect(page.getByTestId("actions-none")).toContainText("No action matches “zebra”");
   await search.fill("");
-  await expect(cards(page)).toHaveCount(5);
+  await expect(cards(page)).toHaveCount(4);
 
   await animationsSettled(page);
   await oneFrame(page, '[data-testid="actions-page"]');
@@ -183,7 +183,7 @@ test("the Library menu leads to Actions, after Automations", async ({ page }) =>
   expect(labels.indexOf("Actions")).toBe(labels.indexOf("Automations") + 1);
   await menu.locator('a[data-subsection="actions"]').click();
   await expect(page).toHaveURL(new RegExp(`${ACTIONS_PATH}$`));
-  await expect(cards(page)).toHaveCount(5);
+  await expect(cards(page)).toHaveCount(4);
   // Library is lit, and Actions is the page you are on.
   await expect(page.locator('.hud-topbar [data-section="library"]')).toHaveAttribute("aria-current", "true");
   await page.locator('.hud-topbar [data-testid="section-menu-library"]').click();
@@ -201,7 +201,7 @@ test("the What step picks each action from the gallery under the trigger that st
   await page.goto(AUTOMATION_NEW_PATH);
   await toStep(page, "What does it do?");
   const group = page.getByTestId("action-kind");
-  // A schedule: the four it starts, in the gallery's order; a review loop is a webhook's.
+  // A schedule: the four it starts, in the gallery's order.
   await expect(group.getByRole("button")).toHaveText([
     /Start a mission/,
     /Start a session/,
@@ -240,26 +240,19 @@ test("the What step picks each action from the gallery under the trigger that st
   expect((created.action as { kind: string }).kind).toBe("start_mission");
 });
 
-test("a webhook's What step offers the review loop and never a mission; chips filter it", async ({ page }) => {
+test("a webhook's What step never offers a mission; one category needs no chips", async ({ page }) => {
   await setup(page);
   await page.goto(AUTOMATION_NEW_PATH);
   await page.getByTestId("trigger-kind").getByRole("button", { name: /When a webhook delivers/ }).click();
   await page.getByTestId("trigger-webhook").selectOption(HOOK.id);
   await toStep(page, "What does it do?");
   const group = page.getByTestId("action-kind");
-  await expect(group.getByRole("button")).toHaveText([
-    /Start a session/,
-    /Message a session/,
-    /Review loop/,
-    /Tell HQ/,
-  ]);
-  await page.getByTestId("action-kind-chips").getByRole("button", { name: "Forge" }).click();
-  await expect(group.getByRole("button")).toHaveText([/Start a session/, /Review loop/]);
-  await page.getByTestId("action-kind-forge_review_loop").click();
-  await expect(page.getByTestId("action-kind-forge_review_loop")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByTestId("loop-return")).toBeVisible();
-  await page.getByTestId("action-kind-chips").getByRole("button", { name: "All" }).click();
-  await expect(group.getByRole("button")).toHaveCount(4);
+  await expect(group.getByRole("button")).toHaveText([/Start a session/, /Message a session/, /Tell HQ/]);
+  // Every built-in action a webhook starts is BattleLab's: a single category draws no chips.
+  await expect(page.getByTestId("action-kind-chips")).toHaveCount(0);
+  await page.getByTestId("action-kind-tell_hq").click();
+  await expect(page.getByTestId("action-kind-tell_hq")).toHaveAttribute("aria-pressed", "true");
+  await expect(group.locator('[aria-pressed="true"]')).toHaveCount(1);
   await expect(wizardHeading(page)).toHaveText("What does it do?");
 });
 
@@ -497,7 +490,7 @@ for (const theme of ["dark", "light"] as const) {
       await page.screenshot({ path: info.outputPath(`impl-${name}-${info.project.name}-${theme}.png`) });
     };
     await page.goto(ACTIONS_PATH);
-    await expect(cards(page)).toHaveCount(5);
+    await expect(cards(page)).toHaveCount(4);
     await shot("gallery");
     await page.goto(AUTOMATION_NEW_PATH);
     await toStep(page, "What does it do?");

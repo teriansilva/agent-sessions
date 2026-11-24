@@ -65,13 +65,11 @@ OUTCOME_CLASS = {
     # Text was typed into the session but not submitted (#1201 review): shown as a failure, but
     # it pauses the automation at once instead of counting toward pause_after_failures.
     "partial": "failed",
-    # A review loop's deliveries (#2202): a verdict or delivery that is stale, unknown or a
-    # duplicate, and a revision past the item's lifetime review cap. Neither is a failure.
+    # Written only by the retired review loop (#2202, removed in #2222), and kept so its old runs
+    # still classify: a stale, unknown or duplicate delivery, a revision past the item's review
+    # cap, and a verdict that could not reach its session.
     "ignored": "skipped",
     "capped": "skipped",
-    # A verdict that could not reach the session that opened the item (no session record, a
-    # terminal session, a busy or ended one). Shown as a failure and announced once on its own,
-    # but not counted toward pause_after_failures: the review itself worked.
     "undelivered": "failed",
 }
 PARTIAL_REASON = "text was typed but not submitted — check the terminal"
@@ -168,8 +166,10 @@ CREATE TABLE automation_origins (
 );
 """
 
-#: The review loop's tables (#2202, schema v2). A fresh file creates them with the v1 schema and
-#: then runs the v1 → v2 step like an existing one, so both paths are the same SQL.
+#: The review loop's tables (#2202, schema v2). The review loop was retired (#2222); the tables
+#: stay so the migration chain runs on every file and `delete()` still cleans an old row's records.
+#: A fresh file creates them with the v1 schema and then runs the v1 → v2 step like an existing
+#: one, so both paths are the same SQL.
 _SCHEMA_V2 = """
 CREATE TABLE automation_hook_secrets (
   automation_id TEXT NOT NULL,
@@ -248,8 +248,8 @@ CREATE TABLE webhook_secrets (
 def _to_v3(con: sqlite3.Connection) -> None:
     """Webhooks become a list. Each #2202 review loop's own webhook moves in UNCHANGED: same id as
     its automation (`legacy_automation`), same secret envelopes with the AAD they were sealed
-    under, same counters. The automation's configuration is not touched, so nothing needs
-    re-approval and its address `/hooks/a/{id}` keeps routing to it alone."""
+    under, same counters. The automation's configuration is not touched. (Since #2222 retired the
+    review loop, such an automation loads unreadable and its address answers the uniform 404.)"""
     for stmt in _SCHEMA_V3.split(";"):
         if stmt.strip():
             con.execute(stmt)
@@ -629,12 +629,11 @@ def _check_webhook_ref(con, config: dict | None) -> None:
 
 
 def source_of(aid: str, config: dict | None) -> str | None:
-    """The webhook a delivery for automation ``aid`` must have come through: the picked one, or
-    — for a #2202 review loop in its old form — its own (same id as the automation)."""
+    """The webhook a delivery for automation ``aid`` must have come through: the one it picked."""
     trig = (config or {}).get("trigger") or {}
     if trig.get("kind") != "webhook":
         return None
-    return trig.get("webhook_id") or aid
+    return trig.get("webhook_id")
 
 
 def create(config: dict, pins: dict, *, now: float | None = None) -> dict:
@@ -1018,8 +1017,6 @@ def _settle(con, aid: str, run_id: str, outcome: str) -> dict:
             updates["paused_reason"] = PARTIAL_REASON
             paused = True
         alert = f"automation:{aid}:{run_id}:partial"
-    elif outcome == "undelivered":
-        alert = f"automation:{aid}:{run_id}:undelivered"
     elif outcome in FAILURE_OUTCOMES:
         n = row["consecutive_failures"] + 1
         updates["consecutive_failures"] = n
@@ -1250,53 +1247,19 @@ def prune_runs(
         return len(doomed)
 
 
-# ---- the review loop's webhook (#2202) -----------------------------------------------------------
+# ---- the automation's webhook (#2221) ----------------------------------------------------------
 #
-# Read `docs/invariants/forge-review-loop.md`. The webhook secret is stored ONLY as an AES-GCM
-# envelope (`template_secrets.encrypt`, AAD = ``automation-webhook:<id>:<gen>``); its plaintext is
-# returned once, by the call that made it, and decrypted again only to verify a delivery.
-
-#: How long a rotated-out secret keeps verifying deliveries, so the forge can be updated.
-SECRET_OVERLAP_S = 24 * 3600
-#: The unsigned-delivery counter's window.
-UNSIGNED_WINDOW_S = 24 * 3600
+# An automation listens on the webhook its trigger picked from the list; the secrets and counters
+# are the webhook's own (`webhooks.py`). Never a secret here.
 
 
 def webhook_of(aid: str) -> str | None:
-    """The webhook automation ``aid`` listens on: its own legacy one (#2202), or the one its
-    trigger picked (#2221). None when it is not a webhook automation."""
-    from . import webhooks
-
-    legacy = webhooks.legacy_for(aid)
-    if legacy:
-        return legacy
+    """The webhook automation ``aid`` listens on (the one its trigger picked), or None when it is
+    not a webhook automation (or its config can't be read)."""
     with _read() as con:
         row = _get(con, aid)
     trig = (row["config"] or {}).get("trigger") or {}
     return trig.get("webhook_id") if trig.get("kind") == "webhook" else None
-
-
-def new_hook_secret(aid: str, *, now: float | None = None) -> str:
-    """Rotate the secret of automation ``aid``'s OWN webhook (a #2202 review loop's) and return it
-    — the only time it is shown. A webhook picked from the list is shared, so it is rotated on its
-    own page (`webhooks.rotate`), never through one of its automations."""
-    from . import webhooks
-
-    with _read() as con:
-        row = _get(con, aid)
-    if (row["config"] or {}).get("trigger", {}).get("kind") != "webhook":
-        raise StoreError("only a webhook automation has a webhook secret", 409)
-    wid = webhooks.legacy_for(aid)
-    if wid is None:
-        raise StoreError("this automation uses a shared webhook: rotate it on its page", 409)
-    return webhooks.rotate(wid, now=now)
-
-
-def hook_secrets(aid: str, *, now: float | None = None) -> list[str]:
-    from . import webhooks
-
-    wid = webhook_of(aid)
-    return webhooks.secrets(wid, now=now) if wid else []
 
 
 def hook_state(aid: str, *, now: float | None = None) -> dict:
@@ -1489,347 +1452,3 @@ def begin_delivery(
         _step(con, run_id, "claimed" if run else "skipped", reason or "a webhook delivery")
         got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
         return {"run": _run(got), "claimed": run, "reason": reason}
-
-
-def begin_review(
-    aid: str,
-    *,
-    slot: str,
-    repo: str,
-    item: str,
-    revision: str,
-    expect_revision: int,
-    inputs: dict,
-    source: str | None = None,
-    now: float | None = None,
-) -> dict:
-    """The review leg's dispatch admission (#2202) — ONE transaction, before any launch.
-
-    **Bound to the configuration the delivery was classified against**: ``expect_revision`` is the
-    automation revision the caller read before its forge check. If the automation changed since
-    (another repo, leg or cap, even with fresh consent), nothing is claimed and the answer carries
-    ``stale_config`` so the caller classifies the delivery again against the current one. The cap
-    is read from THIS transaction's configuration, never passed in.
-
-    Then it claims ``slot``, re-reads the consent / pause / expiry / daily cap / concurrency like
-    every run (`_eligibility`), and:
-
-    * the item's lifetime review count (keyed by repository AND item) is below the cap → the count
-      is incremented, older open records of the item are superseded, a ``dispatched`` review record
-      is written and the run is recorded ``dispatching`` with that record in its inputs;
-    * at the cap → the run is recorded ``capped`` (finished, not counted) and nothing launches.
-
-    A daily-cap or concurrency SKIP records the run WITHOUT consuming the claim, so the forge's
-    redeliver can still deliver it. Returns ``{"run", "claimed", "reason", "record", "round"}``."""
-    from .review_loop import item_key
-
-    ts = time.time() if now is None else now
-    with _tx() as con:
-        row = _get(con, aid)
-        config = row["config"] or {}
-        action = config.get("action") or {}
-        if (
-            row["revision"] != expect_revision
-            or action.get("kind") != "forge_review_loop"
-            or str(action.get("repo", "")).lower() != repo.lower()
-            or (source is not None and source_of(aid, row["config"]) != source)
-        ):
-            return {
-                "run": None,
-                "claimed": False,
-                "stale_config": True,
-                "reason": "the automation changed while the delivery was being checked",
-            }
-        kind = item.partition("#")[0]
-        cap = int((action.get("max_rounds") or {}).get(kind) or 0)
-        key = item_key(repo, item)
-        if con.execute(
-            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
-        ).fetchone():
-            return {"run": None, "claimed": False, "reason": "this revision was already reviewed"}
-        verdict, reason = _eligibility(con, row, manual=False, now=ts)
-        if verdict == "no":
-            return {"run": None, "claimed": False, "reason": reason}
-        run_id = uuid.uuid4().hex
-        scope = {
-            "config": row["config"],
-            "pins": row["pins"],
-            "consented_scope": row["consented_scope"],
-            "consented_at": row["consented_at"],
-            "revision": row["revision"],
-        }
-
-        def insert(state: str, outcome: str, why: str, counts: int, run_inputs: dict) -> dict:
-            con.execute(
-                "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, "
-                "catch_up, covered, state, outcome, reason, scope, inputs, counts, owner, "
-                "created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    run_id,
-                    aid,
-                    "webhook",
-                    slot,
-                    None,
-                    0,
-                    1,
-                    state,
-                    outcome,
-                    why,
-                    json.dumps(scope),
-                    json.dumps(run_inputs),
-                    counts,
-                    owner_token() if state == "dispatching" else "",
-                    ts,
-                    None if state == "dispatching" else ts,
-                ),
-            )
-            _step(con, run_id, outcome or "claimed", why or f"{item} at {revision}")
-            got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
-            return _run(got)
-
-        if verdict == "skip":
-            # Recorded, NOT claimed: the delivery may come again (redeliver) and then run.
-            run = insert("done", "skipped", reason, 0, inputs)
-            return {"run": run, "claimed": False, "reason": reason}
-        con.execute(
-            "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
-            "VALUES (?,?,?,?,?)",
-            (aid, slot, None, ts, run_id),
-        )
-        done = con.execute(
-            "SELECT reviews FROM automation_review_items WHERE automation_id=? AND item=?",
-            (aid, key),
-        ).fetchone()
-        reviews = int(done["reviews"]) if done else 0
-        if reviews >= cap:
-            why = f"{item} has had {reviews} of {cap} reviews; no review started for {revision}"
-            run = insert("done", "capped", why, 0, {**inputs, "reviews": reviews, "cap": cap})
-            return {"run": run, "claimed": True, "reason": why, "capped": True}
-        n = reviews + 1
-        con.execute(
-            "INSERT INTO automation_review_items (automation_id, item, reviews, updated_at) "
-            "VALUES (?,?,?,?) ON CONFLICT(automation_id, item) DO UPDATE SET "
-            "reviews=excluded.reviews, updated_at=excluded.updated_at",
-            (aid, key, n, ts),
-        )
-        con.execute(
-            "UPDATE automation_review_records SET state='superseded' WHERE automation_id=? AND "
-            "item=? AND state='dispatched'",
-            (aid, key),
-        )
-        record = uuid.uuid4().hex[:24]
-        con.execute(
-            "INSERT INTO automation_review_records (id, automation_id, item, revision, round, "
-            "run_id, session_key, state, created_at) VALUES (?,?,?,?,?,?,NULL,'dispatched',?)",
-            (record, aid, key, revision, n, run_id, ts),
-        )
-        run = insert(
-            "dispatching",
-            "",
-            "",
-            1,
-            {**inputs, "record": record, "round": n, "cap": cap},
-        )
-        return {"run": run, "claimed": True, "reason": "", "record": record, "round": n}
-
-
-def set_review_session(record: str, key: str) -> None:
-    with _tx() as con:
-        con.execute("UPDATE automation_review_records SET session_key=? WHERE id=?", (key, record))
-
-
-def review_records(aid: str, item: str | None = None) -> list[dict]:
-    """``item`` is the durable key (`review_loop.item_key`), or None for every record."""
-    with _read() as con:
-        if item is None:
-            rows = con.execute(
-                "SELECT * FROM automation_review_records WHERE automation_id=? ORDER BY "
-                "created_at",
-                (aid,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM automation_review_records WHERE automation_id=? AND item=? "
-                "ORDER BY created_at",
-                (aid, item),
-            ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def review_count(aid: str, item: str) -> int:
-    with _read() as con:
-        r = con.execute(
-            "SELECT reviews FROM automation_review_items WHERE automation_id=? AND item=?",
-            (aid, item),
-        ).fetchone()
-    return int(r["reviews"]) if r else 0
-
-
-def accept_verdict(
-    aid: str,
-    *,
-    slot: str,
-    repo: str,
-    expect_revision: int,
-    record: str,
-    item: str,
-    revision: str,
-    verdict: str,
-    current: str,
-    inputs: dict,
-    source: str | None = None,
-    now: float | None = None,
-) -> dict:
-    """The return leg's acceptance (#2202 PR 2) — ONE transaction, before any send.
-
-    A verdict counts only when ``record`` is a review record THIS automation dispatched for
-    ``item``, its revision is the marker's ``revision`` AND the forge's ``current`` one, and it is
-    still ``dispatched`` (never superseded, never already answered). Then the record becomes
-    ``verdict_accepted`` and the run is recorded: ``dispatching`` when the verdict is to be
-    ``deliver``-ed to the originating session, else finished ``ok``. Anything else is a finished
-    ``ignored`` run with its reason. ``slot`` (one per record) makes a second verdict for the same
-    record — even under another signed body — record nothing at all.
-
-    Bound, like `begin_review`, to the automation revision the delivery was classified against
-    (``expect_revision``): a change since answers ``stale_config`` and claims nothing. Whether the
-    verdict is delivered comes from THIS transaction's configuration. The record is looked up by the
-    repository-qualified item key.
-
-    Returns ``{"run", "claimed", "reason", "accepted"}``."""
-    from .review_loop import item_key
-
-    ts = time.time() if now is None else now
-    with _tx() as con:
-        row = _get(con, aid)
-        action = (row["config"] or {}).get("action") or {}
-        if (
-            row["revision"] != expect_revision
-            or action.get("kind") != "forge_review_loop"
-            or str(action.get("repo", "")).lower() != repo.lower()
-            or (source is not None and source_of(aid, row["config"]) != source)
-        ):
-            return {
-                "run": None,
-                "claimed": False,
-                "stale_config": True,
-                "reason": "the automation changed while the delivery was being checked",
-            }
-        deliver = bool(action.get("return_to_origin"))
-        key = item_key(repo, item)
-        if con.execute(
-            "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
-        ).fetchone():
-            return {"run": None, "claimed": False, "reason": "this review already has a verdict"}
-        verdict_ok, reason = _eligibility(con, row, manual=False, now=ts)
-        if verdict_ok == "no":
-            return {"run": None, "claimed": False, "reason": reason}
-        if verdict_ok == "skip":
-            # The consented limits (daily cap, concurrency) hold for returns too: recorded as
-            # skipped, NOT claimed and NOT accepted, so a redelivery can return it once eligible.
-            sid = uuid.uuid4().hex
-            con.execute(
-                "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
-                "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
-                "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    sid,
-                    aid,
-                    "webhook",
-                    slot,
-                    None,
-                    0,
-                    1,
-                    "done",
-                    "skipped",
-                    reason,
-                    json.dumps({"consented_scope": row["consented_scope"]}),
-                    json.dumps({**inputs, "leg": "return", "record": record}),
-                    0,
-                    "",
-                    ts,
-                    ts,
-                ),
-            )
-            _step(con, sid, "skipped", reason)
-            got = con.execute("SELECT * FROM automation_runs WHERE id=?", (sid,)).fetchone()
-            return {"run": _run(got), "claimed": False, "reason": reason, "accepted": False}
-        rec = con.execute(
-            "SELECT * FROM automation_review_records WHERE id=? AND automation_id=?",
-            (record, aid),
-        ).fetchone()
-        why = ""
-        if rec is None or rec["item"] != key:
-            why = f"ignored: {item} has no review {record} from this automation"
-        elif rec["state"] == "verdict_accepted":
-            why = f"ignored: review {record} already has a verdict ({rec['verdict']})"
-        elif rec["state"] != "dispatched":
-            why = f"ignored: stale verdict — review {record} was superseded by a newer revision"
-        elif rec["revision"] != revision:
-            why = (
-                f"ignored: the verdict names {revision}, but review {record} was for "
-                f"{rec['revision']}"
-            )
-        elif current != revision:
-            why = (
-                f"ignored: stale verdict — it is for {item} at {revision}, but the forge says the "
-                f"current revision is {current}"
-            )
-        run_id = uuid.uuid4().hex
-        scope = {
-            "config": row["config"],
-            "pins": row["pins"],
-            "consented_scope": row["consented_scope"],
-            "consented_at": row["consented_at"],
-            "revision": row["revision"],
-        }
-        accepted = not why
-        if accepted:
-            con.execute(
-                "UPDATE automation_review_records SET state='verdict_accepted', verdict=?, "
-                "accepted_at=? WHERE id=?",
-                (verdict, ts, record),
-            )
-            run_inputs = {
-                **inputs,
-                "leg": "return",
-                "record": record,
-                "round": int(rec["round"]),
-                "reviewer_session": rec["session_key"],
-            }
-        else:
-            run_inputs = {**inputs, "leg": "return", "record": record}
-        dispatching = accepted and deliver
-        outcome = "" if dispatching else ("ok" if accepted else "ignored")
-        if accepted and not deliver:
-            why = f"{verdict} on {item} at {revision}: recorded (this loop returns no verdicts)"
-        con.execute(
-            "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
-            "VALUES (?,?,?,?,?)",
-            (aid, slot, None, ts, run_id),
-        )
-        con.execute(
-            "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
-            "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
-            "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                run_id,
-                aid,
-                "webhook",
-                slot,
-                None,
-                0,
-                1,
-                "dispatching" if dispatching else "done",
-                outcome,
-                why,
-                json.dumps(scope),
-                json.dumps(run_inputs),
-                1 if dispatching else 0,
-                owner_token() if dispatching else "",
-                ts,
-                None if dispatching else ts,
-            ),
-        )
-        _step(con, run_id, "claimed" if dispatching else outcome, why or f"{verdict} accepted")
-        got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
-        return {"run": _run(got), "claimed": True, "reason": why, "accepted": accepted}

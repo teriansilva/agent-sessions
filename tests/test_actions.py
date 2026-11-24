@@ -7,7 +7,7 @@
 * every executor provides validate, scope, describe, widened and run, delegating;
 * the registry, `automations.ACTION_KINDS` / `WEBHOOK_ACTIONS` and `automation_runner._ACTIONS`
   agree;
-* `GET /api/actions` lists the five with their facts, requirements and use, behind login.
+* `GET /api/actions` lists the built-in ones with their facts, requirements and use, behind login.
 """
 
 from __future__ import annotations
@@ -37,17 +37,6 @@ TPIN = {
         "name": "Review PR",
     },
     "checklist": {"id": "ship", "default": False, "label": "Ship a change", "digest": "c" * 64},
-    "cwd": {"path": "/w/p", "real": "/srv/p"},
-}
-SPEC_PIN = {
-    "specialist": {
-        "id": "reviewer",
-        "version": 3,
-        "name": "Reviewer",
-        "effort": "high",
-        "engine": "some-api",
-        "model": None,
-    },
     "cwd": {"path": "/w/p", "real": "/srv/p"},
 }
 WEEKLY = {
@@ -157,39 +146,6 @@ SHAPES = {
         {"template": None, "checklist": None},
         "8e4202e69b710abf19704182471a0b55",
     ),
-    "review loop, legacy webhook": (
-        {
-            "name": "r",
-            "trigger": {"kind": "webhook", "scheme": "forgejo"},
-            "action": {
-                "kind": "forge_review_loop",
-                "project_id": "p1",
-                "repo": "acme/shop",
-                "reviewer": {"specialist_id": "reviewer", "version": 3},
-                "reviewer_login": "review-bot",
-                "legs": {"issues": False, "pulls": True},
-                "max_rounds": {"issue": 2, "pr": 4},
-                "return_to_origin": False,
-            },
-        },
-        SPEC_PIN,
-        "e4eb91cb2471d8644d0dd4a68dcefd31",
-    ),
-    "review loop, webhook from the list": (
-        {
-            "name": "r2",
-            "trigger": {"kind": "webhook", "webhook_id": "2c3d4e5f6a7b8c9d"},
-            "action": {
-                "kind": "forge_review_loop",
-                "project_id": "p1",
-                "repo": "acme/shop",
-                "reviewer": {"specialist_id": "reviewer", "version": 3},
-                "reviewer_login": "review-bot",
-            },
-        },
-        SPEC_PIN,
-        "f85ac32c081fb0b21f3a8658a5e73fd6",
-    ),
     "tell HQ, template": (
         {
             "name": "h",
@@ -257,7 +213,7 @@ def test_the_scope_digest_of_every_stored_shape_is_pinned(shape):
 
 def test_the_shapes_cover_every_action_and_every_trigger_kind():
     configs = [_stored(raw) for raw, _p, _g in SHAPES.values()]
-    # The five built-in kinds; the plugin kind's shapes are pinned in `test_action_plugins.py`.
+    # The built-in kinds; the plugin kind's shapes are pinned in `test_action_plugins.py`.
     assert {c["action"]["kind"] for c in configs} == set(model.ACTION_KINDS) - {"plugin"}
     assert {c["trigger"]["kind"] for c in configs} == set(model.TRIGGER_KINDS)
 
@@ -321,8 +277,7 @@ def test_the_registry_the_model_and_the_runner_agree():
 
 def test_a_manifest_trigger_list_matches_what_the_model_accepts():
     """A manifest that says an action starts from a trigger must be one `validate_config` takes,
-    and one it refuses must not be listed (a review loop starts only from a webhook, a mission never
-    from one)."""
+    and one it refuses must not be listed (a mission never starts from one)."""
     for a in registry.actions():
         m = a.manifest
         assert set(m.triggers) <= set(model.TRIGGER_KINDS)
@@ -332,8 +287,6 @@ def test_a_manifest_trigger_list_matches_what_the_model_accepts():
             assert ("webhook" in m.triggers) == plugins.module(m.id).WEBHOOK, m.id
             continue
         assert ("webhook" in m.triggers) == (m.id in model.WEBHOOK_ACTIONS)
-        if m.id == "forge_review_loop":
-            assert m.triggers == ("webhook",)
 
 
 def test_every_input_is_a_field_of_the_stored_action():
@@ -461,7 +414,7 @@ def test_a_manifest_that_is_not_toml_or_too_large_is_refused():
 # ---- the gallery ------------------------------------------------------------------------------
 
 
-def test_the_gallery_lists_the_five_with_their_facts_requirements_and_use(monkeypatch):
+def test_the_gallery_lists_the_built_in_ones_with_their_facts_requirements_and_use(monkeypatch):
     rows = [
         {"config": _stored(SHAPES["tell HQ, template"][0])},
         {"config": _stored(SHAPES["tell HQ, webhook text"][0])},
@@ -470,7 +423,6 @@ def test_the_gallery_lists_the_five_with_their_facts_requirements_and_use(monkey
     ]
     monkeypatch.setattr("agent_sessions.automations_store.list_all", lambda: rows)
     monkeypatch.setitem(registry._CHECKS, "api_agent", lambda: (False, "no API agent"))
-    monkeypatch.setitem(registry._CHECKS, "forge", lambda: (True, "Forgejo is set up"))
     g = registry.gallery()
     by = {a["id"]: a for a in g["actions"]}
     assert list(by) == list(registry.kinds())
@@ -490,7 +442,6 @@ def test_the_gallery_lists_the_five_with_their_facts_requirements_and_use(monkey
     # A requirement that depends on the wizard's choice is not checked here: never "missing".
     assert by["send_to_session"]["requires"][0]["ok"] is None
     assert by["send_to_session"]["available"] is True
-    assert by["forge_review_loop"]["available"] is True
     assert [c["id"] for c in g["categories"]] == list(mf.CATEGORIES)
     assert [e["level"] for e in g["effects"]] == [1, 2, 3, 4, 5]
 
@@ -535,14 +486,13 @@ def test_the_committed_browser_fixture_is_what_the_server_sends(monkeypatch):
     never pass against a shape or wording the server does not send. Regenerate deliberately with
     `AGENT_SESSIONS_WRITE_FIXTURES=1`."""
     monkeypatch.setitem(registry._CHECKS, "api_agent", lambda: (True, "an API agent is ready"))
-    monkeypatch.setitem(registry._CHECKS, "forge", lambda: (True, "Forgejo is set up"))
     # Every requirement met; the browser specs flip one to meet the needs-setup state.
     monkeypatch.setitem(registry._CHECKS, "messenger", lambda: (True, "a messenger can send"))
     monkeypatch.setitem(registry._CHECKS, "artifacts", lambda: (True, "artifacts are on"))
     monkeypatch.setitem(
         registry._CHECKS, "containment", lambda: (True, "commands run in their own process scope")
     )
-    used = {"start_session": 3, "send_to_session": 1, "forge_review_loop": 2, "tell_hq": 4}
+    used = {"start_session": 3, "send_to_session": 1, "tell_hq": 4}
     monkeypatch.setattr(registry, "_used_by", lambda: used)
     text = json.dumps(registry.gallery(), indent=2, ensure_ascii=False) + "\n"
     if os.environ.get("AGENT_SESSIONS_WRITE_FIXTURES") == "1":

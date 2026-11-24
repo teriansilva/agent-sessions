@@ -13,16 +13,10 @@ export const ACTION_GALLERY: ActionGallery = JSON.parse(
   readFileSync(resolve(process.cwd(), "e2e/fixtures/actions-gallery.json"), "utf8"),
 );
 
-/** The five actions automations had before the plugins (#2248 P1): the gallery the existing
- *  wizard and gallery specs are written against. The plugin actions (#2248 P2) have their own
- *  spec, over the whole answer. */
-export const BUILTIN_IDS = [
-  "start_mission",
-  "start_session",
-  "send_to_session",
-  "forge_review_loop",
-  "tell_hq",
-];
+/** The actions automations had before the plugins (#2248 P1): the gallery the existing wizard
+ *  and gallery specs are written against. The plugin actions (#2248 P2) have their own spec, over
+ *  the whole answer. */
+export const BUILTIN_IDS = ["start_mission", "start_session", "send_to_session", "tell_hq"];
 export const BUILTIN_GALLERY: ActionGallery = {
   ...ACTION_GALLERY,
   actions: ACTION_GALLERY.actions.filter((a) => BUILTIN_IDS.includes(a.id)),

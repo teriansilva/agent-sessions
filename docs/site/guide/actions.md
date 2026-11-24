@@ -50,7 +50,6 @@ The *Read* class is listed so you know what a later action means when it arrives
 | Start a mission | BattleLab | Write · BattleLab | a schedule, once, or Run now |
 | Start a session | BattleLab | Write · BattleLab | any trigger |
 | Message a session | BattleLab | Write · BattleLab | any trigger |
-| Review loop | Forge | Write · BattleLab | a webhook only ([Review loop with Forgejo](/guide/review-loop)) |
 | Tell HQ | BattleLab | Notify | any trigger |
 | Send a message | Messaging | Notify | any trigger |
 | Call a webhook | Web | Write · external | any trigger |

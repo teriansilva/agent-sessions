@@ -58,7 +58,7 @@ test("shell is selectable in the engine picker alongside an agent engine (#636)"
   await page.goto(NEW_SESSION_PATH);
   // The Agent picker shows only when >1 engine is offered; shell is one of its options.
   const agent = agentPicker(page);
-  await expect(page.getByRole("radiogroup", { name: "Agent" })).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "Agent", exact: true })).toBeVisible();
   await agent.selectOption("shell");
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/shell/${UUID.source}$`));

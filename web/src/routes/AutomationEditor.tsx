@@ -4,8 +4,8 @@
  *  1. **When** — a schedule (or once), Run now, or a webhook picked from Library → Webhooks.
  *  2. **Which events** — presets recognised from the webhook's last delivery, or (Advanced) the
  *     operator's own conditions on its fields. Skipped for a schedule or Run now, which have none.
- *  3. **What** — start a session, message a session or a review loop (a schedule may also start a
- *     mission). A template's fields take a fixed value or, from a webhook, a typed value from the
+ *  3. **What** — start a session, message a session, tell HQ or a plugin action (a schedule may
+ *     also start a mission). A template's fields take a fixed value or, from a webhook, a typed value from the
  *     delivery.
  *  4. **Limits** — the policy in one line, its fields folded behind it.
  *  5. **Review & enable** — the name, the server's consent lines, Save (always OFF for a new one)
@@ -24,9 +24,7 @@
  *  when the saved automation already targets it, stamped, with "Switch to API client".
  *
  *  **"+ New webhook…"** opens the create flow with this draft in router state (the form only, never
- *  a secret) and comes back with the new webhook picked. A #2202 review loop saved with its own
- *  webhook (`scheme`) keeps it — saved back as it was, with its own Connect Forgejo panel — and is
- *  never converted here. */
+ *  a secret) and comes back with the new webhook picked. */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -63,14 +61,12 @@ import {
   inFlightNote,
   messengers,
   reconsent,
-  reviewerOptions,
   stepProblems,
   type EditorForm,
   type WizardStepId,
 } from "../lib/automations";
 import { AUTOMATIONS_PATH, WEBHOOK_NEW_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Session, Template, TemplateVariable } from "../types/api";
-import type { Specialist } from "../types/specialists";
 import type { ConnectorCatalog } from "../lib/connectors";
 import type { Automation, AutomationList, ConsentRequired } from "../types/automations";
 import type { NewWebhookHandoff } from "./WebhookNew";
@@ -130,8 +126,6 @@ function Editor({ routeId }: { routeId?: string }) {
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [variables, setVariables] = useState<TemplateVariable[]>([]);
   const [sessions, setSessions] = useState<Session[] | null>(null);
-  /** The specialist pool, for a review loop's reviewer. `null` until read; `[]` if it can't be. */
-  const [specialists, setSpecialists] = useState<Specialist[] | null>(null);
   // The messengers a "Send a message" action may use (#2248 P2), from Settings → HQ connectors.
   const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
   // "Call a webhook" (#2248 P2): the signing secret from the ONE answer that made it. Component
@@ -172,12 +166,12 @@ function Editor({ routeId }: { routeId?: string }) {
   const [returnTo, setReturnTo] = useState<HTMLElement | null>(null);
 
   /** The draft the New webhook page handed back, over the loaded form: the stored automation stays
-   *  what is saved (so it reads as unsaved changes), and a legacy webhook is never converted. */
+   *  what is saved (so it reads as unsaved changes). */
   const adoptHandedBack = useCallback((f: EditorForm): EditorForm => {
     const back = handedBack.current;
     handedBack.current = null;
     if (!back || typeof back.draft !== "object" || back.draft == null) return f;
-    const next: EditorForm = { ...blankForm(f.tz), ...f, ...back.draft, legacyHook: f.legacyHook };
+    const next: EditorForm = { ...blankForm(f.tz), ...f, ...back.draft };
     if (back.id) next.webhookId = back.id;
     return next;
   }, []);
@@ -241,10 +235,6 @@ function Editor({ routeId }: { routeId?: string }) {
       .then(() => api.connectors())
       .then((r) => live && setConnectors(r))
       .catch(() => live && setConnectors({ catalog: [], instances: [], disclosure: "" }));
-    Promise.resolve()
-      .then(() => api.specialists())
-      .then((r) => live && setSpecialists(Array.isArray(r?.specialists) ? r.specialists : []))
-      .catch(() => live && setSpecialists([]));
     return () => {
       live = false;
     };
@@ -252,7 +242,7 @@ function Editor({ routeId }: { routeId?: string }) {
 
   // The picked webhook's last delivery: its shape and the presets recognised from it (step 2, and
   // step 3's fields from the delivery). Only a webhook from the list has one.
-  const hookId = form && form.triggerKind === "webhook" && !form.legacyHook ? form.webhookId : "";
+  const hookId = form && form.triggerKind === "webhook" ? form.webhookId : "";
   const hook = useWebhookDetail(hookId);
 
   const dirty = form != null && JSON.stringify(form) !== pristine;
@@ -408,8 +398,6 @@ function Editor({ routeId }: { routeId?: string }) {
   const engines = list.engines ?? [];
   const savedSwitch = saved ? apiSwitchFor(saved.action, engines) : null;
   const liveProjects = (projects ?? []).filter((p) => !p.archived || p.id === form.projectId);
-  const reviewers = reviewerOptions(specialists, engines, engineLabel);
-  const reviewerChosen = reviewers.find((r) => r.id === form.reviewerId) ?? null;
   const f = (name: string) => `${uid}-${name}`;
   const props = { form, set, update, f };
 
@@ -492,7 +480,6 @@ function Editor({ routeId }: { routeId?: string }) {
             onNewWebhook={() =>
               setHandoff({ returnTo: location.pathname, draft: form })
             }
-            onSavedWebhook={(w) => setSaved((x) => (x && x.id === saved?.id ? { ...x, webhook: w } : x))}
           />
         );
       case "events":
@@ -521,9 +508,6 @@ function Editor({ routeId }: { routeId?: string }) {
             sessions={sessions}
             templates={templates}
             variables={variables}
-            reviewers={reviewers}
-            reviewerChosen={reviewerChosen}
-            specialistsLoaded={specialists != null}
             switchButton={
               saved && savedSwitch
                 ? {

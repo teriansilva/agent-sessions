@@ -20,6 +20,12 @@ what it was allowed to read. Three steps, all on the RECEIVING side:
    nothing is awaited between that answer and the creation. A revoke during the summary or
    while the preview is open therefore never yields a session.
 
+**The target decides how the session starts, as on the handoff route** (#2062). A console agent's
+seed waits in the handoff store for the normal launch to type it; a native API client
+(`handoff.is_api_target`) is created and gets the seed as its FIRST structured turn
+(`handoff_api.commit`, guarded: no permission skip, no source to archive). Whether a target can
+start is `handoff.target_present`, the answer `/api/engines` and the handoff route give.
+
 **What it is not.** Nothing is sent to the owner beyond reads its grant already allows; the
 source session is untouched. The new session is an ordinary local session: the normal launch
 route, the normal working-directory checks, the normal tool and permission boundaries, no
@@ -41,7 +47,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .. import engines, handoff, review
+from .. import engines, handoff, handoff_api, review, template_secrets
 from . import remote, sharing
 
 log = logging.getLogger(__name__)
@@ -106,7 +112,7 @@ def _target(target_engine: object):
     prov = engines.get(target_engine)
     if prov is None:
         raise ContinueError("not_found", "unknown engine", status=404)
-    ok, reason = handoff.handoff_target_state(prov, present=bool(engines.launchable_bin(prov)))
+    ok, reason = handoff.handoff_target_state(prov, present=handoff.target_present(prov))
     if not ok:
         raise ContinueError("invalid", f"target engine unavailable: {reason}")
     return prov
@@ -238,8 +244,13 @@ async def create(fed, handle: object, peer_id: str, grant_id: str, *, cwd: objec
     except remote.ReadError as exc:
         log.info("federation: a brief was not used (%s); nothing was created", exc.code)
         raise ContinueError("gone", GONE_DETAIL, status=409) from None
-    # Nothing is awaited from here on: the owner's answer above is what admits the creation.
+    # Nothing is awaited from here on but the creation itself: the owner's answer above is what
+    # admits it.
+    prov = engines.get(prepared.target_engine)
+    api = prov is not None and handoff.is_api_target(prov)
     try:
+        if api:
+            _refuse_a_known_secret(prepared.seed)
         seeded = handoff.create_handle(
             None,
             prepared.target_engine,
@@ -248,9 +259,36 @@ async def create(fed, handle: object, peer_id: str, grant_id: str, *, cwd: objec
             cwd=cwd,
             guard_secrets=True,
         )
+        if api:
+            # The handoff route's own split (#2141): created, then the seed as its first turn.
+            made = await handoff_api.commit(seeded, None, bypass=False, archive_source=False)
+            if made["delivery"] is None:
+                # Created, and the first turn not taken yet (refused before admission): the
+                # brief stays bound and fences every other send. This handle is spent, so the
+                # answer carries the handoff's own: committing it on the ordinary handoff route
+                # re-sends the SAME brief, same operation id, into the SAME session, never a
+                # second one (`handoff.commit_api` replays; its options and text are fixed). It
+                # reaches the local session only, and lives as long as the handoff store keeps it.
+                made = {**made, "retry_handle": seeded}
+            return made
         return handoff.commit(seeded)
     except handoff.HandoffError as exc:
         raise ContinueError("invalid", exc.detail, status=exc.status) from None
+
+
+def _refuse_a_known_secret(seed: str) -> None:
+    """A console seed is checked against the secrets known when it is TYPED (``guard_secrets``,
+    ``webterm._deliver_seed``). An API seed is sent as a structured turn, which has no such
+    check, so it is checked here, the last step before the session is created: a value that
+    became a secret after the preview was built refuses the create. Fails closed."""
+    try:
+        clean = template_secrets.redact_text(seed) == seed
+    except template_secrets.RedactionUnavailable:
+        clean = False
+    if not clean:
+        raise ContinueError(
+            "invalid", "this brief now holds a known secret — nothing was created", status=422
+        )
 
 
 def reset_for_tests() -> None:

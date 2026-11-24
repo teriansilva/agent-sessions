@@ -27,13 +27,10 @@ export type Trigger =
   | { kind: "manual" }
   | { kind: "once"; at: string; tz: string }
   | { kind: "schedule"; cadence: Cadence; tz: string }
-  /** A webhook picked from Library → Webhooks (#2221). It starts a review loop, a session, a
-   *  message to a session (#2221 P2) or a message to HQ; `when` (omitted when empty) chooses which
-   *  deliveries, and a review loop takes none. */
-  | { kind: "webhook"; webhook_id: string; when?: WebhookCondition[] }
-  /** #2202: a review loop's own Forgejo webhook. Read-only: an existing automation keeps it, but the
-   *  server refuses creating a new one in this form. */
-  | { kind: "webhook"; scheme: "forgejo" };
+  /** A webhook picked from Library → Webhooks (#2221). It starts a session, a message to a
+   *  session (#2221 P2), a message to HQ or a plugin that allows it; `when` (omitted when empty)
+   *  chooses which deliveries. */
+  | { kind: "webhook"; webhook_id: string; when?: WebhookCondition[] };
 
 export type AutomationMessage =
   | { text: string }
@@ -105,7 +102,6 @@ export type AutomationAction =
    *  told only that a message from this automation arrived, never what it says, and never acts on
    *  it. No target, agent or permissions of its own. */
   | { kind: "tell_hq"; message: AutomationMessage }
-  | ReviewLoopAction
   | PluginAction;
 
 /** The registry's plugin actions (#2248 P2), stored as ONE kind. `inputs` is the plugin's own,
@@ -151,24 +147,8 @@ export interface PluginAction {
   from_delivery?: Record<string, DeliveryMapping>;
 }
 
-/** What the wizard picks: one of the five built-in kinds, or a plugin's id. */
+/** What the wizard picks: one of the built-in kinds, or a plugin's id. */
 export type ActionKind = Exclude<AutomationAction["kind"], "plugin"> | PluginId;
-
-/** The Forgejo review loop (#2202): one repository, one pinned reviewer specialist VERSION, one
- *  reviewer login, inside one project. Every field is part of the consent scope. */
-export interface ReviewLoopAction {
-  kind: "forge_review_loop";
-  project_id: string;
-  /** `owner/name` on the configured forge. */
-  repo: string;
-  reviewer: { specialist_id: string; version: number };
-  /** The forge account whose verdicts are trusted. */
-  reviewer_login: string;
-  legs: { issues: boolean; pulls: boolean };
-  /** Reviews per item over its whole life (1..10). */
-  max_rounds: { issue: number; pr: number };
-  return_to_origin: boolean;
-}
 
 export interface AutomationPolicy {
   concurrency: "skip" | "allow";
@@ -284,8 +264,7 @@ export interface Automation {
     success_rate: number | null;
   };
   strip: StripDay[];
-  /** #2202: a webhook automation's delivery facts (never a secret); `null` for any other trigger.
-   *  Absent from a server that predates the review loop. */
+  /** A webhook automation's delivery facts (never a secret); `null` for any other trigger. */
   webhook?: AutomationWebhook | null;
   created_at: number;
   updated_at: number;
@@ -295,18 +274,17 @@ export interface Automation {
   in_flight_detail?: string;
 }
 
-/** Where the forge delivers and what arrived (#2202). The secret itself is never here: it is shown
- *  once, by the call that makes it. Since #2221 it is the picked webhook's public view plus
- *  `webhook_id`; a legacy review loop's is its own webhook (`legacy_automation` set). The extra
- *  fields are absent from a server that predates the list. */
+/** The picked webhook's public view plus `webhook_id` (#2221): where the sender delivers and what
+ *  arrived. The secret itself is never here: it is shown once, on the webhook's own page. Only the
+ *  counters are present when the picked webhook can't be read. */
 export interface AutomationWebhook {
   webhook_id?: string;
   id?: string;
   name?: string;
   legacy_automation?: string | null;
   pickable?: boolean;
-  /** Root-relative: `/hooks/a/<id>`. */
-  path: string;
+  /** Root-relative: `/hooks/w/<id>`. */
+  path?: string;
   secret_set: boolean;
   secret_created_at: number | null;
   /** A rotated-out secret keeps verifying deliveries until then. */
@@ -316,12 +294,6 @@ export interface AutomationWebhook {
   last_note: string;
   /** Unsigned or badly signed deliveries refused in the last 24 h. */
   unsigned_24h: number;
-}
-
-/** `POST /api/automations/{id}/webhook-secret` (201): the plaintext, this once. */
-export interface WebhookSecret {
-  secret: string;
-  webhook: AutomationWebhook;
 }
 
 /** `DELETE /api/automations/{id}`. */

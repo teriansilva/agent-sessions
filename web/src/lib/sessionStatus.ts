@@ -61,3 +61,19 @@ export function sessionStatus(s: SessionStatusInput): SessionStatus {
   }
   return { variant: "idle", role: undefined, label: undefined, title: "idle" };
 }
+
+/** A MAIN session row's dot (#2325): its own state, except that a subagent needing the operator
+ *  lifts an otherwise calmer row to attention — the bubble-up that keeps a collapsed group from
+ *  hiding work that waits on you. Its own intervention keeps its own reason. */
+export function mainRowStatus(
+  s: SessionStatusInput & Pick<Session, "rollup">,
+): SessionStatus {
+  const own = sessionStatus(s);
+  if (own.variant === "attention" || s.rollup !== "attention") return own;
+  return {
+    variant: "attention",
+    role: "img",
+    label: "a subagent needs you",
+    title: "A subagent needs you",
+  };
+}

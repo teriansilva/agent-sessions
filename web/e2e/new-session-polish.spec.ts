@@ -209,7 +209,7 @@ test("a wide pane puts agent and project side by side; a narrow one stacks them 
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1700, height: 1000 });
   await page.goto(NEW_SESSION_PATH);
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
-  const agentBox = (await page.getByRole("radiogroup", { name: "Agent" }).boundingBox())!;
+  const agentBox = (await page.getByRole("radiogroup", { name: "Agent", exact: true }).boundingBox())!;
   const projectBox = (await page.getByRole("radiogroup", { name: "Project" }).boundingBox())!;
   if (info.project.name === "desktop") {
     expect(projectBox.x).toBeGreaterThan(agentBox.x + agentBox.width - 1); // right of it

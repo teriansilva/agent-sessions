@@ -14,8 +14,8 @@
  *    name beta as the one who settled it;
  *  - beta's operator **continues here**: a session of beta's own, briefed from the shared record,
  *    as a Quick copy and as a Summary. The summary's model call goes to a stub of this test's
- *    own on loopback (`startAiStub`), never to a real endpoint. SKIPPED for now: Continue here
- *    cannot start an API session yet (see the comment at those steps);
+ *    own on loopback (`startAiStub`), never to a real endpoint. Each new session is an API
+ *    session whose first message is the preview's text;
  *  - beta's operator **leaves** the share: it is gone on both instances and alpha's bell says so.
  *
  *  The mocked specs (peer-together.spec.ts, share-leave.spec.ts) cover every state; this one
@@ -212,21 +212,8 @@ test("two operators work together on a shared session: notes, access, a decision
     expect(given).not.toContain("NOTE-");
     expect(given).not.toContain("ASK-NOTE");
 
-    // CONTINUE HERE IS SKIPPED, not removed: today it cannot start an API session, and the
-    // harness's agents are API sessions (a console agent would need a real terminal CLI). Two
-    // product gaps, reported, not worked around here:
-    //  - `continue_here._target` asks `engines.launchable_bin` whether the target is present, and
-    //    an API client has no binary of its own, so prepare answers 422 "target engine
-    //    unavailable: not installed" for every API agent the dialog offers (the handoff route
-    //    asks `handoff.target_present`, which knows API clients);
-    //  - `continue_here.create` commits through `handoff.commit`, the console path, so even past
-    //    prepare an API target gets an id and no session ("This conversation does not exist"),
-    //    where the handoff route uses `handoff_api.commit` for one.
-    // With the first patched locally the Quick steps pass up to Start session and fail at the new
-    // session's first turn, as the second predicts. Once Continue here can start an API session,
-    // `test.step.skip` becomes `test.step` again for both steps below.
     let startedOnBeta = 0;
-    await test.step.skip("continue here: a Quick copy becomes a session of beta's own", async () => {
+    await test.step("continue here: a Quick copy becomes a session of beta's own", async () => {
       await remoteMenu(beta, remote, "Continue here…");
       const dialog = beta.getByRole("dialog", { name: "Continue here" });
       await expect(dialog).toHaveAttribute("data-stage", "choose");
@@ -256,7 +243,7 @@ test("two operators work together on a shared session: notes, access, a decision
       expect(stub.asked).toHaveLength(0); // a Quick copy asks no model
     });
 
-    await test.step.skip("continue here: a Summary is built by beta's own AI endpoint (a loopback stub)", async () => {
+    await test.step("continue here: a Summary is built by beta's own AI endpoint (a loopback stub)", async () => {
       await useAiStub(beta, stub);
       await beta.goto(shareUrl);
       await expect(remote.getByTestId("remote-state")).toHaveText("connected", { timeout: ACROSS_MS });
@@ -282,7 +269,12 @@ test("two operators work together on a shared session: notes, access, a decision
         "STUB-SUMMARY",
         { timeout: ACROSS_MS },
       );
-      expect(await localSessions(beta)).toHaveLength(2);
+      // As in the Quick step: the agent answers its first turn, and the list (which reads the
+      // engine's store, written with that turn) then holds the second session.
+      await expect(beta.getByTestId("structured-pane").getByTestId("structured-turn")).toContainText("echo:", {
+        timeout: ACROSS_MS,
+      });
+      await expect.poll(() => localSessions(beta), { timeout: ACROSS_MS }).toHaveLength(2);
       startedOnBeta = 2;
       expect(stub.asked).toHaveLength(1);
     });

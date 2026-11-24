@@ -136,6 +136,8 @@ the same list.
 | `components/sidebar/Filters.module.css` | css | 6 | done | route:sidebar route:sidebar-folded route:sidebar-empty | disclosure (grid rows 0fr → 1fr, one container), chevron turn, segment tint transition |
 | `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
+| `components/sidebar/Subagents.module.css` | css | 6 | todo | | the disclosure chip has no motion; the rolled-up LED flashes on change (Led primitive, nj-led-flash; Reduced: static) |
+| `components/sessions/ArchiveSubagentsDialog.module.css` | css | 6 | todo | | none (the ConfirmDialog's own) |
 | `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
 | `components/specialists/specialists.module.css` | css | 10 | todo |  |  |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |

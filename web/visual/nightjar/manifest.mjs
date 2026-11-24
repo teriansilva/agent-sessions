@@ -422,11 +422,10 @@ const LIB_ACTIONS = {
     LIB_ACTION("start_mission", "Start a mission", "battlelab", "write-battlelab", "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts.", ["once", "schedule", "manual"], [{ id: "project", words: "a project", ok: null, detail: "" }]),
     LIB_ACTION("start_session", "Start a session", "battlelab", "write-battlelab", "Starts a new agent session in a folder with your first message: one agent, one message.", ["once", "schedule", "manual", "webhook"], [{ id: "api_agent", words: "an API agent that can start unattended", ok: false, detail: "needs an API agent that can start unattended (Settings → Agents)" }], 3),
     LIB_ACTION("send_to_session", "Message a session", "battlelab", "write-battlelab", "Sends a message to an existing session that is already running.", ["once", "schedule", "manual", "webhook"], [{ id: "running_session", words: "a running API session to message", ok: null, detail: "" }], 1),
-    LIB_ACTION("forge_review_loop", "Review loop", "forge", "write-battlelab", "A specialist reviews each issue and PR on a Forgejo repository, round by round, until it is approved or out of rounds.", ["webhook"], [{ id: "forge", words: "a Forgejo set up in Settings → Forge", ok: true, detail: "Forgejo is set up" }], 2),
     LIB_ACTION("tell_hq", "Tell HQ", "battlelab", "notify", "Puts a message in your notifications; HQ may comment on it but never acts on it.", ["once", "schedule", "manual", "webhook"], [], 4),
   ],
   categories: [
-    { id: "battlelab", label: "BattleLab" }, { id: "messaging", label: "Messaging" }, { id: "forge", label: "Forge" },
+    { id: "battlelab", label: "BattleLab" }, { id: "messaging", label: "Messaging" },
     { id: "files", label: "Files" }, { id: "run_locally", label: "Run locally" }, { id: "web", label: "Web" },
   ],
   effects: [

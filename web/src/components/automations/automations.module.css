@@ -1141,10 +1141,10 @@ textarea.control {
   color: var(--text-3);
 }
 
-/* --- the Forgejo review loop (#2202) ----------------------------------------------------------- */
-/* "Connect Forgejo": the payload URL and secret are mono values that wrap anywhere (a 64-hex secret
- * on a 390px phone must never push the page sideways); the tag beside the title is a neutral stamp,
- * the event list is instructions (not inputs), and only the last delivery's LED carries a state. */
+/* --- a webhook's panel (#2202, #2221) ---------------------------------------------------------- */
+/* The address and secret are mono values that wrap anywhere (a 64-hex secret on a 390px phone must
+ * never push the page sideways); the tag beside the title is a neutral stamp, and only the last
+ * delivery's LED carries a state. */
 .hookHead {
   display: flex;
   flex-wrap: wrap;
@@ -1156,8 +1156,7 @@ textarea.control {
 .hookHead .panelTitle {
   margin: 0;
 }
-.hookTag,
-.loopTag {
+.hookTag {
   composes: nj-stamp from global;
   padding: 2px 6px;
   font-family: var(--font-mono);
@@ -1188,24 +1187,6 @@ textarea.control {
   text-transform: uppercase;
   color: var(--text-2);
 }
-.hookEvents {
-  list-style: none;
-  margin: 6px 0 8px;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 6px 14px;
-  font-size: var(--fs-row);
-}
-.hookEvents li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.hookTick {
-  font-family: var(--font-mono);
-  color: var(--hud-text);
-}
 .hookLast {
   display: flex;
   align-items: baseline;
@@ -1220,22 +1201,6 @@ textarea.control {
   align-self: flex-start;
   margin-top: 0.55em;
 }
-/* A review-loop run's leg and round beside its time: neutral stamps, never a state colour. */
-.loopTags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
-}
-.loopTag {
-  font-size: var(--fs-micro);
-  letter-spacing: 0.08em;
-}
-.untrusted {
-  color: var(--text-3);
-  font-style: italic;
-}
-
 /* --- Library → Webhooks (#2221) ---------------------------------------------------------------- */
 /* A simple list (frame 1): each row is ONE link — name, the last delivery's LED and time, then a
  * mono meta line. Only the LED carries a state; refused unsigned deliveries tint their line amber.

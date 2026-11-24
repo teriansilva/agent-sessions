@@ -13,7 +13,6 @@ import { AUTOMATION_NEW_PATH, automationEditPath } from "../src/lib/routes";
 import {
   PROJECT,
   automation,
-  backTo,
   mockAutomations,
   targetsAndOverflow,
   toReview,
@@ -112,7 +111,7 @@ test("a schedule skips step 2, saves off, and enables through the server's conse
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await expect(wizardHeading(page)).toHaveText("What does it do?");
   await expect(wizardHeading(page)).toBeFocused();
-  // A schedule offers a mission, never a review loop.
+  // A schedule offers a mission, which a webhook never does.
   await expect(page.getByTestId("action-kind").getByRole("button")).toHaveText([
     /Start a mission/,
     /Start a session/,
@@ -203,7 +202,6 @@ test("no delivery yet: step 2 says to send a test first, and Advanced still work
   await expect(page.getByTestId("action-kind").getByRole("button")).toHaveText([
     /Start a session/,
     /Message a session/,
-    /Review loop/,
     /Tell HQ/,
   ]);
   await page.getByTestId("action-kind").getByRole("button", { name: /Start a session/ }).click();
@@ -395,33 +393,6 @@ test("Advanced: a condition on a field the last delivery lacked warns; a wrong t
   await expect(page.getByTestId("cond-row")).toHaveCount(1);
 });
 
-test("a review loop picks its own events: step 2 says so, and no conditions are sent", async ({ page }) => {
-  const loop = automation({
-    id: "rv1",
-    name: "Review loop · example-org/shop",
-    trigger: { kind: "webhook", webhook_id: SHOP.id },
-    action: {
-      kind: "forge_review_loop",
-      project_id: "p1",
-      repo: "example-org/shop",
-      reviewer: { specialist_id: "shop-reviewer", version: 3 },
-      reviewer_login: "shop-reviewer-bot",
-      legs: { issues: true, pulls: true },
-      max_rounds: { issue: 5, pr: 4 },
-      return_to_origin: true,
-    },
-    policy: { concurrency: "allow", max_concurrent: 3, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
-    enabled: false,
-    state: "off",
-  });
-  await setup(page, { automations: [loop] });
-  await page.goto(automationEditPath("rv1"));
-  await expect(wizardHeading(page)).toHaveText("When does it run?");
-  await wizardNext(page);
-  await expect(page.getByTestId("events-loop")).toContainText("A review loop picks its own events");
-  await expect(page.getByTestId("events-advanced")).toHaveCount(0);
-});
-
 test("an explicitly empty text value is a value: a rename saves is, is not and one of with their empty strings", async ({ page }) => {
   const when = [
     { path: "action", op: "one_of", value: ["", "opened"] },
@@ -466,67 +437,6 @@ test("an explicitly empty text value is a value: a rename saves is, is not and o
   expect(sent.name).toBe("Empty values, renamed");
   expect(sent.trigger).toEqual({ kind: "webhook", webhook_id: SHOP.id, when });
 });
-
-const LEGACY_LOOP = automation({
-  id: "rv1",
-  name: "Review loop · example-org/shop",
-  trigger: { kind: "webhook", scheme: "forgejo" },
-  action: {
-    kind: "forge_review_loop",
-    project_id: "p1",
-    repo: "example-org/shop",
-    reviewer: { specialist_id: "shop-reviewer", version: 3 },
-    reviewer_login: "shop-reviewer-bot",
-    legs: { issues: true, pulls: true },
-    max_rounds: { issue: 5, pr: 4 },
-    return_to_origin: true,
-  },
-  policy: { concurrency: "allow", max_concurrent: 3, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
-  enabled: false,
-  state: "off",
-});
-
-for (const [card, title] of [
-  ["manual", "Only when I press Run now"],
-  ["schedule", "On a schedule"],
-] as const)
-  test(`a review loop's own webhook left for ${card}: What offers that trigger's actions, and switching back restores it`, async ({ page }) => {
-    const { fake } = await setup(page, { automations: [LEGACY_LOOP] });
-    await page.goto(automationEditPath("rv1"));
-    await expect(page.getByTestId("trigger-webhook-legacy")).toBeVisible();
-    await page.getByTestId(`trigger-kind-${card}`).click();
-    await expect(page.getByTestId("trigger-kind").locator('[aria-pressed="true"]')).toContainText(title);
-    await page.getByRole("button", { name: "Next", exact: true }).click();
-    // Step 2 is skipped; What offers what this trigger starts — never only the loop.
-    await expect(wizardHeading(page)).toHaveText("What does it do?");
-    await expect(page.getByTestId("action-kind").getByRole("button")).toHaveText([
-      /Start a mission/,
-      /Start a session/,
-      /Message a session/,
-      /Tell HQ/,
-    ]);
-    await expect(page.getByTestId("action-kind-start_mission")).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("action-why")).not.toContainText("own Forgejo webhook");
-    await expect(page.getByTestId("step-problems")).not.toContainText("own webhook");
-    await page.getByTestId("mission-project").selectOption(PROJECT.id);
-    await page.getByTestId("message-text").fill("Audit the dependencies");
-    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeEnabled();
-    await wizardNext(page);
-    await expect(wizardHeading(page)).toHaveText("Limits");
-
-    // Back to the webhook: its own webhook and its loop again, nothing converted.
-    await backTo(page, "When does it run?");
-    await page.getByTestId("trigger-kind-webhook").click();
-    await expect(page.getByTestId("trigger-webhook-legacy")).toBeVisible();
-    await expect(page.getByTestId("webhook-panel")).toBeVisible();
-    await toStep(page, "What does it do?");
-    await expect(page.getByTestId("action-kind").getByRole("button")).toHaveText([/Review loop/]);
-    await toReview(page);
-    await page.getByTestId("automation-name").fill("Review loop, renamed");
-    await page.getByTestId("editor-save").click();
-    await expect(page.getByTestId("editor-notice")).toContainText("Saved");
-    expect(lastWrite(fake, "PATCH").trigger).toEqual({ kind: "webhook", scheme: "forgejo" });
-  });
 
 test("every step: 44 px targets, the heading takes focus, nothing clipped at 390 px", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

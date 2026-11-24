@@ -23,6 +23,7 @@ from .. import (
     engines,
     freeze_lock,
     fsbrowse,
+    lineage,
     metadata,
     missions,
     native_ownership,
@@ -389,6 +390,74 @@ async def archive_key(key: str) -> tuple[bool, str | None]:
         return False, str(e.detail)
     finally:
         missions.release_session(key, reservation)
+
+
+#: Subagents one archive-with-subagents request may name (#2325).
+ARCHIVE_SUBAGENTS_MAX = 200
+
+
+async def _archive_one(key: str) -> dict:
+    """One key through the archive route's own path; a per-key result, never a raise."""
+    try:
+        prov, native = engines.parse_key(key)
+    except engines.EngineError:
+        return {"id": key, "result": "skipped", "reason": "unknown session"}
+    key = f"{prov.engine_id}:{native}"
+    try:
+        reservation = _reserve_or_refuse(key)
+    except HTTPException as e:  # a mission holds it: its owner decides, not this request
+        return {"id": key, "result": "skipped", "reason": str(e.detail)}
+    try:
+        async with missions.holding(key, reservation):
+            await _archive_reserved(prov, native, key)
+        return {"id": key, "result": "archived", "reason": None}
+    except HTTPException as e:
+        return {"id": key, "result": "failed", "reason": str(e.detail)}
+    finally:
+        missions.release_session(key, reservation)
+
+
+def _descendant_keys(key: str) -> set[str]:
+    links = lineage.links_snapshot() or {}
+    kids: dict[str, list[str]] = {}
+    for child, link in links.items():
+        kids.setdefault(link["parent"], []).append(child)
+    out: set[str] = set()
+    stack = list(kids.get(key, []))
+    while stack:
+        k = stack.pop()
+        if k in out or k == key:
+            continue
+        out.add(k)
+        stack.extend(kids.get(k, []))
+    return out
+
+
+async def archive_with_subagents(key: str, subagents: list[str]) -> list[dict]:
+    """Archive ``key``, then each of ``subagents`` (#2325).
+
+    ``subagents`` is the list the client FROZE when the operator opened the prompt. Each is
+    re-validated here as still a descendant of ``key`` in the lineage ledger, and each runs
+    through the same per-session path as the archive route (mission reservation, runtime freeze
+    and cleanup, transcript ownership, shares). A recorded link never authorizes a termination
+    by itself. The main session goes first; when it is refused nothing else is attempted.
+    Results are per key, in request order, and a failure is reported, never retried."""
+    first = await _archive_one(key)
+    results = [first]
+    if first["result"] != "archived":
+        results.extend(
+            {"id": k, "result": "skipped", "reason": "the main session was not archived"}
+            for k in subagents
+        )
+        return results
+    still = await asyncio.to_thread(_descendant_keys, first["id"])
+    for k in subagents:
+        if k not in still:
+            results.append({"id": k, "result": "skipped", "reason": "no longer a subagent"})
+            continue
+        results.append(await _archive_one(k))
+    engines.invalidate_scan_cache()
+    return results
 
 
 def project_members(pid: str, index: dict) -> list[tuple[object, str, metadata.SessionMeta]]:
@@ -937,6 +1006,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         scoped, memberships, pinned, aliases, running_ok, _working_ok, clusters_doc = _scoped_rows(
             archived=archived, snapshot=snapshot
         )
+        # MAIN SESSIONS ONLY from here on (#2325, `docs/invariants/session-lineage.md`): a session
+        # another one started is a child of it. Facets, filters, sort and paging see main
+        # sessions; a child reaches the client through its main session's row (`child_count`,
+        # `rollup`, `attention_count`, `attention`) and the lazy children/attention routes.
+        scoped = lineage.project(scoped).mains
         project_index = projects.load()
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
@@ -1121,6 +1195,27 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
         # set and "load more" stays within results.
         rows = [r for r in scoped if _keep(r)]
+        filtered = bool(q_norm or project_f or engine_f or mission_f or cluster_f or running)
+        # Attention guarantee 3 (#2325): a child that needs the operator never matches a filter,
+        # so when its main session is filtered out the page says how many such sessions there are
+        # (uncapped) and names EVERY such main session (four short fields each, bounded by the
+        # sessions needing the operator), which the attention route then lists.
+        outside: dict | None = None
+        if filtered:
+            kept_ids = {r["id"] for r in rows}
+            held = [r for r in scoped if r["attention_count"] and r["id"] not in kept_ids]
+            outside = {
+                "count": sum(r["attention_count"] for r in held),
+                "mains": [
+                    {
+                        "id": r["id"],
+                        "engine": r["engine"],
+                        "title": r["title"],
+                        "attention_count": r["attention_count"],
+                    }
+                    for r in held
+                ],
+            }
         # Sort order (#506): favorites (sticky) lead — a global pin (#520) — then the timestamp
         # tier the user picked: last-activity time (default; #525 — last real turn, not raw file
         # mtime, so a mere open no longer reorders) or creation date (stable). The created_at mode
@@ -1138,7 +1233,34 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # Of those, how many have an agent running (#1085).
             "live_total": sum(1 for r in rows if r["running"]),
             "facets": facets,
+            **({"attention_outside": outside} if outside is not None else {}),
             **pinned,
+        }
+
+    def _lineage_page(key: str, *, archived: bool, limit: int, offset: int, kind: str) -> dict:
+        """One page of ``key``'s children (``kind="children"``: one level, spawn order) or of its
+        attention descendants (``kind="attention"``: every one, any depth, with its path).
+
+        Built from the same scoped walk as the list (`_scoped_rows`), so roots, exclusions,
+        archived state and visibility are applied BEFORE anything is projected: a descendant out
+        of scope is not a row, so it adds nothing to any count, rollup or attention list (#2325).
+        A ``key`` the list would not show is a 404."""
+        scoped, *_ = _scoped_rows(archived=archived, snapshot=None)
+        proj = lineage.project(scoped)
+        if key not in proj.by_id:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if kind == "children":
+            items = list(proj.children.get(key, []))
+        else:
+            items = [
+                {**r, "path": [{"id": p["id"], "title": p["title"]} for p in path]}
+                for r, path in proj.attention(key)
+            ]
+        window = items[offset : offset + limit]
+        return {
+            "sessions": window,
+            "total": len(items),
+            "next_offset": offset + limit if offset + limit < len(items) else None,
         }
 
     def _session_row_sync(key: str) -> dict | None:
@@ -1314,8 +1436,94 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 last_activity=_assessment_activity(row),
                 review_failed_at=m.review_failed_at,
             )
+            _stamp_lineage(row, in_scope, meta_index, project_index, aliases)
             return row
         return _NOT_FOUND
+
+    def _stamp_lineage(row: dict, in_scope, meta_index, project_index, aliases) -> None:
+        """The list's lineage fields on a looked-up row (#2325), so the two shapes stay one.
+
+        ``parent_key`` / ``lineage_source`` let a child opened by URL show its breadcrumb; only a
+        parent inside the same hard boundary is named (one outside it, archived away or gone
+        leaves the row without a parent). ``child_count``, ``rollup`` and the attention fields
+        come from this session's ledger descendants that are inside the boundary and active —
+        rows are built for those few only, never for the whole walk."""
+        links = lineage.links_snapshot() or {}
+        wanted = _descendant_keys(row["id"])
+        link = links.get(row["id"])
+        parent_ok = False
+        desc_rows: list[dict] = []
+        use_ai_title = prefs.renames_sessions()
+        for s in engines.scan_all_cached() if (wanted or link) else ():
+            sk = engines.session_key(s)
+            if sk not in wanted and not (link and sk == link["parent"]):
+                continue
+            m = meta_index.get(sk) or meta_index.get(engines.physical_key(sk, aliases))
+            m = m or metadata.SessionMeta()
+            ref = projects.resolve(s.cwd, m.project_id, project_index, alias=m.project_alias)
+            if not in_scope(s.cwd, ref.as_dict()):
+                continue
+            if link and sk == link["parent"]:
+                parent_ok = True
+                continue
+            if (m.archived if m.archived is not None else s.archived) != row["archived"]:
+                continue
+            desc_rows.append(
+                _row(
+                    s,
+                    m,
+                    project_index,
+                    metadata.requested_model_in(meta_index, aliases, sk),
+                    use_ai_title=use_ai_title,
+                    aliases=aliases,
+                    project=ref.as_dict(),
+                )
+            )
+        _stamp_activity(desc_rows, aliases)  # the same working/running facts the list rolls up
+        lineage.project([row, *desc_rows], links=links)
+        row.pop("orphan", None)
+        row.pop("parent_key", None)
+        row.pop("lineage_source", None)
+        if link and parent_ok:
+            row["parent_key"] = link["parent"]
+            row["lineage_source"] = link["source"]
+
+    async def _lineage_route(sid: str, *, archived: bool, limit: int, offset: int, kind: str):
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        return JSONResponse(
+            await asyncio.to_thread(
+                _lineage_page, key, archived=archived, limit=limit, offset=offset, kind=kind
+            )
+        )
+
+    @app.get("/api/sessions/{sid}/children")
+    async def session_children(
+        sid: str,
+        _: str = Depends(logged_in),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        archived: bool = Query(False),
+    ) -> JSONResponse:
+        """One level of a session's children, lazily, paged (#2325)."""
+        return await _lineage_route(
+            sid, archived=archived, limit=limit, offset=offset, kind="children"
+        )
+
+    @app.get("/api/sessions/{sid}/attention")
+    async def session_attention(
+        sid: str,
+        _: str = Depends(logged_in),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        archived: bool = Query(False),
+    ) -> JSONResponse:
+        """Every descendant of a session that needs the operator, any depth, paged (#2325)."""
+        return await _lineage_route(
+            sid, archived=archived, limit=limit, offset=offset, kind="attention"
+        )
 
     @app.get("/api/sessions/{sid}")
     async def get_session(sid: str, _: str = Depends(logged_in)) -> JSONResponse:
@@ -1399,16 +1607,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # `scan_all_cached`, not `scan_all`: the count is a READ, so it may ride the same TTL
         # snapshot the sidebar does. The scope filter still runs per request over those rows, so
         # this stays a performance cache and never an authorization cache (#991/#1007 Phase 3).
+        # Every in-scope session first (children are decided against that set, as the list does),
+        # then main sessions only are counted (#2325).
+        kept: dict[str, str | None] = {}
         for s in engines.scan_all_cached():
             key = engines.session_key(s)
             phys = engines.physical_key(key, aliases)
             m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
             ref = projects.resolve(s.cwd, m.project_id, project_index, alias=m.project_alias)
-            if ref.kind != "project":
-                continue
             archived = m.archived if m.archived is not None else s.archived
             if keep(s.cwd, ref.as_dict(), archived=archived):
-                counts[ref.id] = counts.get(ref.id, 0) + 1
+                kept[key] = ref.id if ref.kind == "project" else None
+        children = lineage.child_keys_of(set(kept))
+        for key, project_id in kept.items():
+            if project_id is not None and key not in children:
+                counts[project_id] = counts.get(project_id, 0) + 1
         out = [
             {**p.as_dict(), "session_count": counts.get(p.id, 0)}
             for p in sorted(project_index.values(), key=lambda p: (p.name.casefold(), p.id))
@@ -1978,6 +2191,38 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 return await _archive_reserved(prov, native, key)
         finally:
             missions.release_session(key, reservation)
+
+    @app.post("/api/sessions/{sid}/archive-with-subagents")
+    async def archive_with_subagents_route(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Archive a main session and the subagents the operator confirmed (#2325)."""
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="body must be JSON") from None
+        subs = body.get("subagents") if isinstance(body, dict) else None
+        if (
+            not isinstance(subs, list)
+            or not all(isinstance(k, str) and k for k in subs)
+            or len(subs) > ARCHIVE_SUBAGENTS_MAX
+            or len(set(subs)) != len(subs)
+            or key in subs
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"subagents must be up to {ARCHIVE_SUBAGENTS_MAX} distinct session ids",
+            )
+        results = await archive_with_subagents(key, subs)
+        needs_you_notify.poke()
+        return JSONResponse({"id": key, "results": results})
 
     @app.post("/api/sessions/{sid}/unarchive")
     async def unarchive_session(

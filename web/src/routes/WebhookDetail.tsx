@@ -3,8 +3,9 @@
  *  (disabled, with the reason, while an automation uses it), the last delivery as field NAMES and
  *  TYPES only — the server never keeps a value — and the automations that use it.
  *
- *  A #2202 review loop's own webhook shows its old address and its automation, may be rotated, and
- *  is never deleted here: it goes when that automation moves to a webhook from the list. */
+ *  A retired #2202 review loop's own webhook shows its old address and its automation, and is never
+ *  deleted here: its address receives nothing any more (#2222), and it goes when that automation is
+ *  deleted. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
@@ -208,11 +209,12 @@ function Page({ id }: { id: string }) {
               className={`${styles.notice} ${styles.more}`}
               data-testid="webhook-legacy"
             >
-              <strong>A review loop’s own address</strong>
+              <strong>A retired review loop’s old address</strong>
               <span>
-                It belongs to “{legacyOwner(w)}” from before webhooks were a
-                list. That automation keeps using it; no other automation can
-                pick it.
+                It belongs to “{legacyOwner(w)}”, a review loop from before
+                webhooks were a list. Review loops were retired: this address
+                receives nothing any more, and no other automation can pick it.
+                It goes when you delete that automation.
               </span>
             </div>
           )}

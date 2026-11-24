@@ -219,10 +219,10 @@ def public(row: dict, *, now: float | None = None) -> dict:
             "success_rate": (counts["ok"] / decided) if decided else None,
         },
         "strip": strip,
-        # The review loop's webhook (#2202): where the forge delivers, and what arrived. Never a
-        # secret — the secret is shown once, by the call that makes it.
+        # The webhook it picked from the list (#2221): where the sender delivers, and what
+        # arrived. Never a secret — that is shown once, on the webhook's own page.
         "webhook": (
-            {"path": f"/hooks/a/{row['id']}", **store.hook_state(row["id"], now=ts)}
+            store.hook_state(row["id"], now=ts)
             if config and config["trigger"]["kind"] == "webhook"
             else None
         ),
@@ -324,9 +324,6 @@ def public_run(r: dict) -> dict:
 def _create(body: dict) -> dict:
     now = time.time()
     config = model.validate_config(body, now=now)
-    if config["trigger"]["kind"] == "webhook" and not config["trigger"].get("webhook_id"):
-        # #2202's per-automation webhook lives on for existing review loops only (#2221).
-        raise model.AutomationError("pick a webhook from Library → Webhooks (webhook_id)")
     automation_runner.check_save(config)
     row = store.create(config, model.compute_pins(config), now=now)
     return _with_new_secret(public(row), row["id"], config)
@@ -658,19 +655,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except (automation_runner.RunRefused, store.StoreError) as e:
             return _err(e)
         return _json(public_run(run), 202)
-
-    @app.post(PREFIX + "/{aid}/webhook-secret")
-    async def new_webhook_secret(
-        aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
-    ) -> JSONResponse:
-        # Makes (or rotates) the secret and returns its plaintext ONCE (#2202). A rotated-out
-        # secret keeps verifying deliveries for `SECRET_OVERLAP_S`.
-        def _new() -> dict:
-            secret = store.new_hook_secret(aid)
-            return {"secret": secret, "webhook": public(store.get(aid))["webhook"]}
-
-        out = await _run(_new)
-        return out if isinstance(out, JSONResponse) else _json(out, 201)
 
     @app.post(PREFIX + "/{aid}/destination-secret")
     async def new_destination_secret(

@@ -74,7 +74,7 @@ def get(action_id: str) -> Action | None:
 
 
 def kinds() -> tuple[str, ...]:
-    """Every action id: the five built-in kinds, then the plugin ids."""
+    """Every action id: the built-in kinds, then the plugin ids."""
     return tuple(a.manifest.id for a in actions())
 
 
@@ -149,20 +149,6 @@ def _artifacts() -> tuple[bool, str]:
     return (True, "artifacts are on") if on else (False, "needs artifacts switched on")
 
 
-def _forge() -> tuple[bool, str]:
-    from .. import prefs
-
-    try:
-        cfg = prefs.public_forge()
-    except Exception:  # noqa: BLE001 — unreadable settings: not set up
-        return False, "the forge settings could not be read"
-    if not cfg.get("configured"):
-        return False, "needs a Forgejo set up in Settings → Forge"
-    if cfg.get("kind") not in ("forgejo", "gitea"):
-        return False, "the forge in Settings → Forge is not a Forgejo"
-    return True, "Forgejo is set up"
-
-
 def _containment() -> tuple[bool, str]:
     from . import run_local
 
@@ -171,10 +157,9 @@ def _containment() -> tuple[bool, str]:
 
 
 #: The requirements this read can check now. The rest depend on a choice made in the wizard (which
-#: project, which session, which reviewer) and are checked there and at save.
+#: project, which session) and are checked there and at save.
 _CHECKS = {
     "api_agent": _api_agent,
-    "forge": _forge,
     "messenger": _messenger,
     "artifacts": _artifacts,
     "containment": _containment,

@@ -92,6 +92,42 @@ export interface Session {
   /** The agent's newest `progress` / `done` report to HQ (#1882), or null. AGENT TEXT: the row
    *  frames it as "agent says" and renders it as text. Absent on older servers. */
   agent_report?: AgentNote | null;
+  /** Session lineage (#2325). A list row is always a MAIN session; these describe its subagents
+   *  (sessions it started, any engine), which load lazily from `/children` and `/attention`.
+   *  All absent on older servers. */
+  child_count?: number;
+  /** Every descendant, any depth: what "Archive with N subagents" covers. */
+  descendant_count?: number;
+  /** The worst state over all descendants, transitively; `null` without any. */
+  rollup?: SessionRollup | null;
+  /** Descendants that need the operator, any depth — uncapped. */
+  attention_count?: number;
+  /** The first 10 of those keys (a preview; the attention route lists them all). */
+  attention?: string[];
+  /** Set on a child row (children/attention routes, or a lookup): its main session's key. */
+  parent_key?: string;
+  lineage_source?: "launch" | "native" | "process" | "operator";
+  /** Its recorded parent is archived, gone or out of scope: it lists as a main session. */
+  orphan?: boolean;
+  /** On an attention row: the sessions from the main session down to this row's parent. */
+  path?: { id: string; title: string }[];
+}
+
+/** A rolled-up subagent state, worst first (#2325) — the same precedence as `sessionStatus`. */
+export type SessionRollup = "attention" | "working" | "draft" | "idle";
+
+/** One page of a session's children or attention descendants (#2325). */
+export interface SessionLineagePage {
+  sessions: Session[];
+  total: number;
+  next_offset: number | null;
+}
+
+/** One key's outcome in an archive-with-subagents request (#2325). */
+export interface ArchiveSubagentResult {
+  id: string;
+  result: "archived" | "skipped" | "failed";
+  reason: string | null;
 }
 
 /** One `progress` / `done` line an agent reported to HQ (#1882). `done` is the agent's claim. */
@@ -1714,6 +1750,12 @@ export interface SessionsPage {
   cluster_filter_unavailable?: boolean;
   /** A `running` filter was requested but the runtime probe failed (#1123): unknown, not "none". */
   running_filter_unavailable?: boolean;
+  /** Present only while a filter is active (#2325): subagents needing the operator whose MAIN
+   *  session the filter dropped. `count` is uncapped; `mains` names every one of those mains. */
+  attention_outside?: {
+    count: number;
+    mains: { id: string; engine: string; title: string; attention_count: number }[];
+  };
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
    *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
   snapshot?: string;
@@ -2916,11 +2958,12 @@ export interface HandoffCommitted {
   /** An API target (#2141): the brief is the new session's first structured turn, sent by the
    *  server. `delivery`: `sent` / `queued` (it is in the session), `not_sent` (the pane's Send
    *  again owns it), `uncertain` (never resent), `pending_start` (a skip session: the client
-   *  starts it, the server sends the brief once it is ready), `released`, or null with `detail`
+   *  starts it, the server sends the brief once it is ready), `released`, `withheld` (a guarded
+   *  brief that now holds a known secret: dropped unsent, with `detail`), or null with `detail`
    *  (not taken yet: commit the same handle again). Absent for a console target. */
   api?: boolean;
   bypass?: boolean;
-  delivery?: "sent" | "queued" | "not_sent" | "uncertain" | "pending_start" | "released" | null;
+  delivery?: "sent" | "queued" | "not_sent" | "uncertain" | "pending_start" | "released" | "withheld" | null;
   detail?: string;
 }
 

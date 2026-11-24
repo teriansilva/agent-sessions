@@ -275,6 +275,8 @@ def _read_session_meta(jsonl_path: Path, *, checked: bool = False) -> tuple[str 
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(rec, dict):
+                    continue  # a bare JSON value is not a transcript record
                 if rec.get("entrypoint") == "sdk-cli":
                     return None, "", True
                 if cwd is None and isinstance(rec.get("cwd"), str) and rec["cwd"]:

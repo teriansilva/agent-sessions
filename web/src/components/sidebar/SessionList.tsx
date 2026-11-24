@@ -10,6 +10,7 @@ import {
 import { motionMode } from "../../theme/motion";
 import {
   type CSSProperties,
+  Fragment,
   type ReactNode,
   useCallback,
   useEffect,
@@ -32,11 +33,19 @@ import {
   projectColor,
   relTime,
 } from "../../lib/format";
-import { sessionStatus } from "../../lib/sessionStatus";
+import { mainRowStatus } from "../../lib/sessionStatus";
 import { SESSIONS_PATH } from "../../lib/routes";
 import { isClusterId } from "../../lib/clusters";
 import type { ProjectRef, Session } from "../../types/api";
 import { ClusterHead } from "./ClusterHead";
+import {
+  AttentionOutside,
+  SubagentChip,
+  SubagentModeToggle,
+  SubagentRows,
+  type RenderRow,
+} from "./Subagents";
+import { useSubagentMode, type SubagentMode } from "./subagentMode";
 import { FiltersBar } from "./Filters";
 import { ProjectTree } from "./ProjectTree";
 import { RowMenu } from "./RowMenu";
@@ -159,6 +168,13 @@ interface RowProps {
   onNavigate?: () => void;
   /** Physical list item ref used by the sidebar FLIP reorder animation (#607). */
   rowRef?: (el: HTMLLIElement | null) => void;
+  /** Subagents (#2325): how deep this row sits under its main session (0 = a main session),
+   *  its breadcrumb when it is shown out of tree order, and its own disclosure state. */
+  depth?: number;
+  crumb?: string;
+  subagentOpen?: boolean;
+  subagentMode?: SubagentMode;
+  onToggleSubagents?: () => void;
 }
 
 function Row({
@@ -174,6 +190,11 @@ function Row({
   onSetProject,
   onNavigate,
   rowRef,
+  depth = 0,
+  crumb,
+  subagentOpen = false,
+  subagentMode = "nested",
+  onToggleSubagents,
 }: RowProps) {
   // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
   // badges or colours, which come from the roster, not from a client-side list.
@@ -310,7 +331,8 @@ function Row({
   // #477: one leading status dot carries the whole row state — colour is the only signal, no
   // extra glyph or row width. The precedence lives in `sessionStatus` (#744) so the session brief
   // resolves the identical state from the identical row, wherever it is opened from.
-  const dot = sessionStatus(s);
+  // A subagent needing the operator lifts its main session's dot to attention (#2325).
+  const dot = mainRowStatus(s);
 
   // Per-project accent (#285): the explicit entity color (Settings, #361) wins; otherwise a
   // stable hash of the ref key (entity id / folder cwd). One CSS var feeds the rail + dot.
@@ -337,7 +359,12 @@ function Row({
     [s.tag, summaryBody].filter(Boolean).join(" · ") + staleHint;
 
   return (
-    <li ref={rowRef} className={styles.rowWrap}>
+    <li
+      ref={rowRef}
+      className={styles.rowWrap}
+      data-depth={depth || undefined}
+      data-testid={depth ? "subagent-row" : undefined}
+    >
       {/* Session brief, Hand off, Move to project and Adopt to mission from the ⋯ menu: the
           same dialogs the terminal header mounts, keyed to this row's session. */}
       {menu.dialogs}
@@ -376,6 +403,11 @@ function Row({
           />
           {/* One-line summary (#356): optional custom tag (#551) + AI summary / exclusion
               marker + stale-age hint when there's been activity since the last review. */}
+          {crumb || s.orphan ? (
+            <div className={styles.crumb} data-testid="row-crumb">
+              {crumb ?? "↳ from an archived or unlisted session"}
+            </div>
+          ) : null}
           {showSummary && (
             <MarqueeText
               active={active}
@@ -523,6 +555,16 @@ function Row({
           </div>
         </div>
       </NavLink>
+      {(s.child_count ?? 0) > 0 && onToggleSubagents ? (
+        <div className={styles.subSlot}>
+          <SubagentChip
+            s={s}
+            open={subagentOpen}
+            mode={subagentMode}
+            onToggle={onToggleSubagents}
+          />
+        </div>
+      ) : null}
       <div
         className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}
       >
@@ -604,8 +646,13 @@ export function SessionList({
     setProject,
     missionFilterUnavailable,
     clusterFilterUnavailable,
+    attentionOutside,
     counts,
   } = useSessionsList();
+  // Subagents (#2325): the device-local display mode, and which groups the operator opened or
+  // closed. A group with a subagent that needs the operator opens by itself until closed.
+  const [subagentMode, setSubagentMode] = useSubagentMode();
+  const [subagentToggled, setSubagentToggled] = useState<Record<string, boolean>>({});
   // Sessions peers share with this instance (#2055): their own read, and since #2198 their own
   // scope. They are never `sessions`: no filter, page, selection or row action here sees one.
   const remote = useRemoteShares();
@@ -863,6 +910,52 @@ export function SessionList({
     </div>
   );
 
+  const subagentOpen = (s: Session) =>
+    subagentToggled[s.id] ?? (s.attention_count ?? 0) > 0;
+  // ONE row renderer for main sessions and their subagents (#2325), so a subagent row has the
+  // same link, dot, menu and handlers as any other; a row with subagents brings its group.
+  const renderRow: RenderRow = (s, depth, crumb) => (
+    <Fragment key={s.id}>
+      <Row
+        s={s}
+        active={
+          !!openMatch &&
+          openMatch.params.engine === s.engine &&
+          openMatch.params.id === s.uuid
+        }
+        onRename={renameRow}
+        onSetTag={setTag}
+        onToggleArchive={handleToggleArchive}
+        onToggleFavorite={setSticky}
+        onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
+        onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
+        onToggleOrchestratorExcluded={
+          aiConfigured ? setOrchestratorExcluded : undefined
+        }
+        onSetProject={setProject}
+        onNavigate={onNavigate}
+        rowRef={depth === 0 ? setRowRef(s.id) : undefined}
+        depth={depth}
+        crumb={crumb}
+        subagentOpen={subagentOpen(s)}
+        subagentMode={subagentMode}
+        onToggleSubagents={() =>
+          setSubagentToggled((t) => ({ ...t, [s.id]: !subagentOpen(s) }))
+        }
+      />
+      {(s.child_count ?? 0) > 0 ? (
+        <SubagentRows
+          main={s}
+          open={subagentOpen(s)}
+          mode={subagentMode}
+          archived={!!filters.archived}
+          depth={depth + 1}
+          renderRow={renderRow}
+        />
+      ) : null}
+    </Fragment>
+  );
+
   return (
     <div
       className={`${styles.wrap} ${styles.wrapTree}`}
@@ -910,6 +1003,16 @@ export function SessionList({
           onSelect={(id) => update({ cluster: id })}
         />
       ) : null}
+      {!shared ? (
+        <>
+          <SubagentModeToggle mode={subagentMode} onChange={setSubagentMode} />
+          <AttentionOutside
+            data={attentionOutside}
+            archived={!!filters.archived}
+            renderRow={renderRow}
+          />
+        </>
+      ) : null}
       {shared ? (
         // Shared (#2198): none of the local list is mounted here — no row, page, "Load more" or
         // row action — so nothing that works on this instance's sessions can reach a shared one.
@@ -930,31 +1033,7 @@ export function SessionList({
         </div>
       ) : (
         <ul className={styles.list} aria-label={`${total} sessions`}>
-          {sessions.map((s) => (
-            <Row
-              key={s.id}
-              s={s}
-              active={
-                !!openMatch &&
-                openMatch.params.engine === s.engine &&
-                openMatch.params.id === s.uuid
-              }
-              onRename={renameRow}
-              onSetTag={setTag}
-              onToggleArchive={handleToggleArchive}
-              onToggleFavorite={setSticky}
-              onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
-              onToggleReviewExcluded={
-                aiConfigured ? setReviewExcluded : undefined
-              }
-              onToggleOrchestratorExcluded={
-                aiConfigured ? setOrchestratorExcluded : undefined
-              }
-              onSetProject={setProject}
-              onNavigate={onNavigate}
-              rowRef={setRowRef(s.id)}
-            />
-          ))}
+          {sessions.map((s) => renderRow(s, 0))}
           {hasMore && (
             <li className={styles.more}>
               <button
