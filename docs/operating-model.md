@@ -161,9 +161,15 @@ unattended.
 
 - **Missions and automations** run only on API sessions.
 - **New sessions** default to the engine's API client when one is ready. A terminal is an explicit choice.
-- **Terminal sessions** stay available for interactive work and for engines without an API client. They get no new agent-driving features (nudges, auto-answers, unattended starts, screen-read supervision). One exception, approved by the operator on #1960: HQ sends the messages the Commander tells it to into terminal sessions too (below).
+- **Terminal sessions** stay available for interactive work and for engines without an API client. They get no new agent-driving features (nudges, auto-answers, unattended starts, screen-read supervision). Two exceptions, both the operator's: HQ sends the messages the Commander tells it to into terminal sessions too (#1960), and session assistance on *Act on its own* may nudge a terminal **patrol** (D22). Both are below.
 - **An engine without a mission-ready API client** cannot hold a mission role.
-- **Unattended means API, everywhere.** Nothing that runs without the Commander watching drives a terminal: mission dispatch, sorties, automations and orchestrator nudges. Terminal input is timing-based and fails too often unattended. Existing terminal-targeting automations are legacy: they keep working, are labelled unreliable, and get no new triggers. The supervisor's own nudges to terminal sessions stay proposals the Commander taps. A message the Commander tells HQ to send is not unattended work: HQ sends it at once, into terminal and API sessions alike, under the operator's approval on #1960 (`ask-orchestrator.md`).
+- **Unattended means API, everywhere.** Nothing that runs without the Commander watching drives a terminal: mission dispatch, sorties, automations and orchestrator nudges. Terminal input is timing-based and fails too often unattended. Existing terminal-targeting automations are legacy: they keep working, are labelled unreliable, and get no new triggers. The supervisor's own nudges to terminal sessions stay proposals the Commander taps. A message the Commander tells HQ to send is not unattended work: HQ sends it at once, into terminal and API sessions alike, under the operator's approval on #1960 (`ask-orchestrator.md`). **Exception (D22): session assistance on *Act on its own* may nudge a terminal patrol unattended,** because the operator chose that tier for sessions outside missions. It is bounded by the code, not by this sentence:
+  - The only autonomous verb is `continue` (`prefs.AUTO_VERBS_V1`), and the bytes typed are the operator's own nudge text, never model-written.
+  - Menu answers (`choose`) and free-text answers are never autonomous for a session.
+  - Delivery re-checks at send time (`actuator.check_precondition`) and refuses if the screen moved since the decision or someone is viewing the session at the keyboard.
+  - It acts only above the configured confidence.
+  - It never touches a terminal a mission holds; a mission's terminal nudges stay proposals, as above.
+  - On *Suggest* every nudge is a proposal the Commander taps.
 - **The critical path:** until an API client is mission-ready, daily work cannot run unattended.
 
 ## 8. Galleries
@@ -208,6 +214,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | D19 | Ongoing work is a standing operation that launches bounded sorties, with a ledger, limits and a circuit breaker | 2026-10-23 · operator ("the sortie concept seems to make sense") |
 | D20 | A clean sortie under *routine close* consent closes itself into a digest; everything else waits for the Commander | 2026-10-23 · derived; the operator accepted the sortie concept including it |
 | D21 | Knowledge has three layers: project memory (per project), specialist notes (per specialist × project) and skills (anywhere). Nothing follows a specialist across projects except its skills; load-bearing state never lives in memory | 2026-10-23 · operator asked; architect's choice ("you choose the best solution") |
+| D22 | Session assistance on *Act on its own* may type its `continue` nudge into a terminal patrol unattended (§7). Bounded by the `continue`-only verb ceiling, the operator-written nudge text and the screen re-check | 2026-11-23 · operator ("explain me what is the problem with yolo? i am fine with it"), after the trade-off was laid out: a wrong *continue* on a session that was really asking something goes unseen |
 
 ## 10. Today vs target
 
