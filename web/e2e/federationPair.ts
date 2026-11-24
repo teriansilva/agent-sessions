@@ -20,6 +20,8 @@ export interface FederationInstance {
   name: string;
   /** `http://127.0.0.1:<port>`: the origin the browser opens and the app checks writes against. */
   origin: string;
+  /** An empty folder under this instance's own HOME: where its sessions work. */
+  workdir: string;
 }
 
 export interface FederationPair {
@@ -30,8 +32,14 @@ export interface FederationPair {
 }
 
 /** `terminal`: a shell session id. alpha then hosts a REAL terminal session under it (a `dtach`
- *  master running `cat`, see `federation_instance.py`), for the spec that shares one (#2060). */
-export async function startFederationPair(opts: { terminal?: string } = {}): Promise<FederationPair> {
+ *  master running `cat`, see `federation_instance.py`), for the spec that shares one (#2060).
+ *
+ *  `api`: BOTH instances can run real API sessions (#2055, #2061, #2062): the in-tree `codex-api`
+ *  client on a scripted Codex (`tests/fake_native.py`), each generation the real worker process.
+ *  A spec creates one through the app's own route and drives it by typing in the page. */
+export async function startFederationPair(
+  opts: { terminal?: string; api?: boolean } = {},
+): Promise<FederationPair> {
   const procs: ChildProcess[] = [];
   const runtimeDirs: string[] = [];
   const killAll = () => killGroupsAndWait(procs);
@@ -59,6 +67,16 @@ export async function startFederationPair(opts: { terminal?: string } = {}): Pro
         // Not under /tmp: the app verifies its runtime dir's whole ancestry is private (#1006).
         const runtimeDir = mkdtempSync(join(homedir(), ".cache", "bl-e2e-rt-"));
         runtimeDirs.push(runtimeDir);
+        const workdir = join(home, "work");
+        mkdirSync(workdir, { recursive: true });
+        const args = [...extra];
+        if (opts.api) {
+          // The workers' private sockets. Short: an AF_UNIX path is at most 107 bytes, and the
+          // runner's TMPDIR is not. Removed with the rest.
+          const sockets = mkdtempSync("/tmp/blfed-");
+          runtimeDirs.push(sockets);
+          args.push("--api", sockets);
+        }
         const port = await freePort();
         const origin = `http://127.0.0.1:${port}`;
         const child = spawn(
@@ -71,7 +89,7 @@ export async function startFederationPair(opts: { terminal?: string } = {}): Pro
             String(port),
             "--name",
             name,
-            ...extra,
+            ...args,
           ],
           {
             cwd: REPO_ROOT,
@@ -92,6 +110,10 @@ export async function startFederationPair(opts: { terminal?: string } = {}): Pro
               AGENT_SESSIONS_2FA_FILE: join(home, "2fa.json"),
               AGENT_SESSIONS_METADATA: join(home, "metadata.json"),
               AGENT_SESSIONS_PROJECTS: join(home, "projects.json"),
+              // The operator's project folder: where a new session of theirs starts by default.
+              // Only for the API specs: a root is also a scope boundary, and the terminal spec's
+              // session works in HOME, outside it.
+              ...(opts.api ? { AGENT_SESSIONS_PROJECT_ROOTS: workdir } : {}),
               PYTHONUNBUFFERED: "1",
             },
           },
@@ -105,7 +127,7 @@ export async function startFederationPair(opts: { terminal?: string } = {}): Pro
         child.stdout?.on("data", add);
         child.stderr?.on("data", add);
         await waitForHttp(`${origin}/healthz`, child, logs, name, left());
-        return { name, origin };
+        return { name, origin, workdir };
       };
 
       const a = await start("alpha", opts.terminal ? ["--terminal", opts.terminal] : []);

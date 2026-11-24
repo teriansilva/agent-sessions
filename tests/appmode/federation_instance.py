@@ -17,15 +17,21 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import uvicorn
 
-from agent_sessions import engines, ptybridge
+from agent_sessions import engines, native_runtime, ptybridge
 from agent_sessions.main import create_app
+
+TESTS = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TESTS))
+from native_fake_host import FakeHost  # noqa: E402 — a sibling of the test modules, not a package
 
 
 def _die_with_parent() -> None:
@@ -64,13 +70,53 @@ def _host_terminal(native: str) -> subprocess.Popen:
     return master
 
 
+def _host_api_sessions(runtime_dir: str) -> FakeHost:
+    """Make this instance able to run real API (structured) sessions, for the specs that share
+    one (``web/e2e/appmode-federation-*.spec.ts``: #2055, #2061, #2062), the way
+    ``tests/test_native_runtime.py``'s ``host`` fixture does and with no vendor account:
+
+    * the Codex CLI the in-tree ``codex-api`` client drives is ``tests/fake_native.py``, named by
+      the documented ``AGENT_SESSIONS_CODEX_BIN`` override. The agent is scripted by the text of
+      the turn (``APPROVE`` raises one exact permission request; anything else is echoed), so a
+      spec drives it by typing in the page;
+    * the service manager is ``FakeHost``: the exact contained command ``systemd-run`` would run,
+      started as a child of this process. The CI runner has no systemd user manager, and a unit
+      started under a real one would outlive the harness's kill of this process's group.
+
+    Nothing else is substituted: the roster is the shipped one (the in-tree manifests, their
+    stores under this instance's own HOME), sessions are created and driven through the app's
+    real routes by the page, and each generation is the real ``native_worker`` process.
+
+    ``runtime_dir`` is where the workers' private sockets go. The caller makes it, short (an
+    AF_UNIX path is at most 107 bytes, whatever TMPDIR is), and removes it.
+
+    Called before ``create_app``. The workers are plain children in this process's group, so the
+    harness's kill of that group ends them with it; a clean exit closes the host, which kills
+    the ones it started by the handles it holds."""
+    bindir = Path.home() / "engine-bin"
+    bindir.mkdir(mode=0o755, exist_ok=True)
+    script = bindir / "codex"
+    script.write_text(f"#!{sys.executable}\n" + (TESTS / "fake_native.py").read_text())
+    script.chmod(0o755)
+    os.environ["AGENT_SESSIONS_CODEX_BIN"] = str(script)
+    host = FakeHost(runtime_dir)
+    native_runtime.HOST = host
+    return host
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--terminal", help="host a real terminal session under this shell id")
+    parser.add_argument(
+        "--api",
+        metavar="RUNTIME_DIR",
+        help="run real API sessions on a scripted agent; the workers' sockets go in this directory",
+    )
     args = parser.parse_args()
 
+    host = _host_api_sessions(args.api) if args.api else None
     app = create_app()
     federation = app.state.federation
     federation.addresses = [{"t": "direct", "url": f"ws://127.0.0.1:{args.port}/ws/fed"}]
@@ -82,6 +128,8 @@ def main() -> None:
         if master is not None:
             master.kill()
             master.wait(timeout=10)
+        if host is not None:
+            host.close()
 
 
 if __name__ == "__main__":
