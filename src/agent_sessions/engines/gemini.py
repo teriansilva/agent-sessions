@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -20,6 +21,25 @@ def _gemini_text(content) -> str:
             if isinstance(item, dict) and item.get("text"):
                 return str(item["text"]).strip()
     return ""
+
+
+def _one_row_per_session(rows: list[Session]) -> list[Session]:
+    """One row per ``sessionId``. Resuming a gemini chat writes another
+    ``session-<ts>-<short>.jsonl`` that holds only a header with the same ``sessionId``, so one
+    session can have several files. The merged row keeps the oldest file's cwd and creation time,
+    the first user message found in any of its files (oldest first), and the newest activity."""
+    merged: dict[str, Session] = {}
+    for r in sorted(rows, key=lambda r: (r.created_at, r.last_mtime)):
+        prev = merged.get(r.uuid)
+        if prev is None:
+            merged[r.uuid] = r
+            continue
+        merged[r.uuid] = dataclasses.replace(
+            prev,
+            last_mtime=max(prev.last_mtime, r.last_mtime),
+            first_user_message=prev.first_user_message or r.first_user_message,
+        )
+    return list(merged.values())
 
 
 class GeminiProvider:
@@ -148,7 +168,7 @@ class GeminiProvider:
             row = self._row(path, pmap)
             if row is not None:
                 out.append(row)
-        return out
+        return _one_row_per_session(out)
 
     def scan_checked(self) -> tuple[list[Session], list[str]]:
         """``scan()``'s rows, plus a line for each chat file that could not be READ (#993).
@@ -168,9 +188,10 @@ class GeminiProvider:
             and Path(e.path).parent.name == "chats"
         ]
         pmap = self._project_map_checked()
-        return base.checked_rows(
+        rows, problems = base.checked_rows(
             sorted(paths), lambda p: self._row(p, pmap, checked=True), engine_id=self.engine_id
         )
+        return _one_row_per_session(rows), problems
 
     def archive(self, native_id):
         # gemini chat logs stay read-only; archive flag rides the engine-agnostic sidecar.

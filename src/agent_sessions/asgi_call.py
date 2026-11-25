@@ -18,7 +18,10 @@ is simply absent, so the route refuses as it would refuse the browser.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 #: The headers a confirmed operation forwards, lowercase as ASGI carries them.
 FORWARDED = (b"cookie", b"x-csrf-token", b"origin")
@@ -142,8 +145,11 @@ async def call(
     chunks: list[bytes] = []
     size = {"n": 0}
 
+    started = {"v": False}
+
     async def send(message: dict) -> None:
         if message["type"] == "http.response.start":
+            started["v"] = True
             status["code"] = int(message["status"])
         elif message["type"] == "http.response.body":
             chunk = message.get("body") or b""
@@ -151,7 +157,16 @@ async def call(
             if size["n"] <= RESPONSE_MAX:
                 chunks.append(chunk)
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
+    except Exception:
+        # Starlette's error middleware sends the 500 and THEN re-raises, for the server's log. A
+        # browser sees only that 500, and so does a READ made here: HQ's facts tools treat it as
+        # "not available" instead of failing the whole turn. A write still raises, as it always
+        # did: whether its effect happened is not something a 500 can say.
+        if method != "GET" or not started["v"] or status["code"] < 500:
+            raise
+        log.warning("in-process GET %s answered %d", path, status["code"], exc_info=True)
     raw = b"".join(chunks)
     try:
         parsed: object = json.loads(raw) if raw else None

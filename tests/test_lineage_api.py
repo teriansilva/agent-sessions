@@ -72,6 +72,23 @@ def test_search_never_matches_a_child_and_the_attention_strip_counts_it(c):
     assert main["attention_outside"]["count"] == 0
 
 
+def test_a_search_survives_a_session_listed_twice(c, monkeypatch):
+    """The 500 behind "failed to load sessions" on any search: a provider listing one session twice
+    left the duplicate row without `attention_count`, which only the filtered path reads."""
+    from agent_sessions import engines
+
+    real = engines.scan_all_cached
+
+    def doubled():
+        rows = list(real())
+        return rows + [r for r in rows if engines.session_key(r) == K3]
+
+    monkeypatch.setattr(engines, "scan_all_cached", doubled)
+    r = c.get("/api/sessions?q=first+message")
+    assert r.status_code == 200
+    assert _ids(r.json()) == [K1]
+
+
 def test_a_tag_filter_that_hides_a_main_shows_its_childs_attention_outside(c):
     """#2338 review: a tag filter is a filter like any other — a main session it hides takes its
     subagent's attention into the strip, never silently off the page."""

@@ -486,6 +486,17 @@ def project(rows: list[dict], *, links: Mapping | None = None) -> Projection:
     # ONE bottom-up pass (#2325 review): every row's aggregates come from its direct children's,
     # so the work is O(rows) whatever the depth. Full descendant and path enumeration is only for
     # the one key a lazy route asks about (`Projection.descendants` / `attention`).
+    #
+    # Every row starts with empty aggregates, so a row the walk below never reaches still carries
+    # all of them: the walk visits each ID once, and a second row with the same id (a provider
+    # that lists one session twice) would otherwise have none. The filtered list reads
+    # `attention_count` on every row, and one row without it failed every search with a 500.
+    for r in rows:
+        r["child_count"] = 0
+        r["descendant_count"] = 0
+        r["rollup"] = None
+        r["attention_count"] = 0
+        r["attention"] = []
     state = {r["id"]: row_state(r) for r in rows}
     order: list[dict] = []  # pre-order over the forest; reversed, children come before parents
     seen: set[str] = set()

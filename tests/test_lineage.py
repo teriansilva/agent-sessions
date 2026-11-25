@@ -171,6 +171,18 @@ def test_attention_is_uncapped_beyond_the_preview():
     assert [r["id"] for r, _ in proj.attention(A)] == kids
 
 
+def test_a_session_listed_twice_still_carries_every_aggregate():
+    """A provider that lists one session twice (gemini's header-only resume files did) must not
+    leave the second row without the aggregates: the filtered list reads `attention_count` on every
+    row, and one missing key failed every sidebar search and HQ list with a 500."""
+    lineage.link(B, A, "launch")
+    rows = [row(A), row(B), row(B), row(C), row(C)]
+    lineage.project(rows)
+    for r in rows:
+        assert r["attention_count"] == 0 and r["attention"] == []
+        assert "child_count" in r and "descendant_count" in r and "rollup" in r
+
+
 def test_a_hand_made_cycle_promotes_its_members_rather_than_hiding_them(tmp_path, monkeypatch):
     p = tmp_path / "lineage.json"
     p.write_text(

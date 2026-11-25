@@ -57,6 +57,27 @@ def test_gemini_scan_discovers_sessions(gemini_tmp):
     assert s.archived is False
 
 
+def test_gemini_resume_files_are_one_session(gemini_tmp):
+    """Resuming writes another chat file holding only a header with the same sessionId: still one
+    row, with the original first message, the oldest creation and the newest activity."""
+    import os
+
+    sid = "96fb77fc-9c1a-4453-b27b-d78d8012dd2c"
+    first = _write_chat(
+        gemini_tmp, sid=sid, project_hash=_HASH, first_user="investigate the issues"
+    )
+    stub = first.parent / f"session-2026-05-26T13-47-{sid[:8]}.jsonl"
+    stub.write_text(json.dumps({"sessionId": sid, "projectHash": _HASH, "kind": "main"}) + "\n")
+    os.utime(first, (1_000_000, 1_000_000))
+    os.utime(stub, (2_000_000, 2_000_000))
+    prov = engines.GeminiProvider()
+    for rows in (prov.scan(), prov.scan_checked()[0]):
+        assert len(rows) == 1
+        [s] = rows
+        assert s.uuid == sid and s.first_user_message == "investigate the issues"
+        assert s.last_mtime == 2_000_000
+
+
 def test_gemini_scan_skips_unmapped_project(gemini_tmp):
     # a session whose projectHash isn't in project-map.json has no usable cwd -> skipped
     # (never a bogus empty-cwd row), mirroring the codex fail-soft rule.

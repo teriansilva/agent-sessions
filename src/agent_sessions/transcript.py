@@ -1522,6 +1522,70 @@ def _tool_arg(summary: object) -> str:
     return summary
 
 
+def _fold_text(
+    msgs: list[dict], keyed: dict[str, dict], streaming: dict[str, dict | None], op: str, data: dict
+) -> None:
+    """One text event into its operation's messages, by the pane's rules (`native_runtime`).
+
+    Streamed pieces join the message streaming now unless they name ANOTHER message id; pieces
+    with no id (Claude's stream events, ACP without `messageId`) always continue it. A settled
+    text belongs to the message its id names; with no id, or an id not seen before while an
+    unkeyed draft streams (Claude settles with `message.id`), it settles the message streaming
+    now, replacing its pieces; otherwise it is a message of its own. Either way nothing is
+    streaming after it."""
+    item = data.get("item_id") if isinstance(data.get("item_id"), str) and data["item_id"] else None
+    cur = streaming.get(op)
+
+    def new() -> dict:
+        msg: dict = {"item": item, "settled": [], "partial": []}
+        msgs.append(msg)
+        if item is not None:
+            keyed[item] = msg
+        return msg
+
+    if data.get("partial"):
+        if item is not None and item in keyed:
+            msg = keyed[item]
+        elif cur is not None and (item is None or cur["item"] in (None, item)):
+            msg = cur
+            if item is not None and msg["item"] is None:
+                msg["item"] = item
+                keyed[item] = msg
+        else:
+            msg = new()
+        msg["partial"].append(data["text"])
+        streaming[op] = msg
+        return
+    if item is not None and item in keyed:
+        msg = keyed[item]
+    elif cur is not None and not cur["settled"] and (item is None or cur["item"] is None):
+        # It settles the message streaming now. Claude streams with NO id and settles with the
+        # message's id (Hermes 8934): an id not seen before adopts the unkeyed draft, never adds
+        # a second copy of it. A draft that already has another id is a different message.
+        msg = cur
+        if item is not None:
+            msg["item"] = item
+            keyed[item] = msg
+    else:
+        msg = new()
+    msg["settled"].append(data["text"])
+    streaming[op] = None
+
+
+def _reply_text(msgs: list[dict]) -> str:
+    """One operation's reply, as the pane shows it: each message its own paragraph, a message's
+    settled text when it has any, else its streamed pieces joined as they arrived."""
+    parts: list[str] = []
+    for msg in msgs:
+        if msg["settled"]:
+            parts.extend(t for t in msg["settled"] if t.strip())
+        else:
+            joined = "".join(msg["partial"])
+            if joined.strip():
+                parts.append(joined)
+    return "\n\n".join(parts)
+
+
 def _native_turns(root: Path, native_id: str) -> list[Turn]:
     """A native API client's conversation (#1311): the same store layout holds its JOURNAL
     (#1278), whose records a chat fold would skip — every consumer would see an empty session.
@@ -1535,7 +1599,15 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         journal = native_journal.read(root, native_id)
     except native_journal.JournalError:
         return []
-    replies: dict[str, list[str]] = {}
+    # Per operation, its reply's messages in order (`_fold_text`, `_reply_text`): a message's
+    # SETTLED text when the client sent one, else its streamed pieces joined. Some clients
+    # (opencode's API client) only ever stream, so a fold of settled text alone read their closing
+    # message as nothing: HQ said "the tail is all tool calls" of a session whose pane showed a
+    # full proposal. Pieces with no message id (Claude, ACP without `messageId`) are one message
+    # until a settled text or a tool call ends it, never one paragraph per piece.
+    blocks: dict[str, list[dict]] = {}
+    keyed: dict[str, dict[str, dict]] = {}
+    streaming: dict[str, dict | None] = {}  # per operation, the message streaming now
     final: dict[str, str] = {}
     tools: dict[str, dict[str, dict]] = {}
     for item in journal.events:
@@ -1543,11 +1615,12 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         op = data.get("operation_id")
         if not isinstance(op, str):
             continue
-        if kind == "text" and not data.get("partial") and isinstance(data.get("text"), str):
-            replies.setdefault(op, []).append(data["text"])
+        if kind == "text" and isinstance(data.get("text"), str):
+            _fold_text(blocks.setdefault(op, []), keyed.setdefault(op, {}), streaming, op, data)
         elif kind == "turn_completed" and isinstance(data.get("text"), str):
             final[op] = data["text"]
         elif kind == "tool" and isinstance(data.get("item_id"), str):
+            streaming[op] = None  # text after a tool call is a new message
             call = tools.setdefault(op, {}).setdefault(data["item_id"], {})
             if isinstance(data.get("tool"), str) and data["tool"] and "name" not in call:
                 call["name"] = data["tool"]
@@ -1575,9 +1648,7 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
                 # that is itself block-shaped JSON can't be told from an older wrapper.
                 text = _result_text(call["output"])
                 out.append(Turn("tool", _short(text, _RESULT_MAX), "result"))
-        reply = "\n\n".join(t for t in replies.get(op.operation_id, ()) if t.strip()) or final.get(
-            op.operation_id
-        )
+        reply = _reply_text(blocks.get(op.operation_id, [])) or final.get(op.operation_id)
         if reply:
             out.append(Turn("assistant", reply))
     return tagged_turns(out[-DEFAULT_MAX_MESSAGES:], len(out) > DEFAULT_MAX_MESSAGES)

@@ -134,3 +134,31 @@ def test_a_response_past_the_cap_says_it_was_cut_not_that_it_had_no_body(operato
     monkeypatch.setattr(asgi_call, "RESPONSE_MAX", 1 << 20)
     r = _run(app, make(), "POST", f"/api/sessions/{KEY}/rename", {"title": ""})
     assert r.truncated is False and r.detail == "title required"
+
+
+def _failing_app(*, answered: bool):
+    """A route that raises the way Starlette's error middleware does: the 500 first (when
+    ``answered``), then the exception again for the server's log."""
+
+    async def app(scope, receive, send):
+        if answered:
+            await send({"type": "http.response.start", "status": 500, "headers": []})
+            await send({"type": "http.response.body", "body": b"Internal Server Error"})
+        raise KeyError("attention_count")
+
+    return app
+
+
+def test_a_read_that_answered_500_returns_it_instead_of_raising():
+    op = asgi_call.Operator(headers=(), scheme="https", server=None, client=None)
+    r = _run(_failing_app(answered=True), op, "GET", "/api/sessions", None)
+    assert r.status == 500
+
+
+@pytest.mark.parametrize(
+    ("method", "answered"), [("POST", True), ("GET", False)], ids=["write", "unanswered-read"]
+)
+def test_a_write_or_an_unanswered_read_still_raises(method, answered):
+    op = asgi_call.Operator(headers=(), scheme="https", server=None, client=None)
+    with pytest.raises(KeyError):
+        _run(_failing_app(answered=answered), op, method, "/api/sessions", None)
