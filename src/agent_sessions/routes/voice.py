@@ -58,6 +58,33 @@ def _over_home_free(conn) -> bool:
     return conn.headers.get("x-battlelab-home-free") == "1"
 
 
+async def heal_tts_lists() -> bool:
+    """Read the STORED TTS server's voices, styles and languages again when all three saved lists
+    are empty; True when that saved any.
+
+    A save that moves the TTS endpoint drops the old server's lists — they were true of THAT
+    server — and only a Read list brings the new one's. A switch saved without one left every
+    General on the group voice and sent no style, with Settings saying the server lists none.
+    The read here is observed by this process, so the save stays within its evidence. Best effort:
+    an unreachable server is asked again at the next save or call."""
+    names = hq_calls_settings.TTS_LISTS
+    block = await asyncio.to_thread(hq_calls_settings.get)
+    side = block["tts"]
+    if not hq_calls_settings.side_configured(side) or any(block[k] for k in names):
+        return False
+    ep = speech_endpoints.Endpoint(side["base_url"], side["model"], side["api_key"])
+    try:
+        found = await speech_endpoints.discover(ep)
+    except speech_endpoints.SpeechError:
+        return False
+    lists = {k: found[k.removeprefix("tts_")] or [] for k in names}
+    if not any(lists.values()):
+        return False  # this server publishes none: the hidden column is the truth
+    hq_calls_settings.observe("tts", ep.base_url, ep.model, ep.api_key, **lists)
+    # Saved only if this endpoint is still the stored one with all three lists still empty.
+    return await asyncio.to_thread(hq_calls_settings.fill_tts_lists, side, lists)
+
+
 HELLO_TIMEOUT_S = 10.0
 PREVIEW_LINES = {
     "woman": "Commander, this is HQ. All units report ready.",
@@ -166,6 +193,7 @@ def register(
             await asyncio.to_thread(hq_calls_settings.save, body)
         except hq_calls_settings.SettingsError as e:
             return JSONResponse({"detail": str(e)}, status_code=422)
+        await heal_tts_lists()
         return JSONResponse(await asyncio.to_thread(hq_calls_settings.public))
 
     @app.post("/api/voice/test")
@@ -418,6 +446,8 @@ def register(
         block = await asyncio.to_thread(hq_calls_settings.get)
         if not hq_calls_settings.configured(block):
             return JSONResponse({"detail": "calls are not set up", "code": "unconfigured"}, 409)
+        if await heal_tts_lists():  # the Generals' own voices and styles, before the profile
+            block = await asyncio.to_thread(hq_calls_settings.get)
         if not prefs.public_ai_review().get("configured"):
             return JSONResponse({"detail": "HQ's AI endpoint is not configured", "code": "ai"}, 409)
         ready, why = await voice_calls.runtime_ready()

@@ -405,6 +405,19 @@ def _no_model_window_reads(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_tts_list_heal(monkeypatch) -> None:
+    """A save or a call reads the TTS server's lists when none are saved. The suite's speech
+    endpoints are fake hosts, so that read is off by default; `test_voice_list_heal.py` turns it
+    back on with its own discovery."""
+    from agent_sessions.routes import voice
+
+    async def _off() -> bool:
+        return False
+
+    monkeypatch.setattr(voice, "heal_tts_lists", _off)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_prefs(tmp_path, monkeypatch) -> None:
     """Point operator prefs (#465) at a per-test tmp file so a LIVE config on the machine running
     the suite can't leak in. ``prefs.get_project_roots()`` — read FIRST by

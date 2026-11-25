@@ -527,6 +527,36 @@ def save(patch: dict, path: Path | None = None) -> dict:
     return prefs.mutate_block(BLOCK, merge, path)
 
 
+TTS_LISTS = ("tts_voices", "tts_styles", "tts_languages")
+
+
+def fill_tts_lists(tts: dict, lists: dict, path: Path | None = None) -> bool:
+    """Save TTS lists read OUTSIDE the lock (`routes.voice.heal_tts_lists`), only while `tts` —
+    the endpoint they were read from — is still the stored one and all three lists are still
+    empty. A read that finishes after a switch, or after another save filled them, changes
+    nothing (Hermes 8957). True when it saved any."""
+    # What `validate` would accept, kept rather than refused: a server's odd entry drops alone.
+    lists = {k: [x for x in lists.get(k) or [] if isinstance(x, str) and 0 < len(x) <= STYLE_MAX]
+             [:200] for k in TTS_LISTS}  # fmt: skip
+    done = False
+
+    def merge(raw: object) -> dict:
+        nonlocal done
+        done = False
+        cur = coerce(raw)
+        same = all(cur["tts"].get(k) == tts.get(k) for k in ("base_url", "model", "api_key"))
+        if not same or any(cur[k] for k in TTS_LISTS):
+            return cur
+        new = dict(cur)
+        for k in TTS_LISTS:
+            new[k] = _within_evidence("tts", cur["tts"], k, lists[k], [])
+        done = any(new[k] for k in TTS_LISTS)
+        return new
+
+    prefs.mutate_block(BLOCK, merge, path)
+    return done
+
+
 def resolve_test_token(stored: dict, base_url: str, api_key: object) -> tuple[str, str | None]:
     """The token a DRAFT test may send, from one snapshot: `(token, None)` or `("", reason)`.
 
