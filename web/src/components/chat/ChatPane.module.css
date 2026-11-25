@@ -242,7 +242,8 @@
   color: var(--on-accent);
   border: 0;
 }
-.send:disabled {
+.send:disabled,
+.send[aria-disabled="true"] {
   background: var(--surface-2);
   color: var(--text-muted);
   border: 1px solid var(--line-strong);

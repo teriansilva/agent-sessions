@@ -815,3 +815,40 @@ test("#2234: the dock minimises to its head, and the transcript marker brings it
   await expect(options(page).filter({ visible: true })).toHaveCount(2);
   await expect(tabs(page).first()).toBeFocused();
 });
+
+// A long question on a phone: the dock's head and actions stay put, so the question text filled
+// the little room left and the options sat out of sight inside it. Send looked dimmed and a tap
+// on it did nothing, so the answer "could not be sent". A tap on Send with nothing chosen now
+// brings the options into view, and the card says what Send is waiting for.
+test("a long docked question: Send says what it waits for, and a tap on it reveals the options", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 412, height: 760 });
+  const room = {
+    question: "Which chat room is the team's release room? The live bot config lists two candidates. "
+      + "I'll post the bug summary (one P1 tablet offline-data login, one P2 list sort order, "
+      + "tagging the three reviewers) there. The only post path that works without the bot's "
+      + "encryption keys is the dashboard announcer, so it will appear under the announcer's name, unencrypted.",
+    header: "Room",
+    options: [
+      { label: "#releases (the announcer's room)", description: "The room the dashboard announcer already posts to" },
+      { label: "#dev (the build bot's room)", description: "The room the build bot listens in" },
+    ],
+    multiSelect: false,
+  };
+  const { decisions } = await claudeAsks(page, { request: askRequest([room]) });
+  const dock = page.getByTestId("structured-question-dock");
+  await expect(dock.getByTestId("structured-ask")).toBeVisible();
+  // Send is not ready, and the card says why — not a dimmed button alone.
+  await expect(askSend(page)).toBeDisabled();
+  await expect(ask(page)).toContainText("Choose an answer to send.");
+  // A tap on it is never swallowed: it brings the first option into view and focuses it.
+  await askSend(page).click({ force: true });
+  await expect(askOptions(page).first()).toBeInViewport();
+  await expect(askOptions(page).first().locator("input")).toBeFocused();
+  expect(decisions).toHaveLength(0);
+  await page.screenshot({ path: testInfo.outputPath("question-dock-long.png") });
+  await askOptions(page).first().click();
+  await expect(askSend(page)).toBeEnabled();
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0]).toMatchObject({ decision: "answer", answers: [{ selected: [room.options[0].label] }] });
+});

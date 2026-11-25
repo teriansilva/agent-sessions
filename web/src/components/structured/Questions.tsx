@@ -63,6 +63,7 @@ export function ChoiceQuestions({
   // switch never loses a choice.
   const [active, setActive] = useState(0);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
+  const panels = useRef<(HTMLFieldSetElement | null)[]>([]);
   const dock = useContext(DockMinimise);
   const minimised = !!dock?.minimised;
   const set = (i: number, next: ChoiceAnswer) =>
@@ -81,6 +82,19 @@ export function ChoiceQuestions({
         return;
       }
     }
+  };
+  /** Send with an answer missing is never a silent no-op: in the dock the options can sit out of
+   *  sight below a long question, so a tap on it opens the first unanswered question and brings
+   *  its first choice into view, focused. */
+  const reveal = () => {
+    const j = questions.findIndex((_, i) => !answered(answers[i]));
+    if (j < 0) return;
+    setActive(j);
+    requestAnimationFrame(() => {
+      const first = panels.current[j]?.querySelector<HTMLInputElement>("input:not(:disabled)");
+      (first?.closest("label") ?? first)?.scrollIntoView?.({ block: "nearest" });
+      first?.focus({ preventScroll: true });
+    });
   };
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     const n = questions.length;
@@ -163,6 +177,7 @@ export function ChoiceQuestions({
         return (
           <fieldset
             key={i}
+            ref={(el) => { panels.current[i] = el; }}
             className={styles.question}
             disabled={disabled}
             hidden={several && i !== current}
@@ -235,24 +250,28 @@ export function ChoiceQuestions({
             <button
               type="button"
               className={chat.send}
-              disabled={disabled || missing.length > 0}
-              onClick={() => onSubmit(answers)}
+              disabled={disabled}
+              aria-disabled={missing.length > 0 || undefined}
+              onClick={() => (missing.length > 0 ? reveal() : onSubmit(answers))}
               data-testid={`${testId}-send`}
             >
               {submitLabel}
             </button>
             {actions}
           </div>
-          {several && missing.length > 0 && (
-            // Named as their tabs are, so the note stays one short line (#2234).
-            <p className={styles.note}>
-              Answer {questions
-                .map((q, i) => (answered(answers[i]) ? null : `“${q.header || `Question ${i + 1}`}”`))
-                .filter(Boolean)
-                .join(", ")} to send.
+          {/* What Send waits for, said in words: a dimmed button alone reads as broken. Named as
+              their tabs are, so the note stays one short line (#2234). */}
+          {missing.length > 0 && !disabled && (
+            <p className={styles.note} data-testid={`${testId}-missing`}>
+              {several
+                ? `Answer ${questions
+                  .map((q, i) => (answered(answers[i]) ? null : `“${q.header || `Question ${i + 1}`}”`))
+                  .filter(Boolean)
+                  .join(", ")} to send.`
+                : "Choose an answer to send."}
             </p>
           )}
-          {hint && !(several && missing.length > 0) && <p className={styles.note}>{hint(answers)}</p>}
+          {hint && !(missing.length > 0 && !disabled) && <p className={styles.note}>{hint(answers)}</p>}
         </div>
       )}
     </section>

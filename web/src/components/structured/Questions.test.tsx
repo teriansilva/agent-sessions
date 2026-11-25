@@ -39,6 +39,31 @@ test("several questions get one tab each, and only the active question's options
   expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Access, not answered");
 });
 
+test("Send with an answer missing sends nothing; it opens the first unanswered question and focuses its first choice", async () => {
+  const user = userEvent.setup();
+  const onSubmit = block();
+  await user.click(screen.getByLabelText("SSH"));
+  await user.click(screen.getAllByRole("tab")[2]);
+  await user.click(screen.getByTestId("structured-question-send"));
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("tab")[1]).toHaveAttribute("aria-selected", "true");
+  await vi.waitFor(() => expect(screen.getByLabelText("All private")).toHaveFocus());
+});
+
+test("a single question says what Send waits for, and the hint returns once it is answered", async () => {
+  const user = userEvent.setup();
+  render(
+    <ChoiceQuestions heading="Claude Code is waiting for your answer" questions={[QS[0]]} allowOther
+      disabled={false} submitLabel="Send answer" onSubmit={vi.fn()} hint={() => "Skip question declines it."} />,
+  );
+  expect(screen.getByTestId("structured-question-missing")).toHaveTextContent("Choose an answer to send.");
+  expect(screen.queryByText("Skip question declines it.")).toBeNull();
+  await user.click(screen.getByLabelText("LAN"));
+  expect(screen.queryByTestId("structured-question-missing")).toBeNull();
+  expect(screen.getByText("Skip question declines it.")).toBeVisible();
+  expect(screen.getByTestId("structured-question-send")).not.toHaveAttribute("aria-disabled");
+});
+
 test("a single-choice pick moves to the next unanswered question; answers survive switching back", async () => {
   const user = userEvent.setup();
   const onSubmit = block();
@@ -47,7 +72,8 @@ test("a single-choice pick moves to the next unanswered question; answers surviv
   expect(screen.getAllByRole("tab")[0]).toHaveAttribute("data-answered", "true");
   expect(screen.getByTestId("structured-question")).toHaveTextContent("1 of 3 answered");
   // Send waits for every question, hidden tabs included, and names what is missing.
-  expect(screen.getByTestId("structured-question-send")).toBeDisabled();
+  // (aria-disabled, not disabled: a tap on it is never swallowed — see the next test.)
+  expect(screen.getByTestId("structured-question-send")).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByTestId("structured-question")).toHaveTextContent("Answer “Network”, “sudo” to send.");
   await user.click(screen.getAllByRole("tab")[0]);
   expect(screen.getByLabelText("SSH")).toBeChecked();
