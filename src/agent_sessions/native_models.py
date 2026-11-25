@@ -27,6 +27,14 @@ writes history before a first turn. It is bounded by a
 deadline and a byte cap, and the answer is cached per binary identity (path + inode + size +
 mtime) for `TTL_S`; a failure is cached briefly so a broken CLI is not re-spawned per request.
 
+**Asked on the login a new session will use.** What a CLI lists depends on who is signed in: a
+signed-out default home answers with generic aliases, an account with what its plan offers. So
+every probe runs on the account a NEW session of the source agent would start on
+(`agent_account_store.for_new_session`, laid over the environment as a launch lays it), and the
+cache is keyed by that account too. A pick the store cannot honour (an unreadable store, a home
+`problems()` rejects) is `unavailable` with the label-only reason, as the create would refuse.
+A source without an account kind never reads the store.
+
 **Served from cache, refreshed behind it (#1503).** A list request never waits for a probe while
 a list for the same binary exists: `models` reads the cache under the short `_GUARD` only (never a
 probe lock) and returns an expired list at once, marked `stale`, after asking the ONE background
@@ -141,6 +149,28 @@ def _model(mid: Any, *, label: Any, description: Any, efforts: Any, is_default: 
 _SPAWN_ENV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "models_spawn_env", default=None
 )
+#: The account a new session of the source would start on (`agent_account_store.for_new_session`),
+#: set by `_probe` the same way: every probe runs on that login, as the session will.
+_SPAWN_ACCOUNT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "models_spawn_account", default=None
+)
+
+
+def _spawn_env(extra: dict | None = None) -> dict[str, str]:
+    """A probe's whole environment: the minimal base, the managed source's switches, the probe's
+    own variables, then the account (`Launch.apply`: its home variable set, the credential
+    variables that would outrank its login removed). Nothing of this app's environment."""
+    env = {
+        "HOME": str(Path.home()),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        **(_SPAWN_ENV.get() or {}),
+        **(extra or {}),
+    }
+    account = _SPAWN_ACCOUNT.get()
+    if account is not None:
+        account.apply(env)
+    return env
 
 
 class _Proc:
@@ -153,13 +183,7 @@ class _Proc:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             cwd=cwd or str(Path.home()),
-            env={
-                "HOME": str(Path.home()),
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "LANG": "C.UTF-8",
-                **(_SPAWN_ENV.get() or {}),
-                **(extra_env or {}),
-            },
+            env=_spawn_env(extra_env),
         )
         self.deadline = time.monotonic() + TIMEOUT_S
         self.buf = b""
@@ -340,14 +364,10 @@ def _opencode(binary: str, *, source) -> list[dict]:
                 timeout=TIMEOUT_S,
                 stdin=subprocess.DEVNULL,
                 cwd=str(Path.home()),
-                env={
-                    "HOME": str(Path.home()),
-                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                    "LANG": "C.UTF-8",
-                    **(_SPAWN_ENV.get() or {}),
+                env=_spawn_env(
                     # Should the command open opencode's internal listener, it is not left open.
-                    "OPENCODE_SERVER_PASSWORD": secrets.token_urlsafe(32),
-                },
+                    {"OPENCODE_SERVER_PASSWORD": secrets.token_urlsafe(32)}
+                ),
             )
         except subprocess.TimeoutExpired as exc:
             raise ProbeError("the agent did not answer in time") from exc
@@ -618,6 +638,8 @@ class _Target:
     binary: str
     source: Any
     client: Any = None
+    #: The source's new-session account (`agent_account_store.Launch`), None for the default login.
+    account: Any = None
 
 
 _CACHE: dict[tuple, _Entry] = {}
@@ -626,7 +648,11 @@ _LOCKS: dict[tuple, threading.Lock] = {}
 _GUARD = threading.Lock()
 
 
-def _target(prov) -> _Target | ModelList:
+#: `account=` left out: the list is read on the account a NEW session of the source starts on.
+NEW_SESSION: Any = object()
+
+
+def _target(prov, account: Any = NEW_SESSION) -> _Target | ModelList:
     manifest = prov.manifest
     kind = manifest.api.kind if manifest is not None and manifest.api is not None else None
     discover = _DISCOVER.get(kind)
@@ -640,7 +666,27 @@ def _target(prov) -> _Target | ModelList:
         return ModelList("unavailable", reason=str(exc))
     except Exception:  # noqa: BLE001 — a missing/unadmitted binary is a reason, not a crash
         return ModelList("unavailable", reason="the agent's CLI is not available")
-    key = (kind, binary, st.st_ino, st.st_size, st.st_mtime_ns)
+    # The list is the LOGIN's as much as the binary's: a signed-out default home lists generic
+    # aliases, an account's lists what its plan offers. So it is read on the account a new session
+    # of the source starts on, and cached per account; doubt answers "no list", as a create would
+    # refuse. ``base_env={}``: the default home is the vendor's own under HOME, as for the child.
+    # A caller that already holds the session's account (a create, once it is recorded) passes it:
+    # an `agent_account_store.Launch`, or None for the default login.
+    if account is NEW_SESSION:
+        from . import agent_account_store
+
+        try:
+            account = agent_account_store.for_new_session(binding.source, base_env={})
+        except agent_account_store.AccountRefused as exc:
+            return ModelList("unavailable", reason=exc.detail[:_TEXT_MAX])
+    key = (
+        kind,
+        binary,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        None if account is None else account.account_id,
+    )
     if getattr(discover, "needs_client", False):
         # A list read from the CLIENT's own store (opencode2-acp: `record_offered`) is that
         # client's, not the executable's (#2095 review): two clients sharing one binary must never
@@ -650,7 +696,7 @@ def _target(prov) -> _Target | ModelList:
         except Exception:  # noqa: BLE001 — no store: discovery itself reports it
             root = None
         key += (os.path.realpath(root) if root is not None else None,)
-    return _Target(key, discover, binary, binding.source, prov)
+    return _Target(key, discover, binary, binding.source, prov, account)
 
 
 def _probe(t: _Target) -> ModelList:
@@ -671,6 +717,7 @@ def _probe(t: _Target) -> ModelList:
             )
         # A managed source's updater stays off in the probe's own environment too.
         token = _SPAWN_ENV.set(self_update_off(t.source))
+        account_token = _SPAWN_ACCOUNT.set(t.account)
     except Exception as exc:  # noqa: BLE001 — EngineError: the isolation refusal, as a reason
         return ModelList("unavailable", reason=str(exc)[:_TEXT_MAX], fetched_at=_clock())
     try:
@@ -691,6 +738,7 @@ def _probe(t: _Target) -> ModelList:
     except Exception:  # noqa: BLE001 — a reply of an unforeseen shape is "unavailable", never a 500
         reason = "the agent's answer was not understood"
     finally:
+        _SPAWN_ACCOUNT.reset(account_token)
         _SPAWN_ENV.reset(token)
     return ModelList("unavailable", reason=reason[:_TEXT_MAX], fetched_at=_clock())
 
@@ -841,11 +889,11 @@ def _wants_refresh(entry: _Entry, now: float) -> bool:
     return entry.refresh_error is None or now - entry.attempted_at >= FAILURE_TTL_S
 
 
-def models(prov) -> ModelList:
+def models(prov, *, account: Any = NEW_SESSION) -> ModelList:
     """The models `prov` (a native API client) can run. Call in a thread: a TRUE miss — nothing
     read yet for this binary — probes on the caller's thread. Anything cached is answered without
     waiting on a probe: an expired good list comes back `stale` and is refreshed behind it."""
-    t = _target(prov)
+    t = _target(prov, account)
     if isinstance(t, ModelList):
         return t
     now = _clock()
@@ -862,11 +910,11 @@ def models(prov) -> ModelList:
     return _view(entry, _clock())
 
 
-def models_fresh(prov) -> ModelList:
+def models_fresh(prov, *, account: Any = NEW_SESSION) -> ModelList:
     """Ask the CLI now (#1503) — one probe, joined with any of the same key already running.
     Its own outcome: a failed probe is `unavailable` with its reason, even though the cache keeps
     the last good list for everyone else. Only `snapshot_for` calls it. Blocking."""
-    t = _target(prov)
+    t = _target(prov, account)
     if isinstance(t, ModelList):
         return t
     entry, outcome = _probe_once(t, since=_clock())
@@ -880,14 +928,16 @@ def _offers(listing: ModelList, model: str, effort: str | None) -> bool:
     return found is not None and (effort is None or effort in found["efforts"])
 
 
-def snapshot_for(prov, model: object, effort: object = None) -> ModelList:
+def snapshot_for(
+    prov, model: object, effort: object = None, *, account: Any = NEW_SESSION
+) -> ModelList:
     """The ONE list a create or a Settings save checks model AND effort against (#1503).
 
     A deliberate relaxation, named in #1503: a choice present in the last good list for this same
     binary is accepted even past `TTL_S` (the binary is unchanged, the list refreshes behind it,
     and the CLI still refuses a model the account lost, with its reason). A choice ABSENT from a
     stale list is never refused on that list alone: one fresh probe decides. Blocking."""
-    listing = models(prov)
+    listing = models(prov, account=account)
     if (
         listing.status == "ok"
         and listing.stale
@@ -895,7 +945,7 @@ def snapshot_for(prov, model: object, effort: object = None) -> ModelList:
         and (effort is None or isinstance(effort, str))
         and not _offers(listing, model, effort)
     ):
-        return models_fresh(prov)
+        return models_fresh(prov, account=account)
     return listing
 
 

@@ -519,7 +519,11 @@ def test_two_clients_on_one_binary_never_read_each_others_models(tmp_path, monke
     lock and its refresher key on that store too — not on the shared executable alone."""
     binary = tmp_path / "opencode"
     binary.write_text("#!/bin/sh\n")
-    source = SimpleNamespace(entrypoint_path=lambda: str(binary))
+    # A source as the registry has it: a manifest naming no account kind (the list is then read on
+    # the default login, and the account store is never read).
+    source = SimpleNamespace(
+        entrypoint_path=lambda: str(binary), manifest=SimpleNamespace(accounts_kind="none")
+    )
     monkeypatch.setattr(api_source, "resolve", lambda prov: SimpleNamespace(source=source))
     manifest = SimpleNamespace(api=SimpleNamespace(kind=KIND, source="opencode2"))
 

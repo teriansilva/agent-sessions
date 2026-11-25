@@ -387,3 +387,143 @@ def test_the_account_is_applied_before_the_forced_tree():
 
     text = inspect.getsource(native_worker.child_environment)
     assert text.index("account_environment(") < text.index("forced_environment(")
+
+
+# --- the model list is read on the login a new session will use ---------------------------------
+
+
+def _offered(source: str) -> set[str]:
+    from agent_sessions import native_models
+
+    listing = native_models.models(registry.get(ENGINES[source]))
+    assert listing.status == "ok", listing.reason
+    return listing.ids()
+
+
+@pytest.fixture
+def fresh_models(monkeypatch):
+    from agent_sessions import native_models
+
+    monkeypatch.setattr(native_models, "_CACHE", {})
+    monkeypatch.setattr(native_models, "_LOCKS", {})
+    monkeypatch.setattr(native_models, "_REFRESHER", native_models._Refresher())
+
+
+@pytest.mark.parametrize("source", POOLED)
+def test_the_model_list_is_asked_on_the_new_session_account(host, configs, fresh_models, source):
+    """A signed-out default home lists generic aliases; the account a new session starts on lists
+    its own plan. The list is that account's, cached per account, so a pick change shows the new
+    account's list and a pick back to the default shows the default's again."""
+    assert not {m for m in _offered(source) if m.startswith("fake-on-")}
+    account, _home = _pick(source, "B")
+    assert f"fake-on-{account}" in _offered(source)
+    store.set_new_sessions(_source(source), store.DEFAULT)
+    assert not {m for m in _offered(source) if m.startswith("fake-on-")}
+    assert _assignments() == {}  # reading the list chose nothing
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", POOLED)
+async def test_a_model_only_the_account_lists_can_be_created(
+    host, project, configs, fresh_models, source
+):
+    account, home = _pick(source, "B")
+    key = (
+        await runtime.create_session(
+            ENGINES[source], str(project), operation_id=ident(), model=f"fake-on-{account}"
+        )
+    )["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hi")
+    _snap, done = await settle(key, turn)
+    assert done["reply"] == "echo:hi"
+    assert {f["account_home"] for f in frames(project)} == {str(home)}
+
+
+@pytest.mark.parametrize("source", POOLED)
+def test_a_pick_that_cannot_be_used_lists_nothing_and_spawns_nothing(
+    host, configs, fresh_models, monkeypatch, source
+):
+    from agent_sessions import native_models
+
+    account, home = _pick(source, "B")
+    link = next(p for p in home.iterdir() if p.is_symlink())
+    link.unlink()
+    link.mkdir()  # a second copy of a shared entry: the account is refused, never repaired
+    spawned = []
+    monkeypatch.setattr(native_models, "_Proc", lambda *a, **k: spawned.append(a))
+    listing = native_models.models(registry.get(ENGINES[source]))
+    assert listing.status == "unavailable" and "'B'" in listing.reason
+    assert spawned == []
+
+
+def _switch_pick_during_discovery(monkeypatch, source: str, to: str) -> list[str]:
+    """Hermes on #2382: the operator changes the new-session pick while a create's model probe
+    runs. The probe answers on the OLD pick; the create then records the NEW one."""
+    from agent_sessions import native_models
+
+    kind = registry.get(ENGINES[source]).manifest.api.kind
+    real = native_models._DISCOVER[kind]
+    probed: list[str] = []
+
+    def racing(binary, **kw):
+        found = real(binary, **kw)
+        probed.append(native_models._SPAWN_ACCOUNT.get() and "account" or "default")
+        if len(probed) == 1:
+            store.set_new_sessions(_source(source), to)
+        return found
+
+    monkeypatch.setitem(native_models._DISCOVER, kind, racing)
+    return probed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", POOLED)
+async def test_a_pick_changed_during_the_model_probe_refuses_what_the_new_login_lacks(
+    host, project, configs, fresh_models, monkeypatch, source
+):
+    """Account B offers `fake-on-B` at effort `high`; the pick moves back to the default login
+    while the probe runs. The session is recorded on the default login, which offers neither, so
+    the create is refused and nothing starts on a model its login was not seen to offer."""
+    account, _home = _pick(source, "B")
+    probed = _switch_pick_during_discovery(monkeypatch, source, store.DEFAULT)
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.create_session(
+            ENGINES[source],
+            str(project),
+            operation_id=ident(),
+            model=f"fake-on-{account}",
+            effort="high",
+        )
+    assert refused.value.status == 422 and not host.launches
+    assert probed == ["account", "default"]  # validated on B, re-checked on the recorded login
+    assert frames(project) == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", POOLED)
+async def test_a_pick_changed_during_the_model_probe_runs_on_the_recorded_account(
+    host, project, configs, fresh_models, monkeypatch, source
+):
+    """The pick moves from the default login to account B while the probe runs. The model and
+    effort both logins offer pass the re-check on B, and the session runs on B — the account it
+    was recorded on and its list was checked against."""
+    prov = _source(source)
+    rec = agent_accounts.recipe(prov.manifest.accounts_kind)
+    agent_accounts.default_home(rec, {}).mkdir(parents=True, exist_ok=True)
+    account = store.add(prov, "B")["id"]
+    home = agent_accounts.home(prov.engine_id, account)
+    probed = _switch_pick_during_discovery(monkeypatch, source, account)
+    model, effort = {"claude": ("fake-opus", "max"), "codex": ("fake-large", "high")}[source]
+    key = (
+        await runtime.create_session(
+            ENGINES[source], str(project), operation_id=ident(), model=model, effort=effort
+        )
+    )["session_key"]
+    assert probed == ["default", "account"]
+    assert _assignments()[key]["account"] == account
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hi")
+    _snap, done = await settle(key, turn)
+    assert done["reply"] == "echo:hi"
+    assert {f["account_home"] for f in frames(project)} == {str(home)}

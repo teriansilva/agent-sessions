@@ -377,11 +377,53 @@ def for_launch(
         )
     if account_id is None or account_id == DEFAULT:
         return None  # never assigned (an older session), or created on the default login
+    return _usable(
+        rec,
+        engine,
+        account_id,
+        _read(),
+        base_env,
+        removed="this session's account was removed; start a new session",
+    )
+
+
+def for_new_session(prov, *, base_env: Mapping[str, str] | None = None) -> Launch | None:
+    """The account a NEW session of this agent would start on, recording nothing: for a read
+    that must see what that session's login will see, such as an API client's model list (asked
+    of the source agent's CLI, `native_models`). None for the default login, and before any read
+    for an agent without an account kind (as `for_launch`). Raises :class:`AccountRefused` where a
+    create would refuse: an unreadable store, a home `problems()` rejects. Synchronous file I/O."""
+    rec = agent_accounts.recipe(getattr(prov.manifest, "accounts_kind", "none"))
+    if rec is None:
+        return None
     doc = _read()
+    pick = (doc["engines"].get(prov.engine_id) or {}).get("new_sessions", DEFAULT)
+    if pick == DEFAULT:
+        return None
+    return _usable(
+        rec,
+        prov.engine_id,
+        pick,
+        doc,
+        base_env,
+        removed="the new-session account was removed; pick another in Settings",
+    )
+
+
+def _usable(
+    rec: agent_accounts.Recipe,
+    engine: str,
+    account_id: str,
+    doc: dict,
+    base_env: Mapping[str, str] | None,
+    *,
+    removed: str,
+) -> Launch:
+    """``account_id`` as a launch may use it, or :class:`AccountRefused` (labels only)."""
     pool = doc["engines"].get(engine) or {"accounts": []}
     acc = next((a for a in pool["accounts"] if a["id"] == account_id), None)
     if acc is None:
-        raise AccountRefused("this session's account was removed; start a new session")
+        raise AccountRefused(removed)
     home = agent_accounts.home(engine, account_id)
     found = agent_accounts.problems(rec, home, agent_accounts.default_home(rec, base_env))
     if found:

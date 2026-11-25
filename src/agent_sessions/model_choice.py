@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from . import metadata, prefs
 from .plugins import kinds
@@ -154,17 +155,25 @@ def select_api_effort(prov, model: str | None, requested: object, *, listing=Non
     return requested
 
 
-def select_api_choice(prov, model: object, effort: object) -> tuple[str | None, str | None]:
+def select_api_choice(
+    prov, model: object, effort: object, *, account: Any = None, pinned: bool = False
+) -> tuple[str | None, str | None]:
     """A create's model AND effort, checked against ONE snapshot of the client's list (#1503).
 
     Two reads could straddle a background refresh and check the model against one list and the
     level against another; one `native_models.snapshot_for` read cannot. No list is read for
-    `default` (it needs none, and a level without a model is refused before any read)."""
+    `default` (it needs none, and a level without a model is refused before any read).
+
+    The list is the login's: read on the account a new session starts on, or — ``pinned`` — on
+    ``account`` (an `agent_account_store.Launch`, None for the default login), the account a
+    create has already recorded for the session."""
     listing = None
     if isinstance(model, str) and model != DEFAULT and _MODEL_ID_RE.fullmatch(model):
         from . import native_models
 
-        listing = native_models.snapshot_for(prov, model, effort)
+        listing = native_models.snapshot_for(
+            prov, model, effort, account=account if pinned else native_models.NEW_SESSION
+        )
     chosen = select_api(prov, model, listing=listing)
     return chosen, select_api_effort(prov, chosen, effort, listing=listing)
 

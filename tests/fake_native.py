@@ -334,6 +334,13 @@ def codex():
                 send({"id": rid, "result": {"data": data, "nextCursor": "p2"}})
             else:
                 data = [{"model": "fake-small", "displayName": "Fake Small"}]
+                if account := os.environ.get("CODEX_HOME"):  # the login it was asked on
+                    data.append(
+                        {
+                            "model": "fake-on-" + os.path.basename(account),
+                            "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+                        }
+                    )
                 send({"id": rid, "result": {"data": data, "nextCursor": None}})
         elif method == "thread/start":
             thread = str(uuid.uuid4())
@@ -925,6 +932,17 @@ def claude():
                                     "supportedEffortLevels": ["low", "max"],
                                 },
                                 {"value": "-not-a-model"},
+                                # The login the list was asked on: an account's home lists its own.
+                                *(
+                                    [
+                                        {
+                                            "value": "fake-on-" + os.path.basename(account),
+                                            "supportedEffortLevels": ["high"],
+                                        }
+                                    ]
+                                    if (account := os.environ.get("CLAUDE_CONFIG_DIR"))
+                                    else []
+                                ),
                             ]
                         },
                     },

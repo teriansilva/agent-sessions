@@ -550,3 +550,28 @@ def test_every_write_route_takes_the_csrf_guard():
                     assert deps.get("dependencies") == "write", node.name
                 elif method == "get":
                     assert deps.get("dependencies") == "read", node.name
+
+
+# --- what a new session would start on, recording nothing ----------------------------------------
+
+
+def test_for_new_session_follows_the_pick_and_records_nothing(pool):
+    """The model list reads the login a NEW session will use (`native_models`): the pick, never
+    recorded under any key, and refused in the same cases a create would be."""
+    plain = SimpleNamespace(engine_id="plain", manifest=SimpleNamespace(accounts_kind="none"))
+    assert store.for_new_session(pool) is None  # no pool: the default login
+    acc = store.add(pool, "Max 2")["id"]
+    assert store.for_new_session(pool) is None  # a pool, but new sessions start on the default
+    store.set_new_sessions(pool, acc)
+    launch = store.for_new_session(pool)
+    assert (launch.account_id, launch.home) == (acc, agent_accounts.home(ENGINE, acc))
+    assert _state()["assignments"] == {}  # a read, never a choice
+    link = agent_accounts.home(ENGINE, acc) / "sessions"
+    link.unlink()
+    link.mkdir()
+    with pytest.raises(store.AccountRefused, match="Max 2"):
+        store.for_new_session(pool)
+    (agent_accounts.root() / "state.json").write_text("{ not json")
+    with pytest.raises(store.AccountRefused, match="cannot be read"):
+        store.for_new_session(pool)
+    assert store.for_new_session(plain) is None  # an agent without a kind never reads it

@@ -311,7 +311,7 @@ def test_model_and_effort_are_checked_against_one_snapshot(host, monkeypatch):
     without = native_models.ModelList("ok", (_model("fake-large", []),))
     served = iter([with_level, without, without])
     reads = []
-    monkeypatch.setattr(native_models, "models", lambda prov: reads.append(1) or next(served))
+    monkeypatch.setattr(native_models, "models", lambda prov, **kw: reads.append(1) or next(served))
     assert model_choice.select_api_choice(_prov(), "fake-large", "high") == ("fake-large", "high")
     assert len(reads) == 1
 
@@ -321,8 +321,8 @@ async def test_create_validates_against_one_snapshot_while_a_refresh_lands(host,
     native_models.models(_prov())
     real_snapshot = native_models.snapshot_for
 
-    def snapshot_then_refresh(prov, model, effort=None):
-        listing = real_snapshot(prov, model, effort)
+    def snapshot_then_refresh(prov, model, effort=None, **kw):
+        listing = real_snapshot(prov, model, effort, **kw)
         cli.models = [_model("fake-large", [])]  # the next list drops the level…
         native_models._record(
             native_models._target(prov).key, native_models._probe(native_models._target(prov))
@@ -379,7 +379,9 @@ def test_settings_save_uses_the_same_snapshot_rule(cli, clock, monkeypatch):
     # Settings checks model and effort against one read, as create does.
     reads = []
     real = native_models.models
-    monkeypatch.setattr(native_models, "models", lambda prov: reads.append(1) or real(prov))
+    monkeypatch.setattr(
+        native_models, "models", lambda prov, **kw: reads.append(1) or real(prov, **kw)
+    )
     prefs.validate_session_defaults_patch(patch)
     assert len(reads) == 1
 

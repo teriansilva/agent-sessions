@@ -592,6 +592,25 @@ def _account(binding, session_key: str, *, new: bool):
         raise NativeError(409, exc.detail) from None
 
 
+def _new_session_account(binding):
+    """The account a new session of the source would start on NOW, for the create's model check
+    (`agent_account_store.for_new_session`), or `_UNRESOLVED` when the store refuses: the check
+    then reads the list itself and reports why, and `_account` refuses the create."""
+    from . import agent_account_store
+
+    try:
+        return agent_account_store.for_new_session(binding.source, base_env={})
+    except agent_account_store.AccountRefused:
+        return _UNRESOLVED
+
+
+def _account_id(account) -> object:
+    """Which login: an account id, None for the default, `_UNRESOLVED` for one never resolved."""
+    if account is None or account is _UNRESOLVED:
+        return account
+    return account.account_id
+
+
 def _account_config(account) -> dict | None:
     """What the worker needs to apply ``account``: the reviewed recipe's kind and the home's path.
     Never anything read from the home."""
@@ -1223,9 +1242,14 @@ def _create_admitted(
     # the client does not list is refused before anything exists. Model and effort are checked
     # against ONE snapshot of that list, and an id absent from a stale one is re-asked once
     # (#1503). A refusal only blocks a NEW creation; an exact replay compares the request as sent.
+    # The list is the login's, so it is read on the account a new session starts on, resolved
+    # ONCE here: the create compares it with the account it records below.
+    checked_on = _new_session_account(binding)
     refused = None
     try:
-        model, effort = model_choice.select_api_choice(prov, model, effort)
+        model, effort = model_choice.select_api_choice(
+            prov, model, effort, account=checked_on, pinned=checked_on is not _UNRESOLVED
+        )
     except model_choice.ModelRefused as exc:
         refused = exc
     launchtiming.mark("model")
@@ -1278,7 +1302,19 @@ def _create_admitted(
             # The account is fixed HERE, when the record is first written (#2169): a skip
             # creation's later `start`, a retry and a relaunch read it and never the pick. Before
             # the slot and the record, so a refusal leaves neither behind.
-            _account(binding, session_key, new=True)
+            account = _account(binding, session_key, new=True)
+            if _account_id(account) != _account_id(checked_on):
+                # The pick moved while the list was read (Hermes on #2382): model and effort are
+                # checked again, together, on the account just recorded, so a session never
+                # starts with a choice its own login was not seen to offer.
+                try:
+                    again = model_choice.select_api_choice(
+                        prov, model, effort, account=account, pinned=True
+                    )
+                except model_choice.ModelRefused as exc:
+                    raise NativeError(422, exc.detail) from None
+                if again != (model, effort):  # the selectors return what they admit, unchanged
+                    raise NativeError(409, "the model check changed under this create; try again")
             # The session limit, before anything is written, and held through the launch: a refused
             # create leaves no row behind, and no launch can take the slot in between (#1819).
             slots.append(_admit_session(session_key))

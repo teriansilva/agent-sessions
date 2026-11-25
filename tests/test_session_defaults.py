@@ -51,7 +51,7 @@ def clients(monkeypatch):
     provs = {API: _Prov(API, "api"), "codex": _Prov("codex", "pty")}
     monkeypatch.setattr(engines, "get", lambda eid: provs.get(eid))
     listing = {"value": MODELS}
-    monkeypatch.setattr(native_models, "models", lambda prov: listing["value"])
+    monkeypatch.setattr(native_models, "models", lambda prov, **kw: listing["value"])
     return listing
 
 
@@ -225,7 +225,7 @@ def test_the_model_probe_never_runs_on_the_event_loop(auth_cfg, clients, monkeyp
 
     seen: list[bool] = []
 
-    def probe(prov):
+    def probe(prov, **kw):
         try:
             asyncio.get_running_loop()
             seen.append(True)
