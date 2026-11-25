@@ -192,8 +192,10 @@ POST	/api/maintenance/compact	maintenance	instance	system.configure	login	mutate
 GET	/api/maintenance/prune	maintenance	instance	system.read	login	read	cold	unscoped	store maintenance (compact, prune)
 POST	/api/maintenance/prune	maintenance	instance	system.configure	login	mutate	cold	unscoped	store maintenance (compact, prune)
 GET	/api/mcp/operations/{op_id}	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/operations/{op_id}/stop	mcp	library	manage	login	mutate	cold	unscoped	stops a running MCP server setup operation (#2353); an instance Library item administrators manage
 GET	/api/mcp/servers	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
 POST	/api/mcp/servers	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/resolve-link	mcp	library	manage	login	mutate	cold	unscoped	resolves a repository link to a published release at a pinned commit before adding an MCP server (#2353); makes an outbound fetch, so P2 should start it as admin-only
 DELETE	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
 GET	/api/mcp/servers/{sid}	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
 PATCH	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
