@@ -110,6 +110,49 @@ async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int |
     return parse_card_verdict(content, cards)
 
 
+# ---- a likely goodbye while HQ is idle (2026-11-25) ----------------------------------------------
+
+#: The call-end judgement's budget for a likely goodbye: past it, HQ answers the words as usual.
+GOODBYE_TIMEOUT_S = 5.0
+GOODBYE_MAX_TOKENS = 1024
+
+
+async def judge_goodbye(said: str, reply: str) -> bool:
+    """#1668's focused "is the call over?" judgement (`hq_call_end`), asked at once for words that
+    look like a plain goodbye while HQ is idle, instead of a whole HQ turn (that took 36 s). The
+    words decide nothing by themselves (operator, 2026-10-24: whether the call is over is HQ's
+    call, never a word list's). One request on the call's own thinking level and model, bounded,
+    and failing closed: anything but a clean "yes" in time means HQ answers as any other words."""
+    from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
+
+    try:
+        cfg = review._require_config()
+        body = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": prompts.effective("hq_call_end")},
+                {"role": "user", "content": f"The Commander said: {said}\n\nHQ answered: {reply}"},
+            ],
+            "temperature": 0,
+            "stream": False,
+            "max_tokens": GOODBYE_MAX_TOKENS,
+        }
+        with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+            r = await asyncio.wait_for(review.post_chat_response(cfg, body), GOODBYE_TIMEOUT_S)
+        if r.status_code != 200:
+            return False
+        choice = r.json()["choices"][0]
+        if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
+            return False
+        content = choice["message"].get("content")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — no judgement: the words go to HQ
+        log.info("goodbye judgement gave no verdict", exc_info=True)
+        return False
+    return isinstance(content, str) and content.strip().strip(".!").lower() == "yes"
+
+
 # ---- the Commander speaks while HQ works (#2113 P3) ---------------------------------------------
 
 #: What the call may do with words heard while HQ works.

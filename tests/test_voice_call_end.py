@@ -60,7 +60,7 @@ def test_the_call_ends_once_the_farewell_has_played(monkeypatch):
     r = Rig(monkeypatch, END)
 
     async def go():
-        await r.ask("Okay, that's all, thanks, bye")
+        await r.ask("Okay, I think we're done here")
         assert r.call.state != "ended"  # not before the goodbye was heard
         farewell = last_say(r)
         assert farewell["text"] == "Goodbye, Commander."
@@ -83,7 +83,7 @@ def test_without_a_played_ack_it_ends_once_the_farewell_had_time_to_play(monkeyp
     window = voice_calls.speech_seconds(END["answer"]) + voice_calls.PLAYBACK_FALLBACK_S
 
     async def go():
-        await r.ask("Tschüss")
+        await r.ask("Ich glaube, wir sind fertig")
         clock["now"] += window * 5  # its audio has not gone out yet: no window has started
         await r.call.check_silence()
         assert r.call.state != "ended"
@@ -114,7 +114,7 @@ def test_speaking_again_after_the_farewell_cancels_the_end(monkeypatch):
     r = Rig(monkeypatch, END)
 
     async def go():
-        await r.ask("bye")
+        await r.ask("I think we're done here")
         farewell = last_say(r)
         await r.ev(t="user_started")  # "…wait, one more thing"
         await r.call.on_played(farewell["id"])
@@ -127,7 +127,7 @@ def test_a_card_that_still_needs_the_operator_keeps_the_call(monkeypatch):
     r = Rig(monkeypatch, {**NUDGE, **END})
 
     async def go():
-        await r.ask("bye")
+        await r.ask("I think we're done here")
         for s in r.says():
             await r.call.on_played(s["id"])
 
@@ -143,7 +143,7 @@ def test_an_empty_or_failed_answer_never_ends_the_call(monkeypatch, view):
     r = Rig(monkeypatch, view)
 
     async def go():
-        await r.ask("bye")
+        await r.ask("I think we're done here")
         for s in r.says():
             await r.call.on_played(s["id"])
         await r.call.check_silence()
@@ -380,7 +380,7 @@ def test_a_farewell_acked_while_its_say_is_still_being_sent_still_ends_the_call(
     r.call._to_worker = to_worker
 
     async def go():
-        await r.ask("Okay, that's all, bye")
+        await r.ask("Okay, I think we're done here")
 
     run(go())
     assert r.call.state == "ended"
@@ -477,7 +477,7 @@ def test_a_farewell_still_being_sent_is_not_hung_up_on_by_the_fallback(monkeypat
 
     async def go():
         release = _held_worker(r, END["answer"])
-        ask = asyncio.ensure_future(r.ask("bye"))
+        ask = asyncio.ensure_future(r.ask("I think we're done here"))
         await asyncio.sleep(0)
         for _ in range(5):
             await asyncio.sleep(0)
@@ -542,7 +542,7 @@ def test_an_answer_that_asks_something_never_hangs_up(monkeypatch):
     r = Rig(monkeypatch, {"end_call": True, "answer": q})
 
     async def go():
-        await r.ask("Okay, bye")
+        await r.ask("I think we're done here")
         await r.ev(t="said", id=last_say(r)["id"])
         await r.call.on_played(last_say(r)["id"])
         clock.now += 600
@@ -638,7 +638,7 @@ def test_speaking_again_before_the_farewell_is_planned_keeps_the_call(monkeypatc
 
     async def go():
         await r.ev(t="user_started")
-        await r.ev(t="utterance", text="Okay, bye.")
+        await r.ev(t="utterance", text="Okay, I think we're done here.")
         await asyncio.sleep(0)
         await r.ev(t="user_started")  # the next request begins
         await r.ev(t="interrupt")
@@ -767,7 +767,7 @@ def test_typing_during_the_farewell_keeps_the_call(app, ai, monkeypatch, acked):
 
     async def bye():
         monkeypatch.setattr(ask_orchestrator, "begin", r.fake_begin)
-        await r.ask("bye")
+        await r.ask("I think we're done here")
         assert r.call.ending is not None
 
     run(bye())
@@ -792,7 +792,7 @@ def test_a_refused_typed_turn_does_not_call_the_farewell_off(app, ai, monkeypatc
 
     async def bye():
         monkeypatch.setattr(ask_orchestrator, "begin", r.fake_begin)
-        await r.ask("bye")
+        await r.ask("I think we're done here")
 
     run(bye())
     monkeypatch.setattr(ask_orchestrator, "begin", r.real_begin)
@@ -978,7 +978,7 @@ def test_a_typed_turn_accepted_before_the_farewell_is_planned_keeps_the_call(mon
     monkeypatch.setattr(ask_orchestrator, "begin", begin)
 
     async def go():
-        await r.ask("bye")
+        await r.ask("I think we're done here")
         farewell = last_say(r)
         assert farewell["text"] == END["answer"]
         assert r.call.ending is None
@@ -1194,10 +1194,175 @@ def test_an_open_question_already_said_never_ends_the_call(monkeypatch):
     )
 
     async def go():
-        await r.ask("Okay, bye")
+        await r.ask("I think we're done here")
         said = last_say(r)
         assert said["text"] == q  # said once: no second line for it
         await r.call.on_played(said["id"])
 
     run(go())
+    assert r.call.state != "ended"
+
+
+# --- a plain goodbye while HQ is idle (2026-11-25: "…General. Bye-bye." took 36 s) ---------------
+
+
+def _judge(monkeypatch, verdict: bool) -> list[str]:
+    from agent_sessions import voice_judge
+
+    seen: list[str] = []
+
+    async def judge(said, reply):
+        seen.append(said)
+        return verdict
+
+    monkeypatch.setattr(voice_judge, "judge_goodbye", judge)
+    return seen
+
+
+def test_a_plain_goodbye_while_idle_ends_the_call_with_no_hq_turn(monkeypatch):
+    r = Rig(monkeypatch, END)
+    seen = _judge(monkeypatch, True)
+
+    async def go():
+        await r.ask("Okay, thank you, General. Bye-bye.")
+        assert r.asked == []  # no HQ turn at all
+        farewell = last_say(r)
+        assert farewell["text"] == voice_calls.GOODBYE_LINE
+        assert r.call.state != "ended"  # not before the goodbye was heard
+        await r.call.on_played(farewell["id"])
+
+    run(go())
+    assert seen == ["Okay, thank you, General. Bye-bye."]  # HQ's judgement decided, not the list
+    assert r.call.state == "ended" and r.call.ended_reason == "hq_ended"
+
+
+def test_a_goodbye_hq_judges_not_over_is_answered_as_usual(monkeypatch):
+    """The words never decide by themselves (operator, 2026-10-24)."""
+    r = Rig(monkeypatch, {"answer": "Before you go: two sessions need you."})
+    seen = _judge(monkeypatch, False)
+
+    async def go():
+        await r.ask("Okay, bye")
+
+    run(go())
+    assert seen == ["Okay, bye"] and r.asked == ["Okay, bye"]
+    assert voice_calls.GOODBYE_LINE not in r.said_text()
+    assert r.call.state != "ended"
+
+
+def test_speaking_again_after_a_plain_goodbye_keeps_the_call(monkeypatch):
+    r = Rig(monkeypatch, END)
+    _judge(monkeypatch, True)
+
+    async def go():
+        await r.ask("Bye")
+        farewell = last_say(r)
+        await r.ev(t="user_started")  # "…wait, one more thing"
+        await r.call.on_played(farewell["id"])
+
+    run(go())
+    assert r.call.state != "ended"
+
+
+def test_a_goodbye_while_a_card_waits_for_an_answer_goes_to_hq(monkeypatch):
+    """The 13:13 call: "Tchau, tchau." with a card waiting was not a hang-up."""
+    r = Rig(monkeypatch, NUDGE)
+    seen = _judge(monkeypatch, True)
+
+    async def go():
+        await r.ask("rerun the auth tests")
+        await r.readback_played()
+        assert r.call.challenge is not None
+        await r.ask("Tchau, tchau.")
+
+    run(go())
+    assert voice_calls.GOODBYE_LINE not in r.said_text()
+    assert r.call.state != "ended" and seen == []  # not even asked: HQ was not idle
+
+
+@pytest.mark.parametrize(
+    "said",
+    ["Bye, and start a session", "Okay, bye. Can you check the build?", "stop"],
+)
+def test_more_than_a_goodbye_is_a_request_for_hq(monkeypatch, said):
+    r = Rig(monkeypatch, {"answer": "On it."})
+    seen = _judge(monkeypatch, True)
+
+    async def go():
+        await r.ask(said)
+
+    run(go())
+    assert r.asked == [said] and seen == []
+    assert voice_calls.GOODBYE_LINE not in r.said_text()
+
+
+def _held_judge(monkeypatch, verdict: bool):
+    """The goodbye judgement, held open until the test releases it."""
+    from agent_sessions import voice_judge
+
+    gate = asyncio.Event()
+    seen: list[str] = []
+
+    async def judge(said, reply):
+        seen.append(said)
+        await gate.wait()
+        return verdict
+
+    monkeypatch.setattr(voice_judge, "judge_goodbye", judge)
+    return gate, seen
+
+
+async def _settled(r):
+    for _ in range(200):
+        await asyncio.sleep(0)
+        pending = [t for t in r.call.side_tasks if not t.done()]
+        if not pending and (r.call.turn_task is None or r.call.turn_task.done()):
+            return
+        await asyncio.gather(*pending, return_exceptions=True)
+        if r.call.turn_task is not None and not r.call.turn_task.done():
+            await r.call.turn_task
+
+
+def test_the_goodbye_judgement_never_holds_up_the_workers_events(monkeypatch):
+    """Hermes 8936: the judgement ran INSIDE the worker-event handler, the socket's only reader,
+    so nothing newer was read until it returned. Driven serially, as the socket delivers: words
+    said while it runs are read at once, join the goodbye, and go to HQ as one question."""
+    r = Rig(monkeypatch, {"answer": "On it."})
+    gate, seen = _held_judge(monkeypatch, True)
+
+    async def go():
+        serial = [
+            {"t": "user_started"},
+            {"t": "utterance", "text": "Bye"},
+            {"t": "user_started"},
+            {"t": "utterance", "text": "wait, check the build first"},
+        ]
+        async with asyncio.timeout(2):  # the reader is never held by the model
+            for ev in serial:
+                await r.ev(**ev)
+                for _ in range(5):
+                    await asyncio.sleep(0)  # the judgement has started before the next event
+                if ev.get("text") == "Bye":
+                    assert seen == ["Bye"] and r.call.goodbye_pending is not None
+        gate.set()
+        await _settled(r)
+
+    run(go())
+    assert r.asked == ["Bye wait, check the build first"]
+    assert voice_calls.GOODBYE_LINE not in r.said_text() and r.call.state != "ended"
+
+
+def test_a_yes_that_comes_after_newer_speech_began_says_no_farewell(monkeypatch):
+    r = Rig(monkeypatch, {"answer": "On it."})
+    gate, _seen = _held_judge(monkeypatch, True)
+
+    async def go():
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Bye")
+        await r.ev(t="user_started")  # speaking again while it is judged
+        gate.set()
+        await _settled(r)
+
+    run(go())
+    assert voice_calls.GOODBYE_LINE not in r.said_text()
     assert r.call.state != "ended"

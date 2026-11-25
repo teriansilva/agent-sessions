@@ -65,6 +65,8 @@ PLAYBACK_FALLBACK_S = 10.0
 #: slow: a longer estimate only ends an unacked call later).
 SPEECH_CHARS_PER_S = 10.0
 STILL_THERE_LINE = "Are you still there?"
+#: What HQ says to a plain goodbye before the call ends (2026-11-25: no HQ turn for it).
+GOODBYE_LINE = "Take care, Commander."
 
 
 def speech_seconds(text: str) -> float:
@@ -272,6 +274,7 @@ from .voice_text import (  # noqa: E402,F401
     card_sentences,
     classify_confirmation,
     classify_decision,
+    is_goodbye,
     is_no_speech_phrase,
     is_skip,
     is_stop_all_phrase,
@@ -373,6 +376,15 @@ class Call:
     #: This call's own HQ turn while it runs (#2113 P3): ``(turn_id, the words it answers)``.
     #: Words heard meanwhile steer or stop ONLY this turn, never a typed one on the conversation.
     call_turn: tuple[str, str] | None = None
+    #: Words to wait for the running turn that came AFTER earlier words still riding on it as a
+    #: steer, by that turn (2026-11-25 call): asked with whatever of the steer it did not use, in
+    #: the order said, once it settles — never ahead of the earlier words.
+    held_later: dict = field(default_factory=dict, repr=False)
+    #: A likely goodbye being judged beside the relay (2026-11-25): ``{"seq", "text", "heard_id",
+    #: "turn", "began", "starts", "typed"}``. Words heard meanwhile join it, so nothing is lost or
+    #: reordered while the judgement runs; the verdict acts only on its own `seq`.
+    goodbye_pending: dict | None = None
+    goodbye_seq: int = 0
     #: Words heard while that turn works, being judged (#2113 P3): ``{"seq", "text", "heard",
     #: "turn_id"}``. More words join it and are judged again; only the newest judgement acts.
     interjection: dict | None = None
@@ -976,13 +988,19 @@ class Call:
         turn: int | None = None,
         captioned: bool = False,
         heard_id: str | None = None,
+        judged_goodbye: bool = False,
     ) -> None:
         # Claimed before the first await (Hermes 7631): while any utterance is still being
         # handled, a held first part waits for it, so its rest can never be asked separately.
         self.in_flight += 1
         try:
             await self._on_utterance(
-                text, late=late, turn=turn, captioned=captioned, heard_id=heard_id
+                text,
+                late=late,
+                turn=turn,
+                captioned=captioned,
+                heard_id=heard_id,
+                judged_goodbye=judged_goodbye,
             )
         finally:
             self.in_flight -= 1
@@ -996,10 +1014,18 @@ class Call:
         turn: int | None = None,
         captioned: bool = False,
         heard_id: str | None = None,
+        judged_goodbye: bool = False,
     ) -> None:
         if self.muted:
             self._link(heard_id, "muted")
             return
+        pending = self.goodbye_pending
+        if pending is not None and not captioned:
+            # Words while a likely goodbye is still being judged: they join it (its verdict is
+            # void from now on), so "bye … wait, one more thing" is one question, in order.
+            self.goodbye_pending = None
+            self._link(pending["heard_id"], "joined")
+            text = f"{pending['text']} {text}"[: ask_orchestrator.QUERY_MAX]
         # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
         # older HQ question is no longer what they reply to.
         # When these words BEGAN: their own turn's start, LATE words too (the worker tags them with
@@ -1026,6 +1052,31 @@ class Call:
             if self.stop_turn(said=text):
                 self._link(heard_id, "stop")
                 return
+        if (
+            not captioned
+            and not judged_goodbye
+            and not late
+            and turn is not None
+            and turn >= self.user_turn  # no newer turn begun: not words to hold for a rest (#1842)
+            and self._idle_for_goodbye()
+            and is_goodbye(text, self.listen_languages, self._contact_names())
+        ):
+            # Words that look like nothing but a goodbye while HQ is idle (2026-11-25: a whole HQ
+            # turn for "Bye-bye" took 36 s). The words only pick the path: HQ's focused call-end
+            # judgement decides (operator, 2026-10-24), in one quick request instead of a turn.
+            # Never while HQ works, a card or question waits for an answer, or anything is
+            # queued: "Tchau, tchau." mid-work was not a hang-up. Not over, no verdict in time,
+            # or anything newer meanwhile: HQ answers the words as any others.
+            # Judged BESIDE the relay (Hermes 8936): the worker's receive loop never waits for
+            # the model, so newer speech is seen while it runs. Reserved before anything yields.
+            self.generation += 1  # an older offer never installs now
+            self.goodbye_seq += 1
+            self.goodbye_pending = {
+                "seq": self.goodbye_seq, "text": text, "heard_id": heard_id, "turn": turn,
+                "began": began, "starts": self.user_starts, "typed": self.typed_turns,
+            }  # fmt: skip
+            self._side(self._judge_goodbye(self.goodbye_seq))
+            return
         if not captioned and self._interjectable():
             # Words while HQ works on this call's own turn (#2113 P3): answered at once, judged
             # beside the relay. No new generation: the running answer is still said. The turn is
@@ -1200,6 +1251,27 @@ class Call:
         waiting = [*ask_orchestrator.queued(self.cid), *([""] * self.admitting)]
         return waiting or None
 
+    def _hand_back(self, turn_id: str, view: dict) -> None:
+        """At a turn's settle: the steer words it never used (#2113 P3; none for a stopped turn)
+        and the words held behind them (`held_later`), asked as ONE question in the order the
+        Commander said them, timed from the earliest (#2354). Nothing once the call ended."""
+        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        since = self.steer_since.pop(turn_id, None)
+        held = self.held_later.pop(turn_id, [])
+        if self.state == "ended":
+            return
+        words: list[str] = []
+        heard: dict | None = None
+        if left and view.get("status") != "stopped":
+            words.append(" ".join(left))
+            heard = self._steered(since)
+        for text, h in held:
+            words.append(text)
+            if heard is None:
+                heard = {**h, "ids": []}  # already linked as queued when held
+        if words:
+            self._ask_later(" ".join(words)[: ask_orchestrator.QUERY_MAX], heard)
+
     def _steered(self, since: float | None) -> dict | None:
         """What steer words a turn never used were heard after (#2354): now, said at `since`."""
         return None if since is None else {**self._heard_now(), "busy_since": since}
@@ -1301,6 +1373,10 @@ class Call:
             self._dispatch(text, heard, self.generation)
             return
         do = verdict[0] if verdict is not None and say else None
+        if do == "steer" and self.held_later.get(turn_id):
+            # Words are already held behind this turn (Hermes 8936): a newer steer must not
+            # overtake them (A steer, B held, C steer was asked A C B). It is held after them.
+            do = "later"
         if do == "steer" and not ask_orchestrator.steer(self.cid, turn_id, text):
             do = "later"  # it could not take them any more: they wait instead
         elif do == "steer":
@@ -1314,7 +1390,15 @@ class Call:
                 await self._interject_say(say or INTERJECT_FALLBACK)
                 return
             do = "later"
-        if do in (None, "later"):
+        if do in (None, "later") and turn_id in self.steer_since:
+            # Earlier words still ride on the running turn as a steer: if it settles without
+            # using them they are asked next, so these must not be asked AHEAD of them (a queued
+            # question starts the moment the turn settles, before the handback is admitted).
+            # Held, and asked together with them in the order said (`_hand_back`).
+            for hid in heard.get("ids", []):
+                self._link(hid, "queued")
+            self.held_later.setdefault(turn_id, []).append((text, heard))
+        elif do in (None, "later"):
             # The running answer is said first, then these: they wait in the conversation's
             # queue (#2103) with no new generation, so both answers are spoken.
             self._ask_later(text, heard)
@@ -1352,6 +1436,8 @@ class Call:
         # Stop all's own fence first, with no await (#2103): the "no successor" marks and every
         # running turn's stop flag.
         elsewhere = bool(ask_orchestrator.request_stop_all()) if everything else False
+        if everything:
+            self.held_later.clear()  # held words wait like queued ones: Stop all withdraws them
         # WHAT is stopped is fixed NOW, before anything awaits, so nothing can slip between the
         # decision and the stop:
         # - an open draft is CLAIMED here (`_take_draft`), so the quiet timer can no longer
@@ -1555,6 +1641,74 @@ class Call:
             and self.user_turn <= turn
         )
 
+    def _idle_for_goodbye(self) -> bool:
+        """Nothing is running, waiting for an answer or queued in this call's conversation."""
+        return (
+            not self._turn_running()
+            and self.draft is None
+            and self.committing is None
+            and self.held is None
+            and self.challenge is None
+            and self.ask is None
+            and self.interjection is None
+            and self.goodbye_pending is None
+            and not self.queued
+            and ask_orchestrator.running_turn(self.cid) is None
+        )
+
+    def _contact_names(self) -> frozenset[str]:
+        """The contact's own names, as words a goodbye may hold ("Bye, General Harlan.")."""
+        try:
+            name = hq_contacts.get(self.contact).name
+        except Exception:  # noqa: BLE001 — no name: a goodbye without one still ends the call
+            return frozenset()
+        return frozenset(w.casefold() for w in name.split() if w)
+
+    async def _judge_goodbye(self, seq: int) -> None:
+        """The verdict on a likely goodbye, beside the relay. It acts only if it is still the
+        pending one (words heard meanwhile joined it). A "yes" says the farewell only if nothing
+        newer was heard or typed and the call is still idle; anything else hands the words on as
+        any others (`judged_goodbye`: not judged again)."""
+        from . import voice_judge
+
+        p = self.goodbye_pending
+        if p is None or p["seq"] != seq:
+            return
+        over = await voice_judge.judge_goodbye(p["text"], GOODBYE_LINE)
+        if self.goodbye_pending is not p:
+            return  # joined by newer words, or the call moved on: their path has them
+        self.goodbye_pending = None
+        if self.state == "ended":
+            return
+        if self.muted:
+            self._link(p["heard_id"], "muted")
+            return
+        if (
+            over
+            and self.user_starts == p["starts"]
+            and self.typed_turns == p["typed"]
+            and self._idle_for_goodbye()
+        ):
+            self._link(p["heard_id"], "goodbye")
+            await self._goodbye(p["text"], p["turn"], p["began"])
+            return
+        await self.on_utterance(
+            p["text"], turn=p["turn"], heard_id=p["heard_id"], judged_goodbye=True
+        )
+
+    async def _goodbye(self, text: str, turn: int, began: float | None) -> None:
+        self.generation += 1  # newer than anything before: an older offer never installs now
+        gen = self.generation
+        heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": turn,
+                 "began": began, "replying_to": None}  # fmt: skip
+        await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
+        sid = uuid.uuid4().hex[:12]
+        # Installed BEFORE the farewell is sent: its ack can come back while the send is in flight.
+        self.ending = {"say_id": sid, "gen": gen, "heard": heard, "said_at": None,
+                       "speech_s": speech_seconds(GOODBYE_LINE)}  # fmt: skip
+        if await self.say(GOODBYE_LINE, kind="farewell", sid=sid) is None:
+            self.ending = None
+
     def _ending_holds(self, end: dict) -> bool:
         return end["gen"] == self.generation and self._still_heard(end["heard"])
 
@@ -1638,11 +1792,7 @@ class Call:
         # Words the Commander added that the turn settled without using (#2113 P3): asked next,
         # exactly once. A stopped turn hands none back (the
         # orchestrator drops them at its settle; checked here too).
-        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
-        since = self.steer_since.pop(turn_id, None)
-        if left and self.state != "ended" and view.get("status") != "stopped":
-            # (#2103: they join the conversation's queue, behind anything already waiting.)
-            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], self._steered(since))
+        self._hand_back(turn_id, view)
         if self.state == "ended" or (d is not None and d.dropped):
             return
         await self._present(view, gen, heard, now)
@@ -1728,10 +1878,7 @@ class Call:
             if self.call_turn is not None and self.call_turn[0] == turn_id:
                 self.call_turn = None
         self._link_asked(heard, turn_id)
-        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
-        since = self.steer_since.pop(turn_id, None)
-        if left and self.state != "ended" and view.get("status") != "stopped":
-            self._ask_later(" ".join(left)[: ask_orchestrator.QUERY_MAX], self._steered(since))
+        self._hand_back(turn_id, view)
         if self.state == "ended":
             return
         await self._present(view, gen, heard, now)

@@ -89,6 +89,54 @@ STOP_ALL_PHRASES: dict[str, frozenset[str]] = {
 }  # fmt: skip
 
 
+#: Words that LOOK like a plain goodbye (2026-11-25: "Okay, thank you, General. Bye-bye." took
+#: 36 s through a whole HQ turn). The WHOLE utterance must be made of these words and hold at
+#: least one farewell (`GOODBYE_CORE`, or "see you"). They decide nothing: they only send the
+#: words to HQ's quick call-end judgement (`voice_judge.judge_goodbye`) instead of a whole turn;
+#: whether the call is over stays HQ's call, never a word list's (operator, 2026-10-24).
+GOODBYE_CORE: dict[str, frozenset[str]] = {
+    "en": frozenset({"bye", "goodbye", "byebye", "cya", "farewell"}),
+    "de": frozenset({"tschüss", "tschüs", "tschuss", "tschau", "tchau", "ciao", "wiedersehen"}),
+}  # fmt: skip
+GOODBYE_FILLER: dict[str, frozenset[str]] = {
+    "en": frozenset({
+        "ok", "okay", "alright", "right", "well", "so", "then", "thanks", "thank", "you", "very",
+        "much", "a", "lot", "cheers", "take", "care", "have", "nice", "good", "great", "day",
+        "evening", "night", "later", "soon", "talk", "to", "see", "general", "hq", "commander",
+        "sir", "for", "now", "thats", "it", "all",
+    }),
+    "de": frozenset({
+        "ok", "okay", "also", "gut", "na", "dann", "danke", "dankeschön", "schön", "sehr",
+        "vielen", "dank", "bis", "später", "bald", "auf", "einen", "schönen", "tag", "abend",
+        "gute", "nacht", "machs", "general", "das", "wars", "erstmal",
+    }),
+}  # fmt: skip
+GOODBYE_MAX_WORDS = 12
+
+
+def is_goodbye(
+    said: str, languages: frozenset | None = None, names: frozenset[str] = frozenset()
+) -> bool:
+    """Whether an utterance is NOTHING but a goodbye, in one of ``languages`` (as
+    `is_stop_phrase`). ``names``: the contact's own names, which a goodbye may hold ("Bye,
+    General Harlan.")."""
+    words = [_word(w) for w in re.split(r"[\s\-]+", said or "")]
+    words = [w for w in words if w]
+    if not words or len(words) > GOODBYE_MAX_WORDS:
+        return False
+    langs = [lang for lang in GOODBYE_CORE if not languages or lang in languages] or list(
+        GOODBYE_CORE
+    )
+    core = frozenset().union(*(GOODBYE_CORE[lang] for lang in langs))
+    allowed = core | names | frozenset().union(*(GOODBYE_FILLER[lang] for lang in langs))
+    if not all(w in allowed for w in words):
+        return False
+    see_you = "en" in langs and any(
+        a == "see" and b == "you" for a, b in zip(words, words[1:], strict=False)
+    )
+    return see_you or any(w in core for w in words)
+
+
 def _whole_phrase(said: str, phrases: dict, languages: frozenset | None) -> bool:
     text = " ".join(_PUNCT.sub(" ", said or "").split()).casefold()
     if not text:

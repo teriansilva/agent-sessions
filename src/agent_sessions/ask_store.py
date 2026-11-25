@@ -144,10 +144,21 @@ RECORD_TYPES = frozenset(
 # greeting, a card read-back, a settle outcome, the still-there question). `counts`: how many of
 # each a call could not store past the bounds below.
 HEARD_ROUTES = frozenset(
-    {"hq", "held", "queued", "joined", "interject", "confirm", "stop", "muted", "dropped"}
+    {
+        "hq",
+        "held",
+        "queued",
+        "joined",
+        "interject",
+        "confirm",
+        "stop",
+        "muted",
+        "dropped",
+        "goodbye",
+    }
 )
 HEARD_DROPS = frozenset({"echo", "foreign", "no_speech"})
-SAID_KINDS = frozenset({"greeting", "readback", "outcome", "still_there"})
+SAID_KINDS = frozenset({"greeting", "readback", "outcome", "still_there", "farewell"})
 #: Bounds per conversation (#2137): past them a call counts instead of storing.
 HEARD_DROPPED_MAX = 200
 HEARD_SAID_MAX = 2_000

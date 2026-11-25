@@ -139,6 +139,96 @@ def test_a_steer_the_turn_never_used_is_asked_next_exactly_once(rig, held):
     assert rig.said_text() == ["Ah, got it.", "Here is the epic.", "Issue 2059 is in phase three."]
 
 
+def test_words_held_behind_an_unused_steer_are_asked_after_it_in_the_order_said(rig, held):
+    """The 2026-11-25 call: "No, I selected already my option" (a steer the turn's last request
+    never carried), then "Your session accessibility is crap" (later). The later words were
+    queued at once and started the moment the turn settled, so the earlier ones, handed back
+    after the settle, were answered LAST. Now the later words wait behind the steer, and both
+    are asked as ONE question in the order said."""
+    verdicts = iter([("steer", "Ah, got it."), ("later", "Noted, one sec.")])
+
+    async def judge():
+        return next(verdicts)
+
+    rig.interject_verdict = judge
+
+    async def scenario():
+        script = held(answer("Here is the epic."), answer("Both points taken."))
+        await _working(rig, script)
+        await _speak(rig, "It's issue 2059.")
+        await _until(lambda: "Ah, got it." in rig.said_text())
+        await _speak(rig, "Also, what needs me?")
+        await _until(lambda: "Noted, one sec." in rig.said_text())
+        script.go.set()
+        await _until(lambda: "Both points taken." in rig.said_text())
+
+    run(scenario())
+    assert _questions(rig.call.cid) == [
+        "Where is the federation epic?",
+        "It's issue 2059. Also, what needs me?",
+    ]
+    assert rig.said_text()[-2:] == ["Here is the epic.", "Both points taken."]
+
+
+def test_a_steer_after_held_words_is_held_after_them_never_ahead(rig, held):
+    """Hermes 8936: A (steer, unused), B (later, held), C (steer) was asked A C B."""
+    verdicts = iter([("steer", "Got it."), ("later", "Noted."), ("steer", "Right.")])
+
+    async def judge():
+        return next(verdicts)
+
+    rig.interject_verdict = judge
+
+    async def scenario():
+        script = held(answer("Here is the epic."), answer("All three noted."))
+        await _working(rig, script)
+        await _speak(rig, "First point.")
+        await _until(lambda: "Got it." in rig.said_text())
+        await _speak(rig, "Second point.")
+        await _until(lambda: "Noted." in rig.said_text())
+        await _speak(rig, "Third point.")
+        await _until(lambda: rig.said_text().count("Right.") == 1)
+        script.go.set()
+        await _until(lambda: "All three noted." in rig.said_text())
+
+    run(scenario())
+    assert _questions(rig.call.cid) == [
+        "Where is the federation epic?",
+        "First point. Second point. Third point.",
+    ]
+
+
+def test_words_held_behind_a_steer_the_turn_used_are_asked_alone(rig, held):
+    """The consumed variant: the steer reached the running turn, so only the held words wait."""
+    verdicts = iter([("steer", "Got it, checking that."), ("later", "Noted.")])
+
+    async def judge():
+        return next(verdicts)
+
+    rig.interject_verdict = judge
+
+    async def scenario():
+        script = held(
+            call("list_projects", cid="a"),
+            call("list_agents", cid="b"),
+            answer("It is 2059."),
+            answer("Two sessions need you."),
+            free=1,
+        )
+        await _working(rig, script)
+        await _speak(rig, "It's issue 2059.")
+        await _until(lambda: "Got it, checking that." in rig.said_text())
+        await _speak(rig, "Also, what needs me?")
+        await _until(lambda: "Noted." in rig.said_text())
+        script.go.set()
+        await _until(lambda: "Two sessions need you." in rig.said_text())
+
+    run(scenario())
+    assert _questions(rig.call.cid) == ["Where is the federation epic?", "Also, what needs me?"]
+    recs = [r for r in ask_store.read(rig.call.cid) if r["type"] == "interjection"]
+    assert [r["text"] for r in recs] == ["It's issue 2059."]  # the steer was used
+
+
 def test_later_says_the_running_answer_first_then_asks_the_new_words(rig, held):
     rig.interject_verdict = ("later", "Sure, one sec, finishing this first.")
 
