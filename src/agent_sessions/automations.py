@@ -235,7 +235,9 @@ def _hhmm(raw: object) -> str:
 
 
 def validate_trigger(raw: object, *, now: float | None = None) -> dict:
-    t = _obj(raw, "trigger", {"kind", "at", "tz", "cadence", "webhook_id", "when"}, {"kind"})
+    t = _obj(
+        raw, "trigger", {"kind", "at", "tz", "cadence", "webhook_id", "when", "once_per"}, {"kind"}
+    )
     kind = _word(t["kind"], "trigger kind")
     if kind in RESERVED_TRIGGERS:
         raise AutomationError(
@@ -247,17 +249,23 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
     if kind == "webhook":
         # A webhook picked from the list (#2221). The retired review loop's own (`scheme`, #2202)
         # is no longer a trigger: a stored one fails here, so its automation loads unreadable.
-        _obj(t, "a webhook trigger", {"kind", "webhook_id", "when"}, {"webhook_id"})
+        _obj(t, "a webhook trigger", {"kind", "webhook_id", "when", "once_per"}, {"webhook_id"})
         wid = t["webhook_id"]
         if not isinstance(wid, str) or not _ID_RE.match(wid):
             raise AutomationError("webhook_id must be a webhook id")
-        # Which events it acts on (#2221 P2): only when some were chosen, so a stored trigger
-        # without conditions keeps its exact shape (and its consent receipt).
+        # Which events it acts on (#2221 P2), and which values make a run's claim (#2222): each
+        # only when chosen, so a stored trigger without them keeps its exact shape (and receipt).
         try:
             when = webhook_events.validate_conditions(t.get("when"))
+            once = webhook_events.validate_once_per(t.get("once_per"))
         except webhook_events.EventError as e:
             raise AutomationError(str(e)) from None
-        return {"kind": "webhook", "webhook_id": wid, **({"when": when} if when else {})}
+        return {
+            "kind": "webhook",
+            "webhook_id": wid,
+            **({"when": when} if when else {}),
+            **({"once_per": once} if once else {}),
+        }
     if kind == "once":
         _obj(t, "a once trigger", {"kind", "at", "tz"}, {"at"})
         at = t["at"]
@@ -278,6 +286,15 @@ def validate_trigger(raw: object, *, now: float | None = None) -> dict:
 
 
 # ---- action -------------------------------------------------------------------------------------
+
+
+def _specialist_ref(raw: object, what: str) -> dict:
+    """``{specialist_id, version}``: one specialist, pinned to one saved version."""
+    r = _obj(raw, what, {"specialist_id", "version"}, {"specialist_id", "version"})
+    sid = r["specialist_id"]
+    if not isinstance(sid, str) or not _ID_RE.match(sid):
+        raise AutomationError(f"{what}.specialist_id must be a specialist id")
+    return {"specialist_id": sid, "version": _int(r["version"], f"{what}.version", 1, 999_999)}
 
 
 def validate_message(raw: object, what: str) -> dict:
@@ -335,6 +352,7 @@ def validate_action(raw: object) -> dict:
             "bypass",
             "message",
             "session_key",
+            "specialist",
         },
         {"kind"},
     )
@@ -370,7 +388,7 @@ def validate_action(raw: object) -> dict:
         _obj(
             a,
             "a start_session action",
-            {"kind", "engine", "model", "folder", "bypass", "message"},
+            {"kind", "engine", "model", "folder", "bypass", "message", "specialist"},
             {"engine", "folder", "message"},
         )
         engine = a["engine"]
@@ -388,7 +406,7 @@ def validate_action(raw: object) -> dict:
         bypass = a.get("bypass", False)
         if not isinstance(bypass, bool):
             raise AutomationError("bypass must be true or false")
-        return {
+        out = {
             "kind": kind,
             "engine": engine,
             "model": None,
@@ -396,6 +414,14 @@ def validate_action(raw: object) -> dict:
             "bypass": bypass,
             "message": validate_message(a["message"], "message"),
         }
+        # The session runs AS a specialist (#2222), pinned to one version: its instructions,
+        # skills, model and effort. Only when one was chosen, so a stored action without it keeps
+        # its exact shape (and its consent receipt).
+        if a.get("specialist") is not None:
+            if bypass:
+                raise AutomationError("a specialist's session never skips permission prompts")
+            out["specialist"] = _specialist_ref(a["specialist"], "specialist")
+        return out
     if kind == "send_to_session":
         _obj(a, "a send_to_session action", {"kind", "session_key", "message"}, {"session_key"})
         key = a["session_key"]
@@ -742,6 +768,8 @@ def compute_pins(config: dict) -> dict:
         # The folder's IDENTITY, not its spelling: a symlink repointed after consent is a drift,
         # and the launch uses `real` (#1201 review).
         pins["cwd"] = folder_identity(action["folder"])
+        if action.get("specialist"):
+            pins["specialist"] = specialist_pin(action["specialist"])
     elif action["kind"] == "plugin":
         # What a plugin action is bound to beyond its config (#2248 P2): only when it has any, so
         # the five's pins keep their exact shape.
@@ -751,10 +779,22 @@ def compute_pins(config: dict) -> dict:
     return pins
 
 
+def _specialist_target(pins: dict) -> dict:
+    """The pinned specialist as a consent target field: which one, which version, its effort."""
+    spec = pins.get("specialist") or {}
+    return {
+        "id": spec.get("id"),
+        "version": spec.get("version"),
+        "name": spec.get("name"),
+        "effort": spec.get("effort"),
+    }
+
+
 def specialist_pin(reviewer: dict) -> dict:
-    """A specialist VERSION as it is now: what it runs on, and whether it can launch. No action
-    pins one since the review loop was retired (#2222); a stored pin is still compared.
-    A specialist edited to a newer version, archived or deleted is a drift (re-approval)."""
+    """A specialist VERSION as it is now: what it runs on, and whether it can launch. A "Start a
+    session" that runs as a specialist pins one (#2222 P2), and the launch fence reads it again
+    (`automation_runner._specialist_still_pinned`). A specialist edited to a newer version,
+    archived or deleted is a drift (re-approval)."""
     from . import specialists_store as sstore
 
     sid, n = reviewer["specialist_id"], int(reviewer["version"])
@@ -939,6 +979,9 @@ def scope_of(config: dict, pins: dict) -> dict:
         }
     elif action["kind"] == "start_session":
         target = {"folder": action["folder"], "cwd": (pins.get("cwd") or {}).get("real")}
+        if action.get("specialist"):
+            # Only when one was chosen, so an existing receipt still matches its scope (#2222).
+            target["specialist"] = _specialist_target(pins)
     elif action["kind"] == "tell_hq":
         # Nothing is started or typed into: the bell and HQ's dispatch are the whole effect.
         target = {}
@@ -947,7 +990,12 @@ def scope_of(config: dict, pins: dict) -> dict:
         target = _plugins().target(action, pins)
     else:
         target = {"session_key": action["session_key"]}
-    engine, model_id = action.get("engine"), action.get("model")
+    if action["kind"] == "start_session" and action.get("specialist"):
+        # A specialist's session runs on what its pinned version names (#2222).
+        engine = (pins.get("specialist") or {}).get("engine")
+        model_id = (pins.get("specialist") or {}).get("model")
+    else:
+        engine, model_id = action.get("engine"), action.get("model")
     return {
         "version": 1,
         "action": action["kind"],
@@ -988,6 +1036,8 @@ def scope_of(config: dict, pins: dict) -> dict:
         **({"webhook_source": trigger["webhook_id"]} if trigger.get("webhook_id") else {}),
         # Which events it acts on (#2221 P2): an equality field, only when some were chosen.
         **({"when": trigger["when"]} if trigger.get("when") else {}),
+        # What one run is claimed by (#2222): an equality field, only when some were chosen.
+        **({"once_per": trigger["once_per"]} if trigger.get("once_per") else {}),
         # A plugin action's other inputs (#2248 P2): only for one, so the five's scopes keep their
         # exact shape and digest.
         **({"inputs": _plugins().data(action)} if action["kind"] == "plugin" else {}),
@@ -1296,6 +1346,13 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         if t.get("cwd") and t.get("cwd") != where:
             where = f"{where} (resolves to {t['cwd']})"
         lines.append(f"Starts a {scope.get('engine')} session in {where}")
+        spec = t.get("specialist")
+        if isinstance(spec, dict):
+            lines.append(
+                f"As the specialist “{spec.get('name') or spec.get('id')}” ({spec.get('id')}), "
+                f"version {spec.get('version')}: its instructions and skills, "
+                f"effort {spec.get('effort') or 'the agent’s default'}"
+            )
     elif action == "send_to_session":
         lines.append(f"Types into the live session {t.get('session_key')}")
         lines.append("If that session isn't running, the run is refused; nothing is started")
@@ -1385,6 +1442,13 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
                     lines.append(f"  {webhook_events.describe_condition(c)}")
                 else:
                     lines.append(f"  {c!r}")
+        once = scope.get("once_per")
+        if isinstance(once, list) and once:
+            lines.append(
+                "Runs once per distinct "
+                + ", ".join(str(p) for p in once)
+                + ": a later delivery with the same values starts nothing"
+            )
     elif trig == "webhook":
         lines.append("Starts when a webhook delivers a signed event")
     elif trig == "manual":

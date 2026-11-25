@@ -26,7 +26,10 @@ import {
   mappableFields,
   sessionEngine,
   sessionPicker,
+  specialistChoices,
   withAction,
+  withEngine,
+  type ReviewerOption,
   withFieldSource,
   type EditorForm,
   type MappingDraft,
@@ -85,7 +88,14 @@ export function StepWhat({
   onNewSecret,
   newSecretBusy,
   secretPanel,
+  specialists,
+  specialistsFailed,
 }: StepProps & {
+  /** The specialist read failed (not "there are none"). */
+  specialistsFailed: boolean;
+  /** "Run as a specialist" (#2222): the specialists an automation may start, or `null` while they
+   *  load. */
+  specialists: ReviewerOption[] | null;
   /** "Call a webhook" (#2248 P2): the SAVED destination's state, and making a new secret. */
   savedDestination: { url: string; secret_set: boolean } | null;
   onNewSecret: (() => void) | null;
@@ -246,7 +256,7 @@ export function StepWhat({
               id={f("engine")}
               className={styles.control}
               value={form.engine}
-              onChange={(e) => set("engine", e.target.value)}
+              onChange={(e) => update((x) => withEngine(x, e.target.value, specialists ?? []))}
               aria-describedby={f("engine-note")}
               data-testid="session-engine"
             >
@@ -289,6 +299,13 @@ export function StepWhat({
               </details>
             )}
           </div>
+          <SpecialistField
+            form={form}
+            update={update}
+            f={f}
+            options={specialists}
+            failed={specialistsFailed}
+          />
           <div className={`${styles.field} ${styles.full}`}>
             <label className={styles.label} htmlFor={f("folder")}>
               Folder
@@ -332,6 +349,7 @@ export function StepWhat({
                       <input
                         type="checkbox"
                         checked={form.bypass}
+                        disabled={!!form.specialistId}
                         onChange={(e) => set("bypass", e.target.checked)}
                         data-testid="session-bypass"
                       />
@@ -801,5 +819,76 @@ export function StepWhat({
 
       <StepIssues problems={problems} warnings={warnings} />
     </>
+  );
+}
+
+/** "Run as a specialist" (#2222): the session runs as one specialist, pinned to its current version
+ *  (its skills, model and effort). Only specialists on the session's agent are offered; a stored pin
+ *  to an older version says so, and choosing it again pins the current one. */
+function SpecialistField({
+  form,
+  update,
+  f,
+  options,
+  failed,
+}: Pick<StepProps, "form" | "update" | "f"> & { options: ReviewerOption[] | null; failed: boolean }) {
+  const choices = specialistChoices(options ?? [], form.engine);
+  const current = choices.find((o) => o.id === form.specialistId) ?? null;
+  const stale = !!form.specialistId && (!current || current.version !== form.specialistVersion);
+  const noteId = f("specialist-note");
+  return (
+    <div className={styles.field}>
+      <label className={styles.label} htmlFor={f("specialist")}>
+        Run as a specialist (optional)
+      </label>
+      <select
+        id={f("specialist")}
+        className={styles.control}
+        value={form.specialistId}
+        disabled={options === null || (!choices.length && !form.specialistId)}
+        onChange={(e) => {
+          const o = choices.find((c) => c.id === e.target.value) ?? null;
+          update((x) => ({
+            ...x,
+            specialistId: o ? o.id : "",
+            specialistVersion: o ? o.version : null,
+            // A specialist's session never skips permission prompts.
+            bypass: o ? false : x.bypass,
+          }));
+        }}
+        aria-describedby={noteId}
+        data-testid="session-specialist"
+      >
+        <option value="">
+          {options === null
+            ? "Loading specialists…"
+            : choices.length || form.specialistId
+              ? "None, the agent’s own defaults"
+              : "None available"}
+        </option>
+        {stale && (
+          <option value={form.specialistId}>
+            {form.specialistId} v{form.specialistVersion ?? "?"} (pinned)
+          </option>
+        )}
+        {choices.map((o) => (
+          <option key={o.id} value={o.id} disabled={!!o.blocked && o.id !== form.specialistId}>
+            {o.label}
+            {o.blocked ? ` — ${o.blocked}` : ""}
+          </option>
+        ))}
+      </select>
+      <p id={noteId} className={styles.hint} data-testid="specialist-note">
+        {failed
+          ? "Couldn’t read your specialists. Reload the page to try again; the session can still run without one."
+          : stale && current
+          ? `Pinned to version ${form.specialistVersion}; the specialist is now at version ${current.version}. Choose it again to pin that one — it asks for your approval again.`
+          : stale
+            ? "Pinned to a version that is no longer offered here (archived, or on another agent). Choose another, or none."
+            : form.engine && options !== null && !choices.length
+              ? "No specialist runs on this agent. Pick its agent, or make one in Library → Specialists."
+              : "Its skills, model and effort, pinned to this version. Editing it later asks for your approval again."}
+      </p>
+    </div>
   );
 }

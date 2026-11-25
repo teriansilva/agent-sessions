@@ -27,6 +27,8 @@ Read ``docs/invariants/webhooks.md``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 
@@ -168,6 +170,62 @@ def validate_mapping(raw: object) -> dict[str, dict]:
             raise EventError(f"{what}: only a choice has choices")
         out[field] = entry
     return dict(sorted(out.items()))
+
+
+#: At most this many fields make up a "once per" key.
+ONCE_PER_MAX = 4
+
+
+def validate_once_per(raw: object) -> list[str]:
+    """``trigger.once_per`` (STRICT): the delivery fields whose values, together, make a run's
+    claim (#2222). One run per distinct combination, instead of one per identical body: a CI step
+    re-sending the same pull request head with a fresh ``updated_at`` starts nothing new. Empty
+    (or absent) keeps the body's fingerprint as the claim."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > ONCE_PER_MAX:
+        raise EventError(f"once_per is a list of at most {ONCE_PER_MAX} fields")
+    out: list[str] = []
+    for i, p in enumerate(raw, 1):
+        path = _path(p, f"once_per field {i}")
+        if "[]" in path:
+            raise EventError(f"once_per field {i}: a value comes from one field, not a list")
+        if path in out:
+            raise EventError(f"once_per names {path} twice")
+        out.append(path)
+    return out
+
+
+def _canonical(path: str, v: object) -> str:
+    """One text per value, whatever JSON type the sender used for it (#2222 review): ``41``,
+    ``41.0`` and ``"41"`` are one key, as are ``true`` and ``"true"``. Merging two spellings can
+    only suppress a duplicate run, never add one: the safe direction for an at-most-once claim."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueRejected(path, "expected a finite number")
+        return str(int(v)) if v.is_integer() and abs(v) <= NUMBER_MAX else repr(v)
+    if isinstance(v, str) and len(v) <= VALUE_MAX:
+        return v
+    raise ValueRejected(path, "a once-per field must be a short text, a number or yes/no")
+
+
+def once_key(paths: list[str], payload: object) -> str:
+    """The claim for ``paths`` in ``payload``: a digest of each field's ONE value (a short text, a
+    number or yes/no), each in its canonical text (`_canonical`). Raises :class:`ValueRejected`
+    when a field is missing, repeated or not a plain value: a delivery whose identity can't be
+    read is refused, never run unclaimed."""
+    values = []
+    for path in paths:
+        got = resolve(payload, path)
+        if len(got) != 1 or got[0] is None:
+            raise ValueRejected(path, f"the delivery has no value at {path}")
+        values.append([path, _canonical(path, got[0])])
+    blob = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def mapping_lines(mapping: dict[str, dict]) -> list[str]:

@@ -337,3 +337,22 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* "Run once per" (#2222): its own block under the conditions, one field per row. */
+.oncePer {
+  display: grid;
+  gap: 8px;
+  margin-top: var(--sp-4, 16px);
+}
+.oncePer h3 {
+  margin: 0;
+}
+.onceRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+.onceRow button {
+  min-height: 44px;
+  min-width: 44px;
+}

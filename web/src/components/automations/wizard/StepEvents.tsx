@@ -8,6 +8,7 @@ import { useState } from "react";
 import {
   CHOICES_MAX,
   CONDITIONS_MAX,
+  ONCE_PER_MAX,
   OP_TAKES,
   OP_WORDS,
   chosenPreset,
@@ -174,8 +175,99 @@ export function StepEvents({
         </p>
       </Fold>
 
+      <OncePer
+        paths={form.oncePer}
+        shape={shape}
+        f={f}
+        onChange={(oncePer) => update((x) => ({ ...x, oncePer }))}
+      />
+
       <StepIssues problems={problems} warnings={warnings} />
     </>
+  );
+}
+
+/** The fields that name one pull request revision, when the last delivery has them. */
+const PR_REVISION = ["repository.full_name", "pull_request.number", "pull_request.head.sha"];
+
+/** "Run once per" (#2222): the delivery fields whose values, together, make a run's claim. One run
+ *  per distinct combination: a re-sent delivery with the same values (a CI re-send of the same pull
+ *  request head, with a fresh `updated_at`) starts nothing. Empty keeps the webhook's own duplicate
+ *  check. Each field must hold one plain value; a delivery without it is refused. */
+function OncePer({
+  paths,
+  shape,
+  f,
+  onChange,
+}: {
+  paths: string[];
+  shape: ShapeField[];
+  f: (name: string) => string;
+  onChange: (paths: string[]) => void;
+}) {
+  const hasRevision = PR_REVISION.every((p) => shape.some((s) => s.path === p));
+  const isRevision = paths.length === PR_REVISION.length && PR_REVISION.every((p, i) => paths[i] === p);
+  return (
+    <section className={w.oncePer} aria-labelledby={f("once-head")} data-testid="once-per">
+      <h3 id={f("once-head")} className={styles.label}>
+        Run once per (optional)
+      </h3>
+      <p className={styles.hint}>
+        A delivery whose values for these fields match an earlier run starts nothing, even if the
+        rest of it differs. Up to {ONCE_PER_MAX} fields, each one plain value (never a list). Leave
+        it empty to keep the webhook’s own duplicate check.
+      </p>
+      {paths.map((p, i) => (
+        <div key={i} className={w.onceRow}>
+          <label className="sr-only" htmlFor={f(`once-${i}`)}>
+            Run once per, field {i + 1}
+          </label>
+          <input
+            id={f(`once-${i}`)}
+            className={`${styles.control} ${styles.mono}`}
+            list={f("shape")}
+            value={p}
+            maxLength={160}
+            placeholder="pull_request.head.sha"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(e) => onChange(paths.map((x, j) => (j === i ? e.target.value.trim() : x)))}
+            data-testid="once-path"
+          />
+          <button
+            type="button"
+            className={styles.ghost}
+            aria-label={`Remove ${p || `field ${i + 1}`}`}
+            onClick={() => onChange(paths.filter((_, j) => j !== i))}
+            data-testid="once-remove"
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <div className={w.actions}>
+        <button
+          type="button"
+          className={styles.ghost}
+          disabled={paths.length >= ONCE_PER_MAX}
+          onClick={() => onChange([...paths, ""])}
+          data-testid="once-add"
+        >
+          Add a field
+        </button>
+        {hasRevision && !isRevision && (
+          <button
+            type="button"
+            className={styles.ghost}
+            onClick={() => onChange([...PR_REVISION])}
+            data-testid="once-revision"
+          >
+            Once per pull request revision
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

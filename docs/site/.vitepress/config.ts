@@ -161,6 +161,7 @@ export default defineConfig({
           { text: "Automations", link: "/guide/automations" },
           { text: "Actions", link: "/guide/actions" },
           { text: "Webhooks", link: "/guide/webhooks" },
+          { text: "Review every pull request", link: "/guide/review-pull-requests" },
           { text: "Mission plans", link: "/guide/mission-plans" },
           { text: "Web research", link: "/guide/web-research" },
           { text: "Files & git", link: "/guide/files-and-git" },

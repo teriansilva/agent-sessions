@@ -227,6 +227,28 @@ def webhook_target_api(action: dict) -> bool:
 NO_API_SINK = "a template with a secret can't be sent to an API session yet"
 
 
+#: A specialist's session is a structured one (#2222): its skills and grants are bundled at create.
+SPECIALIST_API_ONLY = "a specialist runs on an API agent; pick the specialist's own API agent"
+
+
+def _check_specialist(action: dict) -> None:
+    """A "Start a session" that runs AS a specialist (#2222): that version exists and can launch,
+    it runs on an API client, and the action names the same agent, so the consent's "Agent" line
+    is what runs."""
+    try:
+        pin = model.specialist_pin(action["specialist"])
+    except model.PinsUnavailable as e:
+        raise model.AutomationError(str(e), status=503) from None
+    if pin.get("missing"):
+        raise model.AutomationError(f"that specialist can't be used: {pin['missing']}")
+    if pin.get("engine") != action["engine"]:
+        raise model.AutomationError(
+            f"that specialist runs on {pin.get('engine')}; pick that agent for the session"
+        )
+    if not _structured().is_api(engines.get(action["engine"])):
+        raise model.AutomationError(SPECIALIST_API_ONLY)
+
+
 def check_save(config: dict) -> None:
     """Save-time checks that need the world (templates, engines, folders). Raises
     ``AutomationError``; blocking — run off the event loop."""
@@ -256,6 +278,8 @@ def check_save(config: dict) -> None:
         ok, why = folder_ok(action["folder"])
         if not ok:
             raise model.AutomationError(why)
+        if action.get("specialist"):
+            _check_specialist(action)
     elif action["kind"] == "send_to_session":
         try:
             prov, native = engines.parse_key(action["session_key"])
@@ -515,6 +539,30 @@ async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tu
         return _DELIVERED[rid]
 
 
+def _specialist_still_pinned(action: dict, spec: dict) -> str:
+    """Why the specialist no longer matches the pin this run was admitted with, or ``""``. Read
+    inside the launch fence, so the last word before the launch is the store, not the snapshot."""
+    try:
+        live = model.specialist_pin(action["specialist"])
+    except model.PinsUnavailable as e:
+        return str(e)
+    if live.get("missing"):
+        return f"the specialist can't be used: {live['missing']}"
+    if live != spec:
+        return "the specialist changed since you approved this automation"
+    return ""
+
+
+def _specialist_launch(spec: dict) -> dict:
+    """The launch arguments a pinned specialist names: its model, effort and ``(id, version)``."""
+    model_id = spec.get("model")
+    return {
+        "model": None if model_id in (None, "default") else str(model_id),
+        "effort": spec.get("effort"),
+        "specialist": (str(spec["id"]), int(spec["version"])),
+    }
+
+
 def session_cwd_drift(pinned: dict, folder: str) -> str:
     """Why the session folder no longer resolves to the approved directory, or ``""``."""
     if _identity_drift(pinned, folder):
@@ -551,6 +599,14 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
         structured = _structured().is_api(engines.get(action["engine"]))
         if registry is None and not structured:
             return "refused", "the session runner isn't available in this process"
+        spec = pins.get("specialist") if action.get("specialist") else None
+        if spec is not None:
+            # Re-read at run time by the authority check (`pins_drift`); this is the last word on
+            # what the pin itself says (#2222).
+            if spec.get("missing"):
+                return "refused", f"the specialist can't be used: {spec['missing']}"
+            if not structured or spec.get("engine") != action["engine"]:
+                return "refused", SPECIALIST_API_ONLY
 
         def on_key(key: str) -> None:
             # BEFORE anything is spawned: a record naming a session that never came to be is
@@ -567,6 +623,13 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
             moved = _real_still_pinned(pinned)
             if moved:
                 return moved
+            if spec is not None:
+                # The specialist as it is NOW, not as admitted (#2222 review): an edit, archive
+                # or delete between the drift check and this launch refuses it, so a version the
+                # operator never approved never starts.
+                drift = _specialist_still_pinned(action, spec)
+                if drift:
+                    return drift
             ok, why = folder_ok(real)
             return None if ok else why
 
@@ -586,6 +649,7 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
                     brief=text,
                     on_key=on_key,
                     check=fenced,
+                    **(_specialist_launch(spec) if spec is not None else {}),
                 )
             else:
                 out = await headless_dispatch.dispatch(

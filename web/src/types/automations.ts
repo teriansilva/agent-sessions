@@ -30,7 +30,14 @@ export type Trigger =
   /** A webhook picked from Library → Webhooks (#2221). It starts a session, a message to a
    *  session (#2221 P2), a message to HQ or a plugin that allows it; `when` (omitted when empty)
    *  chooses which deliveries. */
-  | { kind: "webhook"; webhook_id: string; when?: WebhookCondition[] };
+  | {
+      kind: "webhook";
+      webhook_id: string;
+      when?: WebhookCondition[];
+      /** The delivery fields whose values make a run's claim (#2222): one run per distinct
+       *  combination. Omitted when none were chosen. */
+      once_per?: string[];
+    };
 
 export type AutomationMessage =
   | { text: string }
@@ -92,6 +99,8 @@ export type AutomationAction =
       folder: string;
       bypass: boolean;
       message: AutomationMessage;
+      /** Run AS a specialist, pinned to one version (#2222). Omitted when none is chosen. */
+      specialist?: { specialist_id: string; version: number };
     }
   | {
       kind: "send_to_session";

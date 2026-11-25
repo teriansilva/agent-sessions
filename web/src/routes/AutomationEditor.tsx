@@ -61,12 +61,14 @@ import {
   inFlightNote,
   messengers,
   reconsent,
+  reviewerOptions,
   stepProblems,
   type EditorForm,
   type WizardStepId,
 } from "../lib/automations";
 import { AUTOMATIONS_PATH, WEBHOOK_NEW_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Session, Template, TemplateVariable } from "../types/api";
+import type { Specialist } from "../types/specialists";
 import type { ConnectorCatalog } from "../lib/connectors";
 import type { Automation, AutomationList, ConsentRequired } from "../types/automations";
 import type { NewWebhookHandoff } from "./WebhookNew";
@@ -126,6 +128,10 @@ function Editor({ routeId }: { routeId?: string }) {
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [variables, setVariables] = useState<TemplateVariable[]>([]);
   const [sessions, setSessions] = useState<Session[] | null>(null);
+  /** The specialist pool, for "Run as a specialist" (#2222). `null` until read; `[]` if it can't be. */
+  const [specialists, setSpecialists] = useState<Specialist[] | null>(null);
+  /** The specialist read failed: "Run as a specialist" says so instead of "none on this agent". */
+  const [specialistsFailed, setSpecialistsFailed] = useState(false);
   // The messengers a "Send a message" action may use (#2248 P2), from Settings → HQ connectors.
   const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
   // "Call a webhook" (#2248 P2): the signing secret from the ONE answer that made it. Component
@@ -235,6 +241,14 @@ function Editor({ routeId }: { routeId?: string }) {
       .then(() => api.connectors())
       .then((r) => live && setConnectors(r))
       .catch(() => live && setConnectors({ catalog: [], instances: [], disclosure: "" }));
+    Promise.resolve()
+      .then(() => api.specialists())
+      .then((r) => live && setSpecialists(Array.isArray(r?.specialists) ? r.specialists : []))
+      .catch(() => {
+        if (!live) return;
+        setSpecialists([]);
+        setSpecialistsFailed(true);
+      });
     return () => {
       live = false;
     };
@@ -398,6 +412,8 @@ function Editor({ routeId }: { routeId?: string }) {
   const engines = list.engines ?? [];
   const savedSwitch = saved ? apiSwitchFor(saved.action, engines) : null;
   const liveProjects = (projects ?? []).filter((p) => !p.archived || p.id === form.projectId);
+  const specialistOptions =
+    specialists === null ? null : reviewerOptions(specialists, engines, engineLabel);
   const f = (name: string) => `${uid}-${name}`;
   const props = { form, set, update, f };
 
@@ -526,6 +542,8 @@ function Editor({ routeId }: { routeId?: string }) {
             warnings={checks.what.warnings}
             savedDestination={saved?.destination ?? null}
             onNewSecret={saved?.destination ? () => void makeSecret() : null}
+            specialists={specialistOptions}
+            specialistsFailed={specialistsFailed}
             newSecretBusy={secretBusy}
             secretPanel={secretPanel}
           />

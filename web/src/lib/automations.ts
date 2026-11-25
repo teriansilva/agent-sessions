@@ -570,6 +570,11 @@ export interface EditorForm {
   when: ConditionDraft[];
   /** Template fields filled from the delivery, by field name (#2221 P2). */
   fromDelivery: Record<string, MappingDraft>;
+  /** "Run once per" (#2222): delivery fields whose values, together, make a run's claim. */
+  oncePer: string[];
+  /** "Run as a specialist" (#2222): the chosen specialist and the version it pins, or "" / null. */
+  specialistId: string;
+  specialistVersion: number | null;
   // "Send a message" (#2248 P2): a messenger connector and one of its saved recipients.
   connector: string;
   recipient: string;
@@ -700,6 +705,9 @@ export function blankForm(tz: string): EditorForm {
     webhookId: "",
     when: [],
     fromDelivery: {},
+    oncePer: [],
+    specialistId: "",
+    specialistVersion: null,
     connector: "",
     recipient: "",
     destination: "",
@@ -738,7 +746,7 @@ export function withTrigger(
     if (f.actionKind === "start_mission") next.actionKind = "start_session";
     return next;
   }
-  return { ...f, triggerKind: kind, when: [], fromDelivery: {} };
+  return { ...f, triggerKind: kind, when: [], fromDelivery: {}, oncePer: [] };
 }
 
 export function withAction(
@@ -750,7 +758,7 @@ export function withAction(
   // A mission can't be webhook-started.
   if (next.triggerKind === "webhook" && kind === "start_mission") {
     const blank = blankForm(f.tz);
-    next = { ...next, triggerKind: blank.triggerKind, when: [], fromDelivery: {} };
+    next = { ...next, triggerKind: blank.triggerKind, when: [], fromDelivery: {}, oncePer: [] };
   }
   return next;
 }
@@ -769,6 +777,7 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     } else if (t.kind === "webhook") {
       f.webhookId = t.webhook_id;
       f.when = (t.when ?? []).map(conditionDraft);
+      f.oncePer = [...(t.once_per ?? [])];
     } else if (t.kind === "schedule") {
       f.tz = t.tz;
       const c = t.cadence;
@@ -880,6 +889,8 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.engine = act.engine;
       f.folder = act.folder;
       f.bypass = act.bypass;
+      f.specialistId = act.specialist?.specialist_id ?? "";
+      f.specialistVersion = act.specialist?.version ?? null;
     } else if (act.kind === "send_to_session") {
       f.sessionKey = act.session_key;
     }
@@ -916,11 +927,15 @@ function formMessage(f: EditorForm): AutomationMessage {
 export function formTrigger(f: EditorForm): Trigger {
   if (f.triggerKind === "manual") return { kind: "manual" };
   if (f.triggerKind === "webhook") {
-    // The key is omitted when there are no conditions.
+    // Each key is omitted when empty, so a stored trigger keeps its exact shape (and receipt).
     const when = f.when.map(conditionBody);
-    return when.length
-      ? { kind: "webhook", webhook_id: f.webhookId, when }
-      : { kind: "webhook", webhook_id: f.webhookId };
+    const oncePer = f.oncePer.map((x) => x.trim()).filter(Boolean);
+    return {
+      kind: "webhook",
+      webhook_id: f.webhookId,
+      ...(when.length ? { when } : {}),
+      ...(oncePer.length ? { once_per: oncePer } : {}),
+    };
   }
   if (f.triggerKind === "once") return { kind: "once", at: f.onceAt, tz: f.tz };
   let cadence: Cadence;
@@ -1079,6 +1094,10 @@ export function formAction(f: EditorForm): AutomationAction {
       folder: f.folder,
       bypass: f.bypass,
       message,
+      // Omitted when none is chosen, so an action without one keeps its exact shape (#2222).
+      ...(f.specialistId && f.specialistVersion
+        ? { specialist: { specialist_id: f.specialistId, version: f.specialistVersion } }
+        : {}),
     };
   // A message to HQ (#2221): the message only — it has no target, agent or permissions.
   if (f.actionKind === "tell_hq") return { kind: "tell_hq", message };
@@ -1135,9 +1154,28 @@ function whenProblems(f: EditorForm): string[] {
   return out;
 }
 
+/** At most this many fields make a "Run once per" key (server: `webhook_events.ONCE_PER_MAX`). */
+export const ONCE_PER_MAX = 4;
+
+/** "Run once per" as the server validates it (`webhook_events.validate_once_per`). */
+export function oncePerProblems(paths: readonly string[]): string[] {
+  const out: string[] = [];
+  if (paths.length > ONCE_PER_MAX) out.push(`Run once per: at most ${ONCE_PER_MAX} fields`);
+  const seen = new Set<string>();
+  paths.forEach((p, i) => {
+    const what = `Run once per, field ${i + 1}`;
+    if (!validPath(p)) out.push(`${what}: pick a field of the delivery (like pull_request.number)`);
+    else if (p.includes("[]")) out.push(`${what}: a value comes from one field, not a list`);
+    else if (seen.has(p)) out.push(`${what}: ${p} is already chosen`);
+    seen.add(p);
+  });
+  return out;
+}
+
 function eventsProblems(f: EditorForm): string[] {
   if (!fromListHook(f)) return [];
   const out: string[] = [];
+  out.push(...oncePerProblems(f.oncePer));
   if (f.when.length > CONDITIONS_MAX)
     out.push(`At most ${CONDITIONS_MAX} conditions`);
   f.when.forEach((c, i) => {
@@ -1185,6 +1223,8 @@ function whatProblems(f: EditorForm): string[] {
     out.push("Choose an agent");
   if (f.actionKind === "start_session" && !f.folder)
     out.push("Choose a folder");
+  if (f.actionKind === "start_session" && f.specialistId && f.bypass)
+    out.push("A specialist’s session never skips permission prompts");
   if (f.actionKind === "send_to_session" && !f.sessionKey)
     out.push("Choose a session");
   if (f.actionKind === "send_message") {
@@ -1782,6 +1822,8 @@ export function sessionPicker(sessions: readonly Session[], keep: readonly strin
 
 export interface ReviewerOption {
   id: string;
+  /** The agent its current version runs on: "Run as a specialist" lists those on the chosen one. */
+  engine: string;
   /** The version a choice pins: the specialist's CURRENT one. */
   version: number;
   label: string;
@@ -1812,6 +1854,7 @@ export function reviewerOptions(
       const model = v.model ? ` · ${v.model}` : "";
       return {
         id: s.id,
+        engine: v.engine,
         version: v.version,
         label: `${v.title || s.id} v${v.version} · ${engineLabel(v.engine)}${model}`,
         blocked:
@@ -1820,4 +1863,23 @@ export function reviewerOptions(
             : "",
       };
     });
+}
+
+/** "Run as a specialist" (#2222): the options on the session's agent. Each pins the specialist's
+ *  CURRENT version; a stored pin to an older one is shown by the step, not offered here. */
+export function specialistChoices(
+  options: readonly ReviewerOption[],
+  engine: string,
+): ReviewerOption[] {
+  return options.filter((o) => o.engine === engine);
+}
+
+/** Choosing the session's agent keeps a chosen specialist only when it runs on that agent. */
+export function withEngine(
+  f: EditorForm,
+  engine: string,
+  options: readonly ReviewerOption[],
+): EditorForm {
+  const keep = options.some((o) => o.id === f.specialistId && o.engine === engine);
+  return keep ? { ...f, engine } : { ...f, engine, specialistId: "", specialistVersion: null };
 }

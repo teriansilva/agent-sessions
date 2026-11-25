@@ -48,7 +48,7 @@ describe("the specialist picker", () => {
       ...(CHAT ? [spec("chat", CHAT.id, 1)] : []),
     ];
     const out = reviewerOptions(list, [], (id) => `label:${id}`);
-    expect(out).toEqual([{ id: "api-one", version: 3, label: `API-ONE v3 · label:${API.id} · m1`, blocked: "" }]);
+    expect(out).toEqual([{ id: "api-one", engine: API.id, version: 3, label: `API-ONE v3 · label:${API.id} · m1`, blocked: "" }]);
   });
 
   test("one the server can't start unattended is offered disabled, with its reason", () => {

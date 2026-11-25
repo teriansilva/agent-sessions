@@ -6,8 +6,10 @@ message a session, tell HQ, or a plugin that allows it) acts on the events its c
 (`webhook_events.matches`), with the template values its mapping takes from the delivery, typed
 (`webhook_events.extract`). A value that fails its type refuses the delivery and nothing starts.
 The admission (`automations_store.begin_delivery`) is one transaction bound to the configuration
-the delivery was matched against and to the webhook it came through, and the body's fingerprint is
-the claim, so a redelivered body never runs twice.
+the delivery was matched against and to the webhook it came through. The claim is the body's
+fingerprint, so a redelivered body never runs twice, or, when the trigger names `once_per`
+fields (#2222), their canonical values (`webhook_events.once_key`), so one value set runs once
+whatever else the body carries.
 
 Delivery values are data: they fill typed template fields and nothing else. The payload never
 chooses the folder, the session, the agent, the template or the permissions.
@@ -80,11 +82,21 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry, source
         delivered = webhook_events.extract(mapping, payload)
     except webhook_events.ValueRejected as e:
         return await _reject(aid, row, source, fp, label, f"{e}; nothing started")
+    once_per = config["trigger"].get("once_per") or []
+    if once_per:
+        # The claim is the chosen values, not the body (#2222): the same pull request head re-sent
+        # with a different body (a fresh `updated_at`) runs once.
+        try:
+            slot = f"once:{webhook_events.once_key(once_per, payload)}"
+        except webhook_events.ValueRejected as e:
+            return await _reject(aid, row, source, fp, label, f"{e}; nothing started")
+    else:
+        slot = f"delivery:{fp}"
     res = await asyncio.to_thread(
         store.begin_delivery,
         aid,
         source=source,
-        slot=f"delivery:{fp}",
+        slot=slot,
         expect_revision=row["revision"],
         inputs={"event": label, "delivered": delivered},
     )
