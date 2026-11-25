@@ -293,4 +293,12 @@ carries the row ID in its acceptance criteria and re-runs it against the real im
 
 Each executed probe produces one evidence row with verdict `pass`, `fail`, `unsupported` or
 `not-run`. The four stay distinct in every summary: an unsupported or unexecuted row is never shown
-as a pass, and a model result is labelled as one.
+as a pass, and a model result is labelled as one. `ENOENT` counts as a denial only for a target the harness verified exists outside the
+envelope: `mu_p0.prepare_plan` checks, on the host, that each target is really reachable (a
+readable file, or a writable file or directory; a dangling link or a loop is not). P0b's runner,
+which lands with the VM run, calls it before each envelope starts and judges every row with
+`mu_p0.judge`; otherwise the row is `not-run`. An evidence file is complete only when its values are
+set (no empty approval, backend, policy or host fact, no placeholder SHA, and a SHA that is a
+commit), every declared probe ID has a row, every sample is a finite number, every arm meets
+the §7 counts, and a backend that ran carries a launch, a first-byte and a throughput arm. A
+backend whose every row is `unsupported` never ran here and needs no samples.
